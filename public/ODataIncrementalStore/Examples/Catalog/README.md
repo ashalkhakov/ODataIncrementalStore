@@ -35,5 +35,8 @@ ODataIncrementalStore.
 The store URL defaults to the public Northwind v4 service. That service
 has Product/Category/Supplier but not Location/Stock, and treats
 Supplier as to-one. Point `OIS_SERVICE_URL` at a service that matches
-this model to exercise the full graph. This app is the real stack; the
+this model to exercise the full graph.
+
+`Examples/Workbench` is the testing bench (in-memory OData, wire log,
+fault/expand/CRUD). This Catalog app is the smaller consumer. The
 XCTest suite never touches the network.

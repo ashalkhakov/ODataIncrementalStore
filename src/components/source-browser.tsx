@@ -5,6 +5,7 @@ import { cn } from "@/lib/utils";
 const GROUPS: { id: SourceGroup; label: string }[] = [
   { id: "library", label: "Library" },
   { id: "tests", label: "XCTest" },
+  { id: "workbench", label: "Workbench" },
   { id: "example", label: "Catalog" },
 ];
 

@@ -1,4 +1,4 @@
-export type SourceGroup = "library" | "tests" | "example";
+export type SourceGroup = "library" | "tests" | "example" | "workbench";
 
 export const SOURCE_FILES: { path: string; label: string; group: SourceGroup }[] = [
   { path: "GNUmakefile", label: "GNUmakefile", group: "library" },
@@ -44,4 +44,11 @@ export const SOURCE_FILES: { path: string; label: string; group: SourceGroup }[]
   { path: "Examples/Catalog/CatalogController.m", label: "CatalogController.m", group: "example" },
   { path: "Examples/Catalog/Catalog.xcdatamodeld/.xccurrentversion", label: "Catalog.xcdatamodeld", group: "example" },
   { path: "Examples/Catalog/Catalog.xcdatamodeld/Catalog.xcdatamodel/contents", label: "Catalog.xcdatamodel", group: "example" },
+  { path: "Examples/Workbench/README.md", label: "Workbench/README.md", group: "workbench" },
+  { path: "Examples/Workbench/GNUmakefile", label: "Workbench/GNUmakefile", group: "workbench" },
+  { path: "Examples/Workbench/main.m", label: "Workbench/main.m", group: "workbench" },
+  { path: "Examples/Workbench/WorkbenchController.h", label: "WorkbenchController.h", group: "workbench" },
+  { path: "Examples/Workbench/WorkbenchController.m", label: "WorkbenchController.m", group: "workbench" },
+  { path: "Examples/Workbench/WorkbenchEngine.h", label: "WorkbenchEngine.h", group: "workbench" },
+  { path: "Examples/Workbench/WorkbenchEngine.m", label: "WorkbenchEngine.m", group: "workbench" },
 ];

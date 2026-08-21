@@ -288,9 +288,12 @@
   }];
   if (object.isInserted) {
     [object.entity.attributesByName enumerateKeysAndObjectsUsingBlock:^(NSString *name, NSAttributeDescription *attr, BOOL *stop) {
-      (void)name; (void)stop;
+      (void)stop;
+      if (!includingKeys && [keyNames containsObject:name]) return;
       NSString *wire = [self->_mapper propertyForAttribute:attr];
-      if (!body[wire]) body[wire] = [self odataJSON:[object primitiveValueForKey:name]];
+      if (body[wire]) return;
+      id json = [self odataJSON:[object primitiveValueForKey:name]];
+      if (json && json != [NSNull null]) body[wire] = json;
     }];
   }
   return body;

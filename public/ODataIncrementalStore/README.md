@@ -77,16 +77,19 @@ make -C Tests run-tests
 On Apple: `swift test`. Snapshots live in `Tests/Snapshots/` and cite the
 OASIS protocol section they pin.
 
-## Example (AppKit)
+## Example apps
 
-`Examples/Catalog` is a Cocoa/GNUstep window. The model is
-`Catalog.xcdatamodeld` (Product ↔ Supplier many-to-many, Stock/Location
-for on-hand quantity). Type an `NSPredicate`, fetch, inspect
-relationships, edit a price, save.
+`Examples/Workbench` is the testing bench: a Cocoa window that drives a
+real store against an in-memory OData v4 service (no network). Predicate
+→ `$filter`, fetch, fault, expand, PATCH/POST/DELETE, wire log.
+
+`Examples/Catalog` is a smaller consumer: table + predicate + inspector.
+
+Both load `Catalog.xcdatamodeld`.
 
 ```sh
-make -C Examples/Catalog
-openapp ./Catalog.app   # GNUstep
+make -C Examples/Workbench
+openapp ./Workbench.app   # GNUstep
 ```
 
 ## Apple / Swift Package Manager

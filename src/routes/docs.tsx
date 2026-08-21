@@ -44,9 +44,9 @@ function DocsPage() {
             tapes under <code className="font-mono text-fg">Tests/Snapshots</code>, each citing the OData v4 protocol
             section it pins ($filter ABNF, /$count, POST, PATCH + If-Match, 412, DELETE).{" "}
             <code className="font-mono text-fg">make test</code> on GNUstep runs the XCTest bundle;{" "}
-            <code className="font-mono text-fg">swift test</code> on Apple. Catalog is a separate AppKit app that
-            loads <code className="font-mono text-fg">Catalog.xcdatamodeld</code> (Product ↔ Supplier many-to-many,
-            Stock at a Location) and talks to a service.
+            <code className="font-mono text-fg">swift test</code> on Apple. The workbench is a Cocoa
+            app under <code className="font-mono text-fg">Examples/Workbench</code> — in-memory OData,
+            real store, no website.
           </p>
         </section>
         <section>
@@ -100,8 +100,7 @@ function DocsPage() {
         <section>
           <h2 className="font-display text-2xl text-fg">Demo model</h2>
           <p className="mt-3">
-            The workbench and the <code className="font-mono text-fg">/odata</code> service speak a Northwind-shaped
-            schema:
+            Catalog and the Cocoa workbench load <code className="font-mono text-fg">Catalog.xcdatamodeld</code>:
           </p>
           <ul className="mt-3 space-y-1 font-mono text-xs text-fg">
             {SCHEMA.entities.map((e) => (

@@ -1,6 +1,5 @@
 import { createFileRoute, Link } from "@tanstack/react-router";
 import { ArrowRight } from "lucide-react";
-import { LiveTranslate } from "@/components/live-translate";
 import { StackDiagram } from "@/components/stack-diagram";
 import { Button } from "@/components/ui/button";
 import { SCHEMA } from "@/lib/odata/model";
@@ -37,7 +36,7 @@ function Home() {
             <a href="/ODataIncrementalStore.zip">Download .m / .h zip</a>
           </Button>
           <Button asChild variant="secondary">
-            <Link to="/tests">XCTest snapshots</Link>
+            <Link to="/workbench">Cocoa workbench</Link>
           </Button>
         </div>
         <div className="mt-10 overflow-hidden rounded-xl bg-surface shadow-[var(--shadow-border)]">
@@ -72,10 +71,6 @@ function Home() {
         </div>
       </section>
 
-      <section className="mx-auto max-w-6xl px-4 pb-16 sm:px-6">
-        <LiveTranslate />
-      </section>
-
       <section className="mx-auto grid max-w-6xl gap-10 px-4 pb-16 sm:px-6 lg:grid-cols-2">
         <div>
           <h2 className="font-display text-3xl tracking-tight text-fg">Why it exists</h2>
@@ -89,8 +84,9 @@ function Home() {
             <a href="https://github.com/ashalkhakov/FreeCoreData" className="text-wire hover:text-fg">
               FreeCoreData
             </a>{" "}
-            on GNUstep. The workbench on this site is the same translation the{" "}
-            <span className="text-fg">.m</span> files perform.
+            on GNUstep. The workbench is{" "}
+            <code className="font-mono text-fg">Examples/Workbench</code> — a Cocoa app. This page is
+            just the README and the source.
           </p>
         </div>
         <StackDiagram />
