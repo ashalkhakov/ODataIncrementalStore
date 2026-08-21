@@ -1,0 +1,4 @@
+module ODataIncrementalStore {
+  umbrella header "ODataIncrementalStore.h"
+  export *
+}
