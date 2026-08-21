@@ -5,37 +5,38 @@
 	};
 	objectVersion = 56;
 	objects = {
+
 /* Begin PBXBuildFile section */
-		AA000000000000000000000A /* ODataIncrementalStore.h in Headers */ = {isa = PBXBuildFile; fileRef = AA000000000000000000000B /* ODataIncrementalStore.h */; settings = {ATTRIBUTES = (Public, ); };};
-		AA000000000000000000000C /* OISRuntime.h in Headers */ = {isa = PBXBuildFile; fileRef = AA000000000000000000000D /* OISRuntime.h */; settings = {ATTRIBUTES = (Public, ); };};
-		AA000000000000000000000E /* OISCoreData.h in Headers */ = {isa = PBXBuildFile; fileRef = AA000000000000000000000F /* OISCoreData.h */; settings = {ATTRIBUTES = (Public, ); };};
-		AA0000000000000000000012 /* ODataError.h in Headers */ = {isa = PBXBuildFile; fileRef = AA0000000000000000000013 /* ODataError.h */; settings = {ATTRIBUTES = (Public, ); };};
-		AA0000000000000000000014 /* ODataConfiguration.h in Headers */ = {isa = PBXBuildFile; fileRef = AA0000000000000000000015 /* ODataConfiguration.h */; settings = {ATTRIBUTES = (Public, ); };};
-		AA0000000000000000000016 /* ODataClient.h in Headers */ = {isa = PBXBuildFile; fileRef = AA0000000000000000000017 /* ODataClient.h */; settings = {ATTRIBUTES = (Public, ); };};
-		AA0000000000000000000018 /* ODataPropertyMapper.h in Headers */ = {isa = PBXBuildFile; fileRef = AA0000000000000000000019 /* ODataPropertyMapper.h */; settings = {ATTRIBUTES = (Public, ); };};
-		AA000000000000000000001A /* ODataResourceIdentifier.h in Headers */ = {isa = PBXBuildFile; fileRef = AA000000000000000000001B /* ODataResourceIdentifier.h */; settings = {ATTRIBUTES = (Public, ); };};
-		AA000000000000000000001C /* ODataPredicateTranslator.h in Headers */ = {isa = PBXBuildFile; fileRef = AA000000000000000000001D /* ODataPredicateTranslator.h */; settings = {ATTRIBUTES = (Public, ); };};
-		AA000000000000000000001E /* ODataQueryBuilder.h in Headers */ = {isa = PBXBuildFile; fileRef = AA000000000000000000001F /* ODataQueryBuilder.h */; settings = {ATTRIBUTES = (Public, ); };};
-		AA0000000000000000000020 /* ODataError.m in Sources */ = {isa = PBXBuildFile; fileRef = AA0000000000000000000021 /* ODataError.m */;};
-		AA0000000000000000000022 /* ODataConfiguration.m in Sources */ = {isa = PBXBuildFile; fileRef = AA0000000000000000000023 /* ODataConfiguration.m */;};
-		AA0000000000000000000024 /* ODataClient.m in Sources */ = {isa = PBXBuildFile; fileRef = AA0000000000000000000025 /* ODataClient.m */;};
-		AA0000000000000000000026 /* ODataPropertyMapper.m in Sources */ = {isa = PBXBuildFile; fileRef = AA0000000000000000000027 /* ODataPropertyMapper.m */;};
-		AA0000000000000000000028 /* ODataResourceIdentifier.m in Sources */ = {isa = PBXBuildFile; fileRef = AA0000000000000000000029 /* ODataResourceIdentifier.m */;};
-		AA000000000000000000002A /* ODataPredicateTranslator.m in Sources */ = {isa = PBXBuildFile; fileRef = AA000000000000000000002B /* ODataPredicateTranslator.m */;};
-		AA000000000000000000002C /* ODataQueryBuilder.m in Sources */ = {isa = PBXBuildFile; fileRef = AA000000000000000000002D /* ODataQueryBuilder.m */;};
-		AA000000000000000000002E /* ODataIncrementalStore.m in Sources */ = {isa = PBXBuildFile; fileRef = AA000000000000000000002F /* ODataIncrementalStore.m */;};
-		AA00000000000000000000C3 /* OISCatalogModel.m in Sources */ = {isa = PBXBuildFile; fileRef = AA00000000000000000000C2 /* OISCatalogModel.m */;};
-		AA00000000000000000000C1 /* Catalog.xcdatamodeld in Resources */ = {isa = PBXBuildFile; fileRef = AA00000000000000000000C0 /* Catalog.xcdatamodeld */;};
-		AA0000000000000000000032 /* ODataSnapshotTransport.m in Sources */ = {isa = PBXBuildFile; fileRef = AA0000000000000000000033 /* ODataSnapshotTransport.m */;};
-		AA0000000000000000000034 /* ODataPredicateTranslatorTests.m in Sources */ = {isa = PBXBuildFile; fileRef = AA0000000000000000000035 /* ODataPredicateTranslatorTests.m */;};
-		AA0000000000000000000036 /* ODataQueryBuilderTests.m in Sources */ = {isa = PBXBuildFile; fileRef = AA0000000000000000000037 /* ODataQueryBuilderTests.m */;};
-		AA0000000000000000000038 /* ODataResourceIdentifierTests.m in Sources */ = {isa = PBXBuildFile; fileRef = AA0000000000000000000039 /* ODataResourceIdentifierTests.m */;};
-		AA000000000000000000003A /* ODataSnapshotStoreTests.m in Sources */ = {isa = PBXBuildFile; fileRef = AA000000000000000000003B /* ODataSnapshotStoreTests.m */;};
-		AA000000000000000000003C /* CoreData.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = AA000000000000000000003D /* CoreData.framework */;};
-		AA000000000000000000003E /* Foundation.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = AA000000000000000000003F /* Foundation.framework */;};
-		AA0000000000000000000040 /* CoreData.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = AA000000000000000000003D /* CoreData.framework */;};
-		AA0000000000000000000041 /* ODataIncrementalStore.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = AA0000000000000000000003 /* ODataIncrementalStore.framework */;};
-		AA0000000000000000000042 /* Snapshots in Resources */ = {isa = PBXBuildFile; fileRef = AA0000000000000000000043 /* Snapshots */;};
+		AA000000000000000000000A /* ODataIncrementalStore.h in Headers */ = {isa = PBXBuildFile; fileRef = AA000000000000000000000B /* ODataIncrementalStore.h */; settings = {ATTRIBUTES = (Public, ); }; };
+		AA000000000000000000000C /* OISRuntime.h in Headers */ = {isa = PBXBuildFile; fileRef = AA000000000000000000000D /* OISRuntime.h */; settings = {ATTRIBUTES = (Public, ); }; };
+		AA000000000000000000000E /* OISCoreData.h in Headers */ = {isa = PBXBuildFile; fileRef = AA000000000000000000000F /* OISCoreData.h */; settings = {ATTRIBUTES = (Public, ); }; };
+		AA0000000000000000000012 /* ODataError.h in Headers */ = {isa = PBXBuildFile; fileRef = AA0000000000000000000013 /* ODataError.h */; settings = {ATTRIBUTES = (Public, ); }; };
+		AA0000000000000000000014 /* ODataConfiguration.h in Headers */ = {isa = PBXBuildFile; fileRef = AA0000000000000000000015 /* ODataConfiguration.h */; settings = {ATTRIBUTES = (Public, ); }; };
+		AA0000000000000000000016 /* ODataClient.h in Headers */ = {isa = PBXBuildFile; fileRef = AA0000000000000000000017 /* ODataClient.h */; settings = {ATTRIBUTES = (Public, ); }; };
+		AA0000000000000000000018 /* ODataPropertyMapper.h in Headers */ = {isa = PBXBuildFile; fileRef = AA0000000000000000000019 /* ODataPropertyMapper.h */; settings = {ATTRIBUTES = (Public, ); }; };
+		AA000000000000000000001A /* ODataResourceIdentifier.h in Headers */ = {isa = PBXBuildFile; fileRef = AA000000000000000000001B /* ODataResourceIdentifier.h */; settings = {ATTRIBUTES = (Public, ); }; };
+		AA000000000000000000001C /* ODataPredicateTranslator.h in Headers */ = {isa = PBXBuildFile; fileRef = AA000000000000000000001D /* ODataPredicateTranslator.h */; settings = {ATTRIBUTES = (Public, ); }; };
+		AA000000000000000000001E /* ODataQueryBuilder.h in Headers */ = {isa = PBXBuildFile; fileRef = AA000000000000000000001F /* ODataQueryBuilder.h */; settings = {ATTRIBUTES = (Public, ); }; };
+		AA0000000000000000000020 /* ODataError.m in Sources */ = {isa = PBXBuildFile; fileRef = AA0000000000000000000021 /* ODataError.m */; };
+		AA0000000000000000000022 /* ODataConfiguration.m in Sources */ = {isa = PBXBuildFile; fileRef = AA0000000000000000000023 /* ODataConfiguration.m */; };
+		AA0000000000000000000024 /* ODataClient.m in Sources */ = {isa = PBXBuildFile; fileRef = AA0000000000000000000025 /* ODataClient.m */; };
+		AA0000000000000000000026 /* ODataPropertyMapper.m in Sources */ = {isa = PBXBuildFile; fileRef = AA0000000000000000000027 /* ODataPropertyMapper.m */; };
+		AA0000000000000000000028 /* ODataResourceIdentifier.m in Sources */ = {isa = PBXBuildFile; fileRef = AA0000000000000000000029 /* ODataResourceIdentifier.m */; };
+		AA000000000000000000002A /* ODataPredicateTranslator.m in Sources */ = {isa = PBXBuildFile; fileRef = AA000000000000000000002B /* ODataPredicateTranslator.m */; };
+		AA000000000000000000002C /* ODataQueryBuilder.m in Sources */ = {isa = PBXBuildFile; fileRef = AA000000000000000000002D /* ODataQueryBuilder.m */; };
+		AA000000000000000000002E /* ODataIncrementalStore.m in Sources */ = {isa = PBXBuildFile; fileRef = AA000000000000000000002F /* ODataIncrementalStore.m */; };
+		AA0000000000000000000032 /* ODataSnapshotTransport.m in Sources */ = {isa = PBXBuildFile; fileRef = AA0000000000000000000033 /* ODataSnapshotTransport.m */; };
+		AA0000000000000000000034 /* ODataPredicateTranslatorTests.m in Sources */ = {isa = PBXBuildFile; fileRef = AA0000000000000000000035 /* ODataPredicateTranslatorTests.m */; };
+		AA0000000000000000000036 /* ODataQueryBuilderTests.m in Sources */ = {isa = PBXBuildFile; fileRef = AA0000000000000000000037 /* ODataQueryBuilderTests.m */; };
+		AA0000000000000000000038 /* ODataResourceIdentifierTests.m in Sources */ = {isa = PBXBuildFile; fileRef = AA0000000000000000000039 /* ODataResourceIdentifierTests.m */; };
+		AA000000000000000000003A /* ODataSnapshotStoreTests.m in Sources */ = {isa = PBXBuildFile; fileRef = AA000000000000000000003B /* ODataSnapshotStoreTests.m */; };
+		AA000000000000000000003C /* CoreData.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = AA000000000000000000003D /* CoreData.framework */; };
+		AA000000000000000000003E /* Foundation.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = AA000000000000000000003F /* Foundation.framework */; };
+		AA0000000000000000000040 /* CoreData.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = AA000000000000000000003D /* CoreData.framework */; };
+		AA0000000000000000000041 /* ODataIncrementalStore.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = AA0000000000000000000003 /* ODataIncrementalStore.framework */; };
+		AA0000000000000000000042 /* Snapshots in Resources */ = {isa = PBXBuildFile; fileRef = AA0000000000000000000043 /* Snapshots */; };
+		AA00000000000000000000C1 /* Catalog.xcdatamodeld in Resources */ = {isa = PBXBuildFile; fileRef = AA00000000000000000000C0 /* Catalog.xcdatamodeld */; };
+		AA00000000000000000000C3 /* OISCatalogModel.m in Sources */ = {isa = PBXBuildFile; fileRef = AA00000000000000000000C2 /* OISCatalogModel.m */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXContainerItemProxy section */
@@ -49,44 +50,43 @@
 /* End PBXContainerItemProxy section */
 
 /* Begin PBXFileReference section */
-		AA0000000000000000000003 /* ODataIncrementalStore.framework */ = {isa = PBXFileReference; explicitFileType = wrapper.framework; includeInIndex = 0; path = ODataIncrementalStore.framework; sourceTree = BUILT_PRODUCTS_DIR;};
-		AA0000000000000000000005 /* ODataIncrementalStoreTests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = ODataIncrementalStoreTests.xctest; sourceTree = BUILT_PRODUCTS_DIR;};
-		AA000000000000000000003D /* CoreData.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = CoreData.framework; path = System/Library/Frameworks/CoreData.framework; sourceTree = SDKROOT;};
-		AA000000000000000000003F /* Foundation.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = Foundation.framework; path = System/Library/Frameworks/Foundation.framework; sourceTree = SDKROOT;};
-		AA0000000000000000000045 /* Debug.xcconfig */ = {isa = PBXFileReference; lastKnownFileType = text.xcconfig; path = Debug.xcconfig; sourceTree = "<group>";};
-		AA0000000000000000000046 /* Release.xcconfig */ = {isa = PBXFileReference; lastKnownFileType = text.xcconfig; path = Release.xcconfig; sourceTree = "<group>";};
-		AA0000000000000000000047 /* Common.xcconfig */ = {isa = PBXFileReference; lastKnownFileType = text.xcconfig; path = Common.xcconfig; sourceTree = "<group>";};
-		AA0000000000000000000048 /* module.modulemap */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.module; path = module.modulemap; sourceTree = "<group>";};
-		AA000000000000000000000B /* ODataIncrementalStore.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = ODataIncrementalStore.h; sourceTree = "<group>";};
-		AA000000000000000000000D /* OISRuntime.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = OISRuntime.h; sourceTree = "<group>";};
-		AA000000000000000000000F /* OISCoreData.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = OISCoreData.h; sourceTree = "<group>";};
-		AA0000000000000000000013 /* ODataError.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = ODataError.h; sourceTree = "<group>";};
-		AA0000000000000000000015 /* ODataConfiguration.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = ODataConfiguration.h; sourceTree = "<group>";};
-		AA0000000000000000000017 /* ODataClient.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = ODataClient.h; sourceTree = "<group>";};
-		AA0000000000000000000019 /* ODataPropertyMapper.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = ODataPropertyMapper.h; sourceTree = "<group>";};
-		AA000000000000000000001B /* ODataResourceIdentifier.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = ODataResourceIdentifier.h; sourceTree = "<group>";};
-		AA000000000000000000001D /* ODataPredicateTranslator.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = ODataPredicateTranslator.h; sourceTree = "<group>";};
-		AA000000000000000000001F /* ODataQueryBuilder.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = ODataQueryBuilder.h; sourceTree = "<group>";};
-		AA0000000000000000000021 /* ODataError.m */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.objc; path = ODataError.m; sourceTree = "<group>";};
-		AA0000000000000000000023 /* ODataConfiguration.m */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.objc; path = ODataConfiguration.m; sourceTree = "<group>";};
-		AA0000000000000000000025 /* ODataClient.m */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.objc; path = ODataClient.m; sourceTree = "<group>";};
-		AA0000000000000000000027 /* ODataPropertyMapper.m */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.objc; path = ODataPropertyMapper.m; sourceTree = "<group>";};
-		AA0000000000000000000029 /* ODataResourceIdentifier.m */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.objc; path = ODataResourceIdentifier.m; sourceTree = "<group>";};
-		AA000000000000000000002B /* ODataPredicateTranslator.m */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.objc; path = ODataPredicateTranslator.m; sourceTree = "<group>";};
-		AA000000000000000000002D /* ODataQueryBuilder.m */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.objc; path = ODataQueryBuilder.m; sourceTree = "<group>";};
-		AA000000000000000000002F /* ODataIncrementalStore.m */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.objc; path = ODataIncrementalStore.m; sourceTree = "<group>";};
-		AA00000000000000000000C2 /* OISCatalogModel.m */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.objc; path = OISCatalogModel.m; sourceTree = "<group>";};
-		AA00000000000000000000C4 /* OISCatalogModel.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = OISCatalogModel.h; sourceTree = "<group>";};
-		AA00000000000000000000C0 /* Catalog.xcdatamodeld */ = {isa = PBXFileReference; lastKnownFileType = wrapper.xcdatamodeld; name = Catalog.xcdatamodeld; path = ../Examples/Catalog/Catalog.xcdatamodeld; sourceTree = "<group>";};
-		AA0000000000000000000033 /* ODataSnapshotTransport.m */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.objc; path = ODataSnapshotTransport.m; sourceTree = "<group>";};
-		AA0000000000000000000035 /* ODataPredicateTranslatorTests.m */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.objc; path = ODataPredicateTranslatorTests.m; sourceTree = "<group>";};
-		AA0000000000000000000037 /* ODataQueryBuilderTests.m */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.objc; path = ODataQueryBuilderTests.m; sourceTree = "<group>";};
-		AA0000000000000000000039 /* ODataResourceIdentifierTests.m */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.objc; path = ODataResourceIdentifierTests.m; sourceTree = "<group>";};
-		AA000000000000000000003B /* ODataSnapshotStoreTests.m */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.objc; path = ODataSnapshotStoreTests.m; sourceTree = "<group>";};
-		AA000000000000000000004B /* ODataSnapshotTransport.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = ODataSnapshotTransport.h; sourceTree = "<group>";};
-		AA0000000000000000000043 /* Snapshots */ = {isa = PBXFileReference; lastKnownFileType = folder; path = Snapshots; sourceTree = "<group>";};
-		AA000000000000000000004C /* README.md */ = {isa = PBXFileReference; lastKnownFileType = net.daringfireball.markdown; path = README.md; sourceTree = "<group>";};
-		AA000000000000000000004D /* GNUmakefile */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.make; path = GNUmakefile; sourceTree = "<group>";};
+		AA0000000000000000000003 /* ODataIncrementalStore.framework */ = {isa = PBXFileReference; explicitFileType = wrapper.framework; includeInIndex = 0; path = ODataIncrementalStore.framework; sourceTree = BUILT_PRODUCTS_DIR; };
+		AA0000000000000000000005 /* ODataIncrementalStoreTests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = ODataIncrementalStoreTests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
+		AA000000000000000000000B /* ODataIncrementalStore.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = ODataIncrementalStore.h; sourceTree = "<group>"; };
+		AA000000000000000000000D /* OISRuntime.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = OISRuntime.h; sourceTree = "<group>"; };
+		AA000000000000000000000F /* OISCoreData.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = OISCoreData.h; sourceTree = "<group>"; };
+		AA0000000000000000000013 /* ODataError.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = ODataError.h; sourceTree = "<group>"; };
+		AA0000000000000000000015 /* ODataConfiguration.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = ODataConfiguration.h; sourceTree = "<group>"; };
+		AA0000000000000000000017 /* ODataClient.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = ODataClient.h; sourceTree = "<group>"; };
+		AA0000000000000000000019 /* ODataPropertyMapper.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = ODataPropertyMapper.h; sourceTree = "<group>"; };
+		AA000000000000000000001B /* ODataResourceIdentifier.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = ODataResourceIdentifier.h; sourceTree = "<group>"; };
+		AA000000000000000000001D /* ODataPredicateTranslator.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = ODataPredicateTranslator.h; sourceTree = "<group>"; };
+		AA000000000000000000001F /* ODataQueryBuilder.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = ODataQueryBuilder.h; sourceTree = "<group>"; };
+		AA0000000000000000000021 /* ODataError.m */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.objc; path = ODataError.m; sourceTree = "<group>"; };
+		AA0000000000000000000023 /* ODataConfiguration.m */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.objc; path = ODataConfiguration.m; sourceTree = "<group>"; };
+		AA0000000000000000000025 /* ODataClient.m */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.objc; path = ODataClient.m; sourceTree = "<group>"; };
+		AA0000000000000000000027 /* ODataPropertyMapper.m */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.objc; path = ODataPropertyMapper.m; sourceTree = "<group>"; };
+		AA0000000000000000000029 /* ODataResourceIdentifier.m */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.objc; path = ODataResourceIdentifier.m; sourceTree = "<group>"; };
+		AA000000000000000000002B /* ODataPredicateTranslator.m */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.objc; path = ODataPredicateTranslator.m; sourceTree = "<group>"; };
+		AA000000000000000000002D /* ODataQueryBuilder.m */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.objc; path = ODataQueryBuilder.m; sourceTree = "<group>"; };
+		AA000000000000000000002F /* ODataIncrementalStore.m */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.objc; path = ODataIncrementalStore.m; sourceTree = "<group>"; };
+		AA0000000000000000000033 /* ODataSnapshotTransport.m */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.objc; path = ODataSnapshotTransport.m; sourceTree = "<group>"; };
+		AA0000000000000000000035 /* ODataPredicateTranslatorTests.m */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.objc; path = ODataPredicateTranslatorTests.m; sourceTree = "<group>"; };
+		AA0000000000000000000037 /* ODataQueryBuilderTests.m */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.objc; path = ODataQueryBuilderTests.m; sourceTree = "<group>"; };
+		AA0000000000000000000039 /* ODataResourceIdentifierTests.m */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.objc; path = ODataResourceIdentifierTests.m; sourceTree = "<group>"; };
+		AA000000000000000000003B /* ODataSnapshotStoreTests.m */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.objc; path = ODataSnapshotStoreTests.m; sourceTree = "<group>"; };
+		AA000000000000000000003D /* CoreData.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = CoreData.framework; path = System/Library/Frameworks/CoreData.framework; sourceTree = SDKROOT; };
+		AA000000000000000000003F /* Foundation.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = Foundation.framework; path = System/Library/Frameworks/Foundation.framework; sourceTree = SDKROOT; };
+		AA0000000000000000000043 /* Snapshots */ = {isa = PBXFileReference; lastKnownFileType = folder; path = Snapshots; sourceTree = "<group>"; };
+		AA0000000000000000000045 /* Debug.xcconfig */ = {isa = PBXFileReference; lastKnownFileType = text.xcconfig; path = Debug.xcconfig; sourceTree = "<group>"; };
+		AA0000000000000000000046 /* Release.xcconfig */ = {isa = PBXFileReference; lastKnownFileType = text.xcconfig; path = Release.xcconfig; sourceTree = "<group>"; };
+		AA0000000000000000000047 /* Common.xcconfig */ = {isa = PBXFileReference; lastKnownFileType = text.xcconfig; path = Common.xcconfig; sourceTree = "<group>"; };
+		AA000000000000000000004B /* ODataSnapshotTransport.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = ODataSnapshotTransport.h; sourceTree = "<group>"; };
+		AA000000000000000000004C /* README.md */ = {isa = PBXFileReference; lastKnownFileType = net.daringfireball.markdown; path = README.md; sourceTree = "<group>"; };
+		AA000000000000000000004D /* GNUmakefile */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.make; path = GNUmakefile; sourceTree = "<group>"; };
+		AA00000000000000000000C0 /* Catalog.xcdatamodeld */ = {isa = PBXFileReference; lastKnownFileType = wrapper.xcdatamodeld; name = Catalog.xcdatamodeld; path = ../Examples/Catalog/Catalog.xcdatamodeld; sourceTree = "<group>"; };
+		AA00000000000000000000C2 /* OISCatalogModel.m */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.objc; path = OISCatalogModel.m; sourceTree = "<group>"; };
+		AA00000000000000000000C4 /* OISCatalogModel.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = OISCatalogModel.h; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -111,7 +111,7 @@
 /* End PBXFrameworksBuildPhase section */
 
 /* Begin PBXGroup section */
-		AA0000000000000000000050 /* Project */ = {
+		AA0000000000000000000050 = {
 			isa = PBXGroup;
 			children = (
 				AA0000000000000000000051 /* Source */,
@@ -135,27 +135,7 @@
 				AA000000000000000000002D /* ODataQueryBuilder.m */,
 				AA000000000000000000002F /* ODataIncrementalStore.m */,
 			);
-			name = Source;
 			path = Source;
-			sourceTree = "<group>";
-		};
-		AA0000000000000000000056 /* include */ = {
-			isa = PBXGroup;
-			children = (
-				AA000000000000000000000B /* ODataIncrementalStore.h */,
-				AA000000000000000000000D /* OISRuntime.h */,
-				AA000000000000000000000F /* OISCoreData.h */,
-				AA0000000000000000000013 /* ODataError.h */,
-				AA0000000000000000000015 /* ODataConfiguration.h */,
-				AA0000000000000000000017 /* ODataClient.h */,
-				AA0000000000000000000019 /* ODataPropertyMapper.h */,
-				AA000000000000000000001B /* ODataResourceIdentifier.h */,
-				AA000000000000000000001D /* ODataPredicateTranslator.h */,
-				AA000000000000000000001F /* ODataQueryBuilder.h */,
-				AA0000000000000000000048 /* module.modulemap */,
-			);
-			name = include;
-			path = include;
 			sourceTree = "<group>";
 		};
 		AA0000000000000000000052 /* Tests */ = {
@@ -174,7 +154,6 @@
 				AA000000000000000000004C /* README.md */,
 				AA000000000000000000004D /* GNUmakefile */,
 			);
-			name = Tests;
 			path = Tests;
 			sourceTree = "<group>";
 		};
@@ -205,6 +184,23 @@
 				AA0000000000000000000005 /* ODataIncrementalStoreTests.xctest */,
 			);
 			name = Products;
+			sourceTree = "<group>";
+		};
+		AA0000000000000000000056 /* include */ = {
+			isa = PBXGroup;
+			children = (
+				AA000000000000000000000B /* ODataIncrementalStore.h */,
+				AA000000000000000000000D /* OISRuntime.h */,
+				AA000000000000000000000F /* OISCoreData.h */,
+				AA0000000000000000000013 /* ODataError.h */,
+				AA0000000000000000000015 /* ODataConfiguration.h */,
+				AA0000000000000000000017 /* ODataClient.h */,
+				AA0000000000000000000019 /* ODataPropertyMapper.h */,
+				AA000000000000000000001B /* ODataResourceIdentifier.h */,
+				AA000000000000000000001D /* ODataPredicateTranslator.h */,
+				AA000000000000000000001F /* ODataQueryBuilder.h */,
+			);
+			path = include;
 			sourceTree = "<group>";
 		};
 /* End PBXGroup section */
@@ -380,24 +376,22 @@
 			isa = XCBuildConfiguration;
 			baseConfigurationReference = AA0000000000000000000045 /* Debug.xcconfig */;
 			buildSettings = {
-				DEFINES_MODULE = YES;
+				COMBINE_HIDPI_IMAGES = YES;
+				DEFINES_MODULE = NO;
 				DYLIB_COMPATIBILITY_VERSION = 1;
 				DYLIB_CURRENT_VERSION = 1;
 				DYLIB_INSTALL_NAME_BASE = "@rpath";
-				HEADER_SEARCH_PATHS = (
-					"$(SRCROOT)/Source/include",
-				);
+				HEADER_SEARCH_PATHS = "$(SRCROOT)/Source/include";
 				INFOPLIST_KEY_NSHumanReadableCopyright = "Copyright (C) 2026 OIS contributors. GPL-3.0-or-later.";
 				INSTALL_PATH = "$(LOCAL_LIBRARY_DIR)/Frameworks";
 				LD_RUNPATH_SEARCH_PATHS = (
 					"@executable_path/../Frameworks",
 					"@loader_path/Frameworks",
 				);
-				MODULEMAP_FILE = "Source/include/module.modulemap";
-				PRODUCT_BUNDLE_IDENTIFIER = "io.github.ashalkhakov.ODataIncrementalStore";
+				MODULEMAP_FILE = "";
+				PRODUCT_BUNDLE_IDENTIFIER = io.github.ashalkhakov.ODataIncrementalStore;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				SKIP_INSTALL = YES;
-				COMBINE_HIDPI_IMAGES = YES;
 			};
 			name = Debug;
 		};
@@ -405,24 +399,22 @@
 			isa = XCBuildConfiguration;
 			baseConfigurationReference = AA0000000000000000000046 /* Release.xcconfig */;
 			buildSettings = {
-				DEFINES_MODULE = YES;
+				COMBINE_HIDPI_IMAGES = YES;
+				DEFINES_MODULE = NO;
 				DYLIB_COMPATIBILITY_VERSION = 1;
 				DYLIB_CURRENT_VERSION = 1;
 				DYLIB_INSTALL_NAME_BASE = "@rpath";
-				HEADER_SEARCH_PATHS = (
-					"$(SRCROOT)/Source/include",
-				);
+				HEADER_SEARCH_PATHS = "$(SRCROOT)/Source/include";
 				INFOPLIST_KEY_NSHumanReadableCopyright = "Copyright (C) 2026 OIS contributors. GPL-3.0-or-later.";
 				INSTALL_PATH = "$(LOCAL_LIBRARY_DIR)/Frameworks";
 				LD_RUNPATH_SEARCH_PATHS = (
 					"@executable_path/../Frameworks",
 					"@loader_path/Frameworks",
 				);
-				MODULEMAP_FILE = "Source/include/module.modulemap";
-				PRODUCT_BUNDLE_IDENTIFIER = "io.github.ashalkhakov.ODataIncrementalStore";
+				MODULEMAP_FILE = "";
+				PRODUCT_BUNDLE_IDENTIFIER = io.github.ashalkhakov.ODataIncrementalStore;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				SKIP_INSTALL = YES;
-				COMBINE_HIDPI_IMAGES = YES;
 			};
 			name = Release;
 		};
@@ -431,6 +423,8 @@
 			baseConfigurationReference = AA0000000000000000000045 /* Debug.xcconfig */;
 			buildSettings = {
 				BUNDLE_LOADER = "$(TEST_HOST)";
+				CLANG_WARN_QUOTED_INCLUDE_IN_FRAMEWORK_HEADER = NO;
+				COMBINE_HIDPI_IMAGES = YES;
 				GENERATE_INFOPLIST_FILE = YES;
 				HEADER_SEARCH_PATHS = (
 					"$(SRCROOT)/Source/include",
@@ -441,11 +435,9 @@
 					"@executable_path/../Frameworks",
 					"@loader_path/../Frameworks",
 				);
-				PRODUCT_BUNDLE_IDENTIFIER = "io.github.ashalkhakov.ODataIncrementalStore.tests";
+				PRODUCT_BUNDLE_IDENTIFIER = io.github.ashalkhakov.ODataIncrementalStore.tests;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				SKIP_INSTALL = YES;
-				COMBINE_HIDPI_IMAGES = YES;
-				CLANG_WARN_QUOTED_INCLUDE_IN_FRAMEWORK_HEADER = NO;
 			};
 			name = Debug;
 		};
@@ -454,6 +446,8 @@
 			baseConfigurationReference = AA0000000000000000000046 /* Release.xcconfig */;
 			buildSettings = {
 				BUNDLE_LOADER = "$(TEST_HOST)";
+				CLANG_WARN_QUOTED_INCLUDE_IN_FRAMEWORK_HEADER = NO;
+				COMBINE_HIDPI_IMAGES = YES;
 				GENERATE_INFOPLIST_FILE = YES;
 				HEADER_SEARCH_PATHS = (
 					"$(SRCROOT)/Source/include",
@@ -464,26 +458,15 @@
 					"@executable_path/../Frameworks",
 					"@loader_path/../Frameworks",
 				);
-				PRODUCT_BUNDLE_IDENTIFIER = "io.github.ashalkhakov.ODataIncrementalStore.tests";
+				PRODUCT_BUNDLE_IDENTIFIER = io.github.ashalkhakov.ODataIncrementalStore.tests;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				SKIP_INSTALL = YES;
-				COMBINE_HIDPI_IMAGES = YES;
-				CLANG_WARN_QUOTED_INCLUDE_IN_FRAMEWORK_HEADER = NO;
 			};
 			name = Release;
 		};
 /* End XCBuildConfiguration section */
 
 /* Begin XCConfigurationList section */
-		AA000000000000000000005F /* Build configuration list for PBXProject "ODataIncrementalStore" */ = {
-			isa = XCConfigurationList;
-			buildConfigurations = (
-				AA0000000000000000000060 /* Debug */,
-				AA0000000000000000000061 /* Release */,
-			);
-			defaultConfigurationIsVisible = 0;
-			defaultConfigurationName = Release;
-		};
 		AA0000000000000000000058 /* Build configuration list for PBXNativeTarget "ODataIncrementalStore" */ = {
 			isa = XCConfigurationList;
 			buildConfigurations = (
@@ -498,6 +481,15 @@
 			buildConfigurations = (
 				AA0000000000000000000064 /* Debug */,
 				AA0000000000000000000065 /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
+		AA000000000000000000005F /* Build configuration list for PBXProject "ODataIncrementalStore" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				AA0000000000000000000060 /* Debug */,
+				AA0000000000000000000061 /* Release */,
 			);
 			defaultConfigurationIsVisible = 0;
 			defaultConfigurationName = Release;
