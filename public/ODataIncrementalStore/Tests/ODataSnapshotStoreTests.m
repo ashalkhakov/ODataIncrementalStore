@@ -172,7 +172,8 @@
   XCTAssertNil(error, @"%@", error);
   [_store newValuesForObjectWithID:oids.firstObject withContext:_context error:&error];
   NSManagedObject *object = [_context objectWithID:oids.firstObject];
-  [object setValue:@22 forKey:@"unitPrice"];
+  // Filter snapshot already has UnitPrice 22 on Products(4).
+  [object setValue:@23 forKey:@"unitPrice"];
   NSSaveChangesRequest *save =
       [[NSSaveChangesRequest alloc] initWithInsertedObjects:nil
                                              updatedObjects:[NSSet setWithObject:object]
