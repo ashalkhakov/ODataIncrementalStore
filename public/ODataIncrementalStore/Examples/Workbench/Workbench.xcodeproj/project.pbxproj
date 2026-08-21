@@ -1,0 +1,319 @@
+// !$*UTF8*$!
+{
+	archiveVersion = 1;
+	classes = {
+	};
+	objectVersion = 56;
+	objects = {
+/* Begin PBXBuildFile section */
+		AA000000000000000000008A /* main.m in Sources */ = {isa = PBXBuildFile; fileRef = AA000000000000000000008B /* main.m */;};
+		AA000000000000000000008C /* WorkbenchController.m in Sources */ = {isa = PBXBuildFile; fileRef = AA000000000000000000008D /* WorkbenchController.m */;};
+		AA000000000000000000008E /* WorkbenchEngine.m in Sources */ = {isa = PBXBuildFile; fileRef = AA000000000000000000008F /* WorkbenchEngine.m */;};
+		AA0000000000000000000090 /* Catalog.xcdatamodeld in Resources */ = {isa = PBXBuildFile; fileRef = AA0000000000000000000091 /* Catalog.xcdatamodeld */;};
+		AA0000000000000000000092 /* ODataIncrementalStore.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = AA0000000000000000000093 /* ODataIncrementalStore.framework */;};
+		AA0000000000000000000094 /* Cocoa.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = AA0000000000000000000095 /* Cocoa.framework */;};
+		AA0000000000000000000096 /* CoreData.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = AA000000000000000000003D /* CoreData.framework */;};
+		AA0000000000000000000097 /* ODataIncrementalStore.framework in Embed Frameworks */ = {isa = PBXBuildFile; fileRef = AA0000000000000000000093 /* ODataIncrementalStore.framework */; settings = {ATTRIBUTES = (CodeSignOnCopy, RemoveHeadersOnCopy, ); };};
+/* End PBXBuildFile section */
+
+/* Begin PBXContainerItemProxy section */
+		AA0000000000000000000098 /* PBXContainerItemProxy */ = {
+			isa = PBXContainerItemProxy;
+			containerPortal = AA0000000000000000000099 /* ODataIncrementalStore.xcodeproj */;
+			proxyType = 1;
+			remoteGlobalIDString = AA0000000000000000000002;
+			remoteInfo = ODataIncrementalStore;
+		};
+		AA000000000000000000009A /* PBXContainerItemProxy */ = {
+			isa = PBXContainerItemProxy;
+			containerPortal = AA0000000000000000000099 /* ODataIncrementalStore.xcodeproj */;
+			proxyType = 2;
+			remoteGlobalIDString = AA0000000000000000000003;
+			remoteInfo = ODataIncrementalStore;
+		};
+/* End PBXContainerItemProxy section */
+
+/* Begin PBXCopyFilesBuildPhase section */
+		AA000000000000000000009B /* Embed Frameworks */ = {
+			isa = PBXCopyFilesBuildPhase;
+			buildActionMask = 2147483647;
+			dstPath = "";
+			dstSubfolderSpec = 10;
+			files = (
+				AA0000000000000000000097 /* ODataIncrementalStore.framework in Embed Frameworks */,
+			);
+			name = "Embed Frameworks";
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXCopyFilesBuildPhase section */
+
+/* Begin PBXFileReference section */
+		AA0000000000000000000009 /* Workbench.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = Workbench.app; sourceTree = BUILT_PRODUCTS_DIR;};
+		AA0000000000000000000099 /* ODataIncrementalStore.xcodeproj */ = {isa = PBXFileReference; lastKnownFileType = "wrapper.pb-project"; name = ODataIncrementalStore.xcodeproj; path = ../../ODataIncrementalStore.xcodeproj; sourceTree = "<group>";};
+		AA0000000000000000000095 /* Cocoa.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = Cocoa.framework; path = System/Library/Frameworks/Cocoa.framework; sourceTree = SDKROOT;};
+		AA000000000000000000003D /* CoreData.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = CoreData.framework; path = System/Library/Frameworks/CoreData.framework; sourceTree = SDKROOT;};
+		AA000000000000000000009C /* ../../Xcode/Configs/Debug.xcconfig */ = {isa = PBXFileReference; lastKnownFileType = text.xcconfig; path = ../../Xcode/Configs/Debug.xcconfig; sourceTree = "<group>";};
+		AA000000000000000000009D /* ../../Xcode/Configs/Release.xcconfig */ = {isa = PBXFileReference; lastKnownFileType = text.xcconfig; path = ../../Xcode/Configs/Release.xcconfig; sourceTree = "<group>";};
+		AA000000000000000000008B /* main.m */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.objc; path = main.m; sourceTree = "<group>";};
+		AA000000000000000000008D /* WorkbenchController.m */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.objc; path = WorkbenchController.m; sourceTree = "<group>";};
+		AA000000000000000000008F /* WorkbenchEngine.m */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.objc; path = WorkbenchEngine.m; sourceTree = "<group>";};
+		AA000000000000000000009E /* WorkbenchController.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = WorkbenchController.h; sourceTree = "<group>";};
+		AA000000000000000000009F /* WorkbenchEngine.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = WorkbenchEngine.h; sourceTree = "<group>";};
+		AA0000000000000000000091 /* Catalog.xcdatamodeld */ = {isa = PBXFileReference; lastKnownFileType = wrapper.xcdatamodeld; name = Catalog.xcdatamodeld; path = ../Catalog/Catalog.xcdatamodeld; sourceTree = "<group>";};
+/* End PBXFileReference section */
+
+/* Begin PBXFrameworksBuildPhase section */
+		AA00000000000000000000A0 /* Frameworks */ = {
+			isa = PBXFrameworksBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				AA0000000000000000000092 /* ODataIncrementalStore.framework in Frameworks */,
+				AA0000000000000000000094 /* Cocoa.framework in Frameworks */,
+				AA0000000000000000000096 /* CoreData.framework in Frameworks */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXFrameworksBuildPhase section */
+
+/* Begin PBXGroup section */
+		AA00000000000000000000A1 /* Project */ = {
+			isa = PBXGroup;
+			children = (
+				AA00000000000000000000A2 /* Workbench */,
+				AA0000000000000000000099 /* ODataIncrementalStore.xcodeproj */,
+				AA00000000000000000000A3 /* Configs */,
+				AA00000000000000000000A4 /* Frameworks */,
+				AA00000000000000000000A5 /* Products */,
+			);
+			sourceTree = "<group>";
+		};
+		AA00000000000000000000A2 /* Workbench */ = {
+			isa = PBXGroup;
+			children = (
+				AA000000000000000000008B /* main.m */,
+				AA000000000000000000008D /* WorkbenchController.m */,
+				AA000000000000000000009E /* WorkbenchController.h */,
+				AA000000000000000000008F /* WorkbenchEngine.m */,
+				AA000000000000000000009F /* WorkbenchEngine.h */,
+				AA0000000000000000000091 /* Catalog.xcdatamodeld */,
+			);
+			name = Workbench;
+			sourceTree = "<group>";
+		};
+		AA00000000000000000000A6 /* Products */ = {
+			isa = PBXGroup;
+			children = (
+				AA0000000000000000000093 /* ODataIncrementalStore.framework */,
+			);
+			name = Products;
+			sourceTree = "<group>";
+		};
+		AA00000000000000000000A4 /* Frameworks */ = {
+			isa = PBXGroup;
+			children = (
+				AA0000000000000000000095 /* Cocoa.framework */,
+				AA000000000000000000003D /* CoreData.framework */,
+			);
+			name = Frameworks;
+			sourceTree = "<group>";
+		};
+		AA00000000000000000000A5 /* Products */ = {
+			isa = PBXGroup;
+			children = (
+				AA0000000000000000000009 /* Workbench.app */,
+			);
+			name = Products;
+			sourceTree = "<group>";
+		};
+		AA00000000000000000000A3 /* Configs */ = {
+			isa = PBXGroup;
+			children = (
+				AA000000000000000000009C /* Debug.xcconfig */,
+				AA000000000000000000009D /* Release.xcconfig */,
+			);
+			name = Configs;
+			sourceTree = "<group>";
+		};
+/* End PBXGroup section */
+
+/* Begin PBXNativeTarget section */
+		AA0000000000000000000008 /* Workbench */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = AA00000000000000000000A7 /* Build configuration list for PBXNativeTarget "Workbench" */;
+			buildPhases = (
+				AA00000000000000000000A8 /* Sources */,
+				AA00000000000000000000A0 /* Frameworks */,
+				AA00000000000000000000A9 /* Resources */,
+				AA000000000000000000009B /* Embed Frameworks */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+				AA00000000000000000000AA /* PBXTargetDependency */,
+			);
+			name = Workbench;
+			productName = Workbench;
+			productReference = AA0000000000000000000009 /* Workbench.app */;
+			productType = "com.apple.product-type.application";
+		};
+/* End PBXNativeTarget section */
+
+/* Begin PBXProject section */
+		AA00000000000000000000AB /* Project object */ = {
+			isa = PBXProject;
+			attributes = {
+				BuildIndependentTargetsInParallel = 1;
+				LastUpgradeCheck = 1500;
+				ORGANIZATIONNAME = "OIS contributors";
+				TargetAttributes = {
+					AA0000000000000000000008 = {
+						CreatedOnToolsVersion = 15.0;
+					};
+				};
+			};
+			buildConfigurationList = AA00000000000000000000AC /* Build configuration list for PBXProject "Workbench" */;
+			compatibilityVersion = "Xcode 14.0";
+			developmentRegion = en;
+			hasScannedForEncodings = 0;
+			knownRegions = (
+				en,
+				Base,
+			);
+			mainGroup = AA00000000000000000000A1;
+			productRefGroup = AA00000000000000000000A5 /* Products */;
+			projectDirPath = "";
+			projectReferences = (
+				{
+					ProductGroup = AA00000000000000000000A6 /* Products */;
+					ProjectRef = AA0000000000000000000099 /* ODataIncrementalStore.xcodeproj */;
+				},
+			);
+			projectRoot = "";
+			targets = (
+				AA0000000000000000000008 /* Workbench */,
+			);
+		};
+/* End PBXProject section */
+
+/* Begin PBXReferenceProxy section */
+		AA0000000000000000000093 /* ODataIncrementalStore.framework */ = {
+			isa = PBXReferenceProxy;
+			fileType = wrapper.framework;
+			path = ODataIncrementalStore.framework;
+			remoteRef = AA000000000000000000009A /* PBXContainerItemProxy */;
+			sourceTree = BUILT_PRODUCTS_DIR;
+		};
+/* End PBXReferenceProxy section */
+
+/* Begin PBXResourcesBuildPhase section */
+		AA00000000000000000000A9 /* Resources */ = {
+			isa = PBXResourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				AA0000000000000000000090 /* Catalog.xcdatamodeld in Resources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXResourcesBuildPhase section */
+
+/* Begin PBXSourcesBuildPhase section */
+		AA00000000000000000000A8 /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				AA000000000000000000008A /* main.m in Sources */,
+				AA000000000000000000008C /* WorkbenchController.m in Sources */,
+				AA000000000000000000008E /* WorkbenchEngine.m in Sources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXSourcesBuildPhase section */
+
+/* Begin PBXTargetDependency section */
+		AA00000000000000000000AA /* PBXTargetDependency */ = {
+			isa = PBXTargetDependency;
+			name = ODataIncrementalStore;
+			targetProxy = AA0000000000000000000098 /* PBXContainerItemProxy */;
+		};
+/* End PBXTargetDependency section */
+
+/* Begin XCBuildConfiguration section */
+		AA00000000000000000000AD /* Debug */ = {
+			isa = XCBuildConfiguration;
+			baseConfigurationReference = AA000000000000000000009C /* Debug.xcconfig */;
+			buildSettings = {
+			};
+			name = Debug;
+		};
+		AA00000000000000000000AE /* Release */ = {
+			isa = XCBuildConfiguration;
+			baseConfigurationReference = AA000000000000000000009D /* Release.xcconfig */;
+			buildSettings = {
+			};
+			name = Release;
+		};
+		AA00000000000000000000AF /* Debug */ = {
+			isa = XCBuildConfiguration;
+			baseConfigurationReference = AA000000000000000000009C /* Debug.xcconfig */;
+			buildSettings = {
+				ASSETCATALOG_COMPILER_GENERATE_SWIFT_ASSET_SYMBOL_EXTENSIONS = NO;
+				COMBINE_HIDPI_IMAGES = YES;
+				INFOPLIST_KEY_CFBundleDisplayName = "OIS Workbench";
+				INFOPLIST_KEY_LSApplicationCategoryType = "public.app-category.developer-tools";
+				INFOPLIST_KEY_NSHumanReadableCopyright = "Copyright (C) 2026 OIS contributors. GPL-3.0-or-later.";
+				INFOPLIST_KEY_NSPrincipalClass = NSApplication;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"@executable_path/../Frameworks",
+				);
+				PRODUCT_BUNDLE_IDENTIFIER = "io.github.ashalkhakov.ODataIncrementalStore.Workbench";
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				ENABLE_HARDENED_RUNTIME = NO;
+				CLANG_WARN_QUOTED_INCLUDE_IN_FRAMEWORK_HEADER = NO;
+			};
+			name = Debug;
+		};
+		AA00000000000000000000B0 /* Release */ = {
+			isa = XCBuildConfiguration;
+			baseConfigurationReference = AA000000000000000000009D /* Release.xcconfig */;
+			buildSettings = {
+				ASSETCATALOG_COMPILER_GENERATE_SWIFT_ASSET_SYMBOL_EXTENSIONS = NO;
+				COMBINE_HIDPI_IMAGES = YES;
+				INFOPLIST_KEY_CFBundleDisplayName = "OIS Workbench";
+				INFOPLIST_KEY_LSApplicationCategoryType = "public.app-category.developer-tools";
+				INFOPLIST_KEY_NSHumanReadableCopyright = "Copyright (C) 2026 OIS contributors. GPL-3.0-or-later.";
+				INFOPLIST_KEY_NSPrincipalClass = NSApplication;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"@executable_path/../Frameworks",
+				);
+				PRODUCT_BUNDLE_IDENTIFIER = "io.github.ashalkhakov.ODataIncrementalStore.Workbench";
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				ENABLE_HARDENED_RUNTIME = NO;
+				CLANG_WARN_QUOTED_INCLUDE_IN_FRAMEWORK_HEADER = NO;
+			};
+			name = Release;
+		};
+/* End XCBuildConfiguration section */
+
+/* Begin XCConfigurationList section */
+		AA00000000000000000000AC /* Build configuration list for PBXProject "Workbench" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				AA00000000000000000000AD /* Debug */,
+				AA00000000000000000000AE /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
+		AA00000000000000000000A7 /* Build configuration list for PBXNativeTarget "Workbench" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				AA00000000000000000000AF /* Debug */,
+				AA00000000000000000000B0 /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
+/* End XCConfigurationList section */
+	};
+	rootObject = AA00000000000000000000AB /* Project object */;
+}

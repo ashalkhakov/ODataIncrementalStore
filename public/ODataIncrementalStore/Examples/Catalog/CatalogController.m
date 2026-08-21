@@ -2,7 +2,11 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
 #import "CatalogController.h"
+#if __has_include(<ODataIncrementalStore/ODataIncrementalStore.h>)
+#import <ODataIncrementalStore/ODataIncrementalStore.h>
+#else
 #import "ODataIncrementalStore.h"
+#endif
 
 static NSArray *CatalogEntityNames(void)
 {

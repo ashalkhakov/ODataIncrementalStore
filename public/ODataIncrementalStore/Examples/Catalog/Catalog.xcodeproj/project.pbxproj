@@ -1,0 +1,313 @@
+// !$*UTF8*$!
+{
+	archiveVersion = 1;
+	classes = {
+	};
+	objectVersion = 56;
+	objects = {
+/* Begin PBXBuildFile section */
+		AA0000000000000000000066 /* main.m in Sources */ = {isa = PBXBuildFile; fileRef = AA0000000000000000000067 /* main.m */;};
+		AA0000000000000000000068 /* CatalogController.m in Sources */ = {isa = PBXBuildFile; fileRef = AA0000000000000000000069 /* CatalogController.m */;};
+		AA000000000000000000006A /* Catalog.xcdatamodeld in Resources */ = {isa = PBXBuildFile; fileRef = AA000000000000000000006B /* Catalog.xcdatamodeld */;};
+		AA000000000000000000006C /* ODataIncrementalStore.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = AA000000000000000000006D /* ODataIncrementalStore.framework */;};
+		AA000000000000000000006E /* Cocoa.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = AA000000000000000000006F /* Cocoa.framework */;};
+		AA0000000000000000000070 /* CoreData.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = AA000000000000000000003D /* CoreData.framework */;};
+		AA0000000000000000000071 /* ODataIncrementalStore.framework in Embed Frameworks */ = {isa = PBXBuildFile; fileRef = AA000000000000000000006D /* ODataIncrementalStore.framework */; settings = {ATTRIBUTES = (CodeSignOnCopy, RemoveHeadersOnCopy, ); };};
+/* End PBXBuildFile section */
+
+/* Begin PBXContainerItemProxy section */
+		AA0000000000000000000072 /* PBXContainerItemProxy */ = {
+			isa = PBXContainerItemProxy;
+			containerPortal = AA0000000000000000000073 /* ODataIncrementalStore.xcodeproj */;
+			proxyType = 1;
+			remoteGlobalIDString = AA0000000000000000000002;
+			remoteInfo = ODataIncrementalStore;
+		};
+		AA0000000000000000000074 /* PBXContainerItemProxy */ = {
+			isa = PBXContainerItemProxy;
+			containerPortal = AA0000000000000000000073 /* ODataIncrementalStore.xcodeproj */;
+			proxyType = 2;
+			remoteGlobalIDString = AA0000000000000000000003;
+			remoteInfo = ODataIncrementalStore;
+		};
+/* End PBXContainerItemProxy section */
+
+/* Begin PBXCopyFilesBuildPhase section */
+		AA0000000000000000000075 /* Embed Frameworks */ = {
+			isa = PBXCopyFilesBuildPhase;
+			buildActionMask = 2147483647;
+			dstPath = "";
+			dstSubfolderSpec = 10;
+			files = (
+				AA0000000000000000000071 /* ODataIncrementalStore.framework in Embed Frameworks */,
+			);
+			name = "Embed Frameworks";
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXCopyFilesBuildPhase section */
+
+/* Begin PBXFileReference section */
+		AA0000000000000000000007 /* Catalog.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = Catalog.app; sourceTree = BUILT_PRODUCTS_DIR;};
+		AA0000000000000000000073 /* ODataIncrementalStore.xcodeproj */ = {isa = PBXFileReference; lastKnownFileType = "wrapper.pb-project"; name = ODataIncrementalStore.xcodeproj; path = ../../ODataIncrementalStore.xcodeproj; sourceTree = "<group>";};
+		AA000000000000000000006F /* Cocoa.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = Cocoa.framework; path = System/Library/Frameworks/Cocoa.framework; sourceTree = SDKROOT;};
+		AA000000000000000000003D /* CoreData.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = CoreData.framework; path = System/Library/Frameworks/CoreData.framework; sourceTree = SDKROOT;};
+		AA0000000000000000000076 /* ../../Xcode/Configs/Debug.xcconfig */ = {isa = PBXFileReference; lastKnownFileType = text.xcconfig; path = ../../Xcode/Configs/Debug.xcconfig; sourceTree = "<group>";};
+		AA0000000000000000000077 /* ../../Xcode/Configs/Release.xcconfig */ = {isa = PBXFileReference; lastKnownFileType = text.xcconfig; path = ../../Xcode/Configs/Release.xcconfig; sourceTree = "<group>";};
+		AA0000000000000000000067 /* main.m */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.objc; path = main.m; sourceTree = "<group>";};
+		AA0000000000000000000069 /* CatalogController.m */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.objc; path = CatalogController.m; sourceTree = "<group>";};
+		AA0000000000000000000078 /* CatalogController.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = CatalogController.h; sourceTree = "<group>";};
+		AA000000000000000000006B /* Catalog.xcdatamodeld */ = {isa = PBXFileReference; lastKnownFileType = wrapper.xcdatamodeld; path = Catalog.xcdatamodeld; sourceTree = "<group>";};
+/* End PBXFileReference section */
+
+/* Begin PBXFrameworksBuildPhase section */
+		AA0000000000000000000079 /* Frameworks */ = {
+			isa = PBXFrameworksBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				AA000000000000000000006C /* ODataIncrementalStore.framework in Frameworks */,
+				AA000000000000000000006E /* Cocoa.framework in Frameworks */,
+				AA0000000000000000000070 /* CoreData.framework in Frameworks */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXFrameworksBuildPhase section */
+
+/* Begin PBXGroup section */
+		AA000000000000000000007A /* Project */ = {
+			isa = PBXGroup;
+			children = (
+				AA000000000000000000007B /* Catalog */,
+				AA0000000000000000000073 /* ODataIncrementalStore.xcodeproj */,
+				AA000000000000000000007C /* Configs */,
+				AA000000000000000000007D /* Frameworks */,
+				AA000000000000000000007E /* Products */,
+			);
+			sourceTree = "<group>";
+		};
+		AA000000000000000000007B /* Catalog */ = {
+			isa = PBXGroup;
+			children = (
+				AA0000000000000000000067 /* main.m */,
+				AA0000000000000000000069 /* CatalogController.m */,
+				AA0000000000000000000078 /* CatalogController.h */,
+				AA000000000000000000006B /* Catalog.xcdatamodeld */,
+			);
+			name = Catalog;
+			sourceTree = "<group>";
+		};
+		AA000000000000000000007F /* Products */ = {
+			isa = PBXGroup;
+			children = (
+				AA000000000000000000006D /* ODataIncrementalStore.framework */,
+			);
+			name = Products;
+			sourceTree = "<group>";
+		};
+		AA000000000000000000007D /* Frameworks */ = {
+			isa = PBXGroup;
+			children = (
+				AA000000000000000000006F /* Cocoa.framework */,
+				AA000000000000000000003D /* CoreData.framework */,
+			);
+			name = Frameworks;
+			sourceTree = "<group>";
+		};
+		AA000000000000000000007E /* Products */ = {
+			isa = PBXGroup;
+			children = (
+				AA0000000000000000000007 /* Catalog.app */,
+			);
+			name = Products;
+			sourceTree = "<group>";
+		};
+		AA000000000000000000007C /* Configs */ = {
+			isa = PBXGroup;
+			children = (
+				AA0000000000000000000076 /* Debug.xcconfig */,
+				AA0000000000000000000077 /* Release.xcconfig */,
+			);
+			name = Configs;
+			sourceTree = "<group>";
+		};
+/* End PBXGroup section */
+
+/* Begin PBXNativeTarget section */
+		AA0000000000000000000006 /* Catalog */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = AA0000000000000000000080 /* Build configuration list for PBXNativeTarget "Catalog" */;
+			buildPhases = (
+				AA0000000000000000000081 /* Sources */,
+				AA0000000000000000000079 /* Frameworks */,
+				AA0000000000000000000082 /* Resources */,
+				AA0000000000000000000075 /* Embed Frameworks */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+				AA0000000000000000000083 /* PBXTargetDependency */,
+			);
+			name = Catalog;
+			productName = Catalog;
+			productReference = AA0000000000000000000007 /* Catalog.app */;
+			productType = "com.apple.product-type.application";
+		};
+/* End PBXNativeTarget section */
+
+/* Begin PBXProject section */
+		AA0000000000000000000084 /* Project object */ = {
+			isa = PBXProject;
+			attributes = {
+				BuildIndependentTargetsInParallel = 1;
+				LastUpgradeCheck = 1500;
+				ORGANIZATIONNAME = "OIS contributors";
+				TargetAttributes = {
+					AA0000000000000000000006 = {
+						CreatedOnToolsVersion = 15.0;
+					};
+				};
+			};
+			buildConfigurationList = AA0000000000000000000085 /* Build configuration list for PBXProject "Catalog" */;
+			compatibilityVersion = "Xcode 14.0";
+			developmentRegion = en;
+			hasScannedForEncodings = 0;
+			knownRegions = (
+				en,
+				Base,
+			);
+			mainGroup = AA000000000000000000007A;
+			productRefGroup = AA000000000000000000007E /* Products */;
+			projectDirPath = "";
+			projectReferences = (
+				{
+					ProductGroup = AA000000000000000000007F /* Products */;
+					ProjectRef = AA0000000000000000000073 /* ODataIncrementalStore.xcodeproj */;
+				},
+			);
+			projectRoot = "";
+			targets = (
+				AA0000000000000000000006 /* Catalog */,
+			);
+		};
+/* End PBXProject section */
+
+/* Begin PBXReferenceProxy section */
+		AA000000000000000000006D /* ODataIncrementalStore.framework */ = {
+			isa = PBXReferenceProxy;
+			fileType = wrapper.framework;
+			path = ODataIncrementalStore.framework;
+			remoteRef = AA0000000000000000000074 /* PBXContainerItemProxy */;
+			sourceTree = BUILT_PRODUCTS_DIR;
+		};
+/* End PBXReferenceProxy section */
+
+/* Begin PBXResourcesBuildPhase section */
+		AA0000000000000000000082 /* Resources */ = {
+			isa = PBXResourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				AA000000000000000000006A /* Catalog.xcdatamodeld in Resources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXResourcesBuildPhase section */
+
+/* Begin PBXSourcesBuildPhase section */
+		AA0000000000000000000081 /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				AA0000000000000000000066 /* main.m in Sources */,
+				AA0000000000000000000068 /* CatalogController.m in Sources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXSourcesBuildPhase section */
+
+/* Begin PBXTargetDependency section */
+		AA0000000000000000000083 /* PBXTargetDependency */ = {
+			isa = PBXTargetDependency;
+			name = ODataIncrementalStore;
+			targetProxy = AA0000000000000000000072 /* PBXContainerItemProxy */;
+		};
+/* End PBXTargetDependency section */
+
+/* Begin XCBuildConfiguration section */
+		AA0000000000000000000086 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			baseConfigurationReference = AA0000000000000000000076 /* Debug.xcconfig */;
+			buildSettings = {
+			};
+			name = Debug;
+		};
+		AA0000000000000000000087 /* Release */ = {
+			isa = XCBuildConfiguration;
+			baseConfigurationReference = AA0000000000000000000077 /* Release.xcconfig */;
+			buildSettings = {
+			};
+			name = Release;
+		};
+		AA0000000000000000000088 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			baseConfigurationReference = AA0000000000000000000076 /* Debug.xcconfig */;
+			buildSettings = {
+				ASSETCATALOG_COMPILER_GENERATE_SWIFT_ASSET_SYMBOL_EXTENSIONS = NO;
+				COMBINE_HIDPI_IMAGES = YES;
+				INFOPLIST_KEY_CFBundleDisplayName = "OIS Catalog";
+				INFOPLIST_KEY_LSApplicationCategoryType = "public.app-category.developer-tools";
+				INFOPLIST_KEY_NSHumanReadableCopyright = "Copyright (C) 2026 OIS contributors. GPL-3.0-or-later.";
+				INFOPLIST_KEY_NSPrincipalClass = NSApplication;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"@executable_path/../Frameworks",
+				);
+				PRODUCT_BUNDLE_IDENTIFIER = "io.github.ashalkhakov.ODataIncrementalStore.Catalog";
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				ENABLE_HARDENED_RUNTIME = NO;
+				CLANG_WARN_QUOTED_INCLUDE_IN_FRAMEWORK_HEADER = NO;
+			};
+			name = Debug;
+		};
+		AA0000000000000000000089 /* Release */ = {
+			isa = XCBuildConfiguration;
+			baseConfigurationReference = AA0000000000000000000077 /* Release.xcconfig */;
+			buildSettings = {
+				ASSETCATALOG_COMPILER_GENERATE_SWIFT_ASSET_SYMBOL_EXTENSIONS = NO;
+				COMBINE_HIDPI_IMAGES = YES;
+				INFOPLIST_KEY_CFBundleDisplayName = "OIS Catalog";
+				INFOPLIST_KEY_LSApplicationCategoryType = "public.app-category.developer-tools";
+				INFOPLIST_KEY_NSHumanReadableCopyright = "Copyright (C) 2026 OIS contributors. GPL-3.0-or-later.";
+				INFOPLIST_KEY_NSPrincipalClass = NSApplication;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"@executable_path/../Frameworks",
+				);
+				PRODUCT_BUNDLE_IDENTIFIER = "io.github.ashalkhakov.ODataIncrementalStore.Catalog";
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				ENABLE_HARDENED_RUNTIME = NO;
+				CLANG_WARN_QUOTED_INCLUDE_IN_FRAMEWORK_HEADER = NO;
+			};
+			name = Release;
+		};
+/* End XCBuildConfiguration section */
+
+/* Begin XCConfigurationList section */
+		AA0000000000000000000085 /* Build configuration list for PBXProject "Catalog" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				AA0000000000000000000086 /* Debug */,
+				AA0000000000000000000087 /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
+		AA0000000000000000000080 /* Build configuration list for PBXNativeTarget "Catalog" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				AA0000000000000000000088 /* Debug */,
+				AA0000000000000000000089 /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
+/* End XCConfigurationList section */
+	};
+	rootObject = AA0000000000000000000084 /* Project object */;
+}

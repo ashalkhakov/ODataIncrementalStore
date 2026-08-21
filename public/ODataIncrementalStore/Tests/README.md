@@ -17,7 +17,9 @@ make OIS_COREDATA=stub
 make -C Tests OIS_COREDATA=stub run-tests
 ```
 
-Apple / SPM: `swift test` (same `.m` files, snapshots copied as resources).
+Apple: open `ODataIncrementalStore.xcworkspace`, scheme
+**ODataIncrementalStoreTests**, ⌘U. Same `.m` files, snapshots copied
+into the test bundle. SwiftPM: `swift test`.
 
 | Class | What it pins |
 |---|---|

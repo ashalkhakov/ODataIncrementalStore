@@ -1,6 +1,6 @@
 // swift-tools-version: 5.9
-// Apple / Xcode path. The same .m files build on GNUstep with clang
-// -fobjc-runtime=gnustep-2.0 (see GNUmakefile and Makefile).
+// Apple: prefer ODataIncrementalStore.xcworkspace (framework + tests + apps).
+// This package is the SwiftPM path. GNUstep uses GNUmakefile / Makefile.
 import PackageDescription
 
 let package = Package(

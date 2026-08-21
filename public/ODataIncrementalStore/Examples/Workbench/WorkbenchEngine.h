@@ -5,7 +5,11 @@
 // Implements <ODataTransport>. The store never opens a socket.
 
 #pragma once
+#if __has_include(<ODataIncrementalStore/ODataIncrementalStore.h>)
+#import <ODataIncrementalStore/ODataIncrementalStore.h>
+#else
 #import "ODataClient.h"
+#endif
 
 NS_ASSUME_NONNULL_BEGIN
 

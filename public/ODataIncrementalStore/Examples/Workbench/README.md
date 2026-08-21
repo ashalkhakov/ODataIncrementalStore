@@ -28,8 +28,9 @@ make
 openapp ./Workbench.app
 ```
 
-Apple: drop these sources into a Cocoa target, add
-`../Catalog/Catalog.xcdatamodeld`, link ODataIncrementalStore.
+Apple: open `ODataIncrementalStore.xcworkspace` at the library root,
+scheme **Workbench**. The app embeds `ODataIncrementalStore.framework`
+and compiles `Catalog.xcdatamodeld`.
 
 `Examples/Catalog` is a smaller consumer app (table + predicate). This
 directory is the testing bench.

@@ -28,9 +28,9 @@ make
 openapp ./Catalog.app
 ```
 
-Apple: drop the sources into a Cocoa app target, add
-`Catalog.xcdatamodeld` (Xcode compiles it to `.momd`), and link
-ODataIncrementalStore.
+Apple: open `ODataIncrementalStore.xcworkspace`, scheme **Catalog**.
+Xcode compiles `Catalog.xcdatamodeld` to `.momd` and embeds
+`ODataIncrementalStore.framework`.
 
 The store URL defaults to the public Northwind v4 service. That service
 has Product/Category/Supplier but not Location/Stock, and treats

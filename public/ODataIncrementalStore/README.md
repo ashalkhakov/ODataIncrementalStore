@@ -74,8 +74,9 @@ make test
 make -C Tests run-tests
 ```
 
-On Apple: `swift test`. Snapshots live in `Tests/Snapshots/` and cite the
-OASIS protocol section they pin.
+On Apple: scheme **ODataIncrementalStoreTests** in the workspace (⌘U), or
+`swift test`. Snapshots live in `Tests/Snapshots/` and cite the OASIS
+protocol section they pin.
 
 ## Example apps
 
@@ -91,6 +92,27 @@ Both load `Catalog.xcdatamodeld`.
 make -C Examples/Workbench
 openapp ./Workbench.app   # GNUstep
 ```
+
+## Apple / Xcode
+
+Open **`ODataIncrementalStore.xcworkspace`** (not a lone `.xcodeproj` — the
+example apps need the framework project in the same workspace).
+
+| Scheme | Product |
+|---|---|
+| `ODataIncrementalStore` | macOS framework |
+| `ODataIncrementalStoreTests` | XCTest, snapshot HTTP, no network (⌘U) |
+| `Catalog` | consumer AppKit app |
+| `Workbench` | in-memory OData workbench |
+
+```
+xcodebuild -workspace ODataIncrementalStore.xcworkspace \
+  -scheme ODataIncrementalStoreTests -destination 'platform=macOS' test
+```
+
+The framework is a real `ODataIncrementalStore.framework` (public headers +
+module map). Catalog and Workbench embed it. GNUstep still uses the
+GNUmakefiles; `Package.swift` is the SwiftPM path.
 
 ## Apple / Swift Package Manager
 
