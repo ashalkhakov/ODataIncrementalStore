@@ -76,3 +76,8 @@ endif
 -include GNUmakefile.preamble
 include $(GNUSTEP_MAKEFILES)/library.make
 -include GNUmakefile.postamble
+
+.PHONY: test
+test: all
+	$(MAKE) -C Tests run-tests OIS_COREDATA=$(OIS_COREDATA)
+

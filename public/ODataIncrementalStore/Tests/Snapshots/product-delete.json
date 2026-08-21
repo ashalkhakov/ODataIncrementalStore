@@ -1,0 +1,17 @@
+{
+  "comment": "DELETE EntitySet(key) with If-Match. \u00a711.4.4",
+  "spec": "OASIS OData 4.0 Protocol \u00a711.4.4",
+  "request": {
+    "method": "DELETE",
+    "path": "Products(4)",
+    "headers": {
+      "If-Match": "W/\"1\""
+    }
+  },
+  "response": {
+    "status": 204,
+    "headers": {
+      "OData-Version": "4.0"
+    }
+  }
+}

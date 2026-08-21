@@ -28,10 +28,23 @@ NSString * const NSStoreUUIDKey = @"NSStoreUUIDKey";
 @implementation NSManagedObjectID
 @end
 
-@implementation NSManagedObject
-- (id)primitiveValueForKey:(NSString *)key { (void)key; return nil; }
-- (void)setPrimitiveValue:(id)value forKey:(NSString *)key { (void)value; (void)key; }
-- (NSDictionary *)changedValues { return @{}; }
+@implementation NSManagedObject {
+  NSMutableDictionary *_primitives;
+}
+- (instancetype)init
+{
+  self = [super init];
+  if (!self) return nil;
+  _primitives = [NSMutableDictionary dictionary];
+  return self;
+}
+- (id)primitiveValueForKey:(NSString *)key { return _primitives[key]; }
+- (void)setPrimitiveValue:(id)value forKey:(NSString *)key
+{
+  if (value) _primitives[key] = value;
+  else [_primitives removeObjectForKey:key];
+}
+- (NSDictionary *)changedValues { return [_primitives copy]; }
 @end
 
 @implementation NSManagedObjectModel
@@ -60,6 +73,19 @@ NSString * const NSStoreUUIDKey = @"NSStoreUUIDKey";
 
 @implementation NSSaveChangesRequest
 - (NSPersistentStoreRequestType)requestType { return NSSaveRequestType; }
+- (instancetype)initWithInsertedObjects:(NSSet *)inserted
+                         updatedObjects:(NSSet *)updated
+                         deletedObjects:(NSSet *)deleted
+                           lockedObjects:(NSSet *)locked
+{
+  self = [super init];
+  if (!self) return nil;
+  _insertedObjects = [inserted copy];
+  _updatedObjects = [updated copy];
+  _deletedObjects = [deleted copy];
+  (void)locked;
+  return self;
+}
 @end
 
 @implementation NSPersistentStore
@@ -131,12 +157,16 @@ static NSMutableDictionary *OISRegisteredStoreClasses = nil;
 @implementation NSManagedObjectContext
 - (NSManagedObject *)objectWithID:(NSManagedObjectID *)objectID
 {
-  (void)objectID;
-  return [[NSManagedObject alloc] init];
+  NSManagedObject *object = [[NSManagedObject alloc] init];
+  object.objectID = objectID;
+  object.entity = objectID.entity;
+  return object;
 }
 @end
 
-@implementation NSIncrementalStoreNode
+@implementation NSIncrementalStoreNode {
+  NSDictionary *_values;
+}
 - (instancetype)initWithObjectID:(NSManagedObjectID *)oid
                       withValues:(NSDictionary *)values
                          version:(uint64_t)version
@@ -145,10 +175,14 @@ static NSMutableDictionary *OISRegisteredStoreClasses = nil;
   if (!self) return nil;
   _objectID = oid;
   _version = version;
-  (void)values;
+  _values = [values copy];
   return self;
 }
-- (id)valueForPropertyDescription:(id)prop { (void)prop; return nil; }
+- (id)valueForPropertyDescription:(id)prop
+{
+  if ([prop respondsToSelector:@selector(name)]) return _values[[prop name]];
+  return nil;
+}
 @end
 
 @interface OISManagedObjectID : NSManagedObjectID

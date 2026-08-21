@@ -37,7 +37,7 @@ function Home() {
             <a href="/ODataIncrementalStore.zip">Download .m / .h zip</a>
           </Button>
           <Button asChild variant="secondary">
-            <Link to="/workbench">Predicate workbench</Link>
+            <Link to="/tests">XCTest snapshots</Link>
           </Button>
         </div>
         <div className="mt-10 overflow-hidden rounded-xl bg-surface shadow-[var(--shadow-border)]">

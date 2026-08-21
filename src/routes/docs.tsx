@@ -38,6 +38,17 @@ function DocsPage() {
           </ul>
         </section>
         <section>
+          <h2 className="font-display text-2xl text-fg">XCTest snapshots</h2>
+          <p className="mt-3">
+            Tests never open a socket. <code className="font-mono text-fg">ODataSnapshotTransport</code> replays JSON
+            tapes under <code className="font-mono text-fg">Tests/Snapshots</code>, each citing the OData v4 protocol
+            section it pins ($filter ABNF, /$count, POST, PATCH + If-Match, 412, DELETE).{" "}
+            <code className="font-mono text-fg">make test</code> on GNUstep runs the XCTest bundle;{" "}
+            <code className="font-mono text-fg">swift test</code> on Apple. Catalog is a separate AppKit app that does
+            talk to a service.
+          </p>
+        </section>
+        <section>
           <h2 className="font-display text-2xl text-fg">Predicate translation</h2>
           <p className="mt-3">
             NSComparisonPredicate and NSCompoundPredicate walk into OData operators. CONTAINS / BEGINSWITH / ENDSWITH

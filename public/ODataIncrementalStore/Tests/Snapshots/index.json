@@ -1,0 +1,63 @@
+{
+  "serviceRoot": "https://odata.test/V4/Northwind.svc/",
+  "spec": "OASIS OData Version 4.0 Part 1: Protocol + ABNF. No live service \u2014 request/response pairs.",
+  "snapshots": [
+    {
+      "id": "metadata",
+      "file": "metadata.json",
+      "spec": "\u00a711.1.2 Service Metadata Document ($metadata)"
+    },
+    {
+      "id": "products-filter",
+      "file": "products-filter.json",
+      "spec": "\u00a711.2.5.1 $filter  \u00a711.2.5.2 $orderby  \u00a711.2.5.7 $top",
+      "predicate": "unitPrice > 20 AND discontinued == NO"
+    },
+    {
+      "id": "products-count",
+      "file": "products-count.json",
+      "spec": "\u00a711.2.5.5 /$count",
+      "predicate": "discontinued == NO"
+    },
+    {
+      "id": "products-select",
+      "file": "products-select.json",
+      "spec": "\u00a711.2.4.1 $select"
+    },
+    {
+      "id": "products-expand",
+      "file": "products-expand.json",
+      "spec": "\u00a711.2.4.2 $expand"
+    },
+    {
+      "id": "product-by-key",
+      "file": "product-by-key.json",
+      "spec": "\u00a711.2.2 Requesting an Individual Entity"
+    },
+    {
+      "id": "product-category",
+      "file": "product-category.json",
+      "spec": "\u00a711.2.3 Requesting Related Entities (navigation)"
+    },
+    {
+      "id": "product-create",
+      "file": "product-create.json",
+      "spec": "\u00a711.4.2 Create an Entity (POST)"
+    },
+    {
+      "id": "product-patch",
+      "file": "product-patch.json",
+      "spec": "\u00a711.4.3 Update an Entity (PATCH) + If-Match"
+    },
+    {
+      "id": "product-precondition",
+      "file": "product-precondition.json",
+      "spec": "\u00a711.4.1.1 Optimistic Concurrency, HTTP 412"
+    },
+    {
+      "id": "product-delete",
+      "file": "product-delete.json",
+      "spec": "\u00a711.4.4 Delete an Entity"
+    }
+  ]
+}

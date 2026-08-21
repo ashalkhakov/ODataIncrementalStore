@@ -8,6 +8,7 @@ NSString * const ODataIncrementalStoreUsernameOption = @"ODataIncrementalStoreUs
 NSString * const ODataIncrementalStorePasswordOption = @"ODataIncrementalStorePassword";
 NSString * const ODataIncrementalStoreTimeoutOption = @"ODataIncrementalStoreTimeout";
 NSString * const ODataIncrementalStorePostOnObtainPermanentIDsOption = @"ODataIncrementalStorePostOnObtainPermanentIDs";
+NSString * const ODataIncrementalStoreTransportOption = @"ODataIncrementalStoreTransport";
 NSString * const ODataIncrementalStoreType = @"ODataIncrementalStore";
 
 @implementation ODataConfiguration

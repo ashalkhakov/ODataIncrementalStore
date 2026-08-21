@@ -13,6 +13,7 @@ import { Route as IndexRouteImport } from './routes/index'
 import { Route as DocsRouteImport } from './routes/docs'
 import { Route as LicenseRouteImport } from './routes/license'
 import { Route as SourceRouteImport } from './routes/source'
+import { Route as TestsRouteImport } from './routes/tests'
 import { Route as WorkbenchRouteImport } from './routes/workbench'
 import { Route as OdataIndexRouteImport } from './routes/odata.index'
 import { Route as OdataSplatRouteImport } from './routes/odata.$'
@@ -37,6 +38,11 @@ const SourceRoute = SourceRouteImport.update({
   path: '/source',
   getParentRoute: () => rootRouteImport,
 } as any)
+const TestsRoute = TestsRouteImport.update({
+  id: '/tests',
+  path: '/tests',
+  getParentRoute: () => rootRouteImport,
+} as any)
 const WorkbenchRoute = WorkbenchRouteImport.update({
   id: '/workbench',
   path: '/workbench',
@@ -58,6 +64,7 @@ export interface FileRoutesByFullPath {
   '/docs': typeof DocsRoute
   '/license': typeof LicenseRoute
   '/source': typeof SourceRoute
+  '/tests': typeof TestsRoute
   '/workbench': typeof WorkbenchRoute
   '/odata/$': typeof OdataSplatRoute
   '/odata/': typeof OdataIndexRoute
@@ -67,6 +74,7 @@ export interface FileRoutesByTo {
   '/docs': typeof DocsRoute
   '/license': typeof LicenseRoute
   '/source': typeof SourceRoute
+  '/tests': typeof TestsRoute
   '/workbench': typeof WorkbenchRoute
   '/odata/$': typeof OdataSplatRoute
   '/odata': typeof OdataIndexRoute
@@ -77,6 +85,7 @@ export interface FileRoutesById {
   '/docs': typeof DocsRoute
   '/license': typeof LicenseRoute
   '/source': typeof SourceRoute
+  '/tests': typeof TestsRoute
   '/workbench': typeof WorkbenchRoute
   '/odata/$': typeof OdataSplatRoute
   '/odata/': typeof OdataIndexRoute
@@ -88,6 +97,7 @@ export interface FileRouteTypes {
     | '/docs'
     | '/license'
     | '/source'
+    | '/tests'
     | '/workbench'
     | '/odata/$'
     | '/odata/'
@@ -97,6 +107,7 @@ export interface FileRouteTypes {
     | '/docs'
     | '/license'
     | '/source'
+    | '/tests'
     | '/workbench'
     | '/odata/$'
     | '/odata'
@@ -106,6 +117,7 @@ export interface FileRouteTypes {
     | '/docs'
     | '/license'
     | '/source'
+    | '/tests'
     | '/workbench'
     | '/odata/$'
     | '/odata/'
@@ -116,6 +128,7 @@ export interface RootRouteChildren {
   DocsRoute: typeof DocsRoute
   LicenseRoute: typeof LicenseRoute
   SourceRoute: typeof SourceRoute
+  TestsRoute: typeof TestsRoute
   WorkbenchRoute: typeof WorkbenchRoute
   OdataSplatRoute: typeof OdataSplatRoute
   OdataIndexRoute: typeof OdataIndexRoute
@@ -151,6 +164,13 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof SourceRouteImport
       parentRoute: typeof rootRouteImport
     }
+    '/tests': {
+      id: '/tests'
+      path: '/tests'
+      fullPath: '/tests'
+      preLoaderRoute: typeof TestsRouteImport
+      parentRoute: typeof rootRouteImport
+    }
     '/workbench': {
       id: '/workbench'
       path: '/workbench'
@@ -180,6 +200,7 @@ const rootRouteChildren: RootRouteChildren = {
   DocsRoute: DocsRoute,
   LicenseRoute: LicenseRoute,
   SourceRoute: SourceRoute,
+  TestsRoute: TestsRoute,
   WorkbenchRoute: WorkbenchRoute,
   OdataSplatRoute: OdataSplatRoute,
   OdataIndexRoute: OdataIndexRoute,

@@ -18,8 +18,18 @@ let package = Package(
         .target(
             name: "ODataIncrementalStore",
             path: "Source",
-            exclude: [],
             publicHeadersPath: "include"
+        ),
+        .testTarget(
+            name: "ODataIncrementalStoreTests",
+            dependencies: ["ODataIncrementalStore"],
+            path: "Tests",
+            exclude: ["GNUmakefile", "README.md"],
+            resources: [.copy("Snapshots")],
+            cSettings: [
+                .headerSearchPath("."),
+                .headerSearchPath("../Source/include")
+            ]
         )
     ]
 )

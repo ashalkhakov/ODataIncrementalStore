@@ -47,6 +47,10 @@
   }
   ODataConfiguration *configuration = [[ODataConfiguration alloc] initWithURL:url options:self.options];
   _client = [[ODataClient alloc] initWithConfiguration:configuration];
+  id transport = self.options[ODataIncrementalStoreTransportOption];
+  if ([transport respondsToSelector:@selector(sendRequest:returningResponse:error:)]) {
+    _client.transport = transport;
+  }
   _mapper = [[ODataPropertyMapper alloc] init];
   _mapper.naming = configuration.naming;
   _builder = [[ODataQueryBuilder alloc] initWithMapper:_mapper serviceRoot:configuration.serviceRoot];

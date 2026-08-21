@@ -35,11 +35,15 @@
   NSError *wire = nil;
   NSData *data = nil;
 
+  if (self.transport) {
+    data = [self.transport sendRequest:req returningResponse:&urlResponse error:&wire];
+  } else {
 #if !defined(__APPLE__) && !defined(OIS_USE_NSURLSESSION)
-  data = [NSURLConnection sendSynchronousRequest:req returningResponse:&urlResponse error:&wire];
+    data = [NSURLConnection sendSynchronousRequest:req returningResponse:&urlResponse error:&wire];
 #else
-  data = [self ois_sessionSend:req response:&urlResponse error:&wire];
+    data = [self ois_sessionSend:req response:&urlResponse error:&wire];
 #endif
+  }
 
   if (wire) {
     if (error) *error = OISError(ODataIncrementalStoreErrorTransport, wire.localizedDescription);

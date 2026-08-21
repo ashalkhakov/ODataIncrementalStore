@@ -1,0 +1,26 @@
+// Snapshot HTTP transport — no network.
+// Copyright (C) 2026 OIS contributors
+// SPDX-License-Identifier: GPL-3.0-or-later
+//
+// Each JSON file is one OData v4 request/response pair. Matching is
+// method + path relative to the service root + query dictionary.
+// Bodies (POST/PATCH) are compared as JSON objects.
+
+#pragma once
+#import "ODataClient.h"
+
+NS_ASSUME_NONNULL_BEGIN
+
+@interface ODataSnapshotTransport : NSObject <ODataTransport>
+@property (nonatomic, copy) NSURL *serviceRoot;
+@property (nonatomic, readonly) NSArray<NSString *> *snapshotNames;
+@property (nonatomic, readonly) NSArray<NSString *> *hits;
+
+- (nullable instancetype)initWithDirectory:(NSString *)directory
+                               serviceRoot:(NSURL *)serviceRoot
+                                     error:(NSError **)error NS_DESIGNATED_INITIALIZER;
+- (instancetype)init NS_UNAVAILABLE;
+- (nullable NSDictionary *)snapshotNamed:(NSString *)name;
+@end
+
+NS_ASSUME_NONNULL_END

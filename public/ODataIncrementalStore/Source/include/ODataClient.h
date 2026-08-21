@@ -15,8 +15,17 @@ NS_ASSUME_NONNULL_BEGIN
 @property (nonatomic, readonly, nullable) NSString *etag;
 @end
 
+/* Swap this in tests. The default path uses NSURLConnection (GNUstep)
+   or NSURLSession (Apple). Snapshot transport never touches the network. */
+@protocol ODataTransport <NSObject>
+- (nullable NSData *)sendRequest:(NSURLRequest *)request
+               returningResponse:(NSURLResponse * _Nullable * _Nullable)response
+                           error:(NSError **)error;
+@end
+
 @interface ODataClient : NSObject
 @property (nonatomic, readonly) ODataConfiguration *configuration;
+@property (nonatomic, strong, nullable) id<ODataTransport> transport;
 
 - (instancetype)initWithConfiguration:(ODataConfiguration *)configuration NS_DESIGNATED_INITIALIZER;
 - (instancetype)init NS_UNAVAILABLE;

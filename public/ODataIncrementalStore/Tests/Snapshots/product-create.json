@@ -1,0 +1,30 @@
+{
+  "comment": "POST EntitySet. Server assigns the key. \u00a711.4.2",
+  "spec": "OASIS OData 4.0 Protocol \u00a711.4.2",
+  "request": {
+    "method": "POST",
+    "path": "Products",
+    "body": {
+      "ProductName": "New Blend",
+      "UnitPrice": 9.5,
+      "Discontinued": false
+    }
+  },
+  "response": {
+    "status": 201,
+    "headers": {
+      "Content-Type": "application/json;odata.metadata=minimal;charset=utf-8",
+      "OData-Version": "4.0",
+      "Location": "https://odata.test/V4/Northwind.svc/Products(78)",
+      "ETag": "W/\"1\""
+    },
+    "body": {
+      "@odata.context": "https://odata.test/V4/Northwind.svc/$metadata#Products/$entity",
+      "@odata.etag": "W/\"1\"",
+      "ProductID": 78,
+      "ProductName": "New Blend",
+      "UnitPrice": 9.5,
+      "Discontinued": false
+    }
+  }
+}

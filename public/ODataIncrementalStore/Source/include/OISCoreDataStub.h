@@ -75,9 +75,9 @@ FOUNDATION_EXPORT NSString * const NSStoreUUIDKey;
 @end
 
 @interface NSManagedObject : NSObject
-@property (nonatomic, readonly) NSEntityDescription *entity;
-@property (nonatomic, readonly) NSManagedObjectID *objectID;
-@property (nonatomic, readonly, getter=isInserted) BOOL inserted;
+@property (nonatomic, strong) NSEntityDescription *entity;
+@property (nonatomic, strong) NSManagedObjectID *objectID;
+@property (nonatomic, getter=isInserted) BOOL inserted;
 - (nullable id)primitiveValueForKey:(NSString *)key;
 - (void)setPrimitiveValue:(nullable id)value forKey:(NSString *)key;
 - (NSDictionary *)changedValues;
@@ -109,6 +109,10 @@ FOUNDATION_EXPORT NSString * const NSStoreUUIDKey;
 @property (nullable, copy) NSSet<NSManagedObject *> *insertedObjects;
 @property (nullable, copy) NSSet<NSManagedObject *> *updatedObjects;
 @property (nullable, copy) NSSet<NSManagedObject *> *deletedObjects;
+- (instancetype)initWithInsertedObjects:(nullable NSSet *)inserted
+                         updatedObjects:(nullable NSSet *)updated
+                         deletedObjects:(nullable NSSet *)deleted
+                           lockedObjects:(nullable NSSet *)locked;
 @end
 
 @interface NSPersistentStore : NSObject

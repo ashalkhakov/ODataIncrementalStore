@@ -1,0 +1,16 @@
+{
+  "comment": "GET $metadata \u2014 OData 4.0 \u00a711.1.2. The store only requires the GET to succeed.",
+  "spec": "OASIS OData Version 4.0 Part 1 \u00a711.1.2",
+  "request": {
+    "method": "GET",
+    "path": "$metadata"
+  },
+  "response": {
+    "status": 200,
+    "headers": {
+      "Content-Type": "application/xml;charset=utf-8",
+      "OData-Version": "4.0"
+    },
+    "bodyXML": "<?xml version=\"1.0\" encoding=\"utf-8\"?>\n<edmx:Edmx Version=\"4.0\" xmlns:edmx=\"http://docs.oasis-open.org/odata/ns/edmx\">\n  <edmx:DataServices>\n    <Schema Namespace=\"Northwind\" xmlns=\"http://docs.oasis-open.org/odata/ns/edm\">\n      <EntityType Name=\"Product\">\n        <Key><PropertyRef Name=\"ProductID\"/></Key>\n        <Property Name=\"ProductID\" Type=\"Edm.Int32\" Nullable=\"false\"/>\n        <Property Name=\"ProductName\" Type=\"Edm.String\"/>\n        <Property Name=\"UnitPrice\" Type=\"Edm.Decimal\"/>\n        <Property Name=\"Discontinued\" Type=\"Edm.Boolean\"/>\n        <NavigationProperty Name=\"Category\" Type=\"Northwind.Category\"/>\n      </EntityType>\n      <EntityType Name=\"Category\">\n        <Key><PropertyRef Name=\"CategoryID\"/></Key>\n        <Property Name=\"CategoryID\" Type=\"Edm.Int32\" Nullable=\"false\"/>\n        <Property Name=\"CategoryName\" Type=\"Edm.String\"/>\n      </EntityType>\n      <EntityContainer Name=\"Northwind\">\n        <EntitySet Name=\"Products\" EntityType=\"Northwind.Product\"/>\n        <EntitySet Name=\"Categories\" EntityType=\"Northwind.Category\"/>\n      </EntityContainer>\n    </Schema>\n  </edmx:DataServices>\n</edmx:Edmx>\n"
+  }
+}

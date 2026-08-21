@@ -1,0 +1,31 @@
+{
+  "comment": "$select projects properties. \u00a711.2.4.1",
+  "spec": "OASIS OData 4.0 Protocol \u00a711.2.4.1",
+  "request": {
+    "method": "GET",
+    "path": "Products",
+    "query": {
+      "$select": "ProductName,UnitPrice"
+    }
+  },
+  "response": {
+    "status": 200,
+    "headers": {
+      "Content-Type": "application/json;odata.metadata=minimal;charset=utf-8",
+      "OData-Version": "4.0"
+    },
+    "body": {
+      "@odata.context": "https://odata.test/V4/Northwind.svc/$metadata#Products(ProductName,UnitPrice)",
+      "value": [
+        {
+          "ProductName": "Chai",
+          "UnitPrice": 18.0
+        },
+        {
+          "ProductName": "Chang",
+          "UnitPrice": 19.0
+        }
+      ]
+    }
+  }
+}

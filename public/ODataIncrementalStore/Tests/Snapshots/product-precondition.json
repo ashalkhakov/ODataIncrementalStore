@@ -1,0 +1,27 @@
+{
+  "comment": "Stale If-Match \u2192 412 Precondition Failed. \u00a711.4.1.1",
+  "spec": "OASIS OData 4.0 Protocol \u00a711.4.1.1",
+  "request": {
+    "method": "PATCH",
+    "path": "Products(4)",
+    "headers": {
+      "If-Match": "W/\"stale\""
+    },
+    "body": {
+      "UnitPrice": 1
+    }
+  },
+  "response": {
+    "status": 412,
+    "headers": {
+      "OData-Version": "4.0",
+      "Content-Type": "application/json;odata.metadata=minimal"
+    },
+    "body": {
+      "error": {
+        "code": "412",
+        "message": "The ETag in the request header does not match the current ETag."
+      }
+    }
+  }
+}

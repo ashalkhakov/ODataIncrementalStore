@@ -1,0 +1,22 @@
+{
+  "comment": "GET navigation property (to-one). \u00a711.2.3",
+  "spec": "OASIS OData 4.0 Protocol \u00a711.2.3",
+  "request": {
+    "method": "GET",
+    "path": "Products(4)/Category"
+  },
+  "response": {
+    "status": 200,
+    "headers": {
+      "Content-Type": "application/json;odata.metadata=minimal;charset=utf-8",
+      "OData-Version": "4.0"
+    },
+    "body": {
+      "@odata.context": "https://odata.test/V4/Northwind.svc/$metadata#Categories/$entity",
+      "@odata.etag": "W/\"1\"",
+      "CategoryID": 2,
+      "CategoryName": "Condiments",
+      "Description": "Sweet and savory sauces"
+    }
+  }
+}

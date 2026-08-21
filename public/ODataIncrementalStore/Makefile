@@ -56,7 +56,7 @@ endif
 
 OBJS = $(SRCS:.m=.o)
 
-.PHONY: all clean
+.PHONY: all clean test
 
 all: libODataIncrementalStore.so ois-filter
 
@@ -69,5 +69,10 @@ $(SRC_DIR)/%.o: $(SRC_DIR)/%.m
 ois-filter: Tools/ois-filter.m libODataIncrementalStore.so
 	$(CC) $(OBJCFLAGS) -o $@ Tools/ois-filter.m -L. -lODataIncrementalStore $(GNUSTEP_LIBS)
 
+# XCTest bundle needs gnustep-make. This target documents the entry point.
+test:
+	$(MAKE) -C Tests run-tests OIS_COREDATA=$(OIS_COREDATA)
+
 clean:
 	rm -f $(OBJS) libODataIncrementalStore.so ois-filter
+

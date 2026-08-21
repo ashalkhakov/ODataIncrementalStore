@@ -1,0 +1,44 @@
+{
+  "comment": "Collection GET with $filter $orderby $top. ABNF: gtExpr, andExpr, boolLiteral.",
+  "spec": "OASIS OData 4.0 Protocol \u00a711.2.5.1 / \u00a711.2.5.2 / \u00a711.2.5.7",
+  "predicate": "unitPrice > 20 AND discontinued == NO",
+  "request": {
+    "method": "GET",
+    "path": "Products",
+    "query": {
+      "$filter": "(UnitPrice gt 20) and (Discontinued eq false)",
+      "$orderby": "ProductName",
+      "$top": "25"
+    }
+  },
+  "response": {
+    "status": 200,
+    "headers": {
+      "Content-Type": "application/json;odata.metadata=minimal;charset=utf-8",
+      "OData-Version": "4.0"
+    },
+    "body": {
+      "@odata.context": "https://odata.test/V4/Northwind.svc/$metadata#Products",
+      "value": [
+        {
+          "@odata.etag": "W/\"1\"",
+          "ProductID": 4,
+          "ProductName": "Chef Anton's Cajun Seasoning",
+          "UnitPrice": 22.0,
+          "Discontinued": false,
+          "UnitsInStock": 53,
+          "QuantityPerUnit": "48 - 6 oz jars"
+        },
+        {
+          "@odata.etag": "W/\"1\"",
+          "ProductID": 6,
+          "ProductName": "Grandma's Boysenberry Spread",
+          "UnitPrice": 25.0,
+          "Discontinued": false,
+          "UnitsInStock": 120,
+          "QuantityPerUnit": "12 - 8 oz jars"
+        }
+      ]
+    }
+  }
+}

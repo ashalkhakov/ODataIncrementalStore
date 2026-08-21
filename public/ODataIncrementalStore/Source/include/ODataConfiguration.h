@@ -11,6 +11,7 @@ FOUNDATION_EXPORT NSString * const ODataIncrementalStoreUsernameOption;
 FOUNDATION_EXPORT NSString * const ODataIncrementalStorePasswordOption;
 FOUNDATION_EXPORT NSString * const ODataIncrementalStoreTimeoutOption;
 FOUNDATION_EXPORT NSString * const ODataIncrementalStorePostOnObtainPermanentIDsOption;
+FOUNDATION_EXPORT NSString * const ODataIncrementalStoreTransportOption;
 FOUNDATION_EXPORT NSString * const ODataIncrementalStoreType;
 
 typedef NS_ENUM(NSInteger, ODataPropertyNaming) {

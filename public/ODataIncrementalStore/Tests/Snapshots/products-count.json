@@ -1,0 +1,20 @@
+{
+  "comment": "GET EntitySet/$count returns a raw integer, not JSON. \u00a711.2.5.5",
+  "spec": "OASIS OData 4.0 Protocol \u00a711.2.5.5",
+  "predicate": "discontinued == NO",
+  "request": {
+    "method": "GET",
+    "path": "Products/$count",
+    "query": {
+      "$filter": "Discontinued eq false"
+    }
+  },
+  "response": {
+    "status": 200,
+    "headers": {
+      "Content-Type": "text/plain;charset=utf-8",
+      "OData-Version": "4.0"
+    },
+    "body": "5"
+  }
+}

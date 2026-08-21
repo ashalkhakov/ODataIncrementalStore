@@ -4,6 +4,7 @@ import { cn } from "@/lib/utils";
 const links = [
   { to: "/", label: "Overview" },
   { to: "/source", label: "Objective-C" },
+  { to: "/tests", label: "Tests" },
   { to: "/workbench", label: "Workbench" },
   { to: "/docs", label: "Notes" },
   { to: "/license", label: "GPL" },

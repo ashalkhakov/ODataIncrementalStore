@@ -63,6 +63,30 @@ make OIS_COREDATA=stub
 make -f Makefile OIS_COREDATA=stub
 ```
 
+## Tests (XCTest, no network)
+
+HTTP is a directory of OData v4 request/response snapshots. The suite
+never opens a socket.
+
+```sh
+make test
+# or
+make -C Tests run-tests
+```
+
+On Apple: `swift test`. Snapshots live in `Tests/Snapshots/` and cite the
+OASIS protocol section they pin.
+
+## Example (AppKit)
+
+`Examples/Catalog` is a Cocoa/GNUstep window: type an `NSPredicate`, fetch
+products, edit a price, save. That is a real `NSIncrementalStore` session.
+
+```sh
+make -C Examples/Catalog
+openapp ./Catalog.app   # GNUstep
+```
+
 ## Apple / Swift Package Manager
 
 The same `.m` / `.h` tree is an SPM clang target. Add the package, then:
