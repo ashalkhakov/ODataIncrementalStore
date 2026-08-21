@@ -79,8 +79,10 @@ OASIS protocol section they pin.
 
 ## Example (AppKit)
 
-`Examples/Catalog` is a Cocoa/GNUstep window: type an `NSPredicate`, fetch
-products, edit a price, save. That is a real `NSIncrementalStore` session.
+`Examples/Catalog` is a Cocoa/GNUstep window. The model is
+`Catalog.xcdatamodeld` (Product ↔ Supplier many-to-many, Stock/Location
+for on-hand quantity). Type an `NSPredicate`, fetch, inspect
+relationships, edit a price, save.
 
 ```sh
 make -C Examples/Catalog

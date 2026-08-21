@@ -44,8 +44,9 @@ function DocsPage() {
             tapes under <code className="font-mono text-fg">Tests/Snapshots</code>, each citing the OData v4 protocol
             section it pins ($filter ABNF, /$count, POST, PATCH + If-Match, 412, DELETE).{" "}
             <code className="font-mono text-fg">make test</code> on GNUstep runs the XCTest bundle;{" "}
-            <code className="font-mono text-fg">swift test</code> on Apple. Catalog is a separate AppKit app that does
-            talk to a service.
+            <code className="font-mono text-fg">swift test</code> on Apple. Catalog is a separate AppKit app that
+            loads <code className="font-mono text-fg">Catalog.xcdatamodeld</code> (Product ↔ Supplier many-to-many,
+            Stock at a Location) and talks to a service.
           </p>
         </section>
         <section>

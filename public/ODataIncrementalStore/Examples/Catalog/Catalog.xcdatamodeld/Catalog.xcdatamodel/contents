@@ -1,0 +1,101 @@
+<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<model type="com.apple.IDECoreDataModeler.DataModel" documentVersion="1.0" lastSavedToolsVersion="24299" systemVersion="24G720" minimumToolsVersion="Automatic" sourceLanguage="Objective-C" userDefinedModelVersionIdentifier="">
+    <entity name="Category" syncable="YES">
+        <attribute name="id" optional="NO" attributeType="Integer 32" defaultValueString="0" usesScalarValueType="NO">
+            <userInfo>
+                <entry key="OData.property" value="CategoryID"/>
+                <entry key="OData.key" value="YES"/>
+            </userInfo>
+        </attribute>
+        <attribute name="name" attributeType="String">
+            <userInfo>
+                <entry key="OData.property" value="CategoryName"/>
+            </userInfo>
+        </attribute>
+        <relationship name="products" optional="YES" toMany="YES" deletionRule="Nullify" destinationEntity="Product" inverseName="category" inverseEntity="Product"/>
+        <userInfo>
+            <entry key="OData.entitySet" value="Categories"/>
+        </userInfo>
+    </entity>
+    <entity name="Location" syncable="YES">
+        <attribute name="id" optional="NO" attributeType="Integer 32" defaultValueString="0" usesScalarValueType="NO">
+            <userInfo>
+                <entry key="OData.property" value="LocationID"/>
+                <entry key="OData.key" value="YES"/>
+            </userInfo>
+        </attribute>
+        <attribute name="name" attributeType="String">
+            <userInfo>
+                <entry key="OData.property" value="LocationName"/>
+            </userInfo>
+        </attribute>
+        <attribute name="city" optional="YES" attributeType="String"/>
+        <attribute name="country" optional="YES" attributeType="String"/>
+        <relationship name="stocks" optional="YES" toMany="YES" deletionRule="Nullify" destinationEntity="Stock" inverseName="location" inverseEntity="Stock"/>
+        <userInfo>
+            <entry key="OData.entitySet" value="Locations"/>
+        </userInfo>
+    </entity>
+    <entity name="Product" syncable="YES">
+        <attribute name="id" optional="NO" attributeType="Integer 32" defaultValueString="0" usesScalarValueType="NO">
+            <userInfo>
+                <entry key="OData.property" value="ProductID"/>
+                <entry key="OData.key" value="YES"/>
+            </userInfo>
+        </attribute>
+        <attribute name="name" attributeType="String">
+            <userInfo>
+                <entry key="OData.property" value="ProductName"/>
+            </userInfo>
+        </attribute>
+        <attribute name="quantityPerUnit" optional="YES" attributeType="String"/>
+        <attribute name="unitPrice" optional="YES" attributeType="Decimal"/>
+        <attribute name="discontinued" optional="YES" attributeType="Boolean" usesScalarValueType="NO"/>
+        <relationship name="category" optional="YES" maxCount="1" deletionRule="Nullify" destinationEntity="Category" inverseName="products" inverseEntity="Category"/>
+        <relationship name="suppliers" optional="YES" toMany="YES" deletionRule="Nullify" destinationEntity="Supplier" inverseName="products" inverseEntity="Supplier"/>
+        <relationship name="stocks" optional="YES" toMany="YES" deletionRule="Nullify" destinationEntity="Stock" inverseName="product" inverseEntity="Stock"/>
+        <userInfo>
+            <entry key="OData.entitySet" value="Products"/>
+        </userInfo>
+    </entity>
+    <entity name="Stock" syncable="YES">
+        <attribute name="id" optional="NO" attributeType="Integer 32" defaultValueString="0" usesScalarValueType="NO">
+            <userInfo>
+                <entry key="OData.property" value="StockID"/>
+                <entry key="OData.key" value="YES"/>
+            </userInfo>
+        </attribute>
+        <attribute name="quantity" optional="NO" attributeType="Integer 16" defaultValueString="0" usesScalarValueType="NO">
+            <userInfo>
+                <entry key="OData.property" value="Quantity"/>
+            </userInfo>
+        </attribute>
+        <relationship name="product" optional="NO" maxCount="1" deletionRule="Nullify" destinationEntity="Product" inverseName="stocks" inverseEntity="Product"/>
+        <relationship name="location" optional="NO" maxCount="1" deletionRule="Nullify" destinationEntity="Location" inverseName="stocks" inverseEntity="Location"/>
+        <userInfo>
+            <entry key="OData.entitySet" value="Stocks"/>
+        </userInfo>
+    </entity>
+    <entity name="Supplier" syncable="YES">
+        <attribute name="id" optional="NO" attributeType="Integer 32" defaultValueString="0" usesScalarValueType="NO">
+            <userInfo>
+                <entry key="OData.property" value="SupplierID"/>
+                <entry key="OData.key" value="YES"/>
+            </userInfo>
+        </attribute>
+        <attribute name="companyName" attributeType="String"/>
+        <attribute name="city" optional="YES" attributeType="String"/>
+        <attribute name="country" optional="YES" attributeType="String"/>
+        <relationship name="products" optional="YES" toMany="YES" deletionRule="Nullify" destinationEntity="Product" inverseName="suppliers" inverseEntity="Product"/>
+        <userInfo>
+            <entry key="OData.entitySet" value="Suppliers"/>
+        </userInfo>
+    </entity>
+    <elements>
+        <element name="Category" positionX="0" positionY="0" width="140" height="88"/>
+        <element name="Product" positionX="250" positionY="0" width="160" height="163"/>
+        <element name="Supplier" positionX="500" positionY="0" width="140" height="118"/>
+        <element name="Stock" positionX="250" positionY="240" width="140" height="103"/>
+        <element name="Location" positionX="500" positionY="240" width="140" height="118"/>
+    </elements>
+</model>

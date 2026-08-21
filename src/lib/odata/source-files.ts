@@ -42,5 +42,6 @@ export const SOURCE_FILES: { path: string; label: string; group: SourceGroup }[]
   { path: "Examples/Catalog/GNUmakefile", label: "Catalog/GNUmakefile", group: "example" },
   { path: "Examples/Catalog/main.m", label: "Catalog/main.m", group: "example" },
   { path: "Examples/Catalog/CatalogController.m", label: "CatalogController.m", group: "example" },
-  { path: "Examples/Catalog/CatalogModel.m", label: "CatalogModel.m", group: "example" },
+  { path: "Examples/Catalog/Catalog.xcdatamodeld/.xccurrentversion", label: "Catalog.xcdatamodeld", group: "example" },
+  { path: "Examples/Catalog/Catalog.xcdatamodeld/Catalog.xcdatamodel/contents", label: "Catalog.xcdatamodel", group: "example" },
 ];
