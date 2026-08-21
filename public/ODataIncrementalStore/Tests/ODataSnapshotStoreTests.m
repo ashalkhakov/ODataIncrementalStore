@@ -3,7 +3,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
 #import <XCTest/XCTest.h>
-#import "OISTestSupport.h"
+#import "OISCatalogModel.h"
 #import "ODataSnapshotTransport.h"
 
 @interface ODataSnapshotStoreTests : XCTestCase
@@ -24,7 +24,8 @@
                                                            error:&error];
   XCTAssertNotNil(_transport, @"%@", error);
   [ODataIncrementalStore registerStore];
-  NSManagedObjectModel *model = OISNorthwindModel();
+  NSManagedObjectModel *model = OISCatalogModel();
+  XCTAssertNotNil(model, @"Catalog.xcdatamodeld at %@", OISCatalogModelURL());
   NSPersistentStoreCoordinator *psc =
       [[NSPersistentStoreCoordinator alloc] initWithManagedObjectModel:model];
   NSPersistentStore *generic =
@@ -40,10 +41,16 @@
   _context.persistentStoreCoordinator = psc;
 }
 
+- (NSEntityDescription *)productEntity
+{
+  return _store.persistentStoreCoordinator.managedObjectModel.entitiesByName[@"Product"]
+         ?: OISCatalogEntity(@"Product");
+}
+
 - (NSFetchRequest *)productFetch
 {
   NSFetchRequest *fetch = [NSFetchRequest fetchRequestWithEntityName:@"Product"];
-  fetch.entity = OISProductEntity();
+  fetch.entity = [self productEntity];
   fetch.returnsObjectsAsFaults = YES;
   return fetch;
 }
@@ -107,7 +114,7 @@
   NSIncrementalStoreNode *node = [_store newValuesForObjectWithID:oid withContext:_context error:&error];
   XCTAssertNil(error, @"%@", error);
   XCTAssertNotNil(node);
-  XCTAssertEqualObjects([node valueForPropertyDescription:OISProductEntity().attributesByName[@"name"]], @"Chef Anton's Cajun Seasoning");
+  XCTAssertEqualObjects([node valueForPropertyDescription:[self productEntity].attributesByName[@"name"]], @"Chef Anton's Cajun Seasoning");
   XCTAssertTrue([_transport.hits containsObject:@"product-by-key.json"]);
 }
 
@@ -120,7 +127,7 @@
   fetch.resultType = NSManagedObjectIDResultType;
   NSError *error = nil;
   NSArray *ids = [_store executeRequest:fetch withContext:_context error:&error];
-  NSRelationshipDescription *rel = OISProductEntity().relationshipsByName[@"category"];
+  NSRelationshipDescription *rel = [self productEntity].relationshipsByName[@"category"];
   id value = [_store newValueForRelationship:rel forObjectWithID:ids.firstObject withContext:_context error:&error];
   XCTAssertNil(error, @"%@", error);
   XCTAssertTrue([value isKindOfClass:[NSManagedObjectID class]]);
@@ -141,11 +148,11 @@
 
 - (void)testInsertPostsEntity
 {
-  NSManagedObject *object = OISMakeObject(OISProductEntity(), @{
-    @"name": @"New Blend",
-    @"unitPrice": @9.5,
-    @"discontinued": @NO,
-  }, YES);
+  NSManagedObject *object =
+      [NSEntityDescription insertNewObjectForEntityForName:@"Product" inManagedObjectContext:_context];
+  [object setValue:@"New Blend" forKey:@"name"];
+  [object setValue:@9.5 forKey:@"unitPrice"];
+  [object setValue:@NO forKey:@"discontinued"];
   NSError *error = nil;
   NSArray *ids = [_store obtainPermanentIDsForObjects:@[ object ] error:&error];
   XCTAssertNil(error, @"%@", error);

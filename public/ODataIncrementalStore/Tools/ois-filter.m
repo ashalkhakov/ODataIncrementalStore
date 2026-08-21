@@ -11,14 +11,19 @@
 #import "ODataIncrementalStore.h"
 #import <stdio.h>
 
-static NSAttributeDescription *OISAttr(NSString *name, NSString *wire)
+static NSManagedObjectModel *OISLoadCatalogModel(void)
 {
-  NSAttributeDescription *attr = [[NSAttributeDescription alloc] init];
-  attr.name = name;
-  if (wire) {
-    attr.userInfo = @{ ODataUserInfoProperty: wire };
+  NSString *here = [@(__FILE__) stringByDeletingLastPathComponent];
+  NSArray *candidates = @[
+    [here stringByAppendingPathComponent:@"../Examples/Catalog/Catalog.xcdatamodeld"],
+    [here stringByAppendingPathComponent:@"Catalog.xcdatamodeld"],
+  ];
+  for (NSString *path in candidates) {
+    if ([[NSFileManager defaultManager] fileExistsAtPath:path]) {
+      return [[NSManagedObjectModel alloc] initWithContentsOfURL:[NSURL fileURLWithPath:path]];
+    }
   }
-  return attr;
+  return nil;
 }
 
 int main(int argc, const char *argv[])
@@ -28,17 +33,12 @@ int main(int argc, const char *argv[])
       ? [NSString stringWithUTF8String:argv[1]]
       : @"unitPrice > 20 AND discontinued == NO";
 
-    NSEntityDescription *entity = [[NSEntityDescription alloc] init];
-    entity.name = @"Product";
-    entity.userInfo = @{ ODataUserInfoEntitySet: @"Products" };
-    entity.attributesByName = @{
-      @"id": OISAttr(@"id", @"ProductID"),
-      @"name": OISAttr(@"name", @"ProductName"),
-      @"unitPrice": OISAttr(@"unitPrice", @"UnitPrice"),
-      @"discontinued": OISAttr(@"discontinued", @"Discontinued"),
-      @"unitsInStock": OISAttr(@"unitsInStock", @"UnitsInStock"),
-      @"quantityPerUnit": OISAttr(@"quantityPerUnit", @"QuantityPerUnit"),
-    };
+    NSManagedObjectModel *model = OISLoadCatalogModel();
+    NSEntityDescription *entity = model.entitiesByName[@"Product"];
+    if (!entity) {
+      fprintf(stderr, "ois-filter: could not load Catalog.xcdatamodeld\n");
+      return 1;
+    }
 
     ODataPropertyMapper *mapper = [[ODataPropertyMapper alloc] init];
     ODataPredicateTranslator *translator =

@@ -7,7 +7,7 @@
 // tolower, inExpr). Protocol §11.2.5.1 System Query Option $filter.
 
 #import <XCTest/XCTest.h>
-#import "OISTestSupport.h"
+#import "OISCatalogModel.h"
 
 @interface ODataPredicateTranslatorTests : XCTestCase
 @end
@@ -20,7 +20,9 @@
 {
   [super setUp];
   ODataPropertyMapper *mapper = [[ODataPropertyMapper alloc] init];
-  _translator = [[ODataPredicateTranslator alloc] initWithMapper:mapper entity:OISProductEntity()];
+  NSEntityDescription *product = OISCatalogEntity(@"Product");
+  XCTAssertNotNil(product, @"Catalog.xcdatamodeld at %@", OISCatalogModelURL());
+  _translator = [[ODataPredicateTranslator alloc] initWithMapper:mapper entity:product];
 }
 
 - (void)assertPredicate:(NSString *)format filter:(NSString *)expected

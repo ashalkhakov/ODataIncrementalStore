@@ -3,7 +3,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
 #import <XCTest/XCTest.h>
-#import "OISTestSupport.h"
+#import "ODataIncrementalStore.h"
 
 @interface ODataResourceIdentifierTests : XCTestCase
 @end

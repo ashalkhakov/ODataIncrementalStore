@@ -25,7 +25,8 @@
 		AA000000000000000000002A /* ODataPredicateTranslator.m in Sources */ = {isa = PBXBuildFile; fileRef = AA000000000000000000002B /* ODataPredicateTranslator.m */;};
 		AA000000000000000000002C /* ODataQueryBuilder.m in Sources */ = {isa = PBXBuildFile; fileRef = AA000000000000000000002D /* ODataQueryBuilder.m */;};
 		AA000000000000000000002E /* ODataIncrementalStore.m in Sources */ = {isa = PBXBuildFile; fileRef = AA000000000000000000002F /* ODataIncrementalStore.m */;};
-		AA0000000000000000000030 /* OISTestSupport.m in Sources */ = {isa = PBXBuildFile; fileRef = AA0000000000000000000031 /* OISTestSupport.m */;};
+		AA00000000000000000000C3 /* OISCatalogModel.m in Sources */ = {isa = PBXBuildFile; fileRef = AA00000000000000000000C2 /* OISCatalogModel.m */;};
+		AA00000000000000000000C1 /* Catalog.xcdatamodeld in Resources */ = {isa = PBXBuildFile; fileRef = AA00000000000000000000C0 /* Catalog.xcdatamodeld */;};
 		AA0000000000000000000032 /* ODataSnapshotTransport.m in Sources */ = {isa = PBXBuildFile; fileRef = AA0000000000000000000033 /* ODataSnapshotTransport.m */;};
 		AA0000000000000000000034 /* ODataPredicateTranslatorTests.m in Sources */ = {isa = PBXBuildFile; fileRef = AA0000000000000000000035 /* ODataPredicateTranslatorTests.m */;};
 		AA0000000000000000000036 /* ODataQueryBuilderTests.m in Sources */ = {isa = PBXBuildFile; fileRef = AA0000000000000000000037 /* ODataQueryBuilderTests.m */;};
@@ -77,13 +78,14 @@
 		AA000000000000000000002D /* ODataQueryBuilder.m */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.objc; path = ODataQueryBuilder.m; sourceTree = "<group>";};
 		AA000000000000000000002F /* ODataIncrementalStore.m */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.objc; path = ODataIncrementalStore.m; sourceTree = "<group>";};
 		AA0000000000000000000049 /* OISCoreDataStub.m */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.objc; path = OISCoreDataStub.m; sourceTree = "<group>";};
-		AA0000000000000000000031 /* OISTestSupport.m */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.objc; path = OISTestSupport.m; sourceTree = "<group>";};
+		AA00000000000000000000C2 /* OISCatalogModel.m */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.objc; path = OISCatalogModel.m; sourceTree = "<group>";};
+		AA00000000000000000000C4 /* OISCatalogModel.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = OISCatalogModel.h; sourceTree = "<group>";};
+		AA00000000000000000000C0 /* Catalog.xcdatamodeld */ = {isa = PBXFileReference; lastKnownFileType = wrapper.xcdatamodeld; name = Catalog.xcdatamodeld; path = ../Examples/Catalog/Catalog.xcdatamodeld; sourceTree = "<group>";};
 		AA0000000000000000000033 /* ODataSnapshotTransport.m */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.objc; path = ODataSnapshotTransport.m; sourceTree = "<group>";};
 		AA0000000000000000000035 /* ODataPredicateTranslatorTests.m */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.objc; path = ODataPredicateTranslatorTests.m; sourceTree = "<group>";};
 		AA0000000000000000000037 /* ODataQueryBuilderTests.m */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.objc; path = ODataQueryBuilderTests.m; sourceTree = "<group>";};
 		AA0000000000000000000039 /* ODataResourceIdentifierTests.m */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.objc; path = ODataResourceIdentifierTests.m; sourceTree = "<group>";};
 		AA000000000000000000003B /* ODataSnapshotStoreTests.m */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.objc; path = ODataSnapshotStoreTests.m; sourceTree = "<group>";};
-		AA000000000000000000004A /* OISTestSupport.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = OISTestSupport.h; sourceTree = "<group>";};
 		AA000000000000000000004B /* ODataSnapshotTransport.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = ODataSnapshotTransport.h; sourceTree = "<group>";};
 		AA0000000000000000000043 /* Snapshots */ = {isa = PBXFileReference; lastKnownFileType = folder; path = Snapshots; sourceTree = "<group>";};
 		AA000000000000000000004C /* README.md */ = {isa = PBXFileReference; lastKnownFileType = net.daringfireball.markdown; path = README.md; sourceTree = "<group>";};
@@ -164,15 +166,16 @@
 		AA0000000000000000000052 /* Tests */ = {
 			isa = PBXGroup;
 			children = (
-				AA0000000000000000000031 /* OISTestSupport.m */,
+				AA00000000000000000000C2 /* OISCatalogModel.m */,
 				AA0000000000000000000033 /* ODataSnapshotTransport.m */,
 				AA0000000000000000000035 /* ODataPredicateTranslatorTests.m */,
 				AA0000000000000000000037 /* ODataQueryBuilderTests.m */,
 				AA0000000000000000000039 /* ODataResourceIdentifierTests.m */,
 				AA000000000000000000003B /* ODataSnapshotStoreTests.m */,
-				AA000000000000000000004A /* OISTestSupport.h */,
+				AA00000000000000000000C4 /* OISCatalogModel.h */,
 				AA000000000000000000004B /* ODataSnapshotTransport.h */,
 				AA0000000000000000000043 /* Snapshots */,
+				AA00000000000000000000C0 /* Catalog.xcdatamodeld */,
 				AA000000000000000000004C /* README.md */,
 				AA000000000000000000004D /* GNUmakefile */,
 			);
@@ -319,6 +322,7 @@
 			buildActionMask = 2147483647;
 			files = (
 				AA0000000000000000000042 /* Snapshots in Resources */,
+				AA00000000000000000000C1 /* Catalog.xcdatamodeld in Resources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -344,7 +348,7 @@
 			isa = PBXSourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
-				AA0000000000000000000030 /* OISTestSupport.m in Sources */,
+				AA00000000000000000000C3 /* OISCatalogModel.m in Sources */,
 				AA0000000000000000000032 /* ODataSnapshotTransport.m in Sources */,
 				AA0000000000000000000034 /* ODataPredicateTranslatorTests.m in Sources */,
 				AA0000000000000000000036 /* ODataQueryBuilderTests.m in Sources */,

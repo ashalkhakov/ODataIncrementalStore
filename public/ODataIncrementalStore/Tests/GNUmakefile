@@ -24,7 +24,7 @@ BUNDLE_NAME = ODataIncrementalStoreTests
 ODataIncrementalStoreTests_NEEDS_GUI = no
 
 ODataIncrementalStoreTests_OBJC_FILES = \
-	OISTestSupport.m \
+	OISCatalogModel.m \
 	ODataSnapshotTransport.m \
 	ODataPredicateTranslatorTests.m \
 	ODataQueryBuilderTests.m \
@@ -40,7 +40,8 @@ ODataIncrementalStoreTests_OBJC_LIBS += -lCoreData
 endif
 
 ADDITIONAL_OBJCFLAGS += -fobjc-arc -fblocks -fobjc-runtime=gnustep-2.0 \
-	-fconstant-string-class=NSConstantString -fobjc-exceptions
+	-fconstant-string-class=NSConstantString -fobjc-exceptions \
+	-DOIS_CATALOG_MODEL_DIR=\"$(CURDIR)/../Examples/Catalog\"
 ifeq ($(OIS_COREDATA),stub)
 ADDITIONAL_OBJCFLAGS += -DOIS_FORCE_STUB_COREDATA
 endif
@@ -54,3 +55,10 @@ run-tests: all $(BUNDLE_NAME).bundle
 -include GNUmakefile.preamble
 include $(GNUSTEP_MAKEFILES)/bundle.make
 -include GNUmakefile.postamble
+
+after-all::
+	@dst="$(GNUSTEP_OBJ_DIR)/$(BUNDLE_NAME).bundle/Resources"; \
+	if [ ! -d "$$dst" ]; then dst="./$(BUNDLE_NAME).bundle/Resources"; fi; \
+	mkdir -p "$$dst"; \
+	rm -rf "$$dst/Catalog.xcdatamodeld"; \
+	cp -R ../Examples/Catalog/Catalog.xcdatamodeld "$$dst/"

@@ -6,7 +6,7 @@
 // ($filter, $orderby, $top, $skip, $select, $expand) and §11.2.5.5 /$count.
 
 #import <XCTest/XCTest.h>
-#import "OISTestSupport.h"
+#import "OISCatalogModel.h"
 
 @interface ODataQueryBuilderTests : XCTestCase
 @end
@@ -42,15 +42,22 @@
   return out;
 }
 
+- (NSEntityDescription *)productEntity
+{
+  NSEntityDescription *product = OISCatalogEntity(@"Product");
+  XCTAssertNotNil(product, @"Catalog.xcdatamodeld at %@", OISCatalogModelURL());
+  return product;
+}
+
 - (void)testFilterOrderbyTop
 {
   NSFetchRequest *fetch = [NSFetchRequest fetchRequestWithEntityName:@"Product"];
-  fetch.entity = OISProductEntity();
+  fetch.entity = [self productEntity];
   fetch.predicate = [NSPredicate predicateWithFormat:@"unitPrice > 20 AND discontinued == NO"];
   fetch.sortDescriptors = @[ [NSSortDescriptor sortDescriptorWithKey:@"name" ascending:YES] ];
   fetch.fetchLimit = 25;
   NSError *error = nil;
-  NSURL *url = [_builder URLForFetch:fetch entity:OISProductEntity() error:&error];
+  NSURL *url = [_builder URLForFetch:fetch entity:[self productEntity] error:&error];
   XCTAssertNil(error);
   XCTAssertEqualObjects(url.path, @"/V4/Northwind.svc/Products");
   NSDictionary *q = [self queryFromURL:url];
@@ -62,11 +69,11 @@
 - (void)testSkipAndExpand
 {
   NSFetchRequest *fetch = [NSFetchRequest fetchRequestWithEntityName:@"Product"];
-  fetch.entity = OISProductEntity();
+  fetch.entity = [self productEntity];
   fetch.fetchOffset = 10;
   fetch.relationshipKeyPathsForPrefetching = @[ @"category" ];
   NSError *error = nil;
-  NSURL *url = [_builder URLForFetch:fetch entity:OISProductEntity() error:&error];
+  NSURL *url = [_builder URLForFetch:fetch entity:[self productEntity] error:&error];
   XCTAssertNil(error);
   NSDictionary *q = [self queryFromURL:url];
   XCTAssertEqualObjects(q[@"$skip"], @"10");
@@ -76,11 +83,11 @@
 - (void)testCountPath
 {
   NSFetchRequest *fetch = [NSFetchRequest fetchRequestWithEntityName:@"Product"];
-  fetch.entity = OISProductEntity();
+  fetch.entity = [self productEntity];
   fetch.resultType = NSCountResultType;
   fetch.predicate = [NSPredicate predicateWithFormat:@"discontinued == NO"];
   NSError *error = nil;
-  NSURL *url = [_builder URLForFetch:fetch entity:OISProductEntity() error:&error];
+  NSURL *url = [_builder URLForFetch:fetch entity:[self productEntity] error:&error];
   XCTAssertNil(error);
   XCTAssertTrue([url.path hasSuffix:@"/Products/$count"]);
   XCTAssertEqualObjects([self queryFromURL:url][@"$filter"], @"Discontinued eq false");
@@ -89,11 +96,11 @@
 - (void)testSelectFromDictionaryResult
 {
   NSFetchRequest *fetch = [NSFetchRequest fetchRequestWithEntityName:@"Product"];
-  fetch.entity = OISProductEntity();
+  fetch.entity = [self productEntity];
   fetch.resultType = NSDictionaryResultType;
   fetch.propertiesToFetch = @[ @"name", @"unitPrice" ];
   NSError *error = nil;
-  NSURL *url = [_builder URLForFetch:fetch entity:OISProductEntity() error:&error];
+  NSURL *url = [_builder URLForFetch:fetch entity:[self productEntity] error:&error];
   XCTAssertNil(error);
   XCTAssertEqualObjects([self queryFromURL:url][@"$select"], @"ProductName,UnitPrice");
 }
@@ -106,7 +113,7 @@
   NSURL *url = [_builder URLForIdentifier:id1 error:&error];
   XCTAssertNil(error);
   XCTAssertTrue([url.path hasSuffix:@"/Products(1)"]);
-  NSRelationshipDescription *rel = OISProductEntity().relationshipsByName[@"category"];
+  NSRelationshipDescription *rel = [self productEntity].relationshipsByName[@"category"];
   NSURL *nav = [_builder URLForIdentifier:id1 relationship:rel error:&error];
   XCTAssertTrue([nav.path hasSuffix:@"/Products(1)/Category"]);
 }

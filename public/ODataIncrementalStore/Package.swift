@@ -25,6 +25,9 @@ let package = Package(
             dependencies: ["ODataIncrementalStore"],
             path: "Tests",
             exclude: ["GNUmakefile", "README.md"],
+            // Catalog.xcdatamodeld lives in Examples/Catalog (outside Tests/).
+            // Xcode compiles it into the test bundle; GNUstep copies it;
+            // OISCatalogModel falls back to __FILE__ for SwiftPM.
             resources: [.copy("Snapshots")],
             cSettings: [
                 .headerSearchPath("."),

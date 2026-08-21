@@ -66,7 +66,9 @@ make -f Makefile OIS_COREDATA=stub
 ## Tests (XCTest, no network)
 
 HTTP is a directory of OData v4 request/response snapshots. The suite
-never opens a socket.
+never opens a socket. Tests load `Examples/Catalog/Catalog.xcdatamodeld`
+(the same model as the example apps) — not a hand-built
+`NSManagedObjectModel`.
 
 ```sh
 make test
