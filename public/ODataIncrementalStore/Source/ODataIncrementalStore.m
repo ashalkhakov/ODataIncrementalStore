@@ -283,19 +283,12 @@
   [object.entity.attributesByName enumerateKeysAndObjectsUsingBlock:^(NSString *name, NSAttributeDescription *attr, BOOL *stop) {
     (void)stop;
     if (!includingKeys && [keyNames containsObject:name]) return;
-    if (!changed[name] && !object.isInserted) return;
-    body[[self->_mapper propertyForAttribute:attr]] = [self odataJSON:[object primitiveValueForKey:name]];
+    if (!object.isInserted && !changed[name]) return;
+    id json = [self odataJSON:[object primitiveValueForKey:name]];
+    // POST omits unset optional properties (§11.4.2). PATCH may send null to clear.
+    if (object.isInserted && (json == nil || json == [NSNull null])) return;
+    body[[self->_mapper propertyForAttribute:attr]] = json ?: [NSNull null];
   }];
-  if (object.isInserted) {
-    [object.entity.attributesByName enumerateKeysAndObjectsUsingBlock:^(NSString *name, NSAttributeDescription *attr, BOOL *stop) {
-      (void)stop;
-      if (!includingKeys && [keyNames containsObject:name]) return;
-      NSString *wire = [self->_mapper propertyForAttribute:attr];
-      if (body[wire]) return;
-      id json = [self odataJSON:[object primitiveValueForKey:name]];
-      if (json && json != [NSNull null]) body[wire] = json;
-    }];
-  }
   return body;
 }
 

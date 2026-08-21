@@ -155,8 +155,16 @@ static BOOL OISJSONEqual(id a, id b)
     }
   }
   if (!hit) {
-    NSString *msg = [NSString stringWithFormat:@"No snapshot for %@ %@",
-                     request.HTTPMethod ?: @"?", request.URL.absoluteString ?: @"?"];
+    NSMutableArray *bits = [NSMutableArray array];
+    [bits addObject:request.HTTPMethod ?: @"?"];
+    [bits addObject:request.URL.absoluteString ?: @"?"];
+    NSString *ifMatch = [request valueForHTTPHeaderField:@"If-Match"];
+    if (ifMatch.length) [bits addObject:[NSString stringWithFormat:@"If-Match=%@", ifMatch]];
+    if (request.HTTPBody.length) {
+      NSString *body = [[NSString alloc] initWithData:request.HTTPBody encoding:NSUTF8StringEncoding];
+      if (body.length) [bits addObject:body];
+    }
+    NSString *msg = [NSString stringWithFormat:@"No snapshot for %@", [bits componentsJoinedByString:@" "]];
     if (error) *error = OISError(ODataIncrementalStoreErrorTransport, msg);
     return nil;
   }

@@ -172,7 +172,7 @@
   XCTAssertNil(error, @"%@", error);
   [_store newValuesForObjectWithID:oids.firstObject withContext:_context error:&error];
   NSManagedObject *object = [_context objectWithID:oids.firstObject];
-  [object setPrimitiveValue:@22 forKey:@"unitPrice"];
+  [object setValue:@22 forKey:@"unitPrice"];
   NSSaveChangesRequest *save =
       [[NSSaveChangesRequest alloc] initWithInsertedObjects:nil
                                              updatedObjects:[NSSet setWithObject:object]
