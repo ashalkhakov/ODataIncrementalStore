@@ -6,9 +6,6 @@
 #   make
 #   ./ois-filter 'unitPrice > 20 AND discontinued == NO'
 #
-# Without FreeCoreData (translator only):
-#   make OIS_COREDATA=stub
-#
 # GCC's libobjc will not work. clang is required.
 
 CC ?= clang
@@ -26,6 +23,8 @@ ifeq ($(strip $(GNUSTEP_FLAGS)),)
   GNUSTEP_FLAGS = -I/usr/include/GNUstep -DGNUSTEP -DGNUSTEP_BASE_LIBRARY=1
   GNUSTEP_LIBS  = -lgnustep-base -lobjc -lpthread
 endif
+
+GNUSTEP_LIBS += -lCoreData
 
 OBJCFLAGS = $(GNUSTEP_FLAGS) \
 	-fobjc-runtime=gnustep-2.0 \
@@ -47,13 +46,6 @@ SRCS = \
 	$(SRC_DIR)/ODataQueryBuilder.m \
 	$(SRC_DIR)/ODataIncrementalStore.m
 
-ifneq ($(OIS_COREDATA),stub)
-  GNUSTEP_LIBS += -lCoreData
-else
-  OBJCFLAGS += -DOIS_FORCE_STUB_COREDATA
-  SRCS += $(SRC_DIR)/OISCoreDataStub.m
-endif
-
 OBJS = $(SRCS:.m=.o)
 
 .PHONY: all clean test
@@ -71,8 +63,7 @@ ois-filter: Tools/ois-filter.m libODataIncrementalStore.so
 
 # XCTest bundle needs gnustep-make. This target documents the entry point.
 test:
-	$(MAKE) -C Tests run-tests OIS_COREDATA=$(OIS_COREDATA)
+	$(MAKE) -C Tests run-tests
 
 clean:
 	rm -f $(OBJS) libODataIncrementalStore.so ois-filter
-

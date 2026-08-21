@@ -5,8 +5,7 @@
 #   # or from the library root: make test
 #
 # Requires clang + libobjc2 + GNUstep XCTest
-# (https://github.com/gnustep/libs-xctest) and FreeCoreData, unless
-# OIS_COREDATA=stub.
+# (https://github.com/gnustep/libs-xctest) and FreeCoreData.
 
 ifeq ($(GNUSTEP_MAKEFILES),)
 $(error Set GNUSTEP_MAKEFILES (source GNUstep.sh).)
@@ -34,17 +33,11 @@ ODataIncrementalStoreTests_OBJC_FILES = \
 ODataIncrementalStoreTests_RESOURCE_FILES = Snapshots
 ODataIncrementalStoreTests_INCLUDE_DIRS = -I../Source/include -I.
 ODataIncrementalStoreTests_LIB_DIRS = -L..
-ODataIncrementalStoreTests_OBJC_LIBS += -lODataIncrementalStore -lXCTest
-ifneq ($(OIS_COREDATA),stub)
-ODataIncrementalStoreTests_OBJC_LIBS += -lCoreData
-endif
+ODataIncrementalStoreTests_OBJC_LIBS += -lODataIncrementalStore -lXCTest -lCoreData
 
 ADDITIONAL_OBJCFLAGS += -fobjc-arc -fblocks -fobjc-runtime=gnustep-2.0 \
 	-fconstant-string-class=NSConstantString -fobjc-exceptions \
 	-DOIS_CATALOG_MODEL_DIR=\"$(CURDIR)/../Examples/Catalog\"
-ifeq ($(OIS_COREDATA),stub)
-ADDITIONAL_OBJCFLAGS += -DOIS_FORCE_STUB_COREDATA
-endif
 
 XCTEST ?= xctest
 

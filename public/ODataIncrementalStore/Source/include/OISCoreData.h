@@ -1,23 +1,19 @@
-// ODataIncrementalStore — Core Data import switch.
+// ODataIncrementalStore — Core Data import.
 // Copyright (C) 2026 OIS contributors
 // SPDX-License-Identifier: GPL-3.0-or-later
 //
-// Apple:          <CoreData/CoreData.h>
-// GNUstep:        FreeCoreData (https://github.com/ashalkhakov/FreeCoreData)
-//                 installs the same umbrella after `make install`
-// Last resort:    OISCoreDataStub.h  (translator / ois-filter only)
-//                 compile with -DOIS_FORCE_STUB_COREDATA
+// Apple:   <CoreData/CoreData.h>
+// GNUstep: FreeCoreData (https://github.com/ashalkhakov/FreeCoreData)
+//          installs the same umbrella after `make install`.
 
 #pragma once
 
 #import "OISRuntime.h"
 
-#if defined(OIS_FORCE_STUB_COREDATA)
-#import "OISCoreDataStub.h"
-#elif __has_include(<CoreData/CoreData.h>)
+#if __has_include(<CoreData/CoreData.h>)
 #import <CoreData/CoreData.h>
 #else
-#import "OISCoreDataStub.h"
+#error "OIS requires Core Data: Apple CoreData.framework, or FreeCoreData on GNUstep (https://github.com/ashalkhakov/FreeCoreData)."
 #endif
 
 #ifndef NSUUIDAttributeType

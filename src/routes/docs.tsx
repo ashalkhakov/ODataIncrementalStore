@@ -84,11 +84,6 @@ function DocsPage() {
             <code className="font-mono text-fg">make</code>. OIS is ARC; FreeCoreData is MRC;{" "}
             <code className="font-mono text-fg">new…</code> methods return +1 on both sides.
           </p>
-          <p className="mt-3">
-            Without FreeCoreData, <code className="font-mono text-fg">make OIS_COREDATA=stub</code> compiles the in-tree
-            shim so <code className="font-mono text-fg">ois-filter</code> can still walk NSPredicate. That is not a
-            persistent store.
-          </p>
         </section>
         <section>
           <h2 className="font-display text-2xl text-fg">Optimistic locking</h2>

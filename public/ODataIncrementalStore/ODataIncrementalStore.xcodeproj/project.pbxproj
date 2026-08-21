@@ -9,7 +9,6 @@
 		AA000000000000000000000A /* ODataIncrementalStore.h in Headers */ = {isa = PBXBuildFile; fileRef = AA000000000000000000000B /* ODataIncrementalStore.h */; settings = {ATTRIBUTES = (Public, ); };};
 		AA000000000000000000000C /* OISRuntime.h in Headers */ = {isa = PBXBuildFile; fileRef = AA000000000000000000000D /* OISRuntime.h */; settings = {ATTRIBUTES = (Public, ); };};
 		AA000000000000000000000E /* OISCoreData.h in Headers */ = {isa = PBXBuildFile; fileRef = AA000000000000000000000F /* OISCoreData.h */; settings = {ATTRIBUTES = (Public, ); };};
-		AA0000000000000000000010 /* OISCoreDataStub.h in Headers */ = {isa = PBXBuildFile; fileRef = AA0000000000000000000011 /* OISCoreDataStub.h */; settings = {ATTRIBUTES = (Public, ); };};
 		AA0000000000000000000012 /* ODataError.h in Headers */ = {isa = PBXBuildFile; fileRef = AA0000000000000000000013 /* ODataError.h */; settings = {ATTRIBUTES = (Public, ); };};
 		AA0000000000000000000014 /* ODataConfiguration.h in Headers */ = {isa = PBXBuildFile; fileRef = AA0000000000000000000015 /* ODataConfiguration.h */; settings = {ATTRIBUTES = (Public, ); };};
 		AA0000000000000000000016 /* ODataClient.h in Headers */ = {isa = PBXBuildFile; fileRef = AA0000000000000000000017 /* ODataClient.h */; settings = {ATTRIBUTES = (Public, ); };};
@@ -61,7 +60,6 @@
 		AA000000000000000000000B /* ODataIncrementalStore.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = ODataIncrementalStore.h; sourceTree = "<group>";};
 		AA000000000000000000000D /* OISRuntime.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = OISRuntime.h; sourceTree = "<group>";};
 		AA000000000000000000000F /* OISCoreData.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = OISCoreData.h; sourceTree = "<group>";};
-		AA0000000000000000000011 /* OISCoreDataStub.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = OISCoreDataStub.h; sourceTree = "<group>";};
 		AA0000000000000000000013 /* ODataError.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = ODataError.h; sourceTree = "<group>";};
 		AA0000000000000000000015 /* ODataConfiguration.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = ODataConfiguration.h; sourceTree = "<group>";};
 		AA0000000000000000000017 /* ODataClient.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = ODataClient.h; sourceTree = "<group>";};
@@ -77,7 +75,6 @@
 		AA000000000000000000002B /* ODataPredicateTranslator.m */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.objc; path = ODataPredicateTranslator.m; sourceTree = "<group>";};
 		AA000000000000000000002D /* ODataQueryBuilder.m */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.objc; path = ODataQueryBuilder.m; sourceTree = "<group>";};
 		AA000000000000000000002F /* ODataIncrementalStore.m */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.objc; path = ODataIncrementalStore.m; sourceTree = "<group>";};
-		AA0000000000000000000049 /* OISCoreDataStub.m */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.objc; path = OISCoreDataStub.m; sourceTree = "<group>";};
 		AA00000000000000000000C2 /* OISCatalogModel.m */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.objc; path = OISCatalogModel.m; sourceTree = "<group>";};
 		AA00000000000000000000C4 /* OISCatalogModel.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = OISCatalogModel.h; sourceTree = "<group>";};
 		AA00000000000000000000C0 /* Catalog.xcdatamodeld */ = {isa = PBXFileReference; lastKnownFileType = wrapper.xcdatamodeld; name = Catalog.xcdatamodeld; path = ../Examples/Catalog/Catalog.xcdatamodeld; sourceTree = "<group>";};
@@ -137,7 +134,6 @@
 				AA000000000000000000002B /* ODataPredicateTranslator.m */,
 				AA000000000000000000002D /* ODataQueryBuilder.m */,
 				AA000000000000000000002F /* ODataIncrementalStore.m */,
-				AA0000000000000000000049 /* OISCoreDataStub.m */,
 			);
 			name = Source;
 			path = Source;
@@ -149,7 +145,6 @@
 				AA000000000000000000000B /* ODataIncrementalStore.h */,
 				AA000000000000000000000D /* OISRuntime.h */,
 				AA000000000000000000000F /* OISCoreData.h */,
-				AA0000000000000000000011 /* OISCoreDataStub.h */,
 				AA0000000000000000000013 /* ODataError.h */,
 				AA0000000000000000000015 /* ODataConfiguration.h */,
 				AA0000000000000000000017 /* ODataClient.h */,
@@ -222,7 +217,6 @@
 				AA000000000000000000000A /* ODataIncrementalStore.h in Headers */,
 				AA000000000000000000000C /* OISRuntime.h in Headers */,
 				AA000000000000000000000E /* OISCoreData.h in Headers */,
-				AA0000000000000000000010 /* OISCoreDataStub.h in Headers */,
 				AA0000000000000000000012 /* ODataError.h in Headers */,
 				AA0000000000000000000014 /* ODataConfiguration.h in Headers */,
 				AA0000000000000000000016 /* ODataClient.h in Headers */,

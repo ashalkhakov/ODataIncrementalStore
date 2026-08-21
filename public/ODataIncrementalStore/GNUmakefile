@@ -10,9 +10,6 @@
 #   make
 #   make install
 #
-# Translator-only (no FreeCoreData, in-tree stub):
-#   make OIS_COREDATA=stub
-#
 # Without gnustep-make, use the sibling Makefile (gnustep-config + clang).
 
 ifeq ($(GNUSTEP_MAKEFILES),)
@@ -45,7 +42,6 @@ ODataIncrementalStore_HEADER_FILES = \
 	ODataIncrementalStore.h \
 	OISRuntime.h \
 	OISCoreData.h \
-	OISCoreDataStub.h \
 	ODataError.h \
 	ODataConfiguration.h \
 	ODataClient.h \
@@ -57,6 +53,7 @@ ODataIncrementalStore_HEADER_FILES = \
 ODataIncrementalStore_HEADER_FILES_DIR = Source/include
 ODataIncrementalStore_HEADER_FILES_INSTALL_DIR = ODataIncrementalStore
 ODataIncrementalStore_INCLUDE_DIRS = -ISource/include
+ODataIncrementalStore_LIBRARIES_DEPEND_UPON += -lCoreData
 
 ADDITIONAL_OBJCFLAGS += -fobjc-arc -fblocks -fobjc-runtime=gnustep-2.0 \
 	-fconstant-string-class=NSConstantString -fobjc-exceptions -Wall -Wno-unused-parameter
@@ -64,20 +61,10 @@ ODataIncrementalStore_OBJCFLAGS += -fobjc-arc -fblocks -fobjc-runtime=gnustep-2.
 	-fconstant-string-class=NSConstantString -fobjc-exceptions -Wall -Wno-unused-parameter
 ODataIncrementalStore_CFLAGS += -fblocks
 
-# FreeCoreData is the default GNUstep Core Data. OIS_USE_SYSTEM_COREDATA=yes
-# is kept as a synonym. OIS_COREDATA=stub compiles the in-tree shim.
-ifneq ($(OIS_COREDATA),stub)
-ODataIncrementalStore_LIBRARIES_DEPEND_UPON += -lCoreData
-else
-ODataIncrementalStore_CPPFLAGS += -DOIS_FORCE_STUB_COREDATA
-ODataIncrementalStore_OBJC_FILES += Source/OISCoreDataStub.m
-endif
-
 -include GNUmakefile.preamble
 include $(GNUSTEP_MAKEFILES)/library.make
 -include GNUmakefile.postamble
 
 .PHONY: test
 test: all
-	$(MAKE) -C Tests run-tests OIS_COREDATA=$(OIS_COREDATA)
-
+	$(MAKE) -C Tests run-tests

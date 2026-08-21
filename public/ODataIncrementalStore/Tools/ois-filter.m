@@ -2,8 +2,7 @@
 // Copyright (C) 2026 OIS contributors
 // SPDX-License-Identifier: GPL-3.0-or-later
 //
-// Default build links FreeCoreData (https://github.com/ashalkhakov/FreeCoreData).
-// Without it: make OIS_COREDATA=stub
+// Links FreeCoreData (https://github.com/ashalkhakov/FreeCoreData).
 //
 //   ./ois-filter 'unitPrice > 20 AND discontinued == NO'
 //   UnitPrice gt 20 and Discontinued eq false

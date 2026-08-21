@@ -15,21 +15,10 @@ make                 # build the library
 make -C Tests run-tests
 ```
 
-Translator-only (in-tree Core Data stub):
-
-```
-make OIS_COREDATA=stub
-make -C Tests OIS_COREDATA=stub run-tests
-```
-
-`OIS_COREDATA=stub` cannot load a `.xcdatamodeld` (`initWithContentsOfURL:`
-is Apple / FreeCoreData). Use FreeCoreData or the Xcode scheme for the
-store tests.
-
-Apple: open `ODataIncrementalStore.xcworkspace`, scheme
-**ODataIncrementalStoreTests**, ⌘U. Same `.m` files, snapshots copied
-into the test bundle. SwiftPM: `swift test` (model via `__FILE__` next
-to `Examples/Catalog`; prefer the workspace on Apple so `momc` runs).
+Requires FreeCoreData on GNUstep, or Apple Core Data via the Xcode
+scheme **ODataIncrementalStoreTests** (⌘U). SwiftPM: `swift test`
+(model via `__FILE__` next to `Examples/Catalog`; prefer the workspace
+on Apple so `momc` runs).
 
 | Class | What it pins |
 |---|---|

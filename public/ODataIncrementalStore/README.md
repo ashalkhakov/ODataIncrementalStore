@@ -23,7 +23,7 @@ that is not clang + ObjC 2.0 + ARC + blocks.
 | Runtime | **libobjc2** (`-fobjc-runtime=gnustep-2.0`) or Apple’s |
 | ABI | Non-fragile. Ivars live in `@implementation { }` blocks. |
 | Foundation | gnustep-base or Apple Foundation |
-| Core Data | Apple Core Data, or **[FreeCoreData](https://github.com/ashalkhakov/FreeCoreData)** on GNUstep. The in-tree stub is translator-only (`OIS_COREDATA=stub`). |
+| Core Data | Apple Core Data, or **[FreeCoreData](https://github.com/ashalkhakov/FreeCoreData)** on GNUstep |
 | Transport | `NSURLConnection` send-synchronous off Apple (no libdispatch); `NSURLSession` + `NSCondition` on Apple |
 | Strings | `-fconstant-string-class=NSConstantString` on GNUstep |
 
@@ -53,14 +53,6 @@ Without gnustep-make, clang + `gnustep-config` is enough:
 make -f Makefile
 ./ois-filter 'unitPrice > 20 AND discontinued == NO'
 # UnitPrice gt 20 and Discontinued eq false
-```
-
-Translator only, no FreeCoreData:
-
-```sh
-make OIS_COREDATA=stub
-# or
-make -f Makefile OIS_COREDATA=stub
 ```
 
 ## Tests (XCTest, no network)

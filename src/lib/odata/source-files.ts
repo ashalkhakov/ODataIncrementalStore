@@ -28,8 +28,6 @@ export const SOURCE_FILES: { path: string; label: string; group: SourceGroup }[]
   { path: "Source/include/ODataError.h", label: "ODataError.h", group: "library" },
   { path: "Source/ODataError.m", label: "ODataError.m", group: "library" },
   { path: "Source/include/OISCoreData.h", label: "OISCoreData.h", group: "library" },
-  { path: "Source/include/OISCoreDataStub.h", label: "OISCoreDataStub.h", group: "library" },
-  { path: "Source/OISCoreDataStub.m", label: "OISCoreDataStub.m", group: "library" },
   { path: "Tests/GNUmakefile", label: "Tests/GNUmakefile", group: "tests" },
   { path: "Tests/README.md", label: "Tests/README.md", group: "tests" },
   { path: "Tests/ODataSnapshotTransport.h", label: "ODataSnapshotTransport.h", group: "tests" },
