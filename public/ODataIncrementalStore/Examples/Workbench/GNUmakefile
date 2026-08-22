@@ -1,6 +1,5 @@
 # AppKit workbench on GNUstep. Requires FreeCoreData + gnustep-gui.
 # In-memory OData v4 behind ODataTransport — no network.
-# UI is WorkbenchWindow.xib (GSXib5Loader / Apple IB).
 ifeq ($(GNUSTEP_MAKEFILES),)
 $(error Set GNUSTEP_MAKEFILES (source GNUstep.sh).)
 endif
@@ -16,7 +15,6 @@ Workbench_INCLUDE_DIRS = -I../../Source/include
 Workbench_LIB_DIRS = -L../..
 Workbench_OBJC_LIBS += -lODataIncrementalStore -lCoreData
 Workbench_TOOL_LIBS += -lODataIncrementalStore -lCoreData
-Workbench_RESOURCE_FILES = WorkbenchWindow.xib
 
 ADDITIONAL_OBJCFLAGS += -fobjc-arc -fblocks -fobjc-runtime=gnustep-2.0 \
 	-fconstant-string-class=NSConstantString -fobjc-exceptions \
@@ -31,5 +29,4 @@ after-all::
 	if [ ! -d "$$dst" ]; then dst="./$(APP_NAME).app/Resources"; fi; \
 	mkdir -p "$$dst"; \
 	rm -rf "$$dst/Catalog.xcdatamodeld"; \
-	cp -R ../Catalog/Catalog.xcdatamodeld "$$dst/"; \
-	cp -f WorkbenchWindow.xib "$$dst/"
+	cp -R ../Catalog/Catalog.xcdatamodeld "$$dst/"
