@@ -43,7 +43,9 @@ export const SOURCE_FILES: { path: string; label: string; group: SourceGroup }[]
   { path: "Examples/Catalog/GNUmakefile", label: "Catalog/GNUmakefile", group: "example" },
   { path: "Examples/Catalog/Catalog.xcodeproj/project.pbxproj", label: "Catalog.xcodeproj", group: "example" },
   { path: "Examples/Catalog/main.m", label: "Catalog/main.m", group: "example" },
+  { path: "Examples/Catalog/CatalogController.h", label: "CatalogController.h", group: "example" },
   { path: "Examples/Catalog/CatalogController.m", label: "CatalogController.m", group: "example" },
+  { path: "Examples/Catalog/CatalogWindow.xib", label: "CatalogWindow.xib", group: "example" },
   { path: "Examples/Catalog/Catalog.xcdatamodeld/.xccurrentversion", label: "Catalog.xcdatamodeld", group: "example" },
   { path: "Examples/Catalog/Catalog.xcdatamodeld/Catalog.xcdatamodel/contents", label: "Catalog.xcdatamodel", group: "example" },
   { path: "Examples/Workbench/README.md", label: "Workbench/README.md", group: "workbench" },
@@ -52,6 +54,7 @@ export const SOURCE_FILES: { path: string; label: string; group: SourceGroup }[]
   { path: "Examples/Workbench/main.m", label: "Workbench/main.m", group: "workbench" },
   { path: "Examples/Workbench/WorkbenchController.h", label: "WorkbenchController.h", group: "workbench" },
   { path: "Examples/Workbench/WorkbenchController.m", label: "WorkbenchController.m", group: "workbench" },
+  { path: "Examples/Workbench/WorkbenchWindow.xib", label: "WorkbenchWindow.xib", group: "workbench" },
   { path: "Examples/Workbench/WorkbenchEngine.h", label: "WorkbenchEngine.h", group: "workbench" },
   { path: "Examples/Workbench/WorkbenchEngine.m", label: "WorkbenchEngine.m", group: "workbench" },
 ];
