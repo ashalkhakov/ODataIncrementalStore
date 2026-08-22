@@ -27,9 +27,9 @@ include $(GNUSTEP_MAKEFILES)/application.make
 -include GNUmakefile.postamble
 
 after-all::
-	@dst=\"$(GNUSTEP_OBJ_DIR)/$(APP_NAME).app/Resources\"; \
-	if [ ! -d \"$$dst\" ]; then dst=\"./$(APP_NAME).app/Resources\"; fi; \
-	mkdir -p \"$$dst\"; \
-	rm -rf \"$$dst/Catalog.xcdatamodeld\"; \
-	cp -R ../Catalog/Catalog.xcdatamodeld \"$$dst/\"; \
-	cp -f WorkbenchWindow.xib \"$$dst/\"
+	@dst="$(GNUSTEP_OBJ_DIR)/$(APP_NAME).app/Resources"; \
+	if [ ! -d "$$dst" ]; then dst="./$(APP_NAME).app/Resources"; fi; \
+	mkdir -p "$$dst"; \
+	rm -rf "$$dst/Catalog.xcdatamodeld"; \
+	cp -R ../Catalog/Catalog.xcdatamodeld "$$dst/"; \
+	cp -f WorkbenchWindow.xib "$$dst/"

@@ -28,9 +28,9 @@ include $(GNUSTEP_MAKEFILES)/application.make
 
 # gnustep-make copies RESOURCE_FILES; a directory bundle needs an extra pass.
 after-all::
-	@dst=\"$(GNUSTEP_OBJ_DIR)/$(APP_NAME).app/Resources\"; \
-	if [ ! -d \"$$dst\" ]; then dst=\"./$(APP_NAME).app/Resources\"; fi; \
-	mkdir -p \"$$dst\"; \
-	rm -rf \"$$dst/Catalog.xcdatamodeld\"; \
-	cp -R Catalog.xcdatamodeld \"$$dst/\"; \
-	cp -f CatalogWindow.xib \"$$dst/\"
+	@dst="$(GNUSTEP_OBJ_DIR)/$(APP_NAME).app/Resources"; \
+	if [ ! -d "$$dst" ]; then dst="./$(APP_NAME).app/Resources"; fi; \
+	mkdir -p "$$dst"; \
+	rm -rf "$$dst/Catalog.xcdatamodeld"; \
+	cp -R Catalog.xcdatamodeld "$$dst/"; \
+	cp -f CatalogWindow.xib "$$dst/"
