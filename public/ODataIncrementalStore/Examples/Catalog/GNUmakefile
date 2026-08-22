@@ -1,5 +1,6 @@
 # AppKit catalog on GNUstep. Requires FreeCoreData + gnustep-gui.
 # The model is Catalog.xcdatamodeld (FreeCoreData reads that XML, and compiled .momd).
+# UI is CatalogWindow.xib (GSXib5Loader).
 ifeq ($(GNUSTEP_MAKEFILES),)
 $(error Set GNUSTEP_MAKEFILES (source GNUstep.sh).)
 endif
@@ -15,7 +16,7 @@ Catalog_INCLUDE_DIRS = -I../../Source/include
 Catalog_LIB_DIRS = -L../..
 Catalog_OBJC_LIBS += -lODataIncrementalStore -lCoreData
 Catalog_TOOL_LIBS += -lODataIncrementalStore -lCoreData
-Catalog_RESOURCE_FILES = Catalog.xcdatamodeld
+Catalog_RESOURCE_FILES = Catalog.xcdatamodeld CatalogWindow.xib
 
 ADDITIONAL_OBJCFLAGS += -fobjc-arc -fblocks -fobjc-runtime=gnustep-2.0 \
 	-fconstant-string-class=NSConstantString -fobjc-exceptions \
@@ -31,4 +32,5 @@ after-all::
 	if [ ! -d "$$dst" ]; then dst="./$(APP_NAME).app/Resources"; fi; \
 	mkdir -p "$$dst"; \
 	rm -rf "$$dst/Catalog.xcdatamodeld"; \
-	cp -R Catalog.xcdatamodeld "$$dst/"
+	cp -R Catalog.xcdatamodeld "$$dst/"; \
+	cp -f CatalogWindow.xib "$$dst/"
