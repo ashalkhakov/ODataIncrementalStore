@@ -81,13 +81,17 @@ static NSURL *CatalogModelURL(void)
   return nil;
 }
 
+static BOOL CatalogLoadNib(NSString *name, id owner)
+{
+#if defined(__APPLE__)
+  NSArray *top = nil;
+  return [[NSBundle mainBundle] loadNibNamed:name owner:owner topLevelObjects:&top];
+#else
+  return [NSBundle loadNibNamed:name owner:owner];
+#endif
+}
+
 @implementation CatalogController {
-  NSWindow *_window;
-  NSPopUpButton *_entity;
-  NSTableView *_table;
-  NSTextField *_search;
-  NSTextField *_status;
-  NSTextView *_inspector;
   NSManagedObjectContext *_context;
   NSArray *_rows;
 }
@@ -97,8 +101,21 @@ static NSURL *CatalogModelURL(void)
   self = [super init];
   if (!self) return nil;
   [self openStore];
-  [self buildWindow];
+  if (!CatalogLoadNib(@"CatalogWindow", self)) {
+    NSLog(@"Catalog: failed to load CatalogWindow.xib");
+  }
   return self;
+}
+
+- (void)awakeFromNib
+{
+  if (self.mainMenu) [NSApp setMainMenu:self.mainMenu];
+  if (self.entityPopup.numberOfItems == 0) {
+    [self.entityPopup addItemsWithTitles:CatalogEntityNames()];
+  }
+  self.tableView.dataSource = self;
+  self.tableView.delegate = self;
+  [self rebuildColumns];
 }
 
 - (void)openStore
@@ -129,123 +146,57 @@ static NSURL *CatalogModelURL(void)
   _rows = @[];
 }
 
-- (void)buildWindow
-{
-  NSUInteger style =
-#if defined(__APPLE__)
-      NSWindowStyleMaskTitled | NSWindowStyleMaskClosable | NSWindowStyleMaskResizable;
-#else
-      NSTitledWindowMask | NSClosableWindowMask | NSResizableWindowMask;
-#endif
-  _window = [[NSWindow alloc] initWithContentRect:NSMakeRect(80, 80, 880, 560)
-                                        styleMask:style
-                                          backing:NSBackingStoreBuffered
-                                            defer:NO];
-  _window.title = @"OIS Catalog";
-  NSView *content = _window.contentView;
-
-  _entity = [[NSPopUpButton alloc] initWithFrame:NSMakeRect(16, 524, 140, 24) pullsDown:NO];
-  [_entity addItemsWithTitles:CatalogEntityNames()];
-  _entity.target = self;
-  _entity.action = @selector(entityChanged:);
-  [content addSubview:_entity];
-
-  _search = [[NSTextField alloc] initWithFrame:NSMakeRect(168, 524, 420, 22)];
-  _search.placeholderString = CatalogPlaceholderForEntity(@"Product");
-  _search.target = self;
-  _search.action = @selector(runFetch:);
-  [content addSubview:_search];
-
-  NSButton *go = [[NSButton alloc] initWithFrame:NSMakeRect(600, 520, 80, 28)];
-  go.title = @"Fetch";
-  go.target = self;
-  go.action = @selector(runFetch:);
-  [content addSubview:go];
-
-  NSButton *save = [[NSButton alloc] initWithFrame:NSMakeRect(688, 520, 80, 28)];
-  save.title = @"Save";
-  save.target = self;
-  save.action = @selector(save:);
-  [content addSubview:save];
-
-  NSScrollView *scroll = [[NSScrollView alloc] initWithFrame:NSMakeRect(16, 176, 848, 332)];
-  scroll.hasVerticalScroller = YES;
-  _table = [[NSTableView alloc] initWithFrame:scroll.bounds];
-  _table.dataSource = self;
-  _table.delegate = self;
-  [self rebuildColumns];
-  scroll.documentView = _table;
-  [content addSubview:scroll];
-
-  NSScrollView *inspectScroll = [[NSScrollView alloc] initWithFrame:NSMakeRect(16, 40, 848, 124)];
-  inspectScroll.hasVerticalScroller = YES;
-  inspectScroll.borderType = NSBezelBorder;
-  _inspector = [[NSTextView alloc] initWithFrame:inspectScroll.bounds];
-  _inspector.editable = NO;
-  _inspector.font = [NSFont userFixedPitchFontOfSize:11];
-  _inspector.string = @"Select a row. To-one and to-many faults fire through the store ($expand / navigation GET).";
-  inspectScroll.documentView = _inspector;
-  [content addSubview:inspectScroll];
-
-  _status = [[NSTextField alloc] initWithFrame:NSMakeRect(16, 12, 848, 20)];
-  _status.bezeled = NO;
-  _status.drawsBackground = NO;
-  _status.editable = NO;
-  _status.stringValue = @"Model is Catalog.xcdatamodeld. Fetch an entity to talk to the store.";
-  [content addSubview:_status];
-}
-
 - (NSString *)currentEntityName
 {
-  NSString *title = _entity.titleOfSelectedItem;
+  NSString *title = self.entityPopup.titleOfSelectedItem;
   return title.length ? title : @"Product";
 }
 
 - (void)rebuildColumns
 {
-  NSArray *existing = [_table.tableColumns copy];
+  NSArray *existing = [self.tableView.tableColumns copy];
   for (NSTableColumn *col in existing) {
-    [_table removeTableColumn:col];
+    [self.tableView removeTableColumn:col];
   }
   for (NSString *ident in CatalogColumnsForEntity([self currentEntityName])) {
     NSTableColumn *col = [[NSTableColumn alloc] initWithIdentifier:ident];
     col.title = ident;
     col.width = ident.length > 6 ? 180 : 90;
-    [_table addTableColumn:col];
+    [self.tableView addTableColumn:col];
   }
 }
 
 - (IBAction)entityChanged:(id)sender
 {
   (void)sender;
-  _search.placeholderString = CatalogPlaceholderForEntity([self currentEntityName]);
-  _search.stringValue = @"";
+  self.searchField.placeholderString = CatalogPlaceholderForEntity([self currentEntityName]);
+  self.searchField.stringValue = @"";
   _rows = @[];
   [self rebuildColumns];
-  [_table reloadData];
+  [self.tableView reloadData];
   [self inspectSelection];
 }
 
 - (void)showWindow
 {
-  [_window makeKeyAndOrderFront:nil];
+  [self.window makeKeyAndOrderFront:nil];
 }
 
 - (IBAction)runFetch:(id)sender
 {
   (void)sender;
   if (!_context) {
-    _status.stringValue = @"No model / store.";
+    self.statusField.stringValue = @"No model / store.";
     return;
   }
   NSString *entity = [self currentEntityName];
   NSFetchRequest *request = [NSFetchRequest fetchRequestWithEntityName:entity];
-  NSString *format = _search.stringValue;
+  NSString *format = self.searchField.stringValue;
   if (format.length) {
     @try {
       request.predicate = [NSPredicate predicateWithFormat:format];
     } @catch (NSException *ex) {
-      _status.stringValue = [NSString stringWithFormat:@"Bad predicate: %@", ex.reason];
+      self.statusField.stringValue = [NSString stringWithFormat:@"Bad predicate: %@", ex.reason];
       return;
     }
   }
@@ -257,13 +208,13 @@ static NSURL *CatalogModelURL(void)
   NSError *error = nil;
   _rows = [_context executeFetchRequest:request error:&error] ?: @[];
   if (error) {
-    _status.stringValue = error.localizedDescription;
+    self.statusField.stringValue = error.localizedDescription;
   } else {
-    _status.stringValue = [NSString stringWithFormat:@"%lu %@  ($expand %@)",
+    self.statusField.stringValue = [NSString stringWithFormat:@"%lu %@  ($expand %@)",
                            (unsigned long)_rows.count, entity,
                            [CatalogPrefetchForEntity(entity) componentsJoinedByString:@", "]];
   }
-  [_table reloadData];
+  [self.tableView reloadData];
   [self inspectSelection];
 }
 
@@ -272,9 +223,9 @@ static NSURL *CatalogModelURL(void)
   (void)sender;
   NSError *error = nil;
   if ([_context save:&error]) {
-    _status.stringValue = @"Saved (PATCH/POST/DELETE).";
+    self.statusField.stringValue = @"Saved (PATCH/POST/DELETE).";
   } else {
-    _status.stringValue = error.localizedDescription ?: @"Save failed";
+    self.statusField.stringValue = error.localizedDescription ?: @"Save failed";
   }
 }
 
@@ -309,9 +260,9 @@ static NSURL *CatalogModelURL(void)
 
 - (void)inspectSelection
 {
-  NSInteger row = _table.selectedRow;
+  NSInteger row = self.tableView.selectedRow;
   if (row < 0 || (NSUInteger)row >= _rows.count) {
-    _inspector.string = @"Select a row to fault to-one / to-many relationships.";
+    self.inspectorView.string = @"Select a row to fault to-one / to-many relationships.";
     return;
   }
   NSManagedObject *object = _rows[(NSUInteger)row];
@@ -346,7 +297,7 @@ static NSURL *CatalogModelURL(void)
       [text appendFormat:@"\n%@: fault failed (%@)\n", name, ex.reason];
     }
   }
-  _inspector.string = text;
+  self.inspectorView.string = text;
 }
 
 @end
