@@ -1,10 +1,12 @@
 # Catalog
 
 AppKit example: an `NSTableView` driven by `ODataIncrementalStore` and
-`Catalog.xcdatamodeld`. There is no programmatic `NSManagedObjectModel`.
-FreeCoreData loads the `.xcdatamodeld` XML (and compiled `.momd` if you
-run `momc`). Search is an `NSPredicate`. The inspector faults to-one and
-to-many relationships (`newValueForRelationship:` / `$expand`).
+`Catalog.xcdatamodeld`. The window lives in `CatalogWindow.xib` (Xcode 5
+XIB, springs and struts — loads on Apple IB and GNUstep `GSXib5Loader`).
+There is no programmatic `NSManagedObjectModel`. FreeCoreData loads the
+`.xcdatamodeld` XML (and compiled `.momd` if you run `momc`). Search is
+an `NSPredicate`. The inspector faults to-one and to-many relationships
+(`newValueForRelationship:` / `$expand`).
 
 ## Model
 
@@ -29,8 +31,8 @@ openapp ./Catalog.app
 ```
 
 Apple: open `ODataIncrementalStore.xcworkspace`, scheme **Catalog**.
-Xcode compiles `Catalog.xcdatamodeld` to `.momd` and embeds
-`ODataIncrementalStore.framework`.
+Xcode compiles `Catalog.xcdatamodeld` to `.momd`, copies
+`CatalogWindow.xib`, and embeds `ODataIncrementalStore.framework`.
 
 The store URL defaults to the public Northwind v4 service. That service
 has Product/Category/Supplier but not Location/Stock, and treats
