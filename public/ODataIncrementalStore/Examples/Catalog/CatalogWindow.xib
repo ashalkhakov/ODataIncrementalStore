@@ -1,0 +1,140 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<document type="com.apple.InterfaceBuilder3.Cocoa.XIB" version="3.0" toolsVersion="21507" targetRuntime="MacOSX.Cocoa" propertyAccessControl="none" useAutolayout="NO" customObjectInstantitationMethod="direct">
+    <dependencies>
+        <deployment identifier="macosx"/>
+        <plugIn identifier="com.apple.InterfaceBuilder.CocoaPlugin" version="21507"/>
+    </dependencies>
+    <objects>
+        <customObject id="-2" userLabel="File's Owner" customClass="CatalogController">
+            <connections>
+                <outlet property="window" destination="WIN" id="c1"/>
+                <outlet property="entityPopup" destination="ENT" id="c2"/>
+                <outlet property="searchField" destination="SRCH" id="c3"/>
+                <outlet property="tableView" destination="TBL" id="c4"/>
+                <outlet property="inspectorView" destination="INS" id="c5"/>
+                <outlet property="statusField" destination="STAT" id="c6"/>
+                <outlet property="mainMenu" destination="MENU" id="c7"/>
+            </connections>
+        </customObject>
+        <customObject id="-1" userLabel="First Responder" customClass="FirstResponder"/>
+        <customObject id="-3" userLabel="Application" customClass="NSObject"/>
+        <menu title="MainMenu" systemMenu="main" id="MENU">
+            <items>
+                <menuItem title="Catalog" id="MI1">
+                    <menu key="submenu" title="Catalog" systemMenu="apple" id="MS1">
+                        <items>
+                            <menuItem title="Quit Catalog" keyEquivalent="q" id="MQ">
+                                <connections>
+                                    <action selector="terminate:" target="-1" id="AQ"/>
+                                </connections>
+                            </menuItem>
+                        </items>
+                    </menu>
+                </menuItem>
+            </items>
+        </menu>
+        <window title="OIS Catalog" releasedWhenClosed="NO" id="WIN">
+            <windowStyleMask key="styleMask" titled="YES" closable="YES" miniaturizable="YES" resizable="YES"/>
+            <rect key="contentRect" x="80" y="80" width="880" height="560"/>
+            <view key="contentView" id="CV">
+                <rect key="frame" x="0.0" y="0.0" width="880" height="560"/>
+                <autoresizingMask key="autoresizingMask" widthSizable="YES" heightSizable="YES"/>
+                <subviews>
+                    <popUpButton id="ENT">
+                        <rect key="frame" x="16" y="524" width="140" height="24"/>
+                        <autoresizingMask key="autoresizingMask" flexibleMinY="YES"/>
+                        <popUpButtonCell key="cell" type="push" title="Product" bezelStyle="rounded" alignment="left" lineBreakMode="truncatingTail" state="on" borderStyle="borderAndBezel" inset="2" selectedItem="EP">
+                            <menu key="menu" id="EM">
+                                <items>
+                                    <menuItem title="Product" state="on" id="EP"/>
+                                    <menuItem title="Supplier" id="ES"/>
+                                    <menuItem title="Location" id="EL"/>
+                                    <menuItem title="Stock" id="EK"/>
+                                    <menuItem title="Category" id="EC"/>
+                                </items>
+                            </menu>
+                        </popUpButtonCell>
+                        <connections>
+                            <action selector="entityChanged:" target="-2" id="AE"/>
+                        </connections>
+                    </popUpButton>
+                    <textField id="SRCH">
+                        <rect key="frame" x="168" y="524" width="420" height="22"/>
+                        <autoresizingMask key="autoresizingMask" widthSizable="YES" flexibleMinY="YES"/>
+                        <textFieldCell key="cell" selectable="YES" editable="YES" sendsActionOnEndEditing="YES" state="on" borderStyle="bezel" drawsBackground="YES" placeholderString="unitPrice &gt; 20 AND discontinued == NO" id="SRCHC"/>
+                        <connections>
+                            <action selector="runFetch:" target="-2" id="AS"/>
+                        </connections>
+                    </textField>
+                    <button id="GO">
+                        <rect key="frame" x="600" y="520" width="80" height="28"/>
+                        <autoresizingMask key="autoresizingMask" flexibleMinX="YES" flexibleMinY="YES"/>
+                        <buttonCell key="cell" type="push" title="Fetch" bezelStyle="rounded" alignment="center" borderStyle="border" inset="2" id="GOC">
+                            <string key="keyEquivalent" base64-UTF8="YES">DQ==</string>
+                        </buttonCell>
+                        <connections>
+                            <action selector="runFetch:" target="-2" id="AG"/>
+                        </connections>
+                    </button>
+                    <button id="SAVE">
+                        <rect key="frame" x="688" y="520" width="80" height="28"/>
+                        <autoresizingMask key="autoresizingMask" flexibleMinX="YES" flexibleMinY="YES"/>
+                        <buttonCell key="cell" type="push" title="Save" bezelStyle="rounded" alignment="center" borderStyle="border" inset="2" id="SAVEC"/>
+                        <connections>
+                            <action selector="save:" target="-2" id="ASAVE"/>
+                        </connections>
+                    </button>
+                    <scrollView autohidesScrollers="YES" hasVerticalScroller="YES" hasHorizontalScroller="NO" id="TSCR">
+                        <rect key="frame" x="16" y="176" width="848" height="332"/>
+                        <autoresizingMask key="autoresizingMask" widthSizable="YES" heightSizable="YES"/>
+                        <clipView key="contentView" id="TCLIP">
+                            <rect key="frame" x="1" y="1" width="846" height="330"/>
+                            <autoresizingMask key="autoresizingMask" widthSizable="YES" heightSizable="YES"/>
+                            <subviews>
+                                <tableView multipleSelection="NO" headerView="TH" id="TBL">
+                                    <rect key="frame" x="0.0" y="0.0" width="846" height="307"/>
+                                    <autoresizingMask key="autoresizingMask" widthSizable="YES" heightSizable="YES"/>
+                                    <tableColumns>
+                                        <tableColumn identifier="id" width="90" id="COL0">
+                                            <tableHeaderCell key="headerCell" title="id"/>
+                                            <textFieldCell key="dataCell" selectable="YES" editable="YES" id="CEL0"/>
+                                        </tableColumn>
+                                    </tableColumns>
+                                    <connections>
+                                        <outlet property="dataSource" destination="-2" id="TDS"/>
+                                        <outlet property="delegate" destination="-2" id="TDEL"/>
+                                    </connections>
+                                </tableView>
+                            </subviews>
+                        </clipView>
+                        <scroller key="verticalScroller" verticalHuggingPriority="750" id="TVS"/>
+                        <tableHeaderView key="headerView" id="TH">
+                            <rect key="frame" x="0.0" y="0.0" width="846" height="23"/>
+                        </tableHeaderView>
+                    </scrollView>
+                    <scrollView borderType="bezelBorder" autohidesScrollers="YES" hasVerticalScroller="YES" hasHorizontalScroller="NO" id="ISCR">
+                        <rect key="frame" x="16" y="40" width="848" height="124"/>
+                        <autoresizingMask key="autoresizingMask" widthSizable="YES" flexibleMaxY="YES"/>
+                        <clipView key="contentView" id="ICLIP">
+                            <rect key="frame" x="1" y="1" width="846" height="122"/>
+                            <autoresizingMask key="autoresizingMask" widthSizable="YES" heightSizable="YES"/>
+                            <subviews>
+                                <textView editable="NO" importsGraphics="NO" richText="NO" id="INS">
+                                    <rect key="frame" x="0.0" y="0.0" width="846" height="122"/>
+                                    <autoresizingMask key="autoresizingMask" widthSizable="YES" heightSizable="YES"/>
+                                    <string key="text">Select a row. To-one and to-many faults fire through the store.</string>
+                                </textView>
+                            </subviews>
+                        </clipView>
+                        <scroller key="verticalScroller" verticalHuggingPriority="750" id="IVS"/>
+                    </scrollView>
+                    <textField id="STAT">
+                        <rect key="frame" x="16" y="12" width="848" height="20"/>
+                        <autoresizingMask key="autoresizingMask" widthSizable="YES" flexibleMaxY="YES"/>
+                        <textFieldCell key="cell" title="Model is Catalog.xcdatamodeld. Fetch an entity to talk to the store." id="STATC"/>
+                    </textField>
+                </subviews>
+            </view>
+        </window>
+    </objects>
+</document>

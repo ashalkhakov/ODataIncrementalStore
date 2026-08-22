@@ -3,6 +3,10 @@
 Native Cocoa / GNUstep app for poking at `ODataIncrementalStore`. This
 **is** the workbench. There is no web workbench.
 
+The window is `WorkbenchWindow.xib` (File's Owner = `WorkbenchController`).
+GNUstep loads it with `GSXib5Loader` / `[NSBundle loadNibNamed:owner:]`.
+Xcode 5 format, springs and struts, no Auto Layout.
+
 It runs a real `NSIncrementalStore` session against an **in-memory OData
 v4 service** (`WorkbenchEngine`, an `ODataTransport`). No socket. The
 model is `Catalog.xcdatamodeld` (Product ↔ Supplier many-to-many, Stock
@@ -29,8 +33,8 @@ openapp ./Workbench.app
 ```
 
 Apple: open `ODataIncrementalStore.xcworkspace` at the library root,
-scheme **Workbench**. The app embeds `ODataIncrementalStore.framework`
-and compiles `Catalog.xcdatamodeld`.
+scheme **Workbench**. The app embeds `ODataIncrementalStore.framework`,
+copies `WorkbenchWindow.xib`, and compiles `Catalog.xcdatamodeld`.
 
 `Examples/Catalog` is a smaller consumer app (table + predicate). This
 directory is the testing bench.
