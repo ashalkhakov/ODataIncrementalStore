@@ -21,7 +21,60 @@
 // Inside a lambda over a collection of values (not of entities): their
 // type, which paths inside the lambda start from.
 @property (nonatomic, copy, nullable) NSString *elementType;
+// Inside a SUBQUERY written as a lambda: its variable, whose key paths
+// ($s.city) are the lambda variable's.
+@property (nonatomic, copy, nullable) NSString *subqueryVariable;
 @end
+
+// An expression that applies a key path to another (the variable of a
+// SUBQUERY, $s.city, or the subquery itself, SUBQUERY(...).@count): on
+// Apple a valueForKeyPath: function, in gnustep-base a key path
+// composition.
+static BOOL OISKeyPathOn(NSExpression *expression, NSExpression **base, NSString **keyPath)
+{
+  if (expression.expressionType == NSFunctionExpressionType && [expression.function isEqualToString:@"valueForKeyPath:"]) {
+    NSExpression *argument = expression.arguments.firstObject;
+    NSString *path = nil;
+    if ([argument respondsToSelector:@selector(keyPath)]) path = [(id)argument keyPath];
+    if (!path && argument.expressionType == NSConstantValueExpressionType && [argument.constantValue isKindOfClass:[NSString class]]) path = argument.constantValue;
+    if (!path) return NO;
+    *base = expression.operand;
+    *keyPath = path;
+    return YES;
+  }
+#if !defined(__APPLE__)
+  if (expression.expressionType == NSKeyPathCompositionExpressionType) {
+    NSExpression *right = [expression rightExpression];
+    if (right.expressionType != NSKeyPathExpressionType) return NO;
+    *base = [expression leftExpression];
+    *keyPath = right.keyPath;
+    return YES;
+  }
+#endif
+  return NO;
+}
+
+// The entities a type test names: `entity == E`, `entity IN {E, F}`.
+static NSArray<NSEntityDescription *> *OISEntitiesIn(NSExpression *expression)
+{
+  if (expression.expressionType == NSAggregateExpressionType) {
+    NSMutableArray *out = [NSMutableArray array];
+    for (NSExpression *e in expression.collection) {
+      if (e.expressionType != NSConstantValueExpressionType || ![e.constantValue isKindOfClass:[NSEntityDescription class]]) return nil;
+      [out addObject:e.constantValue];
+    }
+    return out;
+  }
+  if (expression.expressionType != NSConstantValueExpressionType) return nil;
+  id value = expression.constantValue;
+  if ([value isKindOfClass:[NSEntityDescription class]]) return @[ value ];
+  if ([value isKindOfClass:[NSSet class]] || [value isKindOfClass:[NSOrderedSet class]]) value = [value allObjects];
+  if (![value isKindOfClass:[NSArray class]]) return nil;
+  for (id v in value) {
+    if (![v isKindOfClass:[NSEntityDescription class]]) return nil;
+  }
+  return value;
+}
 
 @implementation ODataPredicateTranslator
 
@@ -85,6 +138,11 @@
   if (cmp.predicateOperatorType == NSLikePredicateOperatorType || cmp.predicateOperatorType == NSMatchesPredicateOperatorType) {
     return [self translatePattern:cmp error:error];
   }
+  BOOL handled = NO;
+  NSString *special = [self translateTypeTest:cmp handled:&handled error:error];
+  if (handled) return special;
+  special = [self translateCount:cmp handled:&handled error:error];
+  if (handled) return special;
   self.comparedAttribute = [self attributeAtExpression:cmp.leftExpression] ?: [self attributeAtExpression:cmp.rightExpression];
   self.comparedType = [self typeAtExpression:cmp.leftExpression] ?: [self typeAtExpression:cmp.rightExpression];
   NSString *lhs = [self translateExpression:cmp.leftExpression error:error];
@@ -95,11 +153,14 @@
     return nil;
   }
   BOOL ci = (cmp.options & NSCaseInsensitivePredicateOption) != 0;
+  // ==[c] as tolower on both sides, as startswith and the others have it.
+  NSString *lowered = ci ? [NSString stringWithFormat:@"tolower(%@)", lhs] : lhs;
+  NSString *loweredRight = ci ? [NSString stringWithFormat:@"tolower(%@)", rhs] : rhs;
   switch (cmp.predicateOperatorType) {
     case NSEqualToPredicateOperatorType:
-      return [NSString stringWithFormat:@"%@ eq %@", lhs, rhs];
+      return [NSString stringWithFormat:@"%@ eq %@", lowered, loweredRight];
     case NSNotEqualToPredicateOperatorType:
-      return [NSString stringWithFormat:@"%@ ne %@", lhs, rhs];
+      return [NSString stringWithFormat:@"%@ ne %@", lowered, loweredRight];
     case NSLessThanPredicateOperatorType:
       return [NSString stringWithFormat:@"%@ lt %@", lhs, rhs];
     case NSLessThanOrEqualToPredicateOperatorType:
@@ -227,11 +288,26 @@
       }
       return [self literal:expression.constantValue];
     case NSKeyPathExpressionType:
-      return [self mapKeyPath:expression.keyPath];
+      return [self mapKeyPath:expression.keyPath error:error];
     case NSEvaluatedObjectExpressionType:
       return self.lambdaVariable ?: @"$it";
-    case NSFunctionExpressionType:
+    case NSVariableExpressionType:
+      if (self.subqueryVariable && [expression.variable isEqualToString:self.subqueryVariable]) return self.lambdaVariable;
+      if (error) *error = OISError(ODataIncrementalStoreErrorUnsupportedExpression, expression.description);
+      return nil;
+    case NSFunctionExpressionType: {
+      NSString *variablePath = [self translateVariablePath:expression error:error];
+      if (variablePath) return variablePath;
       return [self translateFunction:expression error:error];
+    }
+#if !defined(__APPLE__)
+    case NSKeyPathCompositionExpressionType: {
+      NSString *variablePath = [self translateVariablePath:expression error:error];
+      if (variablePath) return variablePath;
+      if (error) *error = OISError(ODataIncrementalStoreErrorUnsupportedExpression, expression.description);
+      return nil;
+    }
+#endif
     case NSAggregateExpressionType: {
       NSArray *col = expression.collection;
       if (![col isKindOfClass:[NSArray class]]) {
@@ -266,16 +342,273 @@
       ? [NSString stringWithFormat:@"tolower(%@)", inner]
       : [NSString stringWithFormat:@"toupper(%@)", inner];
   }
+  // Arithmetic, as Apple and gnustep-base each name it.
+  NSDictionary *operators = @{ @"add:to:": @"add", @"from:subtract:": @"sub", @"multiply:by:": @"mul", @"divide:by:": @"div",
+                               @"modulus:by:": @"mod", @"_add": @"add", @"_sub": @"sub", @"_mul": @"mul", @"_div": @"div" };
+  NSString *op = operators[name];
+  if (op && args.count == 2) {
+    NSString *left = [self translateExpression:args[0] error:error];
+    NSString *right = left ? [self translateExpression:args[1] error:error] : nil;
+    return right ? [NSString stringWithFormat:@"(%@ %@ %@)", left, op, right] : nil;
+  }
   if (error) *error = OISError(ODataIncrementalStoreErrorUnsupportedExpression, expression.description);
   return nil;
 }
 
-- (NSString *)mapKeyPath:(NSString *)path
+// A key path as a property path, from the lambda variable inside a
+// lambda: relationships and attributes (a complex value's members after
+// its attribute) as the mapper names them, a subentity's property after a
+// cast to it (Default.Manager/Budget), @count after a to-many relationship
+// as $count, length after a string attribute as length(). Anything else is
+// no property of the model, and an error, not a guess.
+- (NSString *)mapKeyPath:(NSString *)path error:(NSError **)error
 {
-  NSString *mapped = self.elementType
-      ? [self.mapper memberPath:[path componentsSeparatedByString:@"."] ofType:self.elementType memberType:NULL]
-      : [self.mapper propertyPathForKeyPath:path entity:self.entity];
-  return self.lambdaVariable ? [NSString stringWithFormat:@"%@/%@", self.lambdaVariable, mapped] : mapped;
+  NSMutableArray *mapped = [NSMutableArray array];
+  if (self.lambdaVariable) [mapped addObject:self.lambdaVariable];
+  if (self.elementType) {
+    [mapped addObject:[self.mapper memberPath:[path componentsSeparatedByString:@"."] ofType:self.elementType memberType:NULL]];
+    return [mapped componentsJoinedByString:@"/"];
+  }
+  NSArray<NSString *> *parts = [path componentsSeparatedByString:@"."];
+  NSEntityDescription *current = self.entity;
+  BOOL collection = NO;
+  for (NSUInteger i = 0; i < parts.count; i++) {
+    NSString *part = parts[i];
+    BOOL last = i + 1 == parts.count;
+    if ([part isEqualToString:@"@count"] && last && collection) {
+      [mapped addObject:@"$count"];
+      return [mapped componentsJoinedByString:@"/"];
+    }
+    if (collection) break;
+    NSPropertyDescription *property = current.propertiesByName[part];
+    if (!property) {
+      // A subentity's own, after a cast to it.
+      NSMutableArray *queue = [current.subentities mutableCopy];
+      while (queue.count && !property) {
+        NSEntityDescription *sub = queue.firstObject;
+        [queue removeObjectAtIndex:0];
+        property = sub.propertiesByName[part];
+        if (property) {
+          NSString *cast = [self.mapper qualifiedTypeForEntity:sub];
+          if (!cast) break;
+          [mapped addObject:cast];
+          current = sub;
+        } else {
+          [queue addObjectsFromArray:sub.subentities];
+        }
+      }
+    }
+    if ([property isKindOfClass:[NSAttributeDescription class]]) {
+      NSAttributeDescription *attribute = (NSAttributeDescription *)property;
+      NSArray *rest = [parts subarrayWithRange:NSMakeRange(i + 1, parts.count - i - 1)];
+      [mapped addObject:[self.mapper propertyForAttribute:attribute]];
+      if (rest.count == 1 && [rest[0] isEqualToString:@"length"] && attribute.attributeType == NSStringAttributeType) {
+        return [NSString stringWithFormat:@"length(%@)", [mapped componentsJoinedByString:@"/"]];
+      }
+      if (rest.count) [mapped addObject:[self.mapper memberPath:rest ofType:[self.mapper.values typeNameOfAttribute:attribute] memberType:NULL]];
+      return [mapped componentsJoinedByString:@"/"];
+    }
+    if ([property isKindOfClass:[NSRelationshipDescription class]]) {
+      NSRelationshipDescription *relationship = (NSRelationshipDescription *)property;
+      [mapped addObject:[self.mapper propertyForRelationship:relationship]];
+      current = relationship.destinationEntity;
+      collection = relationship.isToMany;
+      continue;
+    }
+    if (error) *error = OISError(ODataIncrementalStoreErrorUnsupportedExpression,
+                                 [NSString stringWithFormat:@"%@ has no property %@ (in %@)", current.name, part, path]);
+    return nil;
+  }
+  // A path through a to-many relationship: ANY or ALL says which member.
+  NSUInteger crossed = 0;
+  NSEntityDescription *walk = self.entity;
+  for (NSString *part in parts) {
+    NSRelationshipDescription *relationship = walk.relationshipsByName[part];
+    if (!relationship) break;
+    crossed++;
+    if (relationship.isToMany && crossed < parts.count) {
+      if (error) *error = OISError(ODataIncrementalStoreErrorUnsupportedExpression,
+                                   [NSString stringWithFormat:@"%@ goes through the collection %@: say which member with ANY or ALL", path, part]);
+      return nil;
+    }
+    walk = relationship.destinationEntity;
+  }
+  return [mapped componentsJoinedByString:@"/"];
+}
+
+// $s.city inside a SUBQUERY: the lambda variable's path.
+- (NSString *)translateVariablePath:(NSExpression *)expression error:(NSError **)error
+{
+  NSExpression *base = nil;
+  NSString *keyPath = nil;
+  if (!OISKeyPathOn(expression, &base, &keyPath) || base.expressionType != NSVariableExpressionType) return nil;
+  if (!self.subqueryVariable || ![base.variable isEqualToString:self.subqueryVariable]) return nil;
+  return [self mapKeyPath:keyPath error:error];
+}
+
+#pragma mark - Types and counts
+
+// isof for `entity == E` (E and not its subentities) and `entity IN {...}`,
+// of the object or one it reaches (manager.entity). The entities that are
+// the set's own, and those under them not in it, as isof and not isof.
+- (NSString *)translateTypeTest:(NSComparisonPredicate *)cmp handled:(BOOL *)handled error:(NSError **)error
+{
+  *handled = NO;
+  NSExpression *left = cmp.leftExpression;
+  NSString *keyPath = nil;
+  NSExpression *base = nil;
+  if (left.expressionType == NSKeyPathExpressionType) {
+    keyPath = left.keyPath;
+  } else if (!(OISKeyPathOn(left, &base, &keyPath) && base.expressionType == NSVariableExpressionType &&
+               self.subqueryVariable && [base.variable isEqualToString:self.subqueryVariable])) {
+    return nil;
+  }
+  if (![keyPath isEqualToString:@"entity"] && ![keyPath hasSuffix:@".entity"]) return nil;
+  *handled = YES;
+  NSArray<NSEntityDescription *> *entities = OISEntitiesIn(cmp.rightExpression);
+  NSPredicateOperatorType type = cmp.predicateOperatorType;
+  if (!entities.count || (type != NSEqualToPredicateOperatorType && type != NSNotEqualToPredicateOperatorType && type != NSInPredicateOperatorType)) {
+    if (error) *error = OISError(ODataIncrementalStoreErrorUnsupportedPredicate,
+                                 [NSString stringWithFormat:@"a type test compares entity with an entity, or one of some: %@", cmp]);
+    return nil;
+  }
+  NSString *object = nil;
+  if ([keyPath hasSuffix:@".entity"]) {
+    object = [self mapKeyPath:[keyPath substringToIndex:keyPath.length - 7] error:error];
+    if (!object) return nil;
+  } else if (self.lambdaVariable) {
+    object = self.lambdaVariable;
+  }
+  NSSet *set = [NSSet setWithArray:entities];
+  NSMutableArray *clauses = [NSMutableArray array];
+  for (NSEntityDescription *entity in entities) {
+    if (entity.superentity && [set containsObject:entity.superentity]) continue;
+    NSMutableArray *terms = [NSMutableArray array];
+    NSString *root = [self isof:entity object:object error:error];
+    if (!root) return nil;
+    [terms addObject:root];
+    NSMutableArray *walk = [NSMutableArray arrayWithObject:entity];
+    while (walk.count) {
+      NSEntityDescription *node = walk.lastObject;
+      [walk removeLastObject];
+      for (NSEntityDescription *sub in node.subentities) {
+        if ([set containsObject:sub]) {
+          [walk addObject:sub];
+        } else {
+          NSString *excluded = [self isof:sub object:object error:error];
+          if (!excluded) return nil;
+          [terms addObject:[@"not " stringByAppendingString:excluded]];
+        }
+      }
+    }
+    [clauses addObject:terms.count == 1 ? terms[0] : [NSString stringWithFormat:@"(%@)", [terms componentsJoinedByString:@" and "]]];
+  }
+  NSString *test = clauses.count == 1 ? clauses[0] : [NSString stringWithFormat:@"(%@)", [clauses componentsJoinedByString:@" or "]];
+  return type == NSNotEqualToPredicateOperatorType ? [NSString stringWithFormat:@"not %@", test] : test;
+}
+
+- (NSString *)isof:(NSEntityDescription *)entity object:(NSString *)object error:(NSError **)error
+{
+  NSString *type = [self.mapper qualifiedTypeForEntity:entity];
+  if (!type) {
+    if (error) *error = OISError(ODataIncrementalStoreErrorUnsupportedPredicate, [NSString stringWithFormat:@"%@ has no entity type to test for", entity.name]);
+    return nil;
+  }
+  return object ? [NSString stringWithFormat:@"isof(%@,%@)", object, type] : [NSString stringWithFormat:@"isof(%@)", type];
+}
+
+// count:(collection) and collection.@count as $count; a SUBQUERY's count
+// against nought as any (or not any, or all).
+- (NSString *)translateCount:(NSComparisonPredicate *)cmp handled:(BOOL *)handled error:(NSError **)error
+{
+  *handled = NO;
+  NSExpression *left = cmp.leftExpression, *right = cmp.rightExpression;
+  NSPredicateOperatorType type = cmp.predicateOperatorType;
+  NSExpression *counted = [self countedIn:left];
+  if (!counted) {
+    counted = [self countedIn:right];
+    if (!counted) return nil;
+    NSExpression *swap = left;
+    left = right;
+    right = swap;
+    NSDictionary *mirror = @{ @(NSLessThanPredicateOperatorType): @(NSGreaterThanPredicateOperatorType),
+                              @(NSLessThanOrEqualToPredicateOperatorType): @(NSGreaterThanOrEqualToPredicateOperatorType),
+                              @(NSGreaterThanPredicateOperatorType): @(NSLessThanPredicateOperatorType),
+                              @(NSGreaterThanOrEqualToPredicateOperatorType): @(NSLessThanOrEqualToPredicateOperatorType) };
+    if (mirror[@(type)]) type = [mirror[@(type)] unsignedIntegerValue];
+  }
+  *handled = YES;
+  if (counted.expressionType == NSKeyPathExpressionType) {
+    // count:(suppliers): suppliers.@count.
+    NSComparisonPredicate *plain = [NSComparisonPredicate predicateWithLeftExpression:[NSExpression expressionForKeyPath:[counted.keyPath stringByAppendingString:@".@count"]]
+                                                                      rightExpression:right modifier:NSDirectPredicateModifier type:type options:0];
+    return [self translateComparison:plain error:error];
+  }
+  id value = right.expressionType == NSConstantValueExpressionType ? right.constantValue : nil;
+  BOOL zero = [value isKindOfClass:[NSNumber class]] && [value doubleValue] == 0;
+  BOOL one = [value isKindOfClass:[NSNumber class]] && [value doubleValue] == 1;
+  BOOL some = (zero && (type == NSGreaterThanPredicateOperatorType || type == NSNotEqualToPredicateOperatorType)) ||
+              (one && type == NSGreaterThanOrEqualToPredicateOperatorType);
+  BOOL none = (zero && (type == NSEqualToPredicateOperatorType || type == NSLessThanOrEqualToPredicateOperatorType)) ||
+              (one && type == NSLessThanPredicateOperatorType);
+  if (!some && !none) {
+    if (error) *error = OISError(ODataIncrementalStoreErrorUnsupportedPredicate,
+                                 [NSString stringWithFormat:@"a SUBQUERY is counted against nought, as any or none: %@", cmp]);
+    return nil;
+  }
+  NSExpression *collection = counted.collection;
+  if (collection.expressionType != NSKeyPathExpressionType) {
+    if (error) *error = OISError(ODataIncrementalStoreErrorUnsupportedPredicate, [NSString stringWithFormat:@"a SUBQUERY of %@", collection]);
+    return nil;
+  }
+  NSEntityDescription *element = nil;
+  NSEntityDescription *walk = self.entity;
+  for (NSString *part in [collection.keyPath componentsSeparatedByString:@"."]) {
+    NSRelationshipDescription *relationship = walk.relationshipsByName[part];
+    walk = relationship.destinationEntity;
+    element = relationship.isToMany ? walk : element;
+  }
+  NSString *path = [self mapKeyPath:collection.keyPath error:error];
+  if (!path) return nil;
+  if (!element) {
+    if (error) *error = OISError(ODataIncrementalStoreErrorUnsupportedPredicate, [NSString stringWithFormat:@"%@ is not a collection", collection.keyPath]);
+    return nil;
+  }
+  // none of NOT q is all of q.
+  NSPredicate *body = counted.predicate;
+  NSString *function = @"any";
+  if (none && [body isKindOfClass:[NSCompoundPredicate class]] && [(NSCompoundPredicate *)body compoundPredicateType] == NSNotPredicateType) {
+    body = [(NSCompoundPredicate *)body subpredicates].firstObject;
+    function = @"all";
+    none = NO;
+  }
+  ODataPredicateTranslator *inner = [[ODataPredicateTranslator alloc] initWithMapper:self.mapper entity:element];
+  inner.lambdaVariable = [NSString stringWithFormat:@"x%lu", (unsigned long)self.lambdaDepth];
+  inner.lambdaDepth = self.lambdaDepth + 1;
+  inner.subqueryVariable = counted.variable;
+  inner.keysForObjectID = self.keysForObjectID;
+  inner.version = self.version;
+  NSString *test = [inner translatePredicate:body error:error];
+  if (!test) return nil;
+  NSString *lambda = [NSString stringWithFormat:@"%@/%@(%@:%@)", path, function, inner.lambdaVariable, test];
+  return none ? [NSString stringWithFormat:@"not %@", lambda] : lambda;
+}
+
+// What an expression counts: the SUBQUERY of count:(SUBQUERY(...)) or
+// SUBQUERY(...).@count, or the key path of count:(suppliers).
+- (NSExpression *)countedIn:(NSExpression *)expression
+{
+  NSExpression *inner = nil;
+  if (expression.expressionType == NSFunctionExpressionType && [expression.function isEqualToString:@"count:"] && expression.arguments.count == 1) {
+    inner = expression.arguments.firstObject;
+  } else {
+    NSExpression *base = nil;
+    NSString *keyPath = nil;
+    if (OISKeyPathOn(expression, &base, &keyPath) && [keyPath isEqualToString:@"@count"]) inner = base;
+  }
+  if (inner.expressionType == NSSubqueryExpressionType) return inner;
+  if (inner.expressionType == NSKeyPathExpressionType && [expression.function isEqualToString:@"count:"]) return inner;
+  return nil;
 }
 
 #pragma mark - The service's functions
@@ -361,7 +694,7 @@
   }
 
   NSString *call = [NSString stringWithFormat:@"%@(%@)", function.qualifiedName, [arguments componentsJoinedByString:@","]];
-  NSString *prefix = expression.bindingKeyPath ? [self mapKeyPath:expression.bindingKeyPath] : self.lambdaVariable;
+  NSString *prefix = expression.bindingKeyPath ? [self mapKeyPath:expression.bindingKeyPath error:NULL] : self.lambdaVariable;
   if (prefix.length) call = [NSString stringWithFormat:@"%@/%@", prefix, call];
   if (resultPath.length) call = [NSString stringWithFormat:@"%@/%@", call, resultPath];
   if (typeOut) *typeOut = attribute ? nil : resultType;
@@ -432,7 +765,8 @@
   // No collection on the path: ANY and ALL of one value is the value.
   if (!elementEntity && !elementType) return [self translateComparison:direct error:error];
 
-  NSString *collection = [self mapKeyPath:[[parts subarrayWithRange:NSMakeRange(0, i + 1)] componentsJoinedByString:@"."]];
+  NSString *collection = [self mapKeyPath:[[parts subarrayWithRange:NSMakeRange(0, i + 1)] componentsJoinedByString:@"."] error:error];
+  if (!collection) return nil;
   NSArray *rest = [parts subarrayWithRange:NSMakeRange(i + 1, parts.count - i - 1)];
   NSString *variable = [NSString stringWithFormat:@"x%lu", (unsigned long)self.lambdaDepth];
 
@@ -556,7 +890,8 @@ static NSArray *OISObjectsInExpression(NSExpression *expression)
       current = rel.destinationEntity;
     }
     target = current;
-    path = [self mapKeyPath:left.keyPath];
+    path = [self mapKeyPath:left.keyPath error:error];
+    if (!path) return nil;
   }
   if (!target) {
     if (error) *error = OISError(ODataIncrementalStoreErrorUnsupportedPredicate,
@@ -607,6 +942,11 @@ static NSArray *OISObjectsInExpression(NSExpression *expression)
 
 - (NSString *)literal:(id)value
 {
+  // gnustep-base parses {1, 3} into a constant array of constant
+  // expressions.
+  while ([value isKindOfClass:[NSExpression class]] && [(NSExpression *)value expressionType] == NSConstantValueExpressionType) {
+    value = [(NSExpression *)value constantValue];
+  }
   if ([value isKindOfClass:[NSArray class]] || [value isKindOfClass:[NSSet class]]) {
     NSMutableArray *parts = [NSMutableArray array];
     for (id v in value) [parts addObject:[self literal:v]];
@@ -654,6 +994,9 @@ static NSArray *OISObjectsInExpression(NSExpression *expression)
   for (NSString *part in [keyPath componentsSeparatedByString:@"."]) {
     if (found || !current) return nil;
     found = current.attributesByName[part];
+    for (NSEntityDescription *sub in current.subentities) {
+      if (!found) found = sub.attributesByName[part];
+    }
     if (!found) {
       NSRelationshipDescription *rel = current.relationshipsByName[part];
       current = rel.destinationEntity;

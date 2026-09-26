@@ -479,9 +479,41 @@ model's own property names, never from request text:
   It rewrites `BETWEEN` into `>=` / `<=` and wraps each bound in a second
   constant expression, so parsing is not a neutral step.
 
-(Planned: the client's `ODataPredicateTranslator` and this builder tested
-against each other: predicate → `$filter` → predicate, and `$filter` →
-predicate → `$filter`, over the same table of cases.)
+The client's `ODataPredicateTranslator` and this builder are tested
+against each other (`Tests/ODataPredicatePairTests.m`): predicate →
+`$filter` → predicate, and `$filter` → predicate → `$filter` → predicate,
+each pair selecting the same rows, over an in-memory store and SQLite, in
+4.0 and 4.01. A `$filter` the service reads and the client cannot write
+is listed with why (today: `matchesPattern`, and `length()`, which is read
+as one, in 4.0), and the test fails when the list is no longer true. What
+it found, and what came of it:
+
+- OData's null is not SQL's. `UnitPrice ne 18` holds for a null price, and
+  `not (UnitPrice gt 20)` too; SQL's `NULL <> 18` and `NOT (NULL > 20)`
+  are unknown, so Apple's SQLite store left those rows out where its
+  in-memory store kept them. A comparison now tests its nullable key
+  paths (an optional attribute, anything through a relationship) first:
+  `price != nil AND price > 20`, and `price == nil OR price != 18` for
+  `ne`. First, so that a store evaluating it itself never does arithmetic
+  on nil, which raises.
+- Apple's SQLite store compares a computed value with an
+  `NSDecimalNumber` constant as text, so `UnitPrice mul 2 lt 30` took
+  every row: numbers in arithmetic, and compared with it, are plain
+  `NSNumber`s.
+- It takes every row for `name.length > 10`: `length(x) op n` is a
+  pattern of so many characters, `name MATCHES '(?s).{11,}'`.
+- `startswith(tolower(Name), tolower('ch'))` was `lowercase:(name)
+  BEGINSWITH 'ch'`, which Apple's SQLite store refuses (a `500`); the
+  case-insensitive form now takes a folded constant as it takes a literal.
+- `matchesPattern` (4.01), which the client writes for `LIKE` and
+  `MATCHES`, is read, as the pattern found anywhere in the string.
+- The client dropped the case of `==[c]`, wrote `Suppliers/@count`,
+  guessed a wire name for any unknown key path (`entity` became `Entity
+  eq '<NSEntityDescription …>'`), and could not write `SUBQUERY` counts,
+  arithmetic, or a subentity's property. It now writes `tolower(…) eq
+  tolower(…)`, `$count`, `isof` for an entity test, `any`/`all` for a
+  counted `SUBQUERY`, `add`/`sub`/`mul`/`div`/`mod`, and casts
+  (`Default.Manager/Budget`), and refuses a name the model does not have.
 
 ### Values are serialised by the model's types
 
@@ -522,10 +554,15 @@ client's `ODataError` keys read back.
   behind the client's back reported as a conflict.
 - **HTTP adapter.** `Server/Tests/ois-serve-check.m`: requests over a real
   loopback socket, chunked bodies, errors, `HEAD`, concurrent requests.
-- **Planned: snapshots, both ways.** Each file in `Tests/Snapshots/` sent
-  to the service over the Catalog model seeded with the snapshot rows, and
-  the response compared: status and headers exactly, JSON bodies as JSON.
-- **Planned: parser pairs**, as above.
+- **Parser pairs**, as above.
+- **Not the snapshots.** `Tests/Snapshots/` is a corpus of behaviours a
+  client meets, from several services at once (a `204` whatever `Prefer`
+  says, edit links elsewhere, a service's own validation and skip tokens,
+  data that differs from file to file), not one service's answers.
+  Replayed against the service, every difference was one of those, or
+  one where the service follows the specification more closely (context
+  URLs with the expanded select list, null properties written); so they
+  stay the client's.
 
 Everything runs in the existing CI: XCTest on macOS against Apple's Core
 Data, and `tools-xctest` on Linux against FreeCoreData on the

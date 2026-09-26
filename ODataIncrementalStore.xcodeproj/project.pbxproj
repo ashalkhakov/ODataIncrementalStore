@@ -67,6 +67,7 @@
 		AA0000000000000000000038 /* ODataResourceIdentifierTests.m in Sources */ = {isa = PBXBuildFile; fileRef = AA0000000000000000000039 /* ODataResourceIdentifierTests.m */; };
 		AA000000000000000000003A /* ODataSnapshotStoreTests.m in Sources */ = {isa = PBXBuildFile; fileRef = AA000000000000000000003B /* ODataSnapshotStoreTests.m */; };
 		AC00000000000000005E000D /* ODataServiceTests.m in Sources */ = {isa = PBXBuildFile; fileRef = AC00000000000000005E000E /* ODataServiceTests.m */; };
+		AF00000000000000000B0001 /* ODataPredicatePairTests.m in Sources */ = {isa = PBXBuildFile; fileRef = AF00000000000000000B0002 /* ODataPredicatePairTests.m */; };
 		AA000000000000000000003C /* CoreData.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = AA000000000000000000003D /* CoreData.framework */; };
 		AA000000000000000000003E /* Foundation.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = AA000000000000000000003F /* Foundation.framework */; };
 		AA0000000000000000000040 /* CoreData.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = AA000000000000000000003D /* CoreData.framework */; };
@@ -150,6 +151,7 @@
 		AA0000000000000000000039 /* ODataResourceIdentifierTests.m */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.objc; path = ODataResourceIdentifierTests.m; sourceTree = "<group>"; };
 		AA000000000000000000003B /* ODataSnapshotStoreTests.m */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.objc; path = ODataSnapshotStoreTests.m; sourceTree = "<group>"; };
 		AC00000000000000005E000E /* ODataServiceTests.m */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.objc; path = ODataServiceTests.m; sourceTree = "<group>"; };
+		AF00000000000000000B0002 /* ODataPredicatePairTests.m */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.objc; path = ODataPredicatePairTests.m; sourceTree = "<group>"; };
 		AA000000000000000000003D /* CoreData.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = CoreData.framework; path = System/Library/Frameworks/CoreData.framework; sourceTree = SDKROOT; };
 		AA000000000000000000003F /* Foundation.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = Foundation.framework; path = System/Library/Frameworks/Foundation.framework; sourceTree = SDKROOT; };
 		AA0000000000000000000043 /* Snapshots */ = {isa = PBXFileReference; lastKnownFileType = folder; path = Snapshots; sourceTree = "<group>"; };
@@ -247,6 +249,7 @@
 				AA0000000000000000000039 /* ODataResourceIdentifierTests.m */,
 				AA000000000000000000003B /* ODataSnapshotStoreTests.m */,
 				AC00000000000000005E000E /* ODataServiceTests.m */,
+				AF00000000000000000B0002 /* ODataPredicatePairTests.m */,
 				AA00000000000000000000C4 /* OISCatalogModel.h */,
 				AA000000000000000000004B /* ODataSnapshotTransport.h */,
 				AA0000000000000000000043 /* Snapshots */,
@@ -494,6 +497,7 @@
 				AA0000000000000000000038 /* ODataResourceIdentifierTests.m in Sources */,
 				AA000000000000000000003A /* ODataSnapshotStoreTests.m in Sources */,
 				AC00000000000000005E000D /* ODataServiceTests.m in Sources */,
+				AF00000000000000000B0001 /* ODataPredicatePairTests.m in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};

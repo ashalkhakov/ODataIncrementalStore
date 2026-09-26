@@ -179,6 +179,42 @@
   XCTAssertEqualObjects(got, @"Category/CategoryName eq 'Beverages'");
 }
 
+- (void)testCaseInsensitiveEquality
+{
+  // ==[c] is tolower on both sides, not a plain eq that forgets the case.
+  [self assertPredicate:@"name ==[c] 'Chai'" filter:@"tolower(ProductName) eq tolower('Chai')"];
+  [self assertPredicate:@"name !=[c] 'Chai'" filter:@"tolower(ProductName) ne tolower('Chai')"];
+}
+
+- (void)testCountsAndLength
+{
+  [self assertPredicate:@"suppliers.@count > 1" filter:@"Suppliers/$count gt 1"];
+  [self assertPredicate:@"SUBQUERY(suppliers, $s, $s.city == 'London').@count > 0"
+                 filter:@"Suppliers/any(x0:x0/City eq 'London')"];
+  [self assertPredicate:@"SUBQUERY(suppliers, $s, $s.city == 'London').@count == 0"
+                 filter:@"not Suppliers/any(x0:x0/City eq 'London')"];
+  [self assertPredicate:@"SUBQUERY(suppliers, $s, NOT ($s.country == 'UK')).@count == 0"
+                 filter:@"Suppliers/all(x0:x0/Country eq 'UK')"];
+  [self assertPredicate:@"name.length > 10" filter:@"length(ProductName) gt 10"];
+  [self assertPredicate:@"unitPrice + 1 > 20" filter:@"(UnitPrice add 1) gt 20"];
+}
+
+- (void)testUnknownNamesAreErrorsNotGuesses
+{
+  NSError *error = nil;
+  XCTAssertNil([_translator translatePredicate:[NSPredicate predicateWithFormat:@"colour == 'red'"] error:&error]);
+  XCTAssertNotNil(error);
+  error = nil;
+  XCTAssertNil([_translator translatePredicate:[NSPredicate predicateWithFormat:@"suppliers.city == 'London'"] error:&error],
+               @"a collection needs ANY or ALL");
+  XCTAssertNotNil(error);
+  error = nil;
+  NSPredicate *notAnEntity = [NSPredicate predicateWithFormat:@"entity == %@", @"Product"];
+  NSString *written = [_translator translatePredicate:notAnEntity error:&error];
+  XCTAssertNil(written, @"a type test compares with an entity");
+  XCTAssertNotNil(error);
+}
+
 - (void)testUnsupportedPredicateErrors
 {
   NSError *error = nil;

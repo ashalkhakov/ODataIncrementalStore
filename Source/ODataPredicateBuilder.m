@@ -33,6 +33,13 @@ typedef NS_ENUM(NSInteger, OISTermKind) {
 @property (nonatomic, strong, nullable) NSPredicate *guard;
 // A collection's cast (Staff/NS.Manager): only its members of this type.
 @property (nonatomic, strong, nullable) NSEntityDescription *elementType;
+// The key paths the term's value comes from that may hold nil: an
+// optional attribute, or any reached through a relationship.
+@property (nonatomic, copy, nullable) NSArray<NSExpression *> *nullables;
+// Arithmetic: numbers in it, and a number compared with it, are plain
+// NSNumbers (Apple's SQLite store compares a computed value with an
+// NSDecimalNumber as text).
+@property (nonatomic) BOOL computed;
 @end
 
 @implementation OISTerm
@@ -110,6 +117,13 @@ static NSString *OISSwapped(NSString *op)
 {
   NSDictionary *swapped = @{ @"gt": @"lt", @"ge": @"le", @"lt": @"gt", @"le": @"ge" };
   return swapped[op] ?: op;
+}
+
+static NSNumber *OISPlainNumber(NSNumber *number)
+{
+  if (![number isKindOfClass:[NSDecimalNumber class]]) return number;
+  double value = number.doubleValue;
+  return value == floor(value) && fabs(value) < 9e15 ? @((long long)value) : @(value);
 }
 
 static NSPredicate *OISAnd(NSPredicate *a, NSPredicate *b)
@@ -253,6 +267,32 @@ static NSPredicate *OISCompare(NSExpression *left, NSPredicateOperatorType type,
   return t;
 }
 
+// matchesPattern(x, 'pattern') (4.01): the pattern found anywhere in x, as
+// ECMAScript's RegExp test finds it; MATCHES is of the whole string.
+- (NSPredicate *)matchesPattern:(ODataExpression *)e
+{
+  NSArray<ODataExpression *> *args = e.arguments ?: @[];
+  if (args.count != 2) return [self fail:400 message:@"matchesPattern takes a string and a pattern"];
+  OISTerm *x = [self term:args[0]];
+  if (!x) return nil;
+  ODataExpression *pattern = [self resolve:args[1]];
+  if (!pattern) return nil;
+  if (pattern.kind != ODataExpressionLiteral || ![pattern.value isKindOfClass:[NSString class]]) {
+    return [self unsupported:@"matchesPattern with anything but a literal pattern"];
+  }
+  if (x.kind != OISTermValue || (x.attribute && x.attribute.attributeType != NSStringAttributeType)) {
+    return [self fail:400 message:[NSString stringWithFormat:@"matchesPattern: %@ is not a string", args[0]]];
+  }
+  if ([NSRegularExpression regularExpressionWithPattern:pattern.value options:0 error:NULL] == nil) {
+    return [self fail:400 message:[NSString stringWithFormat:@"%@ is not a regular expression", pattern]];
+  }
+  NSExpression *value = [self valueExpression:x typedBy:nil];
+  if (!value) return nil;
+  NSString *anywhere = [NSString stringWithFormat:@"(?s).*(?:%@).*", pattern.value];
+  NSPredicate *p = OISCompare(value, NSMatchesPredicateOperatorType, [NSExpression expressionForConstantValue:anywhere], 0);
+  return [self guarded:[self nullSafe:p terms:@[ x ] type:NSMatchesPredicateOperatorType] terms:@[ x ] whenNull:NO];
+}
+
 // isof(Type), of $it, or isof(expression, Type).
 - (NSPredicate *)isOf:(ODataExpression *)e
 {
@@ -287,6 +327,26 @@ static NSPredicate *OISCompare(NSExpression *left, NSPredicateOperatorType type,
   if (!guard) return p;
   if (whenNull) return [NSCompoundPredicate orPredicateWithSubpredicates:@[ [NSCompoundPredicate notPredicateWithSubpredicate:guard], p ]];
   return OISAnd(guard, p);
+}
+
+// OData's null: a comparison with a null value is false (null ne a value
+// is true), where SQL's is unknown, and NOT unknown is unknown, not true;
+// and arithmetic on nil raises when a store evaluates it itself. So the
+// nil test comes first.
+- (NSPredicate *)nullSafe:(NSPredicate *)p terms:(NSArray<OISTerm *> *)terms type:(NSPredicateOperatorType)type
+{
+  if (!p) return nil;
+  NSMutableArray *paths = [NSMutableArray array];
+  for (OISTerm *t in terms) [paths addObjectsFromArray:t.nullables ?: @[]];
+  if (!paths.count) return p;
+  NSMutableArray *tests = [NSMutableArray array];
+  BOOL ne = type == NSNotEqualToPredicateOperatorType;
+  for (NSExpression *path in paths) {
+    [tests addObject:OISCompare(path, ne ? NSEqualToPredicateOperatorType : NSNotEqualToPredicateOperatorType,
+                                [NSExpression expressionForConstantValue:nil], 0)];
+  }
+  [tests addObject:p];
+  return ne ? [NSCompoundPredicate orPredicateWithSubpredicates:tests] : [NSCompoundPredicate andPredicateWithSubpredicates:tests];
 }
 
 // A collection member's test, where the collection is cast: of the type,
@@ -324,6 +384,7 @@ static NSPredicate *OISCompare(NSExpression *left, NSPredicateOperatorType type,
   if (t.kind == OISTermLiteral) {
     BOOL ok;
     id value = [self valueOfLiteral:t.literal attribute:other.attribute ?: other.inner.attribute ok:&ok];
+    if (ok && other.computed && [value isKindOfClass:[NSNumber class]]) value = OISPlainNumber(value);
     return ok ? [NSExpression expressionForConstantValue:value] : nil;
   }
   if (t.stepFunction) {
@@ -427,6 +488,7 @@ static NSPredicate *OISCompare(NSExpression *left, NSPredicateOperatorType type,
   if ([property isKindOfClass:[NSAttributeDescription class]]) {
     t.kind = OISTermValue;
     t.attribute = (NSAttributeDescription *)property;
+    if (t.attribute.isOptional || base.keyPath) t.nullables = @[ [self pathExpression:t] ];
   } else {
     NSRelationshipDescription *relationship = (NSRelationshipDescription *)property;
     t.kind = relationship.isToMany ? OISTermCollection : OISTermEntity;
@@ -454,14 +516,23 @@ static NSPredicate *OISCompare(NSExpression *left, NSPredicateOperatorType type,
       return [self fail:400 message:[NSString stringWithFormat:@"%@ is not a number", side.wireName ?: @"an operand"]];
     }
   }
-  NSExpression *le = [self valueExpression:l typedBy:r];
-  NSExpression *re = [self valueExpression:r typedBy:l];
+  // Operands' numbers plain, as the value compared with the result.
+  OISTerm *plainL = [[OISTerm alloc] init];
+  plainL.computed = YES;
+  plainL.attribute = l.attribute;
+  OISTerm *plainR = [[OISTerm alloc] init];
+  plainR.computed = YES;
+  plainR.attribute = r.attribute;
+  NSExpression *le = [self valueExpression:l typedBy:plainR];
+  NSExpression *re = [self valueExpression:r typedBy:plainL];
   if (!le || !re) return nil;
   OISTerm *t = [[OISTerm alloc] init];
   t.kind = OISTermValue;
   t.expression = [NSExpression expressionForFunction:function arguments:@[ le, re ]];
   t.attribute = l.attribute ?: r.attribute;
   t.guard = OISAnd(l.guard, r.guard);
+  t.computed = YES;
+  t.nullables = [(l.nullables ?: @[]) arrayByAddingObjectsFromArray:r.nullables ?: @[]];
   return t;
 }
 
@@ -490,6 +561,7 @@ static NSPredicate *OISCompare(NSExpression *left, NSPredicateOperatorType type,
     t.inner = inner;
     t.attribute = inner.attribute;
     t.guard = inner.guard;
+    t.nullables = inner.nullables;
     return t;
   }
   NSSet *dateSteps = [NSSet setWithObjects:@"year", @"date", nil];
@@ -511,6 +583,7 @@ static NSPredicate *OISCompare(NSExpression *left, NSPredicateOperatorType type,
     t.stepFunction = e.name;
     t.inner = inner;
     t.guard = inner.guard;
+    t.nullables = inner.nullables;
     t.wireName = e.description;
     return t;
   }
@@ -522,14 +595,19 @@ static NSPredicate *OISCompare(NSExpression *left, NSPredicateOperatorType type,
     if (args.count != 1) return [self fail:400 message:@"length takes one argument"];
     OISTerm *inner = [self term:args[0]];
     if (!inner) return nil;
-    if (inner.kind != OISTermValue || inner.expression || inner.caseFunction || !inner.keyPath) {
-      return [self unsupported:@"length of anything but a property"];
+    if (inner.kind != OISTermValue || inner.expression || inner.caseFunction || !inner.keyPath ||
+        inner.attribute.attributeType != NSStringAttributeType) {
+      return [self unsupported:@"length of anything but a string property"];
     }
+    // Compared with a number, a pattern of that many characters: a key
+    // path's .length is no SQL a store writes (Apple's SQLite store takes
+    // every row).
     OISTerm *t = [[OISTerm alloc] init];
     t.kind = OISTermValue;
-    t.variable = inner.variable;
-    t.keyPath = [inner.keyPath stringByAppendingString:@".length"];
+    t.stepFunction = @"length";
+    t.inner = inner;
     t.guard = inner.guard;
+    t.nullables = inner.nullables;
     return t;
   }
   if ([e.name isEqualToString:@"cast"]) {
@@ -581,6 +659,7 @@ static NSPredicate *OISCompare(NSExpression *left, NSPredicateOperatorType type,
       return [self fail:400 message:[NSString stringWithFormat:@"%@ is not a condition", e]];
     case ODataExpressionCall:
       if (!e.operand && !e.namedArguments && [e.name isEqualToString:@"isof"]) return [self isOf:e];
+      if (!e.operand && !e.namedArguments && [e.name isEqualToString:@"matchesPattern"]) return [self matchesPattern:e];
       if (!e.operand && !e.namedArguments) {
         NSDictionary *operators = @{ @"contains": @(NSContainsPredicateOperatorType),
                                      @"startswith": @(NSBeginsWithPredicateOperatorType),
@@ -598,11 +677,23 @@ static NSPredicate *OISCompare(NSExpression *left, NSPredicateOperatorType type,
       if (t.kind == OISTermValue && t.attribute.attributeType == NSBooleanAttributeType) {
         NSPredicate *p = OISCompare([self valueExpression:t typedBy:nil], NSEqualToPredicateOperatorType,
                                     [NSExpression expressionForConstantValue:@YES], 0);
-        return [self guarded:p terms:@[ t ] whenNull:NO];
+        return [self guarded:[self nullSafe:p terms:@[ t ] type:NSEqualToPredicateOperatorType] terms:@[ t ] whenNull:NO];
       }
       return [self fail:400 message:[NSString stringWithFormat:@"%@ is not a condition", e]];
     }
   }
+}
+
+// A string known before any row is read: a literal, or tolower or toupper
+// of one.
+static NSString *OISConstantString(OISTerm *t)
+{
+  if (t.kind == OISTermLiteral) return [t.literal.value isKindOfClass:[NSString class]] ? t.literal.value : nil;
+  if (t.kind == OISTermValue && !t.keyPath && !t.variable && !t.caseFunction && t.expression.expressionType == NSConstantValueExpressionType) {
+    id value = t.expression.constantValue;
+    return [value isKindOfClass:[NSString class]] ? value : nil;
+  }
+  return nil;
 }
 
 // tolower(Name) eq 'abc' is Name ==[c] 'abc'; tolower(Name) eq 'Abc' is
@@ -636,16 +727,53 @@ static NSPredicate *OISCompare(NSExpression *left, NSPredicateOperatorType type,
     if (type == NSEqualToPredicateOperatorType) whenNull = null;
     if (type == NSNotEqualToPredicateOperatorType) whenNull = !null;
   }
+  BOOL againstNull = r.kind == OISTermLiteral && (!r.literal.value || r.literal.value == [NSNull null]);
   if (l.stepFunction && r.kind == OISTermLiteral) {
-    return [self guarded:[self step:l type:type literal:r.literal] terms:@[ l ] whenNull:whenNull];
+    NSPredicate *step = [self step:l type:type literal:r.literal];
+    if (!againstNull && ![l.stepFunction isEqualToString:@"length"]) {
+      // A range already says what nil is (ne includes it).
+      step = type == NSNotEqualToPredicateOperatorType ? step : [self nullSafe:step terms:@[ l ] type:type];
+    } else if (!againstNull) {
+      step = [self nullSafe:step terms:@[ l ] type:type];
+    }
+    return [self guarded:step terms:@[ l ] whenNull:whenNull];
   }
   if (l.stepFunction || r.stepFunction) {
     return [self unsupported:[NSString stringWithFormat:@"%@() but compared with a literal", l.stepFunction ?: r.stepFunction]];
   }
-  return [self guarded:[self comparison:type left:l right:r] terms:@[ l, r ] whenNull:whenNull];
+  NSPredicate *comparison = [self comparison:type left:l right:r];
+  if (!againstNull && l.kind == OISTermValue) comparison = [self nullSafe:comparison terms:@[ l, r ] type:type];
+  return [self guarded:comparison terms:@[ l, r ] whenNull:whenNull];
 }
 
 #pragma mark Step functions
+
+// length(x) op n: x MATCHES a run of so many characters.
+- (NSPredicate *)length:(NSExpression *)x type:(NSPredicateOperatorType)type literal:(ODataExpression *)literal
+{
+  id value = literal.value;
+  if (![value isKindOfClass:[NSNumber class]] || [literal.literalType isEqualToString:@"Edm.Boolean"] ||
+      [value doubleValue] != floor([value doubleValue]) || [value doubleValue] < 0 || [value doubleValue] > 100000) {
+    return [self fail:400 message:[NSString stringWithFormat:@"length() is compared with a whole number, not %@", literal]];
+  }
+  long long n = [value longLongValue];
+  NSString *pattern;
+  BOOL negate = NO;
+  switch (type) {
+    case NSEqualToPredicateOperatorType: pattern = [NSString stringWithFormat:@"(?s).{%lld}", n]; break;
+    case NSNotEqualToPredicateOperatorType: pattern = [NSString stringWithFormat:@"(?s).{%lld}", n]; negate = YES; break;
+    case NSGreaterThanPredicateOperatorType: pattern = [NSString stringWithFormat:@"(?s).{%lld,}", n + 1]; break;
+    case NSGreaterThanOrEqualToPredicateOperatorType: pattern = [NSString stringWithFormat:@"(?s).{%lld,}", n]; break;
+    case NSLessThanPredicateOperatorType:
+      if (n == 0) return [NSPredicate predicateWithValue:NO];
+      pattern = [NSString stringWithFormat:@"(?s).{0,%lld}", n - 1];
+      break;
+    case NSLessThanOrEqualToPredicateOperatorType: pattern = [NSString stringWithFormat:@"(?s).{0,%lld}", n]; break;
+    default: return [self unsupported:@"length() with that operator"];
+  }
+  NSPredicate *p = OISCompare(x, NSMatchesPredicateOperatorType, [NSExpression expressionForConstantValue:pattern], 0);
+  return negate ? [NSCompoundPredicate notPredicateWithSubpredicate:p] : p;
+}
 
 // f(x) op literal, as a range of x: year(d) eq 2025 is 2025-01-01 <= d <
 // 2026-01-01 (in UTC, as dates are written), floor(p) le 18 is p < 19,
@@ -656,6 +784,7 @@ static NSPredicate *OISCompare(NSExpression *left, NSPredicateOperatorType type,
   NSString *f = t.stepFunction;
   NSExpression *x = [self valueExpression:t.inner typedBy:nil];
   if (!x) return nil;
+  if ([f isEqualToString:@"length"]) return [self length:x type:type literal:literal];
   id value = literal.value;
   if (!value || value == [NSNull null]) {
     if (type != NSEqualToPredicateOperatorType && type != NSNotEqualToPredicateOperatorType) return [NSPredicate predicateWithValue:NO];
@@ -745,9 +874,9 @@ static NSPredicate *OISCompare(NSExpression *left, NSPredicateOperatorType type,
 
 - (NSPredicate *)comparison:(NSPredicateOperatorType)type left:(OISTerm *)l right:(OISTerm *)r
 {
-  if (l.caseFunction && r.kind == OISTermLiteral && [r.literal.value isKindOfClass:[NSString class]] &&
+  if (l.caseFunction && OISConstantString(r) &&
       (type == NSEqualToPredicateOperatorType || type == NSNotEqualToPredicateOperatorType)) {
-    return [self caseless:l type:type literal:r.literal.value];
+    return [self caseless:l type:type literal:OISConstantString(r)];
   }
 
   // A to-one relationship compares only with null.
@@ -778,14 +907,15 @@ static NSPredicate *OISCompare(NSExpression *left, NSPredicateOperatorType type,
   OISTerm *l = [self term:left];
   OISTerm *r = l ? [self term:right] : nil;
   if (!r) return nil;
-  return [self guarded:[self stringOperator:type name:name leftTerm:l rightTerm:r] terms:@[ l, r ] whenNull:NO];
+  NSPredicate *p = [self nullSafe:[self stringOperator:type name:name leftTerm:l rightTerm:r] terms:@[ l, r ] type:type];
+  return [self guarded:p terms:@[ l, r ] whenNull:NO];
 }
 
 - (NSPredicate *)stringOperator:(NSPredicateOperatorType)type name:(NSString *)name leftTerm:(OISTerm *)l rightTerm:(OISTerm *)r
 {
   if (l.kind != OISTermValue && l.kind != OISTermLiteral) return [self fail:400 message:[NSString stringWithFormat:@"%@ takes strings", name]];
-  if (l.caseFunction && r.kind == OISTermLiteral && [r.literal.value isKindOfClass:[NSString class]]) {
-    NSString *text = r.literal.value;
+  if (l.caseFunction && OISConstantString(r)) {
+    NSString *text = OISConstantString(r);
     NSString *folded = [l.caseFunction isEqualToString:@"tolower"] ? text.lowercaseString : text.uppercaseString;
     if (![folded isEqualToString:text]) return [NSPredicate predicateWithValue:NO];
     NSExpression *inner = [self valueExpression:l.inner typedBy:nil];
@@ -844,7 +974,7 @@ static NSPredicate *OISCompare(NSExpression *left, NSPredicateOperatorType type,
   }
   NSPredicate *p = values.count ? OISCompare([self pathExpression:l], NSInPredicateOperatorType, [NSExpression expressionForConstantValue:values], 0)
                                 : [NSPredicate predicateWithValue:NO];
-  return [self guarded:p terms:@[ l ] whenNull:NO];
+  return [self guarded:[self nullSafe:p terms:@[ l ] type:NSInPredicateOperatorType] terms:@[ l ] whenNull:NO];
 }
 
 - (NSPredicate *)in:(ODataExpression *)left list:(ODataExpression *)list
@@ -866,7 +996,8 @@ static NSPredicate *OISCompare(NSExpression *left, NSPredicateOperatorType type,
       if (!p) return nil;
       [each addObject:p];
     }
-    return [self guarded:[NSCompoundPredicate orPredicateWithSubpredicates:each] terms:@[ l ] whenNull:NO];
+    NSPredicate *any = [NSCompoundPredicate orPredicateWithSubpredicates:each];
+    return [self guarded:[self nullSafe:any terms:@[ l ] type:NSInPredicateOperatorType] terms:@[ l ] whenNull:NO];
   }
   NSMutableArray *values = [NSMutableArray array];
   for (ODataExpression *item in list.arguments) {
@@ -880,6 +1011,7 @@ static NSPredicate *OISCompare(NSExpression *left, NSPredicateOperatorType type,
   }
   NSPredicate *p = OISCompare([self valueExpression:l typedBy:nil], NSInPredicateOperatorType,
                               [NSExpression expressionForConstantValue:values], 0);
+  if (![values containsObject:[NSNull null]]) p = [self nullSafe:p terms:@[ l ] type:NSInPredicateOperatorType];
   return [self guarded:p terms:@[ l ] whenNull:[values containsObject:[NSNull null]]];
 }
 
