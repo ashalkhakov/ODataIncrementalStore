@@ -178,6 +178,65 @@ calling the client conformant.
 | Tests that exercise headers | ❌ | The snapshot transport ignores request headers, which is how the `415` went unnoticed. |
 | Live smoke test in CI | ❌ | Northwind (read) and TripPin (write) are public. Should run without gating merges, since they are not ours. |
 
+## 7. XML format (Atom)
+
+Needed later for XForms 1.1, whose instance data is XML.
+
+OData v4 defines two separate XML formats, and they have different
+standing:
+
+- **CSDL XML** is the `$metadata` document. It is part of the OData 4.0
+  and 4.01 OASIS Standards, and every service provides it. The client
+  already downloads it and does not parse it; see section 3.
+- **The Atom format** (`application/atom+xml`) carries entities, feeds and
+  errors as XML. It is specified in
+  [OData Atom Format Version 4.0](https://docs.oasis-open.org/odata/odata-atom-format/v4.0/cs02/odata-atom-format-v4.0-cs02.html),
+  which stopped at Committee Specification 02 in November 2013: it never
+  became an OASIS Standard, and there is no 4.01 version. Part 1 §13.3
+  requires clients to speak JSON only.
+
+Server support is split along the same line. Microsoft's WCF Data Services
+stack serves Atom: Northwind answers `Accept: application/atom+xml` with a
+feed (**live**). The newer ODataLib / ASP.NET OData stack does not: TripPin
+answers `415` (**live**). Northwind also answers `415` to
+`Accept: application/xml` for a feed, so the media type has to be exact.
+
+That gives XForms two routes, which can coexist:
+
+1. **Map JSON to XML on the client.** The store and the wire stay JSON,
+   and the XForms layer builds its instance from the managed objects, or
+   from the JSON, and back again. This works with every OData v4 service.
+2. **Speak Atom to services that offer it.** A second payload format in the
+   client, used only where a service advertises it.
+
+Route 1 needs nothing from this client beyond what the sections above
+already require. Route 2 is the checklist below. Both platforms can do the
+parsing: `NSXMLParser` and `NSXMLDocument` exist on Apple and in
+gnustep-base (through libxml2).
+
+| Area | Atom §§ | Status | Notes |
+|---|---|---|---|
+| Content negotiation: `Accept: application/atom+xml`, fall back to JSON on `406` / `415` | §3, §4.1 | ❌ | |
+| Service document (`app:service`, `app:collection`) | §5 | ❌ | Lists the entity sets; optional for the store. |
+| Entity (`atom:entry`, `atom:id`, `atom:category` for the type, `atom:link rel="edit"`) | §6 | ❌ | |
+| ETag (`metadata:etag` on the entry) | §6.1.1 | ❌ | Same rules as JSON: keep it verbatim. |
+| Properties (`metadata:properties`, `data:Name`, `metadata:type`, `metadata:null`) | §7.1–7.4 | ❌ | Values use the same ABNF literals as the JSON format's strings, so the type work in section 5 carries over. |
+| Complex properties and collections (`metadata:element`) | §7.5–7.7 | ❌ | Same model gap as JSON; see 4.3. |
+| Navigation links, association links | §8.1–8.2 | ❌ | |
+| Expanded navigation (`metadata:inline`) | §8.3 | ❌ | |
+| Bind operations in POST / PATCH | §8.5 | ❌ | Same need as `@odata.bind`. |
+| Feeds (`atom:feed`, `metadata:count`, `atom:link rel="next"`) | §12 | ❌ | Next links: same paging rules as JSON. |
+| Entity references (`metadata:ref`) | §13 | ❌ | For `$ref` relationship updates. |
+| Individual property values (`metadata:value`) | §11 | — | Not used by the store. |
+| Errors (`metadata:error`, `code`, `message`, `details`, `innererror`) | §19 | ❌ | |
+| Request bodies in Atom (POST, PATCH) | §6, §8.4–8.5 | ❌ | |
+| Stream properties, media entities | §9–10 | — | As for JSON. |
+| Delta responses, bound functions and actions, instance annotations | §14–18 | — | As for JSON. |
+
+For the server described in [server-design.md](server-design.md), Atom is
+an output format like any other, and serving it would give XForms clients
+route 2 against our own services, whatever third-party services do.
+
 ## Order of work
 
 1. **Can connect and read correctly:** request headers, errors from
@@ -195,3 +254,7 @@ calling the client conformant.
    `Prefer: odata.maxpagesize` from `fetchBatchSize`.
 5. **Model:** read `$metadata`: validate the Core Data model against it,
    discover keys, then derived types and enums.
+6. **XML, for XForms:** JSON-to-XML mapping on the client first, since it
+   works with every service; then Atom as a second wire format where a
+   service offers it (section 7). Parsing CSDL XML in step 5 builds the
+   XML reading this needs.
