@@ -50,7 +50,8 @@ ODataIncrementalStore_OBJC_FILES = \
 	Source/ODataPredicateBuilder.m \
 	Source/ODataMetadataWriter.m \
 	Source/ODataOperationCatalog.m \
-	Source/ODataService.m
+	Source/ODataService.m \
+	Source/ODataServiceBatch.m
 
 ODataIncrementalStore_HEADER_FILES = \
 	ODataIncrementalStore.h \

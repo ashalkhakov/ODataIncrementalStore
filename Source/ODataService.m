@@ -8,6 +8,7 @@
 #import "ODataMetadataWriter.h"
 #import "ODataPredicateBuilder.h"
 #import "ODataOperationCatalog.h"
+#import "ODataServiceBatch.h"
 
 NSString * const ODataUserInfoETag = @"OData.etag";
 
@@ -313,6 +314,9 @@ typedef NS_ENUM(NSInteger, OISTargetKind) {
 
 // A write in progress.
 @property (nonatomic) BOOL replace;
+// NO in a change set: its requests share a context, saved once they have
+// all succeeded.
+@property (nonatomic) BOOL saves;
 @end
 
 @implementation OISServiceCall
@@ -626,7 +630,14 @@ typedef NS_ENUM(NSInteger, OISTargetKind) {
     return;
   }
   if ([first.name isEqualToString:@"$batch"]) {
-    [self fail:501 message:@"$batch is not supported yet"];
+    if (segments.count > 1 || !self.saves) {
+      [self fail:(segments.count > 1 ? 404 : 400) message:@"$batch is a resource of its own, and cannot be nested"];
+      return;
+    }
+    // The batch answers the exchange itself, once its requests have.
+    self.done = YES;
+    OISBatchCall *batch = [[OISBatchCall alloc] initWithService:self.service exchange:self.exchange version:self.request.version];
+    [batch start];
     return;
   }
   ODataEntitySetHandler *handler = first.isCall ? nil : [self.service handlerForEntitySet:first.name];
@@ -2075,6 +2086,7 @@ static NSNumber *OISScalarReturnValue(NSInvocation *invocation, char type)
 
 - (BOOL)save
 {
+  if (!self.saves) return YES;
   NSError *error = nil;
   if ([self.request.context save:&error]) return YES;
   [self.request.context rollback];
@@ -2215,6 +2227,11 @@ static NSNumber *OISScalarReturnValue(NSInvocation *invocation, char type)
 
 - (void)startExchange:(ODataExchange *)exchange
 {
+  [self startExchange:exchange inContext:nil saves:YES];
+}
+
+- (void)startExchange:(ODataExchange *)exchange inContext:(NSManagedObjectContext *)shared saves:(BOOL)saves
+{
   [self prepare];
   OISServiceCall *call = [[OISServiceCall alloc] init];
   call.service = self;
@@ -2227,8 +2244,12 @@ static NSNumber *OISScalarReturnValue(NSInvocation *invocation, char type)
   coder.declaredTypeForAttribute = self.mapper.values.declaredTypeForAttribute;
   call.coder = coder;
 
-  NSManagedObjectContext *context = [[NSManagedObjectContext alloc] initWithConcurrencyType:NSPrivateQueueConcurrencyType];
-  context.persistentStoreCoordinator = self.coordinator;
+  call.saves = saves;
+  NSManagedObjectContext *context = shared;
+  if (!context) {
+    context = [[NSManagedObjectContext alloc] initWithConcurrencyType:NSPrivateQueueConcurrencyType];
+    context.persistentStoreCoordinator = self.coordinator;
+  }
   call.request.context = context;
   [context performBlockAndWait:^{
     @try {

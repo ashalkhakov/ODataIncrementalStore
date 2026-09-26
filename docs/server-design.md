@@ -1,12 +1,12 @@
 # OData server: design
 
-**Status: milestones 1 to 5 are implemented** (see Milestones): the core
+**Status: milestones 1 to 6 are implemented** (see Milestones): the core
 (`ODataService`, `ODataEntitySetHandler`, `ODataReply`), `$metadata` from
 the model (`ODataMetadataWriter`), `$filter` to `NSPredicate`
 (`ODataPredicateBuilder`), the HTTP adapter with `ois-serve` (`Server/`),
-and operations declared in protocols (`ODataOperationCatalog`). `$batch`
-and the Workbench's move to the server are next. Where the code went differently from the plan, the sections below
-say so.
+operations declared in protocols (`ODataOperationCatalog`), and `$batch`
+(`ODataServiceBatch`). The Workbench's move to the server is next. Where
+the code went differently from the plan, the sections below say so.
 
 ODataIncrementalStore is a client: Core Data on one side, a remote OData v4
 service on the other. The server is the same mapping run the other way: an
@@ -44,8 +44,8 @@ FreeCoreData) and on Cocoa, with no platform-specific code in its core.
 
 ## Non-goals, at first
 
-- `$batch`, `$apply`, `$search`, delta links, async requests, streams and
-  media entities.
+- `$apply`, `$search`, delta links, async requests, streams and media
+  entities. (`$batch` was one; it is done.)
 - XML (Atom) payloads. JSON only, as the client speaks.
 - Being a general-purpose web framework.
 
@@ -521,8 +521,30 @@ before the split rather than after.
 5. ~~**Operations**~~, declared in protocols, as above. Done: functions and
    actions bound to entities and collections, and unbound ones through
    imports, answering at once or later. Not yet: composing on a result.
-6. **`$batch`**, multipart and JSON. The client falls back to one request
-   at a time without it, so a multi-object save is not atomic until then.
+6. ~~**`$batch`**~~, multipart and JSON. Done:
+   - Each request is answered as any other, in order. A change set's (an
+     atomicity group's) requests share one context, saved once they have
+     all succeeded; if one fails, or the save does, none takes effect, and
+     the change set is answered with that failure alone (in JSON, the
+     others of the group with `424`).
+   - `$1` names what request 1 created, in a URL and in `@odata.bind`; the
+     batch's own headers (who is asking) hold for each request under its
+     own; the batch stops at the first failure unless the client prefers
+     `odata.continue-on-error`; no reads in a multipart change set.
+   - A handler that answers later holds nothing up: the batch goes on when
+     its exchange finishes, target-action.
+   - The client's multi-object saves are atomic through it
+     (`testClientSavesAreAtomic`). Inserts join the change set when the
+     client supplies keys (`ODataIncrementalStorePostOnObtainPermanentIDsOption`
+     set to NO); by default it POSTs them first, for the service to assign
+     keys, and those are not part of the save's change set.
+   - Found on the way: the client took the ETag of an entity from any
+     payload that named it, a key-only reference inside another row
+     included, while keeping older values, so its next update overwrote a
+     change it had not seen. It now takes an ETag only with the row
+     (`testReferencesDoNotRefreshTheClientsETag`). And with port 0,
+     GCDWebServer can pick a port that is free for IPv4 and taken for
+     IPv6; `ODataHTTPServer` tries another.
 7. **Workbench on the server.** Replace `WorkbenchEngine` with an
    `ODataService` over an in-memory store.
 

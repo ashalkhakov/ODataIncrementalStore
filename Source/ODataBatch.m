@@ -177,6 +177,9 @@ NSArray *ODataBatchParts(NSData *body, NSString *boundary)
       NSString *inner = ODataMultipartBoundary(type);
       NSArray *members = inner ? ODataBatchParts(content, inner) : nil;
       if (!members) return nil;
+      for (ODataBatchPart *member in members) {
+        if (!member.changeSet) member.changeSet = inner;
+      }
       [parts addObjectsFromArray:members];
     } else {
       ODataBatchPart *message = OISHTTPMessage(content, OISHeader(mime, @"Content-ID"));

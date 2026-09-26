@@ -1201,7 +1201,11 @@ static BOOL OISKeyIsSet(id value)
   }
   ODataResourceIdentifier *identifier = [self identifierForEntity:entity keys:keys];
   NSManagedObjectID *oid = [self newObjectIDForEntity:entity referenceObject:identifier.data];
-  [self rememberETag:payload[@"@odata.etag"] forObjectID:oid];
+  // No ETag from here: this may be a reference ($select=ProductID inside
+  // another row), whose ETag is the entity's current one while the row the
+  // store keeps may be older. Taking it would send the next update with an
+  // ETag the kept values do not have, and a change made meanwhile would be
+  // overwritten. -cacheNodeForObjectID: takes it with the row.
   // An edit link is sent when writes go somewhere other than the entity's
   // conventional URL (JSON Format section 4.5.8); 4.01 drops the "odata."
   id editLink = payload[@"@odata.editLink"];

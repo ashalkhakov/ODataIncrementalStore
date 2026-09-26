@@ -20,6 +20,9 @@ NS_ASSUME_NONNULL_BEGIN
 @property (nonatomic, copy) NSDictionary<NSString *, NSString *> *headers;
 @property (nonatomic, copy) NSData *body;
 @property (nonatomic, copy, nullable) NSString *contentID;
+// The boundary of the change set the part came in; nil for a part of the
+// batch itself.
+@property (nonatomic, copy, nullable) NSString *changeSet;
 // Case-insensitive, as header names are.
 - (nullable NSString *)valueForHeader:(NSString *)name;
 @end

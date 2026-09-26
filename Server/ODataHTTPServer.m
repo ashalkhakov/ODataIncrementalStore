@@ -6,6 +6,7 @@
 #import "GCDWebServer.h"
 #import "GCDWebServerDataRequest.h"
 #import "GCDWebServerDataResponse.h"
+#include <errno.h>
 
 @implementation ODataHTTPServer {
   GCDWebServer *_server;
@@ -41,6 +42,18 @@
 
 - (BOOL)startOnPort:(NSUInteger)port error:(NSError **)error
 {
+  // With port 0 GCDWebServer takes the port the system picks for IPv4 and
+  // binds IPv6 to the same one, which may be taken there: then any other
+  // free port will do.
+  for (int attempt = 0; attempt < 8; attempt++) {
+    NSError *failure = nil;
+    if ([_server startWithOptions:[self optionsForPort:port] error:&failure]) return YES;
+    BOOL taken = [failure.domain isEqualToString:NSPOSIXErrorDomain] && failure.code == EADDRINUSE;
+    if (port != 0 || !taken) {
+      if (error) *error = failure;
+      return NO;
+    }
+  }
   return [_server startWithOptions:[self optionsForPort:port] error:error];
 }
 

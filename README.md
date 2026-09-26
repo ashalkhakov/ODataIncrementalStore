@@ -324,8 +324,8 @@ The same mapping runs the other way too: `ODataService` answers OData 4.01
 the model by the same `ODataPropertyMapper` and `userInfo` the client reads.
 It serves the service document and `$metadata`, entity sets, entities by
 key, navigation, properties, `$filter`, `$orderby`, `$top`, `$skip`,
-`$count`, `$select`, `$expand`, server-driven paging, and POST, PATCH, PUT
-and DELETE with ETags and `@odata.bind`.
+`$count`, `$select`, `$expand`, server-driven paging, POST, PATCH, PUT and
+DELETE with ETags and `@odata.bind`, and `$batch` with atomic change sets.
 
 ```objc
 ODataService *service = [[ODataService alloc] initWithPersistentStoreCoordinator:coordinator
@@ -350,7 +350,7 @@ Server/obj/ois-serve -Model Catalog.momd -StoreType SQLite -StoreURL /var/lib/ca
 
 `Server/Examples/` has a configuration file, systemd and launchd units, and
 nginx and Caddy configurations. The design, and what is still to come
-(`$batch`, the Workbench on the server): [docs/server-design.md](docs/server-design.md).
+(the Workbench on the server): [docs/server-design.md](docs/server-design.md).
 
 ## Threading
 

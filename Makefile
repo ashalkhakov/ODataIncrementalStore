@@ -61,7 +61,8 @@ SRCS = \
 	$(SRC_DIR)/ODataPredicateBuilder.m \
 	$(SRC_DIR)/ODataMetadataWriter.m \
 	$(SRC_DIR)/ODataOperationCatalog.m \
-	$(SRC_DIR)/ODataService.m
+	$(SRC_DIR)/ODataService.m \
+	$(SRC_DIR)/ODataServiceBatch.m
 
 OBJS = $(SRCS:.m=.o)
 

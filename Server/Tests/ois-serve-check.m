@@ -200,14 +200,32 @@ int main(int argc, const char *argv[])
     OISReply *deleted = OISSend(@"DELETE", @"/odata/Products(4)", nil, nil);
     check(deleted.status == 204 && OISSend(@"GET", @"/odata/Products(4)", nil, nil).status == 404, @"delete", [NSString stringWithFormat:@"%ld", (long)deleted.status]);
 
+    // A $batch with a change set, over the socket: two new categories, the
+    // second one's product bound to the first by its Content-ID.
+    NSString *batch = @"--b\r\nContent-Type: multipart/mixed; boundary=cs\r\n\r\n"
+      @"--cs\r\nContent-Type: application/http\r\nContent-Transfer-Encoding: binary\r\nContent-ID: 1\r\n\r\n"
+      @"POST Categories HTTP/1.1\r\nContent-Type: application/json\r\n\r\n{\"CategoryName\":\"Seafood\"}\r\n"
+      @"--cs\r\nContent-Type: application/http\r\nContent-Transfer-Encoding: binary\r\nContent-ID: 2\r\n\r\n"
+      @"POST $1/Products HTTP/1.1\r\nContent-Type: application/json\r\n\r\n{\"ProductName\":\"Ikura\"}\r\n"
+      @"--cs--\r\n--b--\r\n";
+    NSString *batchHead = [NSString stringWithFormat:@"POST /odata/$batch HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\n"
+                      @"Content-Type: multipart/mixed; boundary=b\r\nContent-Length: %lu\r\n\r\n", (unsigned long)[batch lengthOfBytesUsingEncoding:NSUTF8StringEncoding]];
+    OISReply *batched = OISSendRaw([[batchHead stringByAppendingString:batch] dataUsingEncoding:NSUTF8StringEncoding]);
+    NSString *boundary = ODataMultipartBoundary(batched.headers[@"content-type"] ?: @"");
+    NSArray *batchParts = boundary ? ODataBatchParts(batched.body, boundary) : nil;
+    check(batched.status == 200 && [[batchParts valueForKey:@"status"] isEqual:(@[ @201, @201 ])] &&
+          [OISSend(@"GET", @"/odata/Categories(3)/Products/$count", nil, nil).text isEqual:@"1"],
+          @"batch", [NSString stringWithFormat:@"%ld %@", (long)batched.status, [batchParts valueForKey:@"status"]]);
+
     // Requests at once, each on a connection of its own.
+    NSUInteger expected = (NSUInteger)[OISSend(@"GET", @"/odata/Products/$count", nil, nil).text integerValue];
     __block NSInteger ok = 0;
     dispatch_group_t group = dispatch_group_create();
     NSObject *lock = [[NSObject alloc] init];
     for (int i = 0; i < 24; i++) {
       dispatch_group_async(group, dispatch_get_global_queue(0, 0), ^{
         OISReply *r = OISSend(@"GET", @"/odata/Products?$expand=Category", nil, nil);
-        if (r.status == 200 && [r.json[@"value"] count] == 4) {
+        if (r.status == 200 && [r.json[@"value"] count] == expected) {
           @synchronized (lock) {
             ok++;
           }

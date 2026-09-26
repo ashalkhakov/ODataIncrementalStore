@@ -564,7 +564,7 @@
   XCTAssertEqual([self get:@"Products?$apply=groupby((Category))"].status, 501);
   XCTAssertEqual([self get:@"Products?$search=chai"].status, 501);
   XCTAssertEqual([self get:@"Products?$filter=Flags has Default.Colour'Red'"].status, 501);
-  XCTAssertEqual([self get:@"$batch"].status, 501);
+  XCTAssertEqual([self get:@"$batch"].status, 405, @"$batch takes POST");
   XCTAssertEqual([self get:@"Products?$format=xml"].status, 406);
   XCTAssertEqual(([self send:@"GET" path:@"Products" headers:@{ @"Accept": @"application/xml" } body:nil].status), 406);
   XCTAssertEqual(([self send:@"GET" path:@"Products" headers:@{ @"OData-Version": @"5.0" } body:nil].status), 400);
@@ -799,6 +799,237 @@
   NSManagedObjectContext *backing = [[NSManagedObjectContext alloc] init];
   backing.persistentStoreCoordinator = _coordinator;
   XCTAssertEqualObjects([[self productWithID:1 in:backing] valueForKey:@"unitPrice"], [NSDecimalNumber decimalNumberWithString:@"27"]);
+}
+
+#pragma mark $batch
+
+// A multipart $batch body: each unit a request ({method, url, body,
+// headers, id}), or an array of them, a change set.
+- (NSData *)multipartBatch:(NSArray *)units boundary:(NSString *)boundary
+{
+  NSMutableString *out = [NSMutableString string];
+  NSUInteger changeSets = 0;
+  for (id unit in units) {
+    NSArray *requests = [unit isKindOfClass:[NSArray class]] ? unit : @[ unit ];
+    NSString *into = boundary;
+    if ([unit isKindOfClass:[NSArray class]]) {
+      into = [NSString stringWithFormat:@"changeset_%lu", (unsigned long)++changeSets];
+      [out appendFormat:@"--%@\r\nContent-Type: multipart/mixed; boundary=%@\r\n\r\n", boundary, into];
+    }
+    for (NSDictionary *request in requests) {
+      [out appendFormat:@"--%@\r\nContent-Type: application/http\r\nContent-Transfer-Encoding: binary\r\n", into];
+      if (request[@"id"]) [out appendFormat:@"Content-ID: %@\r\n", request[@"id"]];
+      [out appendFormat:@"\r\n%@ %@ HTTP/1.1\r\n", request[@"method"], request[@"url"]];
+      for (NSString *name in request[@"headers"]) [out appendFormat:@"%@: %@\r\n", name, request[@"headers"][name]];
+      NSString *body = @"";
+      if (request[@"body"]) {
+        body = [[NSString alloc] initWithData:[NSJSONSerialization dataWithJSONObject:request[@"body"] options:0 error:NULL] encoding:NSUTF8StringEncoding];
+        [out appendString:@"Content-Type: application/json\r\n"];
+      }
+      [out appendFormat:@"\r\n%@\r\n", body];
+    }
+    if ([unit isKindOfClass:[NSArray class]]) [out appendFormat:@"--%@--\r\n", into];
+  }
+  [out appendFormat:@"--%@--\r\n", boundary];
+  return [out dataUsingEncoding:NSUTF8StringEncoding];
+}
+
+- (OISServiceResponse *)postBatch:(NSArray *)units headers:(NSDictionary *)extra
+{
+  NSURL *url = [NSURL URLWithString:@"http://example.test/odata/$batch"];
+  NSMutableURLRequest *request = [NSMutableURLRequest requestWithURL:url];
+  request.HTTPMethod = @"POST";
+  [request setValue:@"multipart/mixed; boundary=batch_1" forHTTPHeaderField:@"Content-Type"];
+  for (NSString *name in extra) [request setValue:extra[name] forHTTPHeaderField:name];
+  request.HTTPBody = [self multipartBatch:units boundary:@"batch_1"];
+  return [self exchange:request];
+}
+
+- (OISServiceResponse *)exchange:(NSURLRequest *)request
+{
+  _finished = dispatch_semaphore_create(0);
+  ODataExchange *exchange = [[ODataExchange alloc] initWithRequest:request target:self action:@selector(exchangeDidFinish:)];
+  [_service startExchange:exchange];
+  XCTAssertEqual(dispatch_semaphore_wait(_finished, dispatch_time(DISPATCH_TIME_NOW, (int64_t)(5 * NSEC_PER_SEC))), 0L);
+  OISServiceResponse *response = [[OISServiceResponse alloc] init];
+  NSHTTPURLResponse *http = (NSHTTPURLResponse *)exchange.URLResponse;
+  response.status = http.statusCode;
+  response.headers = http.allHeaderFields;
+  response.data = exchange.data;
+  return response;
+}
+
+- (NSArray<ODataBatchPart *> *)partsOf:(OISServiceResponse *)response
+{
+  NSString *boundary = ODataMultipartBoundary([response header:@"Content-Type"] ?: @"");
+  XCTAssertNotNil(boundary, @"%@", [response header:@"Content-Type"]);
+  return boundary ? ODataBatchParts(response.data, boundary) : @[];
+}
+
+- (id)JSONOf:(ODataBatchPart *)part
+{
+  return part.body.length ? [NSJSONSerialization JSONObjectWithData:part.body options:0 error:NULL] : nil;
+}
+
+- (void)testMultipartBatchWithAChangeSet
+{
+  OISServiceResponse *r = [self postBatch:@[
+    @{ @"method": @"GET", @"url": @"Products(1)" },
+    @[ @{ @"method": @"POST", @"url": @"Categories", @"id": @"1", @"body": @{ @"CategoryName": @"Seafood" } },
+       @{ @"method": @"POST", @"url": @"$1/Products", @"id": @"2", @"body": @{ @"ProductName": @"Ikura" } },
+       @{ @"method": @"PATCH", @"url": @"http://example.test/odata/Products(2)", @"id": @"3", @"body": @{ @"UnitPrice": @20 } } ],
+    @{ @"method": @"GET", @"url": @"/odata/Categories(3)/Products?$select=ProductName" },
+  ] headers:nil];
+  XCTAssertEqual(r.status, 200, @"%@", r.text);
+  NSArray<ODataBatchPart *> *parts = [self partsOf:r];
+  XCTAssertEqualObjects([parts valueForKey:@"status"], (@[ @200, @201, @201, @204, @200 ]));
+  XCTAssertEqualObjects([self JSONOf:parts[0]][@"ProductName"], @"Chai");
+  XCTAssertNil(parts[0].changeSet);
+  XCTAssertNotNil(parts[1].changeSet, @"the change set's responses come in a change set of their own");
+  XCTAssertEqualObjects([parts valueForKey:@"contentID"][1], @"1");
+  XCTAssertEqualObjects([self JSONOf:parts[1]][@"CategoryID"], @3);
+  XCTAssertEqualObjects([[self JSONOf:parts[4]][@"value"] valueForKey:@"ProductName"], @[ @"Ikura" ], @"$1 was the new category");
+  XCTAssertEqualObjects([self get:@"Products(2)/UnitPrice/$value"].text, @"20");
+}
+
+- (void)testFailedChangeSetTakesNoEffect
+{
+  OISServiceResponse *r = [self postBatch:@[
+    @[ @{ @"method": @"POST", @"url": @"Categories", @"id": @"1", @"body": @{ @"CategoryName": @"Seafood" } },
+       @{ @"method": @"PATCH", @"url": @"Products(1)", @"id": @"2", @"headers": @{ @"If-Match": @"W/\"stale\"" }, @"body": @{ @"UnitPrice": @1 } } ],
+    @{ @"method": @"GET", @"url": @"Categories/$count" },
+  ] headers:nil];
+  XCTAssertEqual(r.status, 200);
+  NSArray<ODataBatchPart *> *parts = [self partsOf:r];
+  XCTAssertEqualObjects([parts valueForKey:@"status"], @[ @412 ], @"the failure alone, and the batch stops");
+  XCTAssertEqualObjects([self get:@"Categories/$count"].text, @"2", @"the category was not created");
+
+  r = [self postBatch:@[
+    @[ @{ @"method": @"POST", @"url": @"Categories", @"id": @"1", @"body": @{ @"CategoryName": @"Seafood" } },
+       @{ @"method": @"POST", @"url": @"Products", @"id": @"2", @"body": @{ @"ProductName": @"X", @"Category@odata.bind": @"Categories(99)" } } ],
+    @{ @"method": @"GET", @"url": @"Categories/$count" },
+    @{ @"method": @"GET", @"url": @"Nothing" },
+    @{ @"method": @"GET", @"url": @"Products(1)/ProductName" },
+  ] headers:@{ @"Prefer": @"odata.continue-on-error" }];
+  parts = [self partsOf:r];
+  XCTAssertEqualObjects([parts valueForKey:@"status"], (@[ @400, @200, @404, @200 ]));
+  XCTAssertEqualObjects([[NSString alloc] initWithData:parts[1].body encoding:NSUTF8StringEncoding], @"2");
+  XCTAssertEqualObjects([r header:@"Preference-Applied"], @"odata.continue-on-error");
+
+  parts = [self partsOf:[self postBatch:@[ @{ @"method": @"GET", @"url": @"Nothing" }, @{ @"method": @"GET", @"url": @"Products(1)" } ] headers:nil]];
+  XCTAssertEqualObjects([parts valueForKey:@"status"], @[ @404 ], @"stops at the first failure");
+  parts = [self partsOf:[self postBatch:@[ @[ @{ @"method": @"GET", @"url": @"Products(1)" } ] ] headers:nil]];
+  XCTAssertEqualObjects([parts valueForKey:@"status"], @[ @400 ], @"no reads in a change set");
+}
+
+- (void)testJSONBatch
+{
+  NSMutableURLRequest *request = [NSMutableURLRequest requestWithURL:[NSURL URLWithString:@"http://example.test/odata/$batch"]];
+  request.HTTPMethod = @"POST";
+  [request setValue:@"application/json" forHTTPHeaderField:@"Content-Type"];
+  NSDictionary *batch = @{ @"requests": @[
+    @{ @"id": @"c", @"atomicityGroup": @"g1", @"method": @"post", @"url": @"Categories", @"body": @{ @"CategoryName": @"Seafood" } },
+    @{ @"id": @"p", @"atomicityGroup": @"g1", @"method": @"post", @"url": @"$c/Products", @"body": @{ @"ProductName": @"Ikura" } },
+    @{ @"id": @"r", @"method": @"get", @"url": @"Categories(3)/Products/$count" },
+    @{ @"id": @"x", @"atomicityGroup": @"g2", @"method": @"post", @"url": @"Categories", @"body": @{ @"CategoryName": @"Grains" } },
+    @{ @"id": @"y", @"atomicityGroup": @"g2", @"method": @"patch", @"url": @"Products(1)", @"headers": @{ @"If-Match": @"W/\"stale\"" }, @"body": @{ @"UnitPrice": @1 } },
+  ] };
+  request.HTTPBody = [NSJSONSerialization dataWithJSONObject:batch options:0 error:NULL];
+  [request setValue:@"odata.continue-on-error" forHTTPHeaderField:@"Prefer"];
+  OISServiceResponse *r = [self exchange:request];
+  XCTAssertEqual(r.status, 200, @"%@", r.text);
+  NSArray *responses = r.json[@"responses"];
+  XCTAssertEqualObjects([responses valueForKey:@"id"], (@[ @"c", @"p", @"r", @"x", @"y" ]));
+  XCTAssertEqualObjects([responses valueForKey:@"status"], (@[ @201, @201, @200, @424, @412 ]));
+  XCTAssertEqualObjects(responses[1][@"body"][@"ProductName"], @"Ikura");
+  XCTAssertEqualObjects(responses[2][@"body"], @"1", @"a text body stays text");
+  XCTAssertEqualObjects([self get:@"Categories/$count"].text, @"3", @"g1 saved, g2 not");
+}
+
+- (void)testBatchWaitsForHandlersThatAnswerLater
+{
+  OISLaterProducts *handler = [[OISLaterProducts alloc] initWithEntity:OISCatalogEntity(@"Product")];
+  [_service setHandler:handler forEntitySet:@"Products"];
+  NSArray<ODataBatchPart *> *parts = [self partsOf:[self postBatch:@[
+    @{ @"method": @"GET", @"url": @"Products?$select=ProductName" },
+    @[ @{ @"method": @"PATCH", @"url": @"Categories(1)", @"body": @{ @"CategoryName": @"Drinks" } } ],
+    @{ @"method": @"GET", @"url": @"Products/$count" },
+  ] headers:nil]];
+  XCTAssertEqualObjects([parts valueForKey:@"status"], (@[ @200, @204, @200 ]));
+  XCTAssertEqual([[self JSONOf:parts[0]][@"value"] count], 4u);
+  XCTAssertEqual(handler.deferred, 1);
+  XCTAssertEqualObjects([self get:@"Categories(1)/CategoryName"].json[@"value"], @"Drinks");
+}
+
+// The client's save of several objects is one change set now: a conflict
+// leaves none of them saved. (Inserts join it when the client gives the
+// keys; by default it POSTs them first, for the service to assign them.)
+- (void)testClientSavesAreAtomic
+{
+  [ODataIncrementalStore registerStore];
+  NSPersistentStoreCoordinator *client = [[NSPersistentStoreCoordinator alloc] initWithManagedObjectModel:OISCatalogModel()];
+  NSError *error = nil;
+  NSDictionary *options = @{ ODataIncrementalStoreTransportOption: _service, ODataIncrementalStorePostOnObtainPermanentIDsOption: @NO };
+  XCTAssertNotNil([client addPersistentStoreWithType:[ODataIncrementalStore storeType] configuration:nil
+                                                 URL:[NSURL URLWithString:@"http://example.test/odata/"]
+                                             options:options error:&error], @"%@", error);
+  NSManagedObjectContext *context = [[NSManagedObjectContext alloc] init];
+  context.persistentStoreCoordinator = client;
+  NSFetchRequest *fetch = [NSFetchRequest fetchRequestWithEntityName:@"Product"];
+  fetch.predicate = [NSPredicate predicateWithFormat:@"name == 'Chai'"];
+  NSManagedObject *chai = [[context executeFetchRequest:fetch error:&error] firstObject];
+  // Read now, so the client's row (and ETag) is from before the change
+  // behind its back; a fault fired later may read the row again.
+  XCTAssertEqualObjects([chai valueForKey:@"name"], @"Chai");
+
+  NSManagedObjectContext *backing = [[NSManagedObjectContext alloc] init];
+  backing.persistentStoreCoordinator = _coordinator;
+  [[self productWithID:1 in:backing] setValue:@"Chai tea" forKey:@"name"];
+  XCTAssertTrue([backing save:&error], @"%@", error);
+
+  NSManagedObject *coffee = [NSEntityDescription insertNewObjectForEntityForName:@"Product" inManagedObjectContext:context];
+  [coffee setValue:@70 forKey:@"id"];
+  [coffee setValue:@"Ipoh Coffee" forKey:@"name"];
+  [chai setValue:[NSDecimalNumber decimalNumberWithString:@"19"] forKey:@"unitPrice"];
+  XCTAssertFalse([context save:&error], @"Chai changed behind the client's back");
+  [backing reset];
+  XCTAssertNil([self productWithID:70 in:backing], @"and so the new product was not saved either");
+  XCTAssertEqualObjects([[self productWithID:1 in:backing] valueForKey:@"unitPrice"], [NSDecimalNumber decimalNumberWithString:@"18"]);
+}
+
+// A reference to an entity ($select=ProductID inside another row) carries
+// the entity's current ETag. The client keeps the ETag of the row it has,
+// so an update from stale values still conflicts, however it learnt that
+// the entity exists.
+- (void)testReferencesDoNotRefreshTheClientsETag
+{
+  [ODataIncrementalStore registerStore];
+  NSPersistentStoreCoordinator *client = [[NSPersistentStoreCoordinator alloc] initWithManagedObjectModel:OISCatalogModel()];
+  NSError *error = nil;
+  XCTAssertNotNil([client addPersistentStoreWithType:[ODataIncrementalStore storeType] configuration:nil
+                                                 URL:[NSURL URLWithString:@"http://example.test/odata/"]
+                                             options:@{ ODataIncrementalStoreTransportOption: _service } error:&error], @"%@", error);
+  NSManagedObjectContext *context = [[NSManagedObjectContext alloc] init];
+  context.persistentStoreCoordinator = client;
+  NSFetchRequest *fetch = [NSFetchRequest fetchRequestWithEntityName:@"Product"];
+  fetch.predicate = [NSPredicate predicateWithFormat:@"name == 'Chai'"];
+  NSManagedObject *chai = [[context executeFetchRequest:fetch error:&error] firstObject];
+  XCTAssertEqualObjects([chai valueForKey:@"name"], @"Chai");
+
+  NSManagedObjectContext *backing = [[NSManagedObjectContext alloc] init];
+  backing.persistentStoreCoordinator = _coordinator;
+  [[self productWithID:1 in:backing] setValue:@"Chai tea" forKey:@"name"];
+  XCTAssertTrue([backing save:&error], @"%@", error);
+
+  // Chai's stocks come with Chai as a reference, and its new ETag.
+  NSSet *stocks = [chai valueForKey:@"stocks"];
+  XCTAssertEqual(stocks.count, 1u);
+  XCTAssertEqualObjects([stocks.anyObject valueForKeyPath:@"product.objectID"], chai.objectID);
+
+  [chai setValue:[NSDecimalNumber decimalNumberWithString:@"19"] forKey:@"unitPrice"];
+  XCTAssertFalse([context save:&error], @"the name the client has is not the service's");
+  [backing reset];
+  XCTAssertEqualObjects([[self productWithID:1 in:backing] valueForKey:@"name"], @"Chai tea", @"not overwritten");
 }
 
 @end
