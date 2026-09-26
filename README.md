@@ -247,6 +247,52 @@ array, anything else as the store reads attributes; `NSNull` when there is
 nothing. `-invokeWithTarget:action:` calls without waiting and sends the
 action on the context's queue.
 
+A function can also be filtered and sorted by, as a computed property the
+service works out:
+
+```objc
+NSExpression *airline = [ODataFunctionExpression expressionForFunction:@"GetFavoriteAirline"
+                                                             onKeyPath:nil parameters:nil resultKeyPath:@"name"];
+// People?$filter=NS.GetFavoriteAirline()/Name eq 'American Airlines'
+```
+
+`ODataSortDescriptor` sorts by any such expression.
+
+For a client built on one service, `ois-model --classes DIR` writes classes
+for the entities, with the operations as real methods:
+
+```sh
+ois-model --classes TripPinClasses https://services.odata.org/V4/TripPinServiceRW/ TripPin.xcdatamodeld
+```
+
+```objc
+Airline *airline = [russell getFavoriteAirline:&error];
+BOOL shared = [russell shareTripWithUserName:@"scottketchum" tripId:@0 error:&error];
+Airport *airport = [TripPinService getNearestAirportInContext:context lat:@33.9 lon:@-118.4 error:&error];
+```
+
+Each entity gets `_Person`, written again with the model, and `Person`,
+written once, for your own code; the model names the classes.
+
+## Changes at the service
+
+A store can follow what changes at the service, and keep Core Data's
+persistent history of it:
+
+```objc
+NSDictionary *options = @{ NSPersistentHistoryTrackingKey: @YES };
+// ...
+NSNotification *changes = [store fetchRemoteChanges:&error];   // the first call starts tracking
+[context mergeChangesFromContextDidSaveNotification:changes];
+```
+
+It follows the service's delta links (`Prefer: odata.track-changes`), and
+where a service gives none, reads the entity sets again and compares. With
+`NSPersistentHistoryTrackingKey`, the changes, and every save the store
+makes, are history transactions, fetched with
+`NSPersistentHistoryChangeRequest` as from any store; the service's changes
+are by `ODataRemoteChangesAuthor`. The history is kept in memory.
+
 ## Threading
 
 `NSIncrementalStore` callbacks are synchronous. **Do not load this store on the

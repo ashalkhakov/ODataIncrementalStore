@@ -1,0 +1,18 @@
+# ois-classes, built with the classes ois-model generated from TripPin's
+# $metadata into TripPinClasses/. Run by `make live` (see GNUmakefile),
+# after the classes are written: they are not known before.
+include $(GNUSTEP_MAKEFILES)/common.make
+
+CC = clang
+OBJC = clang
+
+TOOL_NAME = ois-classes
+ois-classes_OBJC_FILES = ois-classes.m $(wildcard TripPinClasses/*.m)
+ois-classes_INCLUDE_DIRS = -Iinclude -I../../Source/include -ITripPinClasses
+ois-classes_LIB_DIRS = -L../../obj -L../..
+ois-classes_TOOL_LIBS += -lODataIncrementalStore -lCoreData
+
+ADDITIONAL_OBJCFLAGS += -fobjc-arc -fblocks -fobjc-runtime=gnustep-2.0 \
+	-fconstant-string-class=NSConstantString -fobjc-exceptions
+
+include $(GNUSTEP_MAKEFILES)/tool.make

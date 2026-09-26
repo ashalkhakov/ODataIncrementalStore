@@ -9,6 +9,7 @@ NSString * const ODataIncrementalStorePasswordOption = @"ODataIncrementalStorePa
 NSString * const ODataIncrementalStoreTimeoutOption = @"ODataIncrementalStoreTimeout";
 NSString * const ODataIncrementalStorePostOnObtainPermanentIDsOption = @"ODataIncrementalStorePostOnObtainPermanentIDs";
 NSString * const ODataIncrementalStoreTransportOption = @"ODataIncrementalStoreTransport";
+NSString * const ODataIncrementalStoreTrackedEntitiesOption = @"ODataIncrementalStoreTrackedEntities";
 NSString * const ODataIncrementalStoreKeyAsSegmentOption = @"ODataIncrementalStoreKeyAsSegment";
 NSString * const ODataIncrementalStoreMaxVersionOption = @"ODataIncrementalStoreMaxVersion";
 NSString * const ODataIncrementalStoreIEEE754CompatibleOption = @"ODataIncrementalStoreIEEE754Compatible";

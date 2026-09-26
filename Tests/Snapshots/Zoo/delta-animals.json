@@ -1,0 +1,93 @@
+{
+  "comment": "Tracking changes: the last page carries a delta link.",
+  "spec": "OASIS OData 4.01 Part 1 §8.2.8.6 (odata.track-changes), §11.3",
+  "request": {
+    "method": "GET",
+    "path": "Animals",
+    "query": {
+      "$expand": "Keeper($select=Code)"
+    },
+    "headers": {
+      "Prefer": "odata.track-changes"
+    }
+  },
+  "response": {
+    "status": 200,
+    "headers": {
+      "Content-Type": "application/json;odata.metadata=minimal;charset=utf-8",
+      "OData-Version": "4.0",
+      "Preference-Applied": "odata.track-changes"
+    },
+    "body": {
+      "@odata.context": "https://zoo.test/Zoo.svc/$metadata#Animals",
+      "value": [
+        {
+          "Id": 1,
+          "Name": "Zebra",
+          "Diet": "Herbivore",
+          "Features": "Stripes",
+          "Born": "2019-04-01",
+          "Home": {
+            "Zone": "Savanna",
+            "Opened": "2015-03-01",
+            "Area": "1200.5"
+          },
+          "Nicknames": [
+            "Stripes"
+          ],
+          "PastHomes": [],
+          "Keeper": {
+            "Code": "K1"
+          }
+        },
+        {
+          "@odata.type": "#Zoo.Lion",
+          "Id": 2,
+          "Name": "Leo",
+          "Diet": "Carnivore",
+          "Features": "Mane",
+          "Born": "2018-02-11",
+          "Home": {
+            "Zone": "Pride Rock",
+            "Opened": "2017-01-01",
+            "Area": 3000
+          },
+          "Nicknames": [
+            "King",
+            "Simba"
+          ],
+          "PastHomes": [
+            {
+              "Zone": "Quarantine",
+              "Opened": "2018-03-01",
+              "Area": "10"
+            }
+          ],
+          "MaxRoar": 114,
+          "Keeper": {
+            "Code": "K1"
+          }
+        },
+        {
+          "Id": 3,
+          "Name": "Okapi",
+          "Diet": "Herbivore",
+          "Features": "Stripes, Spots",
+          "Born": null,
+          "Home": {
+            "@odata.type": "#Zoo.Aviary",
+            "Zone": "Forest",
+            "Opened": null,
+            "Area": "50",
+            "Height": 12.5
+          },
+          "Nicknames": [],
+          "PastHomes": null,
+          "Keeper": null
+        }
+      ],
+      "@odata.deltaLink": "https://zoo.test/Zoo.svc/Animals?$expand=Keeper($select=Code)&$deltatoken=1"
+    }
+  },
+  "state": "delta"
+}

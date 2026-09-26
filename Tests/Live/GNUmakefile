@@ -1,5 +1,6 @@
 # ois-live: the store against Microsoft's public reference services,
-# Northwind v4 (read) and TripPin (write).
+# Northwind v4 (read) and TripPin (write). ois-classes: TripPin's classes,
+# generated from its $metadata, compiled into a client and used.
 #
 #   make -C Tests/Live live
 #
@@ -34,9 +35,10 @@ include $(GNUSTEP_MAKEFILES)/tool.make
 -include GNUmakefile.postamble
 
 NORTHWIND = https://services.odata.org/V4/Northwind/Northwind.svc/
+TRIPPIN = https://services.odata.org/V4/TripPinServiceRW/
 RUN = LD_LIBRARY_PATH="$(CURDIR)/../../obj$${LD_LIBRARY_PATH:+:$$LD_LIBRARY_PATH}"
 
-.PHONY: live Catalog.momd Northwind.momd TripPin.momd NorthwindGenerated.momd
+.PHONY: live classes Catalog.momd Northwind.momd TripPin.momd NorthwindGenerated.momd
 Catalog.momd: ../../Examples/Catalog/Catalog.xcdatamodeld
 	$(MOMC) $< $@
 
@@ -53,8 +55,21 @@ NorthwindGenerated.momd: all
 	$(RUN) ./$(GNUSTEP_OBJ_DIR_NAME)/ois-model $(NORTHWIND) NorthwindGenerated.xcdatamodeld
 	$(MOMC) NorthwindGenerated.xcdatamodeld $@
 
+# TripPin's model and classes, generated; the classes compiled into
+# ois-classes, which uses them against the service. The headers are
+# included as a client includes them, <ODataIncrementalStore/...>.
+classes: all
+	rm -rf TripPinClasses Generated TripPinGenerated.momd
+	$(RUN) ./$(GNUSTEP_OBJ_DIR_NAME)/ois-model --classes TripPinClasses $(TRIPPIN) Generated/TripPin.xcdatamodeld
+	$(MOMC) Generated/TripPin.xcdatamodeld TripPinGenerated.momd
+	mkdir -p include && ln -sfn ../../../Source/include include/ODataIncrementalStore
+	$(MAKE) -f GNUmakefile.classes MAKEFILE_NAME=GNUmakefile.classes
+	$(RUN) ./$(GNUSTEP_OBJ_DIR_NAME)/ois-classes TripPinGenerated.momd
+
 live: all Catalog.momd Northwind.momd TripPin.momd NorthwindGenerated.momd
 	$(RUN) ./$(GNUSTEP_OBJ_DIR_NAME)/ois-live .
+	$(MAKE) classes
 
 after-clean::
-	rm -rf Catalog.momd Northwind.momd TripPin.momd NorthwindGenerated.momd NorthwindGenerated.xcdatamodeld
+	rm -rf Catalog.momd Northwind.momd TripPin.momd NorthwindGenerated.momd NorthwindGenerated.xcdatamodeld \
+	  TripPinClasses Generated TripPinGenerated.momd include

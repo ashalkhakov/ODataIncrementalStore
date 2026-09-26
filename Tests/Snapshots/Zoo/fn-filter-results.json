@@ -1,0 +1,43 @@
+{
+  "comment": "A path goes on into a function's result: an entity's property, a complex value's member typed by its declaration (an Edm.Date).",
+  "spec": "OASIS OData 4.01 Part 2 §5.1.1.12, §5.1.1.15",
+  "request": {
+    "method": "GET",
+    "path": "Animals",
+    "query": {
+      "$filter": "(Zoo.Caretaker()/Name eq 'Ann') and (Zoo.CurrentHome()/Opened lt 2016-01-01)",
+      "$expand": "Keeper($select=Code)"
+    }
+  },
+  "response": {
+    "status": 200,
+    "headers": {
+      "Content-Type": "application/json;odata.metadata=minimal;charset=utf-8",
+      "OData-Version": "4.0"
+    },
+    "body": {
+      "@odata.context": "https://zoo.test/Zoo.svc/$metadata#Animals",
+      "value": [
+        {
+          "Id": 1,
+          "Name": "Zebra",
+          "Diet": "Herbivore",
+          "Features": "Stripes",
+          "Born": "2019-04-01",
+          "Home": {
+            "Zone": "Savanna",
+            "Opened": "2015-03-01",
+            "Area": "1200.5"
+          },
+          "Nicknames": [
+            "Stripes"
+          ],
+          "PastHomes": [],
+          "Keeper": {
+            "Code": "K1"
+          }
+        }
+      ]
+    }
+  }
+}

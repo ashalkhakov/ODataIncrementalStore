@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: LGPL-2.1-or-later
 
 #import "ODataQueryBuilder.h"
+#import "ODataFunctionExpression.h"
 #import "ODataPredicateTranslator.h"
 #import "ODataError.h"
 
@@ -109,8 +110,17 @@ static NSString *OISPercentEncode(NSString *value)
   if (fetch.sortDescriptors.count) {
     NSMutableArray *bits = [NSMutableArray array];
     for (NSSortDescriptor *desc in fetch.sortDescriptors) {
-      // category.name is Category/CategoryName: a dot would be a type cast.
-      NSString *name = [self.mapper propertyPathForKeyPath:desc.key ?: @"" entity:entity];
+      NSString *name;
+      if ([desc isKindOfClass:[ODataSortDescriptor class]]) {
+        // Any expression $filter could hold: a function's result, say.
+        ODataPredicateTranslator *t = [[ODataPredicateTranslator alloc] initWithMapper:self.mapper entity:entity];
+        if (self.version) t.version = self.version;
+        name = [t translateExpression:((ODataSortDescriptor *)desc).expression error:error];
+        if (!name) return nil;
+      } else {
+        // category.name is Category/CategoryName: a dot would be a type cast.
+        name = [self.mapper propertyPathForKeyPath:desc.key ?: @"" entity:entity];
+      }
       [bits addObject:desc.ascending ? name : [name stringByAppendingString:@" desc"]];
     }
     // The key breaks ties. Paging resumes after the last row of a page by

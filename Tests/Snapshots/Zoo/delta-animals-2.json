@@ -1,0 +1,25 @@
+{
+  "comment": "Nothing has changed since: the same delta link again, 4.0 style.",
+  "spec": "OASIS OData 4.01 JSON Format §15",
+  "state": "delta",
+  "request": {
+    "method": "GET",
+    "path": "Animals",
+    "query": {
+      "$expand": "Keeper($select=Code)",
+      "$deltatoken": "2"
+    }
+  },
+  "response": {
+    "status": 200,
+    "headers": {
+      "Content-Type": "application/json;odata.metadata=minimal;charset=utf-8",
+      "OData-Version": "4.0"
+    },
+    "body": {
+      "@odata.context": "https://zoo.test/Zoo.svc/$metadata#Animals/$delta",
+      "value": [],
+      "@odata.deltaLink": "https://zoo.test/Zoo.svc/Animals?$expand=Keeper($select=Code)&$deltatoken=2"
+    }
+  }
+}

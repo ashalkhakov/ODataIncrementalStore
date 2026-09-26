@@ -1,0 +1,27 @@
+{
+  "comment": "A function bound to a collection, reached through a to-many relationship.",
+  "spec": "OASIS OData 4.01 Part 2 §5.1.1.12",
+  "request": {
+    "method": "GET",
+    "path": "Staff",
+    "query": {
+      "$filter": "Animals/Zoo.Heaviest()/Name eq 'Leo'"
+    }
+  },
+  "response": {
+    "status": 200,
+    "headers": {
+      "Content-Type": "application/json;odata.metadata=minimal;charset=utf-8",
+      "OData-Version": "4.0"
+    },
+    "body": {
+      "@odata.context": "https://zoo.test/Zoo.svc/$metadata#Staff",
+      "value": [
+        {
+          "Code": "K1",
+          "Name": "Ann"
+        }
+      ]
+    }
+  }
+}

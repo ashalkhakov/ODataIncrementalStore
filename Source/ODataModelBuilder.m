@@ -362,6 +362,8 @@ static void OISAppendUserInfo(NSMutableString *xml, NSDictionary *info, NSString
   }];
   for (NSEntityDescription *entity in entities) {
     [xml appendFormat:@"    <entity name=\"%@\"", OISEscape(entity.name)];
+    NSString *cls = entity.managedObjectClassName;
+    if (cls.length && ![cls isEqualToString:@"NSManagedObject"]) [xml appendFormat:@" representedClassName=\"%@\"", OISEscape(cls)];
     if (entity.superentity) [xml appendFormat:@" parentEntity=\"%@\"", OISEscape(entity.superentity.name)];
     if (entity.isAbstract) [xml appendString:@" isAbstract=\"YES\""];
     [xml appendString:@" syncable=\"YES\">\n"];
@@ -443,8 +445,17 @@ static NSString *OISDocumentVersion(NSData *document)
   }
   if (!currentName && existing.count == 1) currentName = existing.anyObject;
   if (currentName) {
-    NSData *old = [NSData dataWithContentsOfFile:[[path stringByAppendingPathComponent:currentName] stringByAppendingPathComponent:@"contents"]];
-    if (version && [OISDocumentVersion(old) isEqualToString:version]) return currentName.stringByDeletingPathExtension;
+    NSString *contents = [[path stringByAppendingPathComponent:currentName] stringByAppendingPathComponent:@"contents"];
+    NSData *old = [NSData dataWithContentsOfFile:contents];
+    if (version && [OISDocumentVersion(old) isEqualToString:version]) {
+      // The same version of the schema, written otherwise (with class
+      // names, say): the same model version, rewritten in place.
+      if (![old isEqualToData:document]) {
+        if (![document writeToFile:contents options:NSDataWritingAtomic error:error]) return nil;
+        if (changed) *changed = YES;
+      }
+      return currentName.stringByDeletingPathExtension;
+    }
   }
 
   // A new version: "Zoo", then "Zoo 2", "Zoo 3", ...

@@ -19,3 +19,7 @@ obj/
 ois-filter
 ois-model
 *.momd
+Tests/Live/TripPinClasses/
+Tests/Live/Generated/
+Tests/Live/TripPinGenerated.momd/
+Tests/Live/include/

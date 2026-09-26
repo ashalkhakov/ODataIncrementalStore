@@ -462,6 +462,74 @@ static void operations(void)
         later ?: (target.finished ? reason(target.finished.error) : @"no answer"));
 }
 
+static void remoteChanges(void)
+{
+  fprintf(stderr, "== Changes at the service (delta)\n");
+  NSError *error = nil;
+  NSURL *tripPin = tripPinSession();
+  NSManagedObjectModel *model = [ODataIncrementalStore modelForServiceAtURL:tripPin options:nil error:&error];
+  if (!model) {
+    check(NO, @"TripPin's model", reason(error));
+    return;
+  }
+  // Two clients of one session: one tracks People, the other changes them.
+  NSDictionary *tracking = @{ NSPersistentHistoryTrackingKey: @YES, ODataIncrementalStoreTrackedEntitiesOption: @[ @"Person" ] };
+  NSPersistentStoreCoordinator *watcher = [[NSPersistentStoreCoordinator alloc] initWithManagedObjectModel:model];
+  ODataIncrementalStore *store = (ODataIncrementalStore *)[watcher addPersistentStoreWithType:[ODataIncrementalStore storeType] configuration:nil
+                                                                                          URL:tripPin options:tracking error:&error];
+  NSPersistentStoreCoordinator *other = [[NSPersistentStoreCoordinator alloc] initWithManagedObjectModel:model];
+  BOOL opened = store && [other addPersistentStoreWithType:[ODataIncrementalStore storeType] configuration:nil URL:tripPin options:nil error:&error];
+  NSNotification *first = opened ? [store fetchRemoteChanges:&error] : nil;
+  check(first && first.userInfo.count == 0, @"start tracking People (Prefer: odata.track-changes)", first ? @"" : reason(error));
+  if (!first) return;
+
+  NSManagedObjectContext *moc = newContext(other);
+  __block NSError *saveError = nil;
+  __block BOOL saved = NO;
+  [moc performBlockAndWait:^{
+    NSManagedObject *added = [NSEntityDescription insertNewObjectForEntityForName:@"Person" inManagedObjectContext:moc];
+    [added setValue:@"oisdelta" forKey:@"userName"];
+    [added setValue:@"Del" forKey:@"firstName"];
+    [added setValue:@"Ta" forKey:@"lastName"];
+    [added setValue:@[] forKey:@"emails"];
+    [added setValue:@[] forKey:@"addressInfo"];
+    [added setValue:@"Female" forKey:@"gender"];
+    [added setValue:@0 forKey:@"concurrency"];
+    NSManagedObject *gone = personNamed(moc, @"ronaldmundy", NULL);
+    if (gone) [moc deleteObject:gone];
+    NSError *e = nil;
+    saved = gone && [moc save:&e];
+    saveError = e;
+  }];
+  if (!saved) {
+    check(NO, @"another client adds a person and deletes one", reason(saveError));
+    return;
+  }
+
+  NSNotification *changes = [store fetchRemoteChanges:&error];
+  NSMutableArray *added = [NSMutableArray array], *removed = [NSMutableArray array];
+  for (NSManagedObjectID *oid in changes.userInfo[NSInsertedObjectIDsKey]) {
+    [added addObject:[ODataResourceIdentifier identifierFromReference:[store referenceObjectForObjectID:oid]].path];
+  }
+  for (NSManagedObjectID *oid in changes.userInfo[NSDeletedObjectIDsKey]) {
+    [removed addObject:[ODataResourceIdentifier identifierFromReference:[store referenceObjectForObjectID:oid]].path];
+  }
+  check([added containsObject:@"People('oisdelta')"] && [removed containsObject:@"People('ronaldmundy')"],
+        @"another client's changes arrive: an insert and a delete",
+        changes ? [NSString stringWithFormat:@"inserted %@; deleted %@", [added componentsJoinedByString:@","], [removed componentsJoinedByString:@","]]
+                : reason(error));
+
+  __block NSArray *history = nil;
+  NSManagedObjectContext *watching = newContext(watcher);
+  [watching performBlockAndWait:^{
+    NSPersistentHistoryResult *result = (NSPersistentHistoryResult *)[watching executeRequest:[NSPersistentHistoryChangeRequest fetchHistoryAfterToken:nil] error:NULL];
+    history = result.result;
+  }];
+  NSPersistentHistoryTransaction *transaction = history.lastObject;
+  check(history.count == 1 && [transaction.author isEqualToString:ODataRemoteChangesAuthor] && transaction.changes.count == added.count + removed.count,
+        @"they are a persistent history transaction", [NSString stringWithFormat:@"%lu transactions, %@", (unsigned long)history.count, transaction]);
+}
+
 static void modelsFromMetadata(NSString *models)
 {
   fprintf(stderr, "== Models from $metadata\n");
@@ -545,6 +613,7 @@ int main(int argc, const char *argv[])
     tripPin(models);
     modelsFromMetadata(models);
     operations();
+    remoteChanges();
     fprintf(stderr, "%s\n", failures ? "ois-live: FAILED" : "ois-live: all checks passed");
     return failures ? 1 : 0;
   }

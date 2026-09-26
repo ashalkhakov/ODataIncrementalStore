@@ -3,6 +3,7 @@
 
 #import "ODataPredicateTranslator.h"
 #import "ODataError.h"
+#import "ODataFunctionExpression.h"
 #include <string.h>
 
 @interface ODataPredicateTranslator ()
@@ -20,7 +21,6 @@
 // Inside a lambda over a collection of values (not of entities): their
 // type, which paths inside the lambda start from.
 @property (nonatomic, copy, nullable) NSString *elementType;
-- (nullable NSString *)translateExpression:(NSExpression *)expression error:(NSError **)error;
 @end
 
 @implementation ODataPredicateTranslator
@@ -254,6 +254,9 @@
 
 - (NSString *)translateFunction:(NSExpression *)expression error:(NSError **)error
 {
+  if ([expression isKindOfClass:[ODataFunctionExpression class]]) {
+    return [self translateODataFunction:(ODataFunctionExpression *)expression type:NULL attribute:NULL error:error];
+  }
   NSString *name = expression.function;
   NSArray *args = expression.arguments ?: @[];
   if ([name isEqualToString:@"lowercase:"] || [name isEqualToString:@"uppercase:"]) {
@@ -273,6 +276,97 @@
       ? [self.mapper memberPath:[path componentsSeparatedByString:@"."] ofType:self.elementType memberType:NULL]
       : [self.mapper propertyPathForKeyPath:path entity:self.entity];
   return self.lambdaVariable ? [NSString stringWithFormat:@"%@/%@", self.lambdaVariable, mapped] : mapped;
+}
+
+#pragma mark - The service's functions
+
+- (NSEntityDescription *)modelEntityForType:(NSString *)qualified
+{
+  for (NSEntityDescription *entity in self.entity.managedObjectModel.entities) {
+    if ([[self.mapper qualifiedTypeForEntity:entity] isEqualToString:qualified]) return entity;
+  }
+  return nil;
+}
+
+// NS.GetFavoriteAirline()/Name: the call, bound to the entity the binding
+// key path leads to (or to a collection, when it ends in a to-many
+// relationship), and the path into its result. Through type and
+// attribute, what the path ends at, for the literal it is compared with.
+- (NSString *)translateODataFunction:(ODataFunctionExpression *)expression
+                                type:(NSString **)typeOut
+                           attribute:(NSAttributeDescription **)attributeOut
+                               error:(NSError **)error
+{
+  NSString *why = nil;
+  ODataSchema *schema = self.mapper.schema;
+  NSEntityDescription *bound = self.entity;
+  BOOL collection = NO;
+  if (!schema) why = @"needs the service's $metadata";
+  else if (self.elementType) why = @"is bound to entities, not to a collection of values";
+  for (NSString *part in why ? @[] : [expression.bindingKeyPath componentsSeparatedByString:@"."] ?: @[]) {
+    NSRelationshipDescription *rel = collection ? nil : bound.relationshipsByName[part];
+    if (!rel) {
+      why = [NSString stringWithFormat:@"is bound through %@, which is no relationship to follow", expression.bindingKeyPath];
+      break;
+    }
+    bound = rel.destinationEntity;
+    collection = rel.isToMany;
+  }
+  ODataSchemaEntityType *boundType = why ? nil : [self.mapper entityTypeForEntity:bound];
+  if (!why && !boundType) why = [NSString stringWithFormat:@"is bound to %@, which has no entity type in $metadata", bound.name];
+  NSSet *names = [NSSet setWithArray:expression.parameters.allKeys];
+  ODataSchemaOperation *function = boundType ? [schema operationNamed:expression.functionName boundToEntityType:boundType
+                                                              collection:collection parameterNames:names] : nil;
+  if (!why && (!function || function.isAction)) {
+    why = [NSString stringWithFormat:@"is no function bound to %@%@", collection ? @"a collection of " : @"", boundType.qualifiedName];
+  }
+
+  NSMutableArray *arguments = [NSMutableArray array];
+  for (NSString *given in why ? @[] : [expression.parameters.allKeys sortedArrayUsingSelector:@selector(compare:)]) {
+    ODataSchemaParameter *parameter = nil;
+    for (ODataSchemaParameter *p in function.callerParameters) {
+      if ([p.name isEqualToString:given] || (!parameter && [p.name caseInsensitiveCompare:given] == NSOrderedSame)) parameter = p;
+    }
+    if (!parameter) {
+      why = [NSString stringWithFormat:@"has no parameter %@", given];
+      break;
+    }
+    [arguments addObject:[NSString stringWithFormat:@"%@=%@", parameter.name,
+                                                     [self.mapper.values literalForValue:expression.parameters[given] typeName:parameter.type]]];
+  }
+
+  // Into the result: an entity's properties, a complex value's members.
+  NSString *resultPath = nil;
+  NSString *resultType = function.returnType;
+  NSAttributeDescription *attribute = nil;
+  if (!why && expression.resultKeyPath) {
+    NSEntityDescription *resultEntity = [schema entityTypeNamed:resultType] ? [self modelEntityForType:resultType] : nil;
+    if (resultEntity) {
+      NSString *memberType = nil;
+      resultPath = [self.mapper propertyPathForKeyPath:expression.resultKeyPath entity:resultEntity memberType:&memberType];
+      attribute = [self attributeAtKeyPath:expression.resultKeyPath entity:resultEntity];
+      resultType = memberType;
+    } else if ([schema complexTypeNamed:resultType]) {
+      NSString *memberType = nil;
+      resultPath = [self.mapper memberPath:[expression.resultKeyPath componentsSeparatedByString:@"."] ofType:resultType memberType:&memberType];
+      resultType = memberType;
+    } else {
+      why = [NSString stringWithFormat:@"returns %@, which has no %@ to follow", resultType ?: @"nothing", expression.resultKeyPath];
+    }
+  }
+  if (why) {
+    if (error) *error = OISError(ODataIncrementalStoreErrorUnsupportedExpression,
+                                 [NSString stringWithFormat:@"%@ %@", expression.functionName, why]);
+    return nil;
+  }
+
+  NSString *call = [NSString stringWithFormat:@"%@(%@)", function.qualifiedName, [arguments componentsJoinedByString:@","]];
+  NSString *prefix = expression.bindingKeyPath ? [self mapKeyPath:expression.bindingKeyPath] : self.lambdaVariable;
+  if (prefix.length) call = [NSString stringWithFormat:@"%@/%@", prefix, call];
+  if (resultPath.length) call = [NSString stringWithFormat:@"%@/%@", call, resultPath];
+  if (typeOut) *typeOut = attribute ? nil : resultType;
+  if (attributeOut) *attributeOut = attribute;
+  return call;
 }
 
 #pragma mark - ANY / ALL
@@ -527,6 +621,10 @@ static NSArray *OISObjectsInExpression(NSExpression *expression)
 - (NSString *)typeAtExpression:(NSExpression *)expression
 {
   NSString *type = nil;
+  if ([expression isKindOfClass:[ODataFunctionExpression class]]) {
+    [self translateODataFunction:(ODataFunctionExpression *)expression type:&type attribute:NULL error:NULL];
+    return type;
+  }
   if (expression.expressionType == NSEvaluatedObjectExpressionType) return self.elementType;
   if (expression.expressionType != NSKeyPathExpressionType) return nil;
   if (self.elementType) {
@@ -540,10 +638,20 @@ static NSArray *OISObjectsInExpression(NSExpression *expression)
 // The attribute at the end of a key path, through to-one relationships.
 - (NSAttributeDescription *)attributeAtExpression:(NSExpression *)expression
 {
+  if ([expression isKindOfClass:[ODataFunctionExpression class]]) {
+    NSAttributeDescription *attribute = nil;
+    [self translateODataFunction:(ODataFunctionExpression *)expression type:NULL attribute:&attribute error:NULL];
+    return attribute;
+  }
   if (expression.expressionType != NSKeyPathExpressionType || self.elementType) return nil;
-  NSEntityDescription *current = self.entity;
+  return [self attributeAtKeyPath:expression.keyPath entity:self.entity];
+}
+
+- (NSAttributeDescription *)attributeAtKeyPath:(NSString *)keyPath entity:(NSEntityDescription *)entity
+{
+  NSEntityDescription *current = entity;
   NSAttributeDescription *found = nil;
-  for (NSString *part in [expression.keyPath componentsSeparatedByString:@"."]) {
+  for (NSString *part in [keyPath componentsSeparatedByString:@"."]) {
     if (found || !current) return nil;
     found = current.attributesByName[part];
     if (!found) {

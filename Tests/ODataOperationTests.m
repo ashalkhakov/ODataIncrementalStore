@@ -65,7 +65,7 @@
   ODataSchema *schema = _store.schema;
   ODataSchemaEntityType *lion = [schema entityTypeNamed:@"Zoo.Lion"];
   NSArray *instance = [[schema operationsBoundToEntityType:lion collection:NO] valueForKey:@"name"];
-  XCTAssertEqualObjects(instance, (@[ @"Age", @"Feed", @"Move" ]), @"a derived type has its base's methods");
+  XCTAssertEqualObjects(instance, (@[ @"Age", @"Caretaker", @"CurrentHome", @"Feed", @"Move" ]), @"a derived type has its base's methods");
   XCTAssertEqualObjects([[schema operationsBoundToEntityType:lion collection:YES] valueForKey:@"name"], @[ @"Heaviest" ]);
   ODataSchemaOperation *admit = [schema operationNamed:@"AdmitAnimal" boundToEntityType:nil collection:NO parameterNames:nil];
   XCTAssertTrue(admit.isAction);
@@ -171,6 +171,80 @@
   result = [[ODataOperationCall callOfOperation:@"Heaviest" onEntity:@"Keeper" inContext:_context] invoke:&error];
   XCTAssertNil(result);
   XCTAssertNotNil(error, @"bound to animals, not keepers");
+}
+
+#pragma mark - Functions in $filter and $orderby
+
+- (NSArray *)fetch:(NSString *)entity predicate:(NSPredicate *)predicate sort:(NSArray *)sort error:(NSError **)error
+{
+  NSFetchRequest *fetch = [NSFetchRequest fetchRequestWithEntityName:entity];
+  fetch.predicate = predicate;
+  fetch.sortDescriptors = sort;
+  return [_context executeFetchRequest:fetch error:error];
+}
+
+static NSPredicate *OISCompare(NSExpression *left, NSPredicateOperatorType type, id value)
+{
+  return [NSComparisonPredicate predicateWithLeftExpression:left rightExpression:[NSExpression expressionForConstantValue:value]
+                                                   modifier:NSDirectPredicateModifier type:type options:0];
+}
+
+- (void)testAFunctionIsFilteredByAsAComputedProperty
+{
+  NSExpression *age = [ODataFunctionExpression expressionForFunction:@"Age" onKeyPath:nil
+                                                          parameters:@{ @"on": ODataDateFromString(@"2024-01-01") } resultKeyPath:nil];
+  NSError *error = nil;
+  NSArray *old = [self fetch:@"Animal" predicate:OISCompare(age, NSGreaterThanPredicateOperatorType, @5) sort:nil error:&error];
+  XCTAssertEqual(old.count, (NSUInteger)2, @"%@", error);
+  XCTAssertTrue([_transport.hits containsObject:@"fn-filter-age.json"]);
+}
+
+- (void)testAPathGoesOnIntoAFunctionsResult
+{
+  NSExpression *caretaker = [ODataFunctionExpression expressionForFunction:@"Caretaker" onKeyPath:nil parameters:nil resultKeyPath:@"name"];
+  NSExpression *opened = [ODataFunctionExpression expressionForFunction:@"CurrentHome" onKeyPath:nil parameters:nil resultKeyPath:@"opened"];
+  NSPredicate *both = [NSCompoundPredicate andPredicateWithSubpredicates:@[
+    OISCompare(caretaker, NSEqualToPredicateOperatorType, @"Ann"),
+    OISCompare(opened, NSLessThanPredicateOperatorType, ODataDateFromString(@"2016-01-01")) ]];
+  NSError *error = nil;
+  NSArray *found = [self fetch:@"Animal" predicate:both sort:nil error:&error];
+  XCTAssertEqualObjects([found valueForKey:@"name"], @[ @"Zebra" ], @"%@", error);
+}
+
+- (void)testAFunctionOfACollectionIsReachedThroughARelationship
+{
+  NSExpression *heaviest = [ODataFunctionExpression expressionForFunction:@"Heaviest" onKeyPath:@"animals" parameters:nil resultKeyPath:@"name"];
+  NSError *error = nil;
+  NSArray *keepers = [self fetch:@"Keeper" predicate:OISCompare(heaviest, NSEqualToPredicateOperatorType, @"Leo") sort:nil error:&error];
+  XCTAssertEqual(keepers.count, (NSUInteger)1, @"%@", error);
+  XCTAssertTrue([_transport.hits containsObject:@"fn-filter-collection.json"]);
+}
+
+- (void)testAFunctionIsSortedBy
+{
+  NSExpression *age = [ODataFunctionExpression expressionForFunction:@"Age" onKeyPath:nil
+                                                          parameters:@{ @"On": ODataDateFromString(@"2024-01-01") } resultKeyPath:nil];
+  NSError *error = nil;
+  NSArray *sorted = [self fetch:@"Animal" predicate:nil sort:@[ [ODataSortDescriptor sortDescriptorWithExpression:age ascending:NO] ] error:&error];
+  XCTAssertEqualObjects([sorted valueForKey:@"name"], (@[ @"Leo", @"Zebra", @"Okapi" ]), @"%@", error);
+}
+
+- (void)testAFunctionEvaluatedInMemoryCallsTheService
+{
+  NSManagedObject *zebra = [self fetchOne:@"Animal" where:@"name == 'Zebra'"];
+  NSExpression *age = [ODataFunctionExpression expressionForFunction:@"Age" onKeyPath:nil
+                                                          parameters:@{ @"On": ODataDateFromString(@"2024-01-01") } resultKeyPath:nil];
+  XCTAssertTrue([OISCompare(age, NSEqualToPredicateOperatorType, @8) evaluateWithObject:zebra]);
+  XCTAssertTrue([_transport.hits containsObject:@"op-age.json"]);
+}
+
+- (void)testWhatIsNoFunctionIsAnError
+{
+  NSExpression *move = [ODataFunctionExpression expressionForFunction:@"Move" onKeyPath:nil parameters:nil resultKeyPath:nil];
+  NSError *error = nil;
+  NSArray *rows = [self fetch:@"Animal" predicate:OISCompare(move, NSEqualToPredicateOperatorType, @1) sort:nil error:&error];
+  XCTAssertNil(rows);
+  XCTAssertTrue([error.localizedDescription rangeOfString:@"Move is no function bound to Zoo.Animal"].location != NSNotFound, @"%@", error);
 }
 
 @end

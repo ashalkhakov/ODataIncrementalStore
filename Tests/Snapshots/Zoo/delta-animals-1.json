@@ -1,0 +1,50 @@
+{
+  "comment": "The changes since, in OData 4.01's delta format: a change to one property only, a deleted entity by its id, a new entity; the next delta link at the end.",
+  "spec": "OASIS OData 4.01 JSON Format §15 (delta payloads), §4.5 (control information without odata.)",
+  "state": "delta",
+  "request": {
+    "method": "GET",
+    "path": "Animals",
+    "query": {
+      "$expand": "Keeper($select=Code)",
+      "$deltatoken": "1"
+    }
+  },
+  "response": {
+    "status": 200,
+    "headers": {
+      "Content-Type": "application/json;odata.metadata=minimal;charset=utf-8",
+      "OData-Version": "4.01"
+    },
+    "body": {
+      "@context": "https://zoo.test/Zoo.svc/$metadata#Animals/$delta",
+      "value": [
+        {
+          "@id": "https://zoo.test/Zoo.svc/Animals(1)",
+          "Id": 1,
+          "Name": "Zed"
+        },
+        {
+          "@removed": {
+            "reason": "deleted"
+          },
+          "@id": "https://zoo.test/Zoo.svc/Animals(3)"
+        },
+        {
+          "Id": 7,
+          "Name": "Giraffe",
+          "Diet": "Herbivore",
+          "Features": "Spots",
+          "Born": "2020-07-07",
+          "Home": null,
+          "Nicknames": [],
+          "PastHomes": [],
+          "Keeper": {
+            "Code": "K1"
+          }
+        }
+      ],
+      "@deltaLink": "https://zoo.test/Zoo.svc/Animals?$expand=Keeper($select=Code)&$deltatoken=2"
+    }
+  }
+}

@@ -188,4 +188,53 @@
   XCTAssertNotNil([psc addPersistentStoreWithType:[ODataIncrementalStore storeType] configuration:nil URL:root options:options error:&error], @"%@", error);
 }
 
+- (void)testClassesCarryTheOperationsAsMethods
+{
+  NSString *root = [NSTemporaryDirectory() stringByAppendingPathComponent:[NSString stringWithFormat:@"ois-%@", [[NSUUID UUID] UUIDString]]];
+  NSString *classes = [root stringByAppendingPathComponent:@"Classes"];
+  NSString *package = [root stringByAppendingPathComponent:@"Zoo.xcdatamodeld"];
+  NSError *error = nil;
+  BOOL changed = NO;
+  // A package written before there were classes: the same version gains them.
+  XCTAssertEqualObjects([ODataModelBuilder writeModel:[ODataModelBuilder modelWithSchema:_zoo] toPackage:package changed:&changed error:&error], @"Zoo");
+
+  NSManagedObjectModel *model = [ODataModelBuilder modelWithSchema:_zoo];
+  NSArray *written = [ODataClassWriter writeClassesForModel:model schema:_zoo serviceName:@"ZooService" toDirectory:classes error:&error];
+  XCTAssertNotNil(written, @"%@", error);
+  NSEntityDescription *lion = model.entitiesByName[@"Lion"];
+  XCTAssertEqualObjects(lion.managedObjectClassName, @"Lion");
+  NSString *(^read)(NSString *) = ^NSString *(NSString *name) {
+    return [NSString stringWithContentsOfFile:[classes stringByAppendingPathComponent:name] encoding:NSUTF8StringEncoding error:NULL] ?: @"";
+  };
+  NSString *animal = read(@"_Animal.h");
+  NSArray *expected = @[
+    @"@property (nonatomic, strong, nullable) NSDictionary *home;",
+    @"@property (nonatomic, strong, nullable) Keeper *keeper;",
+    @"- (nullable NSNumber *)ageWithOn:(nullable NSDate *)on error:(NSError **)error;",
+    @"- (nullable Keeper *)caretaker:(NSError **)error;",
+    @"- (nullable NSDictionary *)moveWithTo:(nullable NSDictionary *)to error:(NSError **)error;",
+    @"- (BOOL)feed:(NSError **)error;",
+    @"+ (nullable Animal *)heaviestInContext:(NSManagedObjectContext *)context error:(NSError **)error;",
+  ];
+  for (NSString *line in expected) XCTAssertTrue([animal rangeOfString:line].location != NSNotFound, @"%@ in\n%@", line, animal);
+  XCTAssertTrue([read(@"_Lion.h") rangeOfString:@"@interface _Lion : Animal"].location != NSNotFound, @"a sub-entity's class derives from its super-entity's");
+  XCTAssertTrue([read(@"_Keeper.h") rangeOfString:@"- (nullable NSArray<Animal *> *)animalsInWithZones:(nullable NSArray *)zones error:(NSError **)error;"].location != NSNotFound);
+  NSString *service = read(@"_ZooService.h");
+  XCTAssertTrue([service rangeOfString:@"+ (nullable Animal *)admitAnimalInContext:(NSManagedObjectContext *)context name:(nullable NSString *)name diet:(nullable NSString *)diet keeper:(nullable Keeper *)keeper error:(NSError **)error;"].location != NSNotFound, @"%@", service);
+  XCTAssertTrue([read(@"_Animal.m") rangeOfString:@"invokeODataOperation:@\"Zoo.Age\""].location != NSNotFound);
+
+  // Your own class is yours: writing again leaves it be.
+  NSString *mine = [classes stringByAppendingPathComponent:@"Animal.m"];
+  [@"// mine" writeToFile:mine atomically:YES encoding:NSUTF8StringEncoding error:NULL];
+  written = [ODataClassWriter writeClassesForModel:[ODataModelBuilder modelWithSchema:_zoo] schema:_zoo serviceName:@"ZooService" toDirectory:classes error:&error];
+  XCTAssertFalse([written containsObject:mine]);
+  XCTAssertEqualObjects([NSString stringWithContentsOfFile:mine encoding:NSUTF8StringEncoding error:NULL], @"// mine");
+
+  XCTAssertEqualObjects([ODataModelBuilder writeModel:model toPackage:package changed:&changed error:&error], @"Zoo", @"the same version");
+  XCTAssertTrue(changed, @"rewritten in place, with the class names");
+  NSString *document = [NSString stringWithContentsOfFile:[package stringByAppendingPathComponent:@"Zoo.xcdatamodel/contents"] encoding:NSUTF8StringEncoding error:NULL];
+  XCTAssertTrue([document rangeOfString:@"representedClassName=\"Lion\""].location != NSNotFound);
+  [[NSFileManager defaultManager] removeItemAtPath:root error:NULL];
+}
+
 @end

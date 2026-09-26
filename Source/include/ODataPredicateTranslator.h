@@ -27,6 +27,9 @@ typedef NSDictionary * _Nullable (^ODataObjectKeysResolver)(NSManagedObjectID *o
 - (instancetype)initWithMapper:(ODataPropertyMapper *)mapper entity:(NSEntityDescription *)entity NS_DESIGNATED_INITIALIZER;
 - (instancetype)init NS_UNAVAILABLE;
 - (nullable NSString *)translatePredicate:(NSPredicate *)predicate error:(NSError **)error;
+// One expression, as a $filter or $orderby operand: a key path, a
+// constant, a function (lowercase:, an ODataFunctionExpression).
+- (nullable NSString *)translateExpression:(NSExpression *)expression error:(NSError **)error;
 @end
 
 NS_ASSUME_NONNULL_END

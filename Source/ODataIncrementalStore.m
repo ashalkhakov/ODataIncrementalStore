@@ -42,6 +42,18 @@ typedef NS_ENUM(NSInteger, OISWriteMode) {
   OISWriteDeferred   // only the relationships an insert had to leave out
 };
 
+// What -fetchRemoteChanges: knows of one entity set: its rows as last
+// read (object ID -> row; NSNull for one this store wrote since, whose row
+// it has not seen), and the delta link to read the next changes from,
+// where the service gave one.
+@interface OISTracking : NSObject
+@property (nonatomic, strong) NSMutableDictionary *rows;
+@property (nonatomic, strong, nullable) NSURL *deltaLink;
+@end
+
+@implementation OISTracking
+@end
+
 @implementation ODataIncrementalStore {
   ODataClient *_client;
   ODataPropertyMapper *_mapper;
@@ -53,6 +65,8 @@ typedef NS_ENUM(NSInteger, OISWriteMode) {
   NSMutableDictionary *_editLinks;  // object ID -> @odata.editLink, where the service gave one
   BOOL _batchRefused;               // the service answered $batch itself with an error
   NSLock *_lock;
+  ODataHistoryLog *_history;        // with NSPersistentHistoryTrackingKey
+  NSMutableDictionary *_tracking;   // entity name -> OISTracking, for -fetchRemoteChanges:
 }
 
 + (NSString *)storeType
@@ -116,6 +130,7 @@ typedef NS_ENUM(NSInteger, OISWriteMode) {
   _editLinks = [NSMutableDictionary dictionary];
   _metadataProblems = @[];
   _lock = [[NSLock alloc] init];
+  _tracking = [NSMutableDictionary dictionary];
   return self;
 }
 
@@ -186,6 +201,7 @@ typedef NS_ENUM(NSInteger, OISWriteMode) {
     }
   }
   self.metadata = storeMetadata;
+  if ([self.options[NSPersistentHistoryTrackingKey] boolValue]) _history = [[ODataHistoryLog alloc] initWithStoreID:uuid];
   return YES;
 }
 
@@ -206,6 +222,14 @@ typedef NS_ENUM(NSInteger, OISWriteMode) {
       return nil;
     }
     return [self executeSave:(NSSaveChangesRequest *)request error:error];
+  }
+  if ([request isKindOfClass:[NSPersistentHistoryChangeRequest class]]) {
+    if (!_history) {
+      if (error) *error = OISError(ODataIncrementalStoreErrorUnsupportedRequest,
+                                   @"Persistent history tracking is not enabled on this store (NSPersistentHistoryTrackingKey).");
+      return nil;
+    }
+    return [_history resultForRequest:(NSPersistentHistoryChangeRequest *)request error:error];
   }
   if (error) *error = OISError(ODataIncrementalStoreErrorUnsupportedRequest, @"Unsupported NSPersistentStoreRequest");
   return nil;
@@ -399,7 +423,23 @@ typedef NS_ENUM(NSInteger, OISWriteMode) {
 // (section 8.2.8.3); the service may page smaller, never larger.
 - (NSArray *)rowsAtURL:(NSURL *)url limit:(NSUInteger)limit pageSize:(NSUInteger)pageSize error:(NSError **)error
 {
-  NSDictionary *headers = pageSize ? @{ @"Prefer": [NSString stringWithFormat:@"odata.maxpagesize=%lu", (unsigned long)pageSize] } : nil;
+  return [self rowsAtURL:url limit:limit pageSize:pageSize trackChanges:NO deltaLink:NULL error:error];
+}
+
+// With trackChanges, asks for a delta link (Prefer: odata.track-changes,
+// Part 1 section 8.2.8.6), which comes with the last page.
+- (NSArray *)rowsAtURL:(NSURL *)url
+                 limit:(NSUInteger)limit
+              pageSize:(NSUInteger)pageSize
+          trackChanges:(BOOL)trackChanges
+             deltaLink:(NSURL **)deltaLink
+                 error:(NSError **)error
+{
+  NSMutableArray *preferences = [NSMutableArray array];
+  if (pageSize) [preferences addObject:[NSString stringWithFormat:@"odata.maxpagesize=%lu", (unsigned long)pageSize]];
+  if (trackChanges) [preferences addObject:@"odata.track-changes"];
+  NSDictionary *headers = preferences.count ? @{ @"Prefer": [preferences componentsJoinedByString:@","] } : nil;
+  if (deltaLink) *deltaLink = nil;
   NSMutableArray *rows = [NSMutableArray array];
   NSMutableSet *seen = [NSMutableSet set];
   while (url) {
@@ -425,6 +465,11 @@ typedef NS_ENUM(NSInteger, OISWriteMode) {
       return [rows subarrayWithRange:NSMakeRange(0, limit)];
     }
     NSString *next = json[@"@odata.nextLink"];
+    NSString *delta = json[@"@odata.deltaLink"];
+    if (deltaLink && [delta isKindOfClass:[NSString class]]) {
+      NSURL *resolved = [NSURL URLWithString:delta relativeToURL:url].absoluteURL;
+      *deltaLink = resolved ? [self serviceURLForLink:resolved] : nil;
+    }
     url = [next isKindOfClass:[NSString class]] ? [NSURL URLWithString:next relativeToURL:url].absoluteURL : nil;
   }
   return rows;
@@ -493,7 +538,264 @@ typedef NS_ENUM(NSInteger, OISWriteMode) {
       [_lock unlock];
     }
   }
+  [self recordSave:save];
   return @[];
+}
+
+#pragma mark - History
+
+// FreeCoreData's coordinator asks a store these for its history token.
+- (BOOL)_historyTrackingEnabled
+{
+  return _history != nil;
+}
+
+- (long long)_lastHistoryTransactionNumber
+{
+  return _history.lastTransactionNumber;
+}
+
+// A save, as a transaction; and what the store now knows of the rows the
+// save touched, for -fetchRemoteChanges:.
+- (void)recordSave:(NSSaveChangesRequest *)save
+{
+  NSMutableArray *inserted = [NSMutableArray array];
+  NSMutableDictionary *updated = [NSMutableDictionary dictionary];
+  NSMutableArray *deleted = [NSMutableArray array];
+  NSManagedObjectContext *context = nil;
+  for (NSManagedObject *object in save.insertedObjects) {
+    [inserted addObject:object.objectID];
+    context = context ?: object.managedObjectContext;
+  }
+  for (NSManagedObject *object in save.updatedObjects) {
+    updated[object.objectID] = [NSSet setWithArray:object.changedValues.allKeys];
+    context = context ?: object.managedObjectContext;
+  }
+  for (NSManagedObject *object in save.deletedObjects) {
+    [deleted addObject:object.objectID];
+    context = context ?: object.managedObjectContext;
+  }
+  [_lock lock];
+  for (OISTracking *tracking in _tracking.allValues) {
+    for (NSManagedObjectID *oid in inserted) {
+      if (tracking == _tracking[[self trackedEntityFor:oid.entity].name]) tracking.rows[oid] = [NSNull null];
+    }
+    for (NSManagedObjectID *oid in updated) {
+      if (tracking.rows[oid]) tracking.rows[oid] = [NSNull null];
+    }
+    for (NSManagedObjectID *oid in deleted) [tracking.rows removeObjectForKey:oid];
+  }
+  [_lock unlock];
+  [_history recordInserted:inserted updated:updated deleted:deleted author:context.transactionAuthor contextName:context.name];
+}
+
+#pragma mark - Remote changes
+
+// The entities whose sets are tracked: the option's, or every entity with
+// a set of its own (a sub-entity in its base's set is read with it).
+- (NSArray *)trackedEntities
+{
+  NSManagedObjectModel *model = self.persistentStoreCoordinator.managedObjectModel;
+  NSArray *named = self.options[ODataIncrementalStoreTrackedEntitiesOption];
+  NSMutableArray *entities = [NSMutableArray array];
+  if ([named isKindOfClass:[NSArray class]]) {
+    for (NSString *name in named) {
+      NSEntityDescription *entity = model.entitiesByName[name];
+      if (entity) [entities addObject:entity];
+    }
+    return entities;
+  }
+  for (NSEntityDescription *entity in [model.entities sortedArrayUsingComparator:^NSComparisonResult(id a, id b) {
+         return [[a name] compare:[b name]];
+       }]) {
+    if ([self trackedEntityFor:entity] != entity) continue;
+    ODataSchemaEntityType *type = [_mapper entityTypeForEntity:entity];
+    if (_schema && type && ![_schema entitySetForEntityType:type] && [_schema entityTypeIsContained:type]) continue;
+    [entities addObject:entity];
+  }
+  return entities;
+}
+
+// The entity whose set holds this one's rows.
+- (NSEntityDescription *)trackedEntityFor:(NSEntityDescription *)entity
+{
+  NSEntityDescription *e = entity;
+  while (e.superentity && [[_mapper entitySetForEntity:e] isEqualToString:[_mapper entitySetForEntity:e.superentity]]) e = e.superentity;
+  return e;
+}
+
+// Rows compared without their control information, which changes with
+// every read (a context, a session in a link) though the entity does not.
+static BOOL OISSameRow(NSDictionary *a, NSDictionary *b)
+{
+  NSMutableDictionary *x = [NSMutableDictionary dictionary], *y = [NSMutableDictionary dictionary];
+  for (NSString *key in a) if (![key hasPrefix:@"@"] || [key isEqualToString:@"@odata.etag"]) x[key] = a[key];
+  for (NSString *key in b) if (![key hasPrefix:@"@"] || [key isEqualToString:@"@odata.etag"]) y[key] = b[key];
+  return [x isEqualToDictionary:y];
+}
+
+// The names of the properties that differ between two rows of an object.
+- (NSSet *)changedPropertiesFrom:(NSDictionary *)old to:(NSDictionary *)row entity:(NSEntityDescription *)entity
+{
+  NSMutableSet *names = [NSMutableSet set];
+  for (NSAttributeDescription *attr in entity.attributesByName.allValues) {
+    NSString *wire = [_mapper propertyForAttribute:attr];
+    id a = old[wire], b = row[wire];
+    if (b && !(a == b || [a isEqual:b])) [names addObject:attr.name];
+  }
+  for (NSRelationshipDescription *rel in entity.relationshipsByName.allValues) {
+    NSString *wire = [_mapper propertyForRelationship:rel];
+    id a = old[wire], b = row[wire];
+    if (b && !(a == b || [a isEqual:b])) [names addObject:rel.name];
+  }
+  return names;
+}
+
+// A known object the service names by URL (a deleted entity's id).
+- (NSManagedObjectID *)objectIDNamed:(NSString *)url among:(NSDictionary *)rows
+{
+  NSString *decoded = [url stringByRemovingPercentEncoding] ?: url;
+  for (NSManagedObjectID *oid in rows) {
+    NSString *path = [ODataResourceIdentifier identifierFromReference:[self referenceObjectForObjectID:oid]].path;
+    NSString *plain = [path stringByRemovingPercentEncoding] ?: path;
+    if (plain.length && ([decoded hasSuffix:[@"/" stringByAppendingString:plain]] || [decoded isEqualToString:plain])) return oid;
+    [_lock lock];
+    NSURL *edit = _editLinks[oid];
+    [_lock unlock];
+    if (edit && [[[edit.absoluteString stringByRemovingPercentEncoding] ?: @"" lastPathComponent] isEqualToString:decoded.lastPathComponent]) return oid;
+  }
+  return nil;
+}
+
+- (void)bumpVersionForObjectID:(NSManagedObjectID *)objectID
+{
+  [_lock lock];
+  _versions[objectID] = @([_versions[objectID] unsignedLongLongValue] + 1);
+  [_lock unlock];
+}
+
+// One entry of a delta response (JSON Format section 15): an entity new
+// or changed (perhaps only in part), a deleted one, a link added or taken
+// away (a change to its source).
+- (void)applyDeltaEntry:(NSDictionary *)entry
+               tracking:(OISTracking *)tracking
+                 entity:(NSEntityDescription *)entity
+               inserted:(NSMutableArray *)inserted
+                updated:(NSMutableDictionary *)updated
+                deleted:(NSMutableArray *)deleted
+{
+  NSString *context = [entry[@"@odata.context"] isKindOfClass:[NSString class]] ? entry[@"@odata.context"] : @"";
+  if ([context hasSuffix:@"/$link"] || [context hasSuffix:@"/$deletedLink"]) {
+    NSManagedObjectID *source = [entry[@"source"] isKindOfClass:[NSString class]] ? [self objectIDNamed:entry[@"source"] among:tracking.rows] : nil;
+    if (!source) return;
+    NSMutableSet *names = [updated[source] mutableCopy] ?: [NSMutableSet set];
+    for (NSRelationshipDescription *rel in source.entity.relationshipsByName.allValues) {
+      if ([[_mapper propertyForRelationship:rel] isEqual:entry[@"relationship"]]) [names addObject:rel.name];
+    }
+    updated[source] = names;
+    [self discardCachedRowsForObjectIDs:@[ source ]];
+    return;
+  }
+  if (entry[@"@odata.removed"] || [context hasSuffix:@"/$deletedEntity"]) {
+    id name = entry[@"@odata.id"] ?: entry[@"id"];
+    NSManagedObjectID *oid = [name isKindOfClass:[NSString class]] ? [self objectIDNamed:name among:tracking.rows]
+                                                                   : [self objectIDFromPayload:entry entity:entity error:NULL];
+    if (!oid) return;
+    // Its last row stays: merging the deletion into a context fires the
+    // object's fault, and the service no longer has it.
+    [deleted addObject:oid];
+    [tracking.rows removeObjectForKey:oid];
+    return;
+  }
+  NSManagedObjectID *oid = [self objectIDFromPayload:entry entity:entity error:NULL];
+  if (!oid && [entry[@"@odata.id"] isKindOfClass:[NSString class]]) oid = [self objectIDNamed:entry[@"@odata.id"] among:tracking.rows];
+  if (!oid) return;
+  id old = tracking.rows[oid];
+  NSMutableDictionary *row = [old isKindOfClass:[NSDictionary class]] ? [old mutableCopy] : [NSMutableDictionary dictionary];
+  [row addEntriesFromDictionary:entry];
+  if (old) {
+    NSMutableSet *names = [updated[oid] mutableCopy] ?: [NSMutableSet set];
+    if ([old isKindOfClass:[NSDictionary class]]) [names unionSet:[self changedPropertiesFrom:old to:entry entity:oid.entity]];
+    updated[oid] = names;
+  } else {
+    [inserted addObject:oid];
+  }
+  tracking.rows[oid] = row;
+  [self cacheNodeForObjectID:oid entity:oid.entity payload:row error:NULL];
+  [self bumpVersionForObjectID:oid];
+}
+
+- (BOOL)changesOfEntity:(NSEntityDescription *)entity
+               inserted:(NSMutableArray *)inserted
+                updated:(NSMutableDictionary *)updated
+                deleted:(NSMutableArray *)deleted
+                  error:(NSError **)error
+{
+  OISTracking *tracking = _tracking[entity.name];
+  NSURL *deltaLink = nil;
+  if (tracking.deltaLink) {
+    NSArray *entries = [self rowsAtURL:tracking.deltaLink limit:0 pageSize:0 trackChanges:NO deltaLink:&deltaLink error:error];
+    if (!entries) return NO;
+    for (NSDictionary *entry in entries) {
+      [self applyDeltaEntry:entry tracking:tracking entity:entity inserted:inserted updated:updated deleted:deleted];
+    }
+    // Without a new delta link (TripPin sends none), the next call reads
+    // the whole set again and compares.
+    tracking.deltaLink = deltaLink;
+    return YES;
+  }
+
+  // The whole set, compared with what was read last time.
+  NSURL *url = [_builder URLForFetch:[NSFetchRequest fetchRequestWithEntityName:entity.name] entity:entity error:error];
+  NSArray *rows = url ? [self rowsAtURL:url limit:0 pageSize:0 trackChanges:YES deltaLink:&deltaLink error:error] : nil;
+  if (!rows) return NO;
+  NSMutableDictionary *now = [NSMutableDictionary dictionary];
+  for (NSDictionary *row in rows) {
+    NSManagedObjectID *oid = [self objectIDFromPayload:row entity:entity error:error];
+    if (!oid) return NO;
+    now[oid] = row;
+    id old = tracking.rows[oid];
+    if (tracking && !old) {
+      [inserted addObject:oid];
+    } else if ([old isKindOfClass:[NSDictionary class]] && !OISSameRow(old, row)) {
+      updated[oid] = [self changedPropertiesFrom:old to:row entity:oid.entity];
+      [self bumpVersionForObjectID:oid];
+    }
+    [self cacheNodeForObjectID:oid entity:oid.entity payload:row error:NULL];
+  }
+  for (NSManagedObjectID *oid in tracking.rows) {
+    if (!now[oid]) [deleted addObject:oid];  // its last row stays, as for a delta's deletion
+  }
+  if (!tracking) {
+    tracking = [[OISTracking alloc] init];
+    _tracking[entity.name] = tracking;
+  }
+  tracking.rows = now;
+  tracking.deltaLink = deltaLink;
+  return YES;
+}
+
+- (NSNotification *)fetchRemoteChanges:(NSError **)error
+{
+  NSMutableArray *inserted = [NSMutableArray array];
+  NSMutableDictionary *updated = [NSMutableDictionary dictionary];
+  NSMutableArray *deleted = [NSMutableArray array];
+  for (NSEntityDescription *entity in [self trackedEntities]) {
+    if (![self changesOfEntity:entity inserted:inserted updated:updated deleted:deleted error:error]) return nil;
+  }
+  NSMutableDictionary *info = [NSMutableDictionary dictionary];
+  if (inserted.count) info[NSInsertedObjectIDsKey] = [NSSet setWithArray:inserted];
+  if (updated.count) info[NSUpdatedObjectIDsKey] = [NSSet setWithArray:updated.allKeys];
+  if (deleted.count) info[NSDeletedObjectIDsKey] = [NSSet setWithArray:deleted];
+  NSPersistentHistoryTransaction *transaction = [_history recordInserted:inserted updated:updated deleted:deleted
+                                                                  author:ODataRemoteChangesAuthor contextName:nil];
+  if (transaction && [self.options[NSPersistentStoreRemoteChangeNotificationPostOptionKey] boolValue]) {
+    NSMutableDictionary *remote = [@{ NSStoreUUIDKey: self.identifier ?: @"", NSPersistentHistoryTokenKey: transaction.token } mutableCopy];
+    if (self.URL) remote[@"storeURL"] = self.URL;
+    [[NSNotificationCenter defaultCenter] postNotificationName:NSPersistentStoreRemoteChangeNotification
+                                                        object:self.persistentStoreCoordinator userInfo:remote];
+  }
+  return [NSNotification notificationWithName:NSManagedObjectContextDidSaveObjectIDsNotification object:self userInfo:info];
 }
 
 - (OISOperation *)operation:(NSURLRequest *)request completion:(BOOL (^)(ODataHTTPResponse *, NSError **))completion
@@ -1042,7 +1344,16 @@ static BOOL OISKeyIsSet(id value)
   [_lock lock];
   NSURL *link = _editLinks[objectID];
   [_lock unlock];
-  if (link) {
+  if (link) return [self serviceURLForLink:link];
+  ODataResourceIdentifier *identifier = [self identifierFromObjectID:objectID error:error];
+  return identifier ? [_builder URLForIdentifier:identifier error:error] : nil;
+}
+
+// A link the service gave, on the service root's scheme and port when it
+// is on its host.
+- (NSURL *)serviceURLForLink:(NSURL *)link
+{
+  {
     NSURL *root = _client.configuration.serviceRoot;
     if ([link.host caseInsensitiveCompare:root.host ?: @""] != NSOrderedSame) return link;
     NSString *s = link.absoluteString;
@@ -1057,8 +1368,6 @@ static BOOL OISKeyIsSet(id value)
     }
     return link;
   }
-  ODataResourceIdentifier *identifier = [self identifierFromObjectID:objectID error:error];
-  return identifier ? [_builder URLForIdentifier:identifier error:error] : nil;
 }
 
 - (ODataResourceIdentifier *)identifierFromObjectID:(NSManagedObjectID *)objectID error:(NSError **)error

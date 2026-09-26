@@ -1,0 +1,84 @@
+{
+  "comment": "The Zoo after a change, read again: the zebra renamed, the okapi gone, a giraffe new; the lion as it was.",
+  "spec": "OASIS OData 4.01 Part 1 §11.3 (requesting changes): a service that sends no delta link is read again and compared",
+  "request": {
+    "method": "GET",
+    "path": "Animals",
+    "query": {
+      "$expand": "Keeper($select=Code)"
+    }
+  },
+  "response": {
+    "status": 200,
+    "headers": {
+      "Content-Type": "application/json;odata.metadata=minimal;charset=utf-8",
+      "OData-Version": "4.0"
+    },
+    "body": {
+      "@odata.context": "https://zoo.test/Zoo.svc/$metadata#Animals",
+      "value": [
+        {
+          "Id": 1,
+          "Name": "Zed",
+          "Diet": "Herbivore",
+          "Features": "Stripes",
+          "Born": "2019-04-01",
+          "Home": {
+            "Zone": "Savanna",
+            "Opened": "2015-03-01",
+            "Area": "1200.5"
+          },
+          "Nicknames": [
+            "Stripes"
+          ],
+          "PastHomes": [],
+          "Keeper": {
+            "Code": "K1"
+          }
+        },
+        {
+          "@odata.type": "#Zoo.Lion",
+          "Id": 2,
+          "Name": "Leo",
+          "Diet": "Carnivore",
+          "Features": "Mane",
+          "Born": "2018-02-11",
+          "Home": {
+            "Zone": "Pride Rock",
+            "Opened": "2017-01-01",
+            "Area": 3000
+          },
+          "Nicknames": [
+            "King",
+            "Simba"
+          ],
+          "PastHomes": [
+            {
+              "Zone": "Quarantine",
+              "Opened": "2018-03-01",
+              "Area": "10"
+            }
+          ],
+          "MaxRoar": 114,
+          "Keeper": {
+            "Code": "K1"
+          }
+        },
+        {
+          "Id": 7,
+          "Name": "Giraffe",
+          "Diet": "Herbivore",
+          "Features": "Spots",
+          "Born": "2020-07-07",
+          "Home": null,
+          "Nicknames": [],
+          "PastHomes": [],
+          "Keeper": {
+            "Code": "K1"
+          }
+        }
+      ]
+    }
+  },
+  "state": "changed"
+}

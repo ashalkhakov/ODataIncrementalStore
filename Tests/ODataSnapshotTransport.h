@@ -24,6 +24,11 @@ NS_ASSUME_NONNULL_BEGIN
 @property (nonatomic, readonly) NSArray<NSNumber *> *batches;
 // Answer $batch with 404, as a service without it does.
 @property (nonatomic) BOOL refusesBatches;
+// What the service is like now. A snapshot with a "state" answers only
+// while the transport is in that state, and before any without one: the
+// same request can be answered one way, then, once the test says the
+// service has changed, another.
+@property (atomic, copy, nullable) NSString *state;
 
 - (nullable instancetype)initWithDirectory:(NSString *)directory
                                serviceRoot:(NSURL *)serviceRoot

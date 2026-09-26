@@ -32,6 +32,9 @@ FOUNDATION_EXPORT NSString * const ODataIncrementalStoreMaxVersionOption;
 // (Part 2 section 4.3.6). Unset, the store does so when $metadata says
 // the service supports it (Capabilities.KeyAsSegmentSupported).
 FOUNDATION_EXPORT NSString * const ODataIncrementalStoreKeyAsSegmentOption;
+// NSArray of entity names: the entities -fetchRemoteChanges: tracks.
+// Unset, every entity with an entity set of its own.
+FOUNDATION_EXPORT NSString * const ODataIncrementalStoreTrackedEntitiesOption;
 FOUNDATION_EXPORT NSString * const ODataIncrementalStoreType;
 
 typedef NS_ENUM(NSInteger, ODataPropertyNaming) {

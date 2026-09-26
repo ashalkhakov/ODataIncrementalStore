@@ -84,7 +84,8 @@ calling the client conformant.
 | Percent-encoding of key values in paths | Part 2 §4.3.1 | ✅ | Everything but what a path segment allows and OData's key syntax uses: `Customers('Smith%20%26%20Co%2F2')`. |
 | Deep insert | §11.4.2.2 | — | Not needed: a save that inserts related objects is one `$batch` change set, with binds, which is as atomic. |
 | Actions and functions | §11.5 | ✅ **live** | `ODataOperationCall`; see section 8. |
-| Delta, async, streams | | — | No Core Data equivalent in a fetch or save; planned in section 8. |
+| Delta | §11.3 | ✅ **live** | As persistent history; see section 8. |
+| Async, streams | | — | No Core Data equivalent in a fetch or save; planned in section 8. |
 
 ## 4. Core Data mapping
 
@@ -287,26 +288,64 @@ reached through an import in the container, a function of the service.
   other values as the coder reads them. An action that creates an entity
   hands back the new object, already saved. An action bound to an object
   drops its kept row, since it may have changed it.
-- Still to come: operations in `$filter` and `$orderby` (composable
-  functions), and methods on the classes a generated model's entities
-  could have. The Workbench can list an object's operations with
+- Functions in `$filter` and `$orderby` (Part 2 §5.1.1.12): an
+  `ODataFunctionExpression` is a function call inside a predicate or an
+  `ODataSortDescriptor` (`Zoo.Age(On=2024-01-01) gt 5`,
+  `Zoo.Caretaker()/Name eq 'Ann'`, `Animals/Zoo.Heaviest()/Name eq 'Leo'`,
+  `$orderby=Zoo.Age(…) desc`), bound to the fetched entity or to where a
+  key path leads, with a path on into its result; the compared literal is
+  typed by what that path ends at. Evaluated in memory it calls the
+  function. ✅ with snapshots only: TripPin parses such filters and answers
+  `500 not implemented`, **live**, and Northwind has no functions.
+  `FUNCTION(…)` in a format string would have been the natural spelling,
+  but gnustep-base parses neither it nor block expressions.
+- Generated classes: `ois-model --classes DIR` writes a class per entity,
+  mogenerator's way (`_Person`, rewritten each time, and `Person`, the
+  client's), with the operations as methods: `-[Person getFavoriteAirline:]`,
+  `+[Animal heaviestInContext:error:]`, and the imports on a service class,
+  `+[TripPinService getNearestAirportInContext:lat:lon:error:]`. ✅ **live**:
+  generated from TripPin's `$metadata`, compiled, and called, on both
+  platforms.
+- The Workbench can list an object's operations with
   `-[ODataSchema operationsBoundToEntityType:collection:]`.
 
-**Delta** (Part 1 §11.3). A GET with `Prefer: odata.track-changes` ends its
-last page with `@odata.deltaLink`; a later GET of that link returns only
-what changed since: new and changed entities, and removed ones
-(`@odata.removed` in 4.01, `$deletedEntity` in 4.0). These map onto Core
-Data's persistent history, which FreeCoreData supports: each delta read
-becomes a history transaction of inserts, updates and deletes, and the
-app catches up as it would with any store, by fetching the history after
-its last token (`NSPersistentHistoryChangeRequest`) and merging it into its
-contexts. The store refreshes its cached rows and bumps the versions of
-what changed as it records them. In FreeCoreData a store answers history
-requests itself (the SQLite store does), so the incremental store can do
-the same; on Apple, whether `NSIncrementalStore` can answer them (its
-history classes have no public initializers) needs checking first. It
-needs a service that tracks changes; neither public reference service
-does, so it would be tested with snapshots.
+**Delta** (Part 1 §11.3), mapped onto Core Data's persistent history.
+✅ **live**. `-[ODataIncrementalStore fetchRemoteChanges:]` reads what
+changed at the service since the store last looked, for every entity with
+a set of its own (or those `ODataIncrementalStoreTrackedEntitiesOption`
+names):
+
+- The first call reads each set with `Prefer: odata.track-changes` and
+  starts tracking it. Later calls follow the `@odata.deltaLink` the last
+  page gave, reading both delta formats: entities new or changed (a
+  change may carry only the changed properties, which are laid over the
+  row the store kept), deleted entities (`@removed` in 4.01,
+  `$deletedEntity` in 4.0), and added or deleted links (a change to
+  their source).
+- Where there is no delta link, from a service that does not track
+  changes or one that stops (TripPin sends a delta link with a collection
+  but none with a delta response), the set is read again and compared
+  with the rows from the last read. So changes can be followed on any
+  service, at the cost of reading the set.
+- The answer is an `NSManagedObjectContextDidSaveObjectIDsNotification`-
+  shaped notification for `-mergeChangesFromContextDidSaveNotification:`,
+  and the rows the store keeps are brought up to date first, so merged
+  objects show the changes. A deleted object's last row is kept, since
+  merging its deletion fires its fault.
+- With `NSPersistentHistoryTrackingKey`, the store keeps persistent history:
+  each save is a transaction (author and name from the context), and so is
+  each read of remote changes (`ODataRemoteChangesAuthor`). History
+  requests are answered by token, date or transaction, with every result
+  type, and delete history too; with
+  `NSPersistentStoreRemoteChangeNotificationPostOptionKey` the store posts
+  `NSPersistentStoreRemoteChangeNotification`. Core Data's history classes
+  are abstract on Apple and concrete in FreeCoreData, and the store hands
+  out subclasses of its own on both; FreeCoreData's coordinator tokens
+  work as well.
+- Limits: history lives in memory, as long as the store (a token from an
+  earlier store stands before everything); TripPin's delta leaves out
+  updates (**live**: a PATCHed person is not in it), which a service that
+  sends no further delta link then shows at the next read-and-compare.
 
 **Asynchronous requests** (Part 1 §8.2.8.8, §11.6). A request sent with
 `Prefer: respond-async` may be answered `202 Accepted` with a status
@@ -351,7 +390,9 @@ content type and ETag.
    key-as-segment.~~ Done; spatial types left out for now.
 7. ~~**Versions:** speak 4.01 or 4.0 as the service does.~~ Done: `IN`
    had been sent as `in`, which both 4.0 reference services refuse.
-8. ~~**Actions and functions**~~ Done; then **delta**; see section 8.
+8. ~~**Actions and functions**~~ Done, with composable functions in
+   `$filter` and `$orderby`, and generated classes whose methods they are;
+   and ~~**delta**~~, done as persistent history; see section 8.
 9. **XML, for XForms:** JSON-to-XML mapping on the client first, since it
    works with every service; then Atom as a second wire format where a
    service offers it (section 7). Parsing CSDL XML in step 5 builds the

@@ -17,10 +17,13 @@
 #import "ODataBatch.h"
 #import "ODataSchema.h"
 #import "ODataModelBuilder.h"
+#import "ODataClassWriter.h"
 #import "ODataResourceIdentifier.h"
 #import "ODataPredicateTranslator.h"
 #import "ODataQueryBuilder.h"
 #import "ODataOperationCall.h"
+#import "ODataFunctionExpression.h"
+#import "ODataHistory.h"
 
 NS_ASSUME_NONNULL_BEGIN
 
@@ -68,6 +71,25 @@ NS_ASSUME_NONNULL_BEGIN
 // refreshObject:mergeChanges:] alone turns an object back into a fault,
 // which this store then fills from what it kept.
 - (void)discardCachedRowsForObjectIDs:(nullable NSArray<NSManagedObjectID *> *)objectIDs;
+
+// What changed at the service since the store last looked (Part 1 section
+// 11.3, delta), for the entities in ODataIncrementalStoreTrackedEntitiesOption,
+// or every entity with an entity set of its own. The first call reads each
+// set and starts tracking it: it reports no changes. Later calls follow
+// the delta link the service gave, and where it gave none, read the set
+// again and compare. The rows the store keeps are brought up to date, so
+// the objects' next faults see the changes.
+//
+// The answer is a notification in the shape of
+// NSManagedObjectContextDidSaveObjectIDsNotification (NSInsertedObjectIDsKey,
+// NSUpdatedObjectIDsKey, NSDeletedObjectIDsKey), for
+// -mergeChangesFromContextDidSaveNotification:. With
+// NSPersistentHistoryTrackingKey the changes are also a history
+// transaction, by ODataRemoteChangesAuthor, and with
+// NSPersistentStoreRemoteChangeNotificationPostOptionKey the store posts
+// NSPersistentStoreRemoteChangeNotification for it. nil and the error when
+// a request fails.
+- (nullable NSNotification *)fetchRemoteChanges:(NSError **)error;
 
 @end
 

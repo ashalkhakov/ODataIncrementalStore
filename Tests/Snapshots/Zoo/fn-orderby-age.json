@@ -1,0 +1,88 @@
+{
+  "comment": "Sorting by a function's result; the key still breaks ties.",
+  "spec": "OASIS OData 4.01 Part 2 §5.1.1.12; Part 1 §11.2.6.2 ($orderby)",
+  "request": {
+    "method": "GET",
+    "path": "Animals",
+    "query": {
+      "$orderby": "Zoo.Age(On=2024-01-01) desc,Id",
+      "$expand": "Keeper($select=Code)"
+    }
+  },
+  "response": {
+    "status": 200,
+    "headers": {
+      "Content-Type": "application/json;odata.metadata=minimal;charset=utf-8",
+      "OData-Version": "4.0"
+    },
+    "body": {
+      "@odata.context": "https://zoo.test/Zoo.svc/$metadata#Animals",
+      "value": [
+        {
+          "@odata.type": "#Zoo.Lion",
+          "Id": 2,
+          "Name": "Leo",
+          "Diet": "Carnivore",
+          "Features": "Mane",
+          "Born": "2018-02-11",
+          "Home": {
+            "Zone": "Pride Rock",
+            "Opened": "2017-01-01",
+            "Area": 3000
+          },
+          "Nicknames": [
+            "King",
+            "Simba"
+          ],
+          "PastHomes": [
+            {
+              "Zone": "Quarantine",
+              "Opened": "2018-03-01",
+              "Area": "10"
+            }
+          ],
+          "MaxRoar": 114,
+          "Keeper": {
+            "Code": "K1"
+          }
+        },
+        {
+          "Id": 1,
+          "Name": "Zebra",
+          "Diet": "Herbivore",
+          "Features": "Stripes",
+          "Born": "2019-04-01",
+          "Home": {
+            "Zone": "Savanna",
+            "Opened": "2015-03-01",
+            "Area": "1200.5"
+          },
+          "Nicknames": [
+            "Stripes"
+          ],
+          "PastHomes": [],
+          "Keeper": {
+            "Code": "K1"
+          }
+        },
+        {
+          "Id": 3,
+          "Name": "Okapi",
+          "Diet": "Herbivore",
+          "Features": "Stripes, Spots",
+          "Born": null,
+          "Home": {
+            "@odata.type": "#Zoo.Aviary",
+            "Zone": "Forest",
+            "Opened": null,
+            "Area": "50",
+            "Height": 12.5
+          },
+          "Nicknames": [],
+          "PastHomes": null,
+          "Keeper": null
+        }
+      ]
+    }
+  }
+}

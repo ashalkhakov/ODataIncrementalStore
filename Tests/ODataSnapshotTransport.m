@@ -327,8 +327,15 @@ static BOOL OISAccepts(NSString *accept, NSString *type)
     return [self sendBatch:request returningResponse:response];
   }
   NSDictionary *hit = nil;
+  NSString *state = self.state;
   for (NSDictionary *snapshot in _snapshots) {
-    if ([self matches:snapshot request:request]) {
+    if (state && [snapshot[@"state"] isEqual:state] && [self matches:snapshot request:request]) {
+      hit = snapshot;
+      break;
+    }
+  }
+  for (NSDictionary *snapshot in hit ? @[] : _snapshots) {
+    if (!snapshot[@"state"] && [self matches:snapshot request:request]) {
       hit = snapshot;
       break;
     }

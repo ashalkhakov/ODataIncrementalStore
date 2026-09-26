@@ -9,7 +9,8 @@
 //   modelForServiceAtURL:options:error:]) builds the model in memory.
 // - Ahead of time, for a client built on a particular service:
 //   +writeModel:toPackage:... writes it as an .xcdatamodeld, which Xcode
-//   edits and momc compiles like any other (Tools/ois-model does this).
+//   edits and momc compiles like any other (Tools/ois-model does this),
+//   with classes for its entities if asked (see ODataClassWriter.h).
 //
 // A service whose schema changes is a new version of the model, as in
 // Core Data: writing to a package that already holds the model adds a
