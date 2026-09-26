@@ -1,0 +1,19 @@
+{
+  "comment": "An imported function: a function of the service, called by its import's name; an enumeration parameter as a qualified literal; an Int64 result as a string (IEEE754Compatible).",
+  "spec": "OASIS OData 4.01 Part 1 §11.5.4.1; CSDL §13.6 (function import)",
+  "request": {
+    "method": "GET",
+    "path": "CountByDiet(Diet=Zoo.Diet'Herbivore')"
+  },
+  "response": {
+    "status": 200,
+    "headers": {
+      "Content-Type": "application/json;odata.metadata=minimal;charset=utf-8",
+      "OData-Version": "4.0"
+    },
+    "body": {
+      "@odata.context": "https://zoo.test/Zoo.svc/$metadata#Edm.Int64",
+      "value": "2"
+    }
+  }
+}

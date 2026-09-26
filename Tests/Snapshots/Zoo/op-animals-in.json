@@ -1,0 +1,43 @@
+{
+  "comment": "A collection parameter goes by alias, as JSON; the entities returned come in pages.",
+  "spec": "OASIS OData 4.01 Part 2 §5.1.1.13.1 (parameter aliases); Part 1 §11.2.6.7",
+  "request": {
+    "method": "GET",
+    "path": "Staff('K1')/Zoo.AnimalsIn(Zones=@Zones)",
+    "query": {
+      "@Zones": "[\"Savanna\",\"Pride Rock\"]"
+    }
+  },
+  "response": {
+    "status": 200,
+    "headers": {
+      "Content-Type": "application/json;odata.metadata=minimal;charset=utf-8",
+      "OData-Version": "4.0"
+    },
+    "body": {
+      "@odata.context": "https://zoo.test/Zoo.svc/$metadata#Animals",
+      "value": [
+        {
+          "Id": 1,
+          "Name": "Zebra",
+          "Diet": "Herbivore",
+          "Features": "Stripes",
+          "Born": "2019-04-01",
+          "Home": {
+            "Zone": "Savanna",
+            "Opened": "2015-03-01",
+            "Area": "1200.5"
+          },
+          "Nicknames": [
+            "Stripes"
+          ],
+          "PastHomes": [],
+          "Keeper": {
+            "Code": "K1"
+          }
+        }
+      ],
+      "@odata.nextLink": "https://zoo.test/Zoo.svc/Staff('K1')/Zoo.AnimalsIn(Zones=@Zones)?@Zones=%5B%22Savanna%22,%22Pride%20Rock%22%5D&$skiptoken=1"
+    }
+  }
+}

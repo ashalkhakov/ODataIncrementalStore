@@ -1,0 +1,32 @@
+{
+  "comment": "An imported action creates an entity (as an invoicing service's CreateInvoice would); an object parameter is sent as a reference to it.",
+  "spec": "OASIS OData 4.01 Part 1 §11.5.5.1; JSON Format §17 (action invocation), §4.5.1 (@odata.id)",
+  "request": {
+    "method": "POST",
+    "path": "AdmitAnimal",
+    "body": {
+      "Name": "Kovu",
+      "Diet": "Carnivore",
+      "Keeper": {
+        "@odata.id": "https://zoo.test/Zoo.svc/Staff('K1')"
+      }
+    }
+  },
+  "response": {
+    "status": 201,
+    "headers": {
+      "Content-Type": "application/json;odata.metadata=minimal;charset=utf-8",
+      "OData-Version": "4.0"
+    },
+    "body": {
+      "@odata.context": "https://zoo.test/Zoo.svc/$metadata#Animals/$entity",
+      "@odata.type": "#Zoo.Lion",
+      "Id": 6,
+      "Name": "Kovu",
+      "Diet": "Carnivore",
+      "Features": "Mane",
+      "Born": null,
+      "MaxRoar": null
+    }
+  }
+}

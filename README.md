@@ -224,6 +224,29 @@ open).
 4.01 syntax, so `IN` becomes `eq … or eq …` there, and `LIKE` and
 `MATCHES` (`matchesPattern`) work only against 4.01.
 
+## Actions and functions
+
+A service's actions and functions are its entities' methods, over the
+network, and are called that way: one bound to an entity type on an
+object, one bound to a collection on an entity, an unbound one on the
+context, by the name the service imports it under. `$metadata` says what
+there is and what each takes.
+
+```objc
+NSManagedObject *airline = [russell invokeODataOperation:@"GetFavoriteAirline" parameters:nil error:&error];
+
+ODataOperationCall *call = [ODataOperationCall callOfOperation:@"GetNearestAirport" inContext:context];
+call.parameters = @{ @"lat": @33.94, @"lon": @-118.4 };
+NSManagedObject *airport = [call invoke:&error];
+```
+
+Parameters are written as their declared types say (dates, enumerations,
+complex values from dictionaries, objects as references). An entity comes
+back as a managed object in the context, a collection of them as an
+array, anything else as the store reads attributes; `NSNull` when there is
+nothing. `-invokeWithTarget:action:` calls without waiting and sends the
+action on the context's queue.
+
 ## Threading
 
 `NSIncrementalStore` callbacks are synchronous. **Do not load this store on the

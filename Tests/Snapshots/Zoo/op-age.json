@@ -1,0 +1,19 @@
+{
+  "comment": "A function bound to an entity: an instance method, called with GET after the entity's URL, its parameters as literals (an Edm.Date as a date).",
+  "spec": "OASIS OData 4.01 Part 1 §11.5.4.1 (invoking a function); Part 2 §4.5.1 (addressing operations)",
+  "request": {
+    "method": "GET",
+    "path": "Animals(1)/Zoo.Age(On=2024-01-01)"
+  },
+  "response": {
+    "status": 200,
+    "headers": {
+      "Content-Type": "application/json;odata.metadata=minimal;charset=utf-8",
+      "OData-Version": "4.0"
+    },
+    "body": {
+      "@odata.context": "https://zoo.test/Zoo.svc/$metadata#Edm.Int32",
+      "value": 8
+    }
+  }
+}

@@ -27,6 +27,24 @@
 @implementation ODataSchemaEnumType
 @end
 
+@implementation ODataSchemaParameter
+@end
+
+@implementation ODataSchemaOperation
+- (ODataSchemaParameter *)bindingParameter
+{
+  return self.isBound ? self.parameters.firstObject : nil;
+}
+- (NSArray *)callerParameters
+{
+  if (!self.isBound || !self.parameters.count) return self.parameters;
+  return [self.parameters subarrayWithRange:NSMakeRange(1, self.parameters.count - 1)];
+}
+@end
+
+@implementation ODataSchemaOperationImport
+@end
+
 // Reads CSDL XML into the schema's dictionaries. Element names are taken
 // without their prefix (edmx:Edmx, Edmx), so a document is read the same
 // with or without namespace prefixes.
@@ -36,6 +54,8 @@
 @property (nonatomic, strong) NSMutableDictionary *enumTypes;
 @property (nonatomic, strong) NSMutableDictionary *typeDefinitions;  // qualified name -> underlying type
 @property (nonatomic, strong) NSMutableDictionary *entitySets;
+@property (nonatomic, strong) NSMutableDictionary *operations;        // qualified name -> NSMutableArray
+@property (nonatomic, strong) NSMutableDictionary *operationImports;  // name -> import
 @property (nonatomic, strong) NSMutableDictionary *aliases;  // alias -> namespace
 @property (nonatomic) BOOL keyAsSegmentSupported;
 @property (nonatomic, copy) NSString *version;
@@ -49,6 +69,8 @@
   NSMutableDictionary *_properties;
   NSMutableDictionary *_navigation;
   ODataSchemaEnumType *_enumType;
+  ODataSchemaOperation *_operation;
+  NSMutableArray *_parameters;
   NSMutableArray *_memberNames;
   NSMutableDictionary *_memberValues;
   BOOL _inKey;
@@ -64,6 +86,8 @@
   _enumTypes = [NSMutableDictionary dictionary];
   _typeDefinitions = [NSMutableDictionary dictionary];
   _entitySets = [NSMutableDictionary dictionary];
+  _operations = [NSMutableDictionary dictionary];
+  _operationImports = [NSMutableDictionary dictionary];
   _aliases = [NSMutableDictionary dictionary];
   return self;
 }
@@ -151,6 +175,29 @@ static NSString *OISLocalName(NSString *name)
       [_memberNames addObject:name];
       _memberValues[name] = value;
     }
+  } else if ([element isEqualToString:@"Function"] || [element isEqualToString:@"Action"]) {
+    _operation = [[ODataSchemaOperation alloc] init];
+    _operation.name = attributes[@"Name"] ?: @"";
+    _operation.qualifiedName = [self qualify:_operation.name];
+    _operation.isAction = [element isEqualToString:@"Action"];
+    _operation.isBound = [attributes[@"IsBound"] isEqualToString:@"true"];
+    _operation.isComposable = [attributes[@"IsComposable"] isEqualToString:@"true"];
+    _parameters = [NSMutableArray array];
+  } else if (_operation && [element isEqualToString:@"Parameter"]) {
+    ODataSchemaParameter *parameter = [[ODataSchemaParameter alloc] init];
+    parameter.name = attributes[@"Name"] ?: @"";
+    parameter.type = attributes[@"Type"] ?: @"Edm.String";
+    parameter.nullable = ![attributes[@"Nullable"] isEqualToString:@"false"];
+    [_parameters addObject:parameter];
+  } else if (_operation && [element isEqualToString:@"ReturnType"]) {
+    _operation.returnType = attributes[@"Type"];
+  } else if (_inContainer && ([element isEqualToString:@"FunctionImport"] || [element isEqualToString:@"ActionImport"])) {
+    ODataSchemaOperationImport *import = [[ODataSchemaOperationImport alloc] init];
+    import.name = attributes[@"Name"] ?: @"";
+    import.isAction = [element isEqualToString:@"ActionImport"];
+    import.operation = (import.isAction ? attributes[@"Action"] : attributes[@"Function"]) ?: @"";
+    import.entitySet = attributes[@"EntitySet"];
+    if (import.name.length) _operationImports[import.name] = import;
   } else if ([element isEqualToString:@"Annotation"]) {
     // On the container, or in <Annotations Target="NS.Container">; the
     // term under any alias of Org.OData.Capabilities.V1. A tag: true
@@ -182,6 +229,12 @@ static NSString *OISLocalName(NSString *name)
     _entityType.declaredNavigationProperties = _navigation;
     _entityTypes[_entityType.qualifiedName] = _entityType;
     _entityType = nil;
+  } else if (([element isEqualToString:@"Function"] || [element isEqualToString:@"Action"]) && _operation) {
+    _operation.parameters = _parameters;
+    NSMutableArray *overloads = _operations[_operation.qualifiedName];
+    if (!overloads) _operations[_operation.qualifiedName] = overloads = [NSMutableArray array];
+    [overloads addObject:_operation];
+    _operation = nil;
   } else if ([element isEqualToString:@"Key"]) {
     _inKey = NO;
   } else if ([element isEqualToString:@"EnumType"] && _enumType) {
@@ -240,6 +293,26 @@ static NSString *OISLocalName(NSString *name)
     if (type.baseType) type.baseType = [schema qualifiedName:type.baseType];
     for (ODataSchemaProperty *property in type.declaredProperties.allValues) qualify(property);
   }
+  // Parameters and return types are typed as properties are.
+  NSString * (^qualifyType)(NSString *) = ^NSString *(NSString *type) {
+    ODataSchemaProperty *p = [[ODataSchemaProperty alloc] init];
+    p.type = type;
+    qualify(p);
+    return p.type;
+  };
+  NSMutableDictionary *operations = [NSMutableDictionary dictionary];
+  for (NSString *name in reader.operations) {
+    for (ODataSchemaOperation *operation in reader.operations[name]) {
+      for (ODataSchemaParameter *parameter in operation.parameters) parameter.type = qualifyType(parameter.type);
+      if (operation.returnType) operation.returnType = qualifyType(operation.returnType);
+    }
+    operations[name] = [reader.operations[name] copy];
+  }
+  for (ODataSchemaOperationImport *import in reader.operationImports.allValues) {
+    import.operation = [schema qualifiedName:import.operation];
+  }
+  schema->_operations = [operations copy];
+  schema->_operationImports = [reader.operationImports copy];
   schema->_entityTypes = [reader.entityTypes copy];
   schema->_complexTypes = [reader.complexTypes copy];
   schema->_enumTypes = [reader.enumTypes copy];
@@ -345,6 +418,70 @@ static NSString *OISLocalName(NSString *name)
   NSMutableDictionary *all = [NSMutableDictionary dictionary];
   for (ODataSchemaComplexType *t in chain) [all addEntriesFromDictionary:t.declaredProperties];
   return all;
+}
+
+#pragma mark - Operations
+
+// Whether an operation's binding parameter takes this entity type (it or
+// a base of it) or, with collection, a collection of them.
+- (BOOL)operation:(ODataSchemaOperation *)operation binds:(ODataSchemaEntityType *)type collection:(BOOL)collection
+{
+  ODataSchemaParameter *binding = operation.bindingParameter;
+  if (!binding) return NO;
+  BOOL isCollection = [binding.type hasPrefix:@"Collection("] && [binding.type hasSuffix:@")"];
+  if (isCollection != collection) return NO;
+  NSString *bound = isCollection ? [binding.type substringWithRange:NSMakeRange(11, binding.type.length - 12)] : binding.type;
+  ODataSchemaEntityType *boundType = self.entityTypes[bound];
+  return boundType && [self entityType:type isOrDerivesFrom:boundType];
+}
+
+- (NSArray *)operationsBoundToEntityType:(ODataSchemaEntityType *)type collection:(BOOL)collection
+{
+  NSMutableArray *found = [NSMutableArray array];
+  for (NSString *name in [self.operations.allKeys sortedArrayUsingSelector:@selector(compare:)]) {
+    for (ODataSchemaOperation *operation in self.operations[name]) {
+      if ([self operation:operation binds:type collection:collection]) [found addObject:operation];
+    }
+  }
+  return found;
+}
+
+- (ODataSchemaOperation *)operationNamed:(NSString *)name
+                       boundToEntityType:(ODataSchemaEntityType *)type
+                              collection:(BOOL)collection
+                          parameterNames:(NSSet *)names
+{
+  NSMutableArray *candidates = [NSMutableArray array];
+  if (!type) {
+    ODataSchemaOperationImport *import = self.operationImports[name];
+    NSString *qualified = import ? import.operation : [self qualifiedName:name];
+    for (ODataSchemaOperation *operation in self.operations[qualified]) {
+      if (!operation.isBound) [candidates addObject:operation];
+    }
+  } else {
+    BOOL qualified = [name rangeOfString:@"."].location != NSNotFound;
+    NSString *wanted = qualified ? [self qualifiedName:name] : name;
+    for (NSString *key in self.operations) {
+      for (ODataSchemaOperation *operation in self.operations[key]) {
+        if (![(qualified ? operation.qualifiedName : operation.name) isEqualToString:wanted]) continue;
+        if ([self operation:operation binds:type collection:collection]) [candidates addObject:operation];
+      }
+    }
+  }
+  if (candidates.count <= 1) return candidates.firstObject;
+  // Overloads: the one whose parameters are the names given; else the one
+  // bound most closely (a derived type's own before its base's).
+  for (ODataSchemaOperation *operation in candidates) {
+    NSSet *own = [NSSet setWithArray:[operation.callerParameters valueForKey:@"name"]];
+    if (names && [own isEqualToSet:names]) return operation;
+  }
+  for (ODataSchemaOperation *operation in candidates) {
+    NSString *bound = operation.bindingParameter.type;
+    if ([bound isEqualToString:type.qualifiedName] || [bound isEqualToString:[NSString stringWithFormat:@"Collection(%@)", type.qualifiedName]]) {
+      return operation;
+    }
+  }
+  return candidates.firstObject;
 }
 
 - (BOOL)entityTypeIsContained:(ODataSchemaEntityType *)type

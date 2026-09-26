@@ -1,0 +1,44 @@
+{
+  "comment": "A function bound to a collection: a class method. It returns an entity, of a derived type.",
+  "spec": "OASIS OData 4.01 Part 1 §11.5.4.1",
+  "request": {
+    "method": "GET",
+    "path": "Animals/Zoo.Heaviest()"
+  },
+  "response": {
+    "status": 200,
+    "headers": {
+      "Content-Type": "application/json;odata.metadata=minimal;charset=utf-8",
+      "OData-Version": "4.0"
+    },
+    "body": {
+      "@odata.context": "https://zoo.test/Zoo.svc/$metadata#Animals/$entity",
+      "@odata.type": "#Zoo.Lion",
+      "Id": 2,
+      "Name": "Leo",
+      "Diet": "Carnivore",
+      "Features": "Mane",
+      "Born": "2018-02-11",
+      "Home": {
+        "Zone": "Pride Rock",
+        "Opened": "2017-01-01",
+        "Area": 3000
+      },
+      "Nicknames": [
+        "King",
+        "Simba"
+      ],
+      "PastHomes": [
+        {
+          "Zone": "Quarantine",
+          "Opened": "2018-03-01",
+          "Area": "10"
+        }
+      ],
+      "MaxRoar": 114,
+      "Keeper": {
+        "Code": "K1"
+      }
+    }
+  }
+}

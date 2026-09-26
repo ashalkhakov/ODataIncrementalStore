@@ -47,6 +47,7 @@ SRCS = \
 	$(SRC_DIR)/ODataValue.m \
 	$(SRC_DIR)/ODataBatch.m \
 	$(SRC_DIR)/ODataSchema.m \
+	$(SRC_DIR)/ODataOperationCall.m \
 	$(SRC_DIR)/ODataModelBuilder.m \
 	$(SRC_DIR)/ODataResourceIdentifier.m \
 	$(SRC_DIR)/ODataPredicateTranslator.m \

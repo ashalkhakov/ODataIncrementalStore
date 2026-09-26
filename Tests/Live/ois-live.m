@@ -388,6 +388,80 @@ static void tripPin(NSString *models)
   }];
 }
 
+// Receives a call made without waiting.
+@interface OISLiveCallTarget : NSObject
+@property (atomic, strong) ODataOperationCall *finished;
+@property (atomic) BOOL onContextQueue;
+@end
+
+@implementation OISLiveCallTarget
+- (void)callFinished:(ODataOperationCall *)call
+{
+  self.onContextQueue = ![NSThread isMainThread];
+  self.finished = call;
+}
+@end
+
+static void operations(void)
+{
+  fprintf(stderr, "== Actions and functions\n");
+  NSError *error = nil;
+  NSURL *tripPin = tripPinSession();
+  NSManagedObjectModel *model = [ODataIncrementalStore modelForServiceAtURL:tripPin options:nil error:&error];
+  NSPersistentStoreCoordinator *psc = model ? [[NSPersistentStoreCoordinator alloc] initWithManagedObjectModel:model] : nil;
+  if (![psc addPersistentStoreWithType:[ODataIncrementalStore storeType] configuration:nil URL:tripPin options:nil error:&error]) {
+    check(NO, @"open TripPin with its own model", reason(error));
+    return;
+  }
+  NSManagedObjectContext *moc = newContext(psc);
+  __block NSString *airline = nil, *airport = nil, *city = nil;
+  __block id shared = nil;
+  __block NSError *e1 = nil, *e2 = nil, *e3 = nil;
+  [moc performBlockAndWait:^{
+    NSManagedObject *russell = personNamed(moc, @"russellwhyte", NULL);
+    NSError *e = nil;
+    NSManagedObject *favorite = [russell invokeODataOperation:@"GetFavoriteAirline" parameters:nil error:&e];
+    airline = [favorite valueForKey:@"name"];
+    e1 = e;
+
+    e = nil;
+    ODataOperationCall *nearest = [ODataOperationCall callOfOperation:@"GetNearestAirport" inContext:moc];
+    nearest.parameters = @{ @"lat": @33.94, @"lon": @-118.4 };
+    NSManagedObject *found = [nearest invoke:&e];
+    airport = [found valueForKey:@"icaoCode"];
+    NSDictionary *location = [found valueForKey:@"location"];
+    city = [location isKindOfClass:[NSDictionary class]] ? location[@"City"][@"Name"] : nil;
+    e2 = e;
+
+    e = nil;
+    shared = [russell invokeODataOperation:@"ShareTrip" parameters:@{ @"userName": @"scottketchum", @"tripId": @0 } error:&e];
+    e3 = e;
+  }];
+  check([airline isEqualToString:@"American Airlines"], @"a function bound to an entity, returning one (GetFavoriteAirline)",
+        airline ?: reason(e1));
+  check([airport isEqualToString:@"KLAX"] && [city isEqualToString:@"Los Angeles"], @"an imported function with parameters (GetNearestAirport)",
+        airport ? [NSString stringWithFormat:@"%@, %@", airport, city] : reason(e2));
+  check(shared == [NSNull null], @"an action bound to an entity, returning nothing (ShareTrip)", shared ? @"done" : reason(e3));
+
+  OISLiveCallTarget *target = [[OISLiveCallTarget alloc] init];
+  [moc performBlockAndWait:^{
+    NSManagedObject *russell = personNamed(moc, @"russellwhyte", NULL);
+    [[ODataOperationCall callOfOperation:@"GetFavoriteAirline" onObject:russell] invokeWithTarget:target action:@selector(callFinished:)];
+  }];
+  NSDate *deadline = [NSDate dateWithTimeIntervalSinceNow:60];
+  while (!target.finished && [deadline timeIntervalSinceNow] > 0) {
+    [[NSRunLoop currentRunLoop] runMode:NSDefaultRunLoopMode beforeDate:[NSDate dateWithTimeIntervalSinceNow:0.1]];
+  }
+  __block NSString *later = nil;
+  if (target.finished.result) {
+    [moc performBlockAndWait:^{
+      later = [target.finished.result valueForKey:@"name"];
+    }];
+  }
+  check([later isEqualToString:@"American Airlines"] && target.onContextQueue, @"called without waiting: target-action, on the context's queue",
+        later ?: (target.finished ? reason(target.finished.error) : @"no answer"));
+}
+
 static void modelsFromMetadata(NSString *models)
 {
   fprintf(stderr, "== Models from $metadata\n");
@@ -470,6 +544,7 @@ int main(int argc, const char *argv[])
     northwindTypes(models);
     tripPin(models);
     modelsFromMetadata(models);
+    operations();
     fprintf(stderr, "%s\n", failures ? "ois-live: FAILED" : "ois-live: all checks passed");
     return failures ? 1 : 0;
   }

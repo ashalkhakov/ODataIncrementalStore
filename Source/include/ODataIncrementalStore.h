@@ -20,6 +20,7 @@
 #import "ODataResourceIdentifier.h"
 #import "ODataPredicateTranslator.h"
 #import "ODataQueryBuilder.h"
+#import "ODataOperationCall.h"
 
 NS_ASSUME_NONNULL_BEGIN
 

@@ -8,7 +8,8 @@
 // entity sets. A property typed by a type definition takes its underlying
 // type. Functions, actions and annotations are read past. Type names are
 // kept qualified by namespace; an alias ("Self.Person") resolves to its
-// namespace, in a collection's element type too.
+// namespace, in a collection's element type too. Functions and actions
+// are read with their parameters and return types, and their imports.
 
 #pragma once
 #import "OISRuntime.h"
@@ -60,6 +61,36 @@ NS_ASSUME_NONNULL_BEGIN
 @property (nonatomic, copy) NSDictionary<NSString *, NSNumber *> *values;
 @end
 
+@interface ODataSchemaParameter : NSObject
+@property (nonatomic, copy) NSString *name;
+@property (nonatomic, copy) NSString *type;  // qualified, Collection(...) for a collection
+@property (nonatomic) BOOL nullable;
+@end
+
+// A function or an action (CSDL sections 12.1-12.2). A bound one's first
+// parameter is its binding parameter: the entity, or the collection of
+// entities, it is a method of.
+@interface ODataSchemaOperation : NSObject
+@property (nonatomic, copy) NSString *name;
+@property (nonatomic, copy) NSString *qualifiedName;
+@property (nonatomic) BOOL isAction;
+@property (nonatomic) BOOL isBound;
+@property (nonatomic) BOOL isComposable;
+@property (nonatomic, copy) NSArray<ODataSchemaParameter *> *parameters;  // the binding parameter first
+@property (nonatomic, copy, nullable) NSString *returnType;               // nil: returns nothing
+@property (nonatomic, readonly, nullable) ODataSchemaParameter *bindingParameter;
+// The parameters a caller gives: all but the binding one.
+@property (nonatomic, readonly) NSArray<ODataSchemaParameter *> *callerParameters;
+@end
+
+// An unbound operation, as the entity container names it.
+@interface ODataSchemaOperationImport : NSObject
+@property (nonatomic, copy) NSString *name;
+@property (nonatomic, copy) NSString *operation;            // qualified
+@property (nonatomic) BOOL isAction;
+@property (nonatomic, copy, nullable) NSString *entitySet;  // where returned entities live
+@end
+
 @interface ODataSchema : NSObject
 
 + (nullable instancetype)schemaWithData:(NSData *)csdl error:(NSError **)error;
@@ -68,6 +99,10 @@ NS_ASSUME_NONNULL_BEGIN
 @property (nonatomic, readonly) NSDictionary<NSString *, ODataSchemaComplexType *> *complexTypes;  // by qualified name
 @property (nonatomic, readonly) NSDictionary<NSString *, ODataSchemaEnumType *> *enumTypes;      // by qualified name
 @property (nonatomic, readonly) NSDictionary<NSString *, NSString *> *entitySets;                // name -> qualified type
+// By qualified name: the overloads of each (functions overload by binding
+// type and parameter names).
+@property (nonatomic, readonly) NSDictionary<NSString *, NSArray<ODataSchemaOperation *> *> *operations;
+@property (nonatomic, readonly) NSDictionary<NSString *, ODataSchemaOperationImport *> *operationImports;  // by name
 // The OData version the service speaks: <edmx:Edmx Version="4.01">.
 @property (nonatomic, readonly, copy) NSString *version;
 // The entity container is annotated Org.OData.Capabilities.V1.KeyAsSegmentSupported.
@@ -93,6 +128,17 @@ NS_ASSUME_NONNULL_BEGIN
 // The entity set holding entities of this type: one declared for it, or
 // for its nearest base type that has one.
 - (nullable NSString *)entitySetForEntityType:(ODataSchemaEntityType *)type;
+
+// The operations bound to this entity type or a base of it; with
+// collection, to a collection of them.
+- (NSArray<ODataSchemaOperation *> *)operationsBoundToEntityType:(ODataSchemaEntityType *)type collection:(BOOL)collection;
+// The one to call: bound to this type (or a base) or its collection, or
+// unbound when type is nil; named simply or qualified; an overload whose
+// parameters are these names, else the only one.
+- (nullable ODataSchemaOperation *)operationNamed:(NSString *)name
+                                   boundToEntityType:(nullable ODataSchemaEntityType *)type
+                                          collection:(BOOL)collection
+                                      parameterNames:(nullable NSSet<NSString *> *)names;
 
 // Whether entities of this type are contained in others (a navigation
 // property with ContainsTarget reaches this type or a base of it): such

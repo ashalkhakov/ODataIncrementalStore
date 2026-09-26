@@ -1,0 +1,28 @@
+{
+  "comment": "An action bound to an entity: POST, its parameters in a JSON body, a complex value written by its members' types; a complex value returned.",
+  "spec": "OASIS OData 4.01 Part 1 §11.5.5.1 (invoking an action)",
+  "request": {
+    "method": "POST",
+    "path": "Animals(1)/Zoo.Move",
+    "body": {
+      "To": {
+        "Zone": "Savanna North",
+        "Opened": "2024-02-01",
+        "Area": "900"
+      }
+    }
+  },
+  "response": {
+    "status": 200,
+    "headers": {
+      "Content-Type": "application/json;odata.metadata=minimal;charset=utf-8",
+      "OData-Version": "4.0"
+    },
+    "body": {
+      "@odata.context": "https://zoo.test/Zoo.svc/$metadata#Zoo.Enclosure",
+      "Zone": "Savanna North",
+      "Opened": "2024-02-01",
+      "Area": "900"
+    }
+  }
+}

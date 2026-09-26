@@ -1,0 +1,14 @@
+{
+  "comment": "An action that returns nothing: 204.",
+  "spec": "OASIS OData 4.01 Part 1 §11.5.5.1",
+  "request": {
+    "method": "POST",
+    "path": "Animals(2)/Zoo.Feed"
+  },
+  "response": {
+    "status": 204,
+    "headers": {
+      "OData-Version": "4.0"
+    }
+  }
+}

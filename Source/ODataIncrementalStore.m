@@ -3,7 +3,7 @@
 //
 // SPDX-License-Identifier: LGPL-2.1-or-later
 
-#import "ODataIncrementalStore.h"
+#import "ODataIncrementalStore+Private.h"
 
 // One object's share of a save: the entity body, the $ref requests for
 // to-many changes a body cannot carry, and the relationships that had to
@@ -708,6 +708,22 @@ static BOOL OISKeyIsSet(id value)
   if (oid.isTemporaryID) oid = assigned[oid];
   if (!oid || oid.isTemporaryID) return nil;
   return [ODataResourceIdentifier identifierFromReference:[self referenceObjectForObjectID:oid]].path;
+}
+
+- (ODataClient *)client
+{
+  return _client;
+}
+
+- (ODataPropertyMapper *)mapper
+{
+  return _mapper;
+}
+
+- (NSURL *)canonicalURLForObjectID:(NSManagedObjectID *)objectID error:(NSError **)error
+{
+  ODataResourceIdentifier *identifier = [self identifierFromObjectID:objectID error:error];
+  return identifier ? [self absoluteURLForPath:identifier.path] : nil;
 }
 
 - (NSURL *)absoluteURLForPath:(NSString *)path
