@@ -24,6 +24,11 @@ typedef NS_ENUM(NSInteger, OISTermKind) {
 @property (nonatomic, strong, nullable) ODataExpression *literal;
 @property (nonatomic, copy, nullable) NSString *caseFunction;  // tolower or toupper around `inner`
 @property (nonatomic, strong, nullable) OISTerm *inner;
+// What a type cast on the way asks of an object's entity: the term has a
+// value only where it holds, and is null elsewhere.
+@property (nonatomic, strong, nullable) NSPredicate *guard;
+// A collection's cast (Staff/NS.Manager): only its members of this type.
+@property (nonatomic, strong, nullable) NSEntityDescription *elementType;
 @end
 
 @implementation OISTerm
@@ -70,6 +75,19 @@ static NSString *OISSwapped(NSString *op)
   return swapped[op] ?: op;
 }
 
+static NSPredicate *OISAnd(NSPredicate *a, NSPredicate *b)
+{
+  if (!a) return b;
+  if (!b) return a;
+  return [NSCompoundPredicate andPredicateWithSubpredicates:@[ a, b ]];
+}
+
+static void OISCollectSubentities(NSEntityDescription *entity, NSMutableArray *into)
+{
+  [into addObject:entity];
+  for (NSEntityDescription *subentity in entity.subentities) OISCollectSubentities(subentity, into);
+}
+
 static NSPredicate *OISCompare(NSExpression *left, NSPredicateOperatorType type, NSExpression *right, NSComparisonPredicateOptions options)
 {
   return [NSComparisonPredicate predicateWithLeftExpression:left
@@ -86,6 +104,7 @@ static NSPredicate *OISCompare(NSExpression *left, NSPredicateOperatorType type,
 @property (nonatomic, strong) NSEntityDescription *root;
 @property (nonatomic, copy) NSDictionary<NSString *, ODataExpression *> *aliases;
 @property (nonatomic, strong) NSMutableDictionary<NSString *, OISTerm *> *scope;
+@property (nonatomic, copy) NSDictionary<NSString *, NSEntityDescription *> *entitiesByTypeName;
 @property (nonatomic) NSInteger variables;
 @property (nonatomic, strong, nullable) NSError *error;
 @end
@@ -131,6 +150,114 @@ static NSPredicate *OISCompare(NSExpression *left, NSPredicateOperatorType type,
     return [NSExpression expressionWithFormat:[NSString stringWithFormat:@"$%@.%@", t.variable, t.keyPath]];
   }
   return t.keyPath ? [NSExpression expressionForKeyPath:t.keyPath] : [NSExpression expressionForEvaluatedObject];
+}
+
+#pragma mark Types
+
+// t (an object) is of type, or of a type derived from it: its entity is one
+// of them. Apple's stores and FreeCoreData's all answer "entity" in a
+// predicate, of the fetched object or one it reaches.
+- (NSPredicate *)object:(OISTerm *)t isOfType:(NSEntityDescription *)type
+{
+  OISTerm *entity = [[OISTerm alloc] init];
+  entity.variable = t.variable;
+  entity.keyPath = t.keyPath ? [t.keyPath stringByAppendingString:@".entity"] : @"entity";
+  NSMutableArray *entities = [NSMutableArray array];
+  OISCollectSubentities(type, entities);
+  return OISCompare([self pathExpression:entity], NSInPredicateOperatorType, [NSExpression expressionForConstantValue:entities], 0);
+}
+
+// The entity type a cast or isof names: a qualified name (NS.Manager), or,
+// as some clients write it, the name in quotes.
+- (NSEntityDescription *)typeNamed:(ODataExpression *)e what:(NSString *)what
+{
+  e = [self resolve:e];
+  if (!e) return nil;
+  NSString *name = nil;
+  if (e.kind == ODataExpressionCast && !e.operand) name = e.name;
+  if (e.kind == ODataExpressionLiteral && [e.value isKindOfClass:[NSString class]]) name = e.value;
+  if (!name) return [self fail:400 message:[NSString stringWithFormat:@"%@ takes a qualified type name, not %@", what, e]];
+  return [self typeForName:name what:what];
+}
+
+- (NSEntityDescription *)typeForName:(NSString *)name what:(NSString *)what
+{
+  if ([name hasPrefix:@"Edm."]) return [self unsupported:[NSString stringWithFormat:@"%@ with the primitive type %@", what, name]];
+  NSEntityDescription *type = self.entitiesByTypeName[name];
+  if (!type) return [self fail:400 message:[NSString stringWithFormat:@"%@ is not an entity type of this service", name]];
+  return type;
+}
+
+// base as type: an object that is null unless it is of the type, a
+// collection of those of its members that are.
+- (OISTerm *)cast:(OISTerm *)base to:(NSEntityDescription *)type named:(NSString *)name
+{
+  if (base.kind != OISTermEntity && base.kind != OISTermCollection) {
+    return [self unsupported:[NSString stringWithFormat:@"A cast of %@", base.wireName ?: @"a value"]];
+  }
+  if (![type isKindOfEntity:base.entity] && ![base.entity isKindOfEntity:type]) {
+    return [self fail:400 message:[NSString stringWithFormat:@"%@ is not derived from %@, nor it from %@", name, base.entity.name, name]];
+  }
+  OISTerm *t = [[OISTerm alloc] init];
+  t.kind = base.kind;
+  t.variable = base.variable;
+  t.keyPath = base.keyPath;
+  t.guard = base.guard;
+  t.elementType = base.elementType;
+  t.entity = type;
+  t.wireName = base.wireName ? [NSString stringWithFormat:@"%@/%@", base.wireName, name] : name;
+  if (type != base.entity && [type isKindOfEntity:base.entity]) {
+    if (base.kind == OISTermCollection) {
+      t.elementType = type;
+    } else {
+      t.guard = OISAnd(base.guard, [self object:base isOfType:type]);
+    }
+  }
+  return t;
+}
+
+// isof(Type), of $it, or isof(expression, Type).
+- (NSPredicate *)isOf:(ODataExpression *)e
+{
+  NSArray<ODataExpression *> *args = e.arguments ?: @[];
+  if (args.count != 1 && args.count != 2) return [self fail:400 message:@"isof takes a type, or an expression and a type"];
+  NSEntityDescription *type = [self typeNamed:args.lastObject what:@"isof"];
+  if (!type) return nil;
+  OISTerm *object = args.count == 2 ? [self term:args[0]] : [self itTerm];
+  if (!object) return nil;
+  if (object.kind == OISTermCollection) return [self fail:400 message:[NSString stringWithFormat:@"isof: %@ is a collection", args[0]]];
+  if (object.kind != OISTermEntity) return [self unsupported:@"isof of a value"];
+  NSPredicate *test;
+  if ([object.entity isKindOfEntity:type]) {
+    // It is, when it is there at all.
+    test = object.keyPath ? OISCompare([self pathExpression:object], NSNotEqualToPredicateOperatorType, [NSExpression expressionForConstantValue:nil], 0)
+                          : [NSPredicate predicateWithValue:YES];
+  } else if ([type isKindOfEntity:object.entity]) {
+    test = [self object:object isOfType:type];
+  } else {
+    test = [NSPredicate predicateWithValue:NO];
+  }
+  return OISAnd(object.guard, test);
+}
+
+// p, about terms of which some are null where their guard does not hold:
+// there p is as it would be for null, whenNull.
+- (NSPredicate *)guarded:(NSPredicate *)p terms:(NSArray<OISTerm *> *)terms whenNull:(BOOL)whenNull
+{
+  if (!p) return nil;
+  NSPredicate *guard = nil;
+  for (OISTerm *t in terms) guard = OISAnd(guard, t.guard);
+  if (!guard) return p;
+  if (whenNull) return [NSCompoundPredicate orPredicateWithSubpredicates:@[ [NSCompoundPredicate notPredicateWithSubpredicate:guard], p ]];
+  return OISAnd(guard, p);
+}
+
+// A collection member's test, where the collection is cast: of the type,
+// and then the test.
+- (NSPredicate *)member:(OISTerm *)element of:(OISTerm *)collection test:(NSPredicate *)test
+{
+  if (!collection.elementType) return test ?: [NSPredicate predicateWithValue:YES];
+  return OISAnd([self object:element isOfType:collection.elementType], test);
 }
 
 #pragma mark Literals
@@ -201,9 +328,19 @@ static NSPredicate *OISCompare(NSExpression *left, NSPredicateOperatorType type,
       }
       OISTerm *t = [[OISTerm alloc] init];
       t.kind = OISTermValue;
+      t.guard = collection.guard;
+      t.wireName = e.description;
+      if (collection.elementType) {
+        OISTerm *element = [self elementOf:collection];
+        NSPredicate *member = [self member:element of:collection test:nil];
+        NSExpression *members = [NSExpression expressionForSubquery:[self pathExpression:collection]
+                                              usingIteratorVariable:element.variable
+                                                          predicate:member];
+        t.expression = [NSExpression expressionForFunction:@"count:" arguments:@[ members ]];
+        return t;
+      }
       t.variable = collection.variable;
       t.keyPath = [NSString stringWithFormat:@"%@.@count", collection.keyPath];
-      t.wireName = e.description;
       return t;
     }
     case ODataExpressionUnary:
@@ -216,8 +353,12 @@ static NSPredicate *OISCompare(NSExpression *left, NSPredicateOperatorType type,
       return [self fail:400 message:[NSString stringWithFormat:@"%@ is not a value", e]];
     case ODataExpressionCall:
       return [self callTerm:e];
-    case ODataExpressionCast:
-      return [self unsupported:@"A type cast"];
+    case ODataExpressionCast: {
+      OISTerm *base = e.operand ? [self term:e.operand] : [self itTerm];
+      if (!base) return nil;
+      NSEntityDescription *type = [self typeForName:e.name what:@"A cast"];
+      return type ? [self cast:base to:type named:e.name] : nil;
+    }
     default:
       return [self fail:400 message:[NSString stringWithFormat:@"%@ is not a value", e]];
   }
@@ -239,6 +380,7 @@ static NSPredicate *OISCompare(NSExpression *left, NSPredicateOperatorType type,
   if (!OISIsPlainName(property.name)) return [self unsupported:[NSString stringWithFormat:@"The property %@", e.name]];
 
   OISTerm *t = [[OISTerm alloc] init];
+  t.guard = base.guard;
   t.variable = base.variable;
   t.keyPath = base.keyPath ? [NSString stringWithFormat:@"%@.%@", base.keyPath, property.name] : property.name;
   t.wireName = base.wireName ? [NSString stringWithFormat:@"%@/%@", base.wireName, e.name] : e.name;
@@ -279,6 +421,7 @@ static NSPredicate *OISCompare(NSExpression *left, NSPredicateOperatorType type,
   t.kind = OISTermValue;
   t.expression = [NSExpression expressionForFunction:function arguments:@[ le, re ]];
   t.attribute = l.attribute ?: r.attribute;
+  t.guard = OISAnd(l.guard, r.guard);
   return t;
 }
 
@@ -306,6 +449,7 @@ static NSPredicate *OISCompare(NSExpression *left, NSPredicateOperatorType type,
     t.caseFunction = e.name;
     t.inner = inner;
     t.attribute = inner.attribute;
+    t.guard = inner.guard;
     return t;
   }
   if ([e.name isEqualToString:@"length"]) {
@@ -319,7 +463,14 @@ static NSPredicate *OISCompare(NSExpression *left, NSPredicateOperatorType type,
     t.kind = OISTermValue;
     t.variable = inner.variable;
     t.keyPath = [inner.keyPath stringByAppendingString:@".length"];
+    t.guard = inner.guard;
     return t;
+  }
+  if ([e.name isEqualToString:@"cast"]) {
+    if (args.count != 1 && args.count != 2) return [self fail:400 message:@"cast takes a type, or an expression and a type"];
+    NSEntityDescription *type = [self typeNamed:args.lastObject what:@"cast"];
+    OISTerm *base = !type ? nil : args.count == 2 ? [self term:args[0]] : [self itTerm];
+    return base ? [self cast:base to:type named:args.lastObject.description] : nil;
   }
   if ([e.name isEqualToString:@"now"] && args.count == 0) {
     OISTerm *t = [[OISTerm alloc] init];
@@ -363,6 +514,7 @@ static NSPredicate *OISCompare(NSExpression *left, NSPredicateOperatorType type,
       }
       return [self fail:400 message:[NSString stringWithFormat:@"%@ is not a condition", e]];
     case ODataExpressionCall:
+      if (!e.operand && !e.namedArguments && [e.name isEqualToString:@"isof"]) return [self isOf:e];
       if (!e.operand && !e.namedArguments) {
         NSDictionary *operators = @{ @"contains": @(NSContainsPredicateOperatorType),
                                      @"startswith": @(NSBeginsWithPredicateOperatorType),
@@ -378,8 +530,9 @@ static NSPredicate *OISCompare(NSExpression *left, NSPredicateOperatorType type,
       OISTerm *t = [self term:e];
       if (!t) return nil;
       if (t.kind == OISTermValue && t.attribute.attributeType == NSBooleanAttributeType) {
-        return OISCompare([self pathExpression:t], NSEqualToPredicateOperatorType,
-                          [NSExpression expressionForConstantValue:@YES], 0);
+        NSPredicate *p = OISCompare([self valueExpression:t typedBy:nil], NSEqualToPredicateOperatorType,
+                                    [NSExpression expressionForConstantValue:@YES], 0);
+        return [self guarded:p terms:@[ t ] whenNull:NO];
       }
       return [self fail:400 message:[NSString stringWithFormat:@"%@ is not a condition", e]];
     }
@@ -410,7 +563,18 @@ static NSPredicate *OISCompare(NSExpression *left, NSPredicateOperatorType type,
     op = OISSwapped(op);
   }
   NSPredicateOperatorType type = OISComparisonOperator(op);
+  // Where a cast leaves a side null: null eq null, null ne 'x'.
+  BOOL whenNull = NO;
+  if (r.kind == OISTermLiteral && !(l.guard && r.guard)) {
+    BOOL null = !r.literal.value || r.literal.value == [NSNull null];
+    if (type == NSEqualToPredicateOperatorType) whenNull = null;
+    if (type == NSNotEqualToPredicateOperatorType) whenNull = !null;
+  }
+  return [self guarded:[self comparison:type left:l right:r] terms:@[ l, r ] whenNull:whenNull];
+}
 
+- (NSPredicate *)comparison:(NSPredicateOperatorType)type left:(OISTerm *)l right:(OISTerm *)r
+{
   if (l.caseFunction && r.kind == OISTermLiteral && [r.literal.value isKindOfClass:[NSString class]] &&
       (type == NSEqualToPredicateOperatorType || type == NSNotEqualToPredicateOperatorType)) {
     return [self caseless:l type:type literal:r.literal.value];
@@ -421,9 +585,11 @@ static NSPredicate *OISCompare(NSExpression *left, NSPredicateOperatorType type,
     OISTerm *entity = l.kind == OISTermEntity ? l : r;
     OISTerm *other = entity == l ? r : l;
     BOOL null = other.kind == OISTermLiteral && (!other.literal.value || other.literal.value == [NSNull null]);
-    if (!null || !entity.keyPath || (type != NSEqualToPredicateOperatorType && type != NSNotEqualToPredicateOperatorType)) {
+    if (!null || (type != NSEqualToPredicateOperatorType && type != NSNotEqualToPredicateOperatorType)) {
       return [self unsupported:[NSString stringWithFormat:@"Comparing %@ with anything but null", entity.wireName ?: @"an entity"]];
     }
+    // $it, or a lambda's variable, is there (a cast of it may not be).
+    if (!entity.keyPath) return [NSPredicate predicateWithValue:type == NSNotEqualToPredicateOperatorType];
     return OISCompare([self pathExpression:entity], type, [NSExpression expressionForConstantValue:nil], 0);
   }
   for (OISTerm *side in @[ l, r ]) {
@@ -442,6 +608,11 @@ static NSPredicate *OISCompare(NSExpression *left, NSPredicateOperatorType type,
   OISTerm *l = [self term:left];
   OISTerm *r = l ? [self term:right] : nil;
   if (!r) return nil;
+  return [self guarded:[self stringOperator:type name:name leftTerm:l rightTerm:r] terms:@[ l, r ] whenNull:NO];
+}
+
+- (NSPredicate *)stringOperator:(NSPredicateOperatorType)type name:(NSString *)name leftTerm:(OISTerm *)l rightTerm:(OISTerm *)r
+{
   if (l.kind != OISTermValue && l.kind != OISTermLiteral) return [self fail:400 message:[NSString stringWithFormat:@"%@ takes strings", name]];
   if (l.caseFunction && r.kind == OISTermLiteral && [r.literal.value isKindOfClass:[NSString class]]) {
     NSString *text = r.literal.value;
@@ -473,8 +644,9 @@ static NSPredicate *OISCompare(NSExpression *left, NSPredicateOperatorType type,
     if (!ok) return nil;
     [values addObject:typed ?: [NSNull null]];
   }
-  return OISCompare([self valueExpression:l typedBy:nil], NSInPredicateOperatorType,
-                    [NSExpression expressionForConstantValue:values], 0);
+  NSPredicate *p = OISCompare([self valueExpression:l typedBy:nil], NSInPredicateOperatorType,
+                              [NSExpression expressionForConstantValue:values], 0);
+  return [self guarded:p terms:@[ l ] whenNull:[values containsObject:[NSNull null]]];
 }
 
 - (NSPredicate *)lambda:(ODataExpression *)e
@@ -486,19 +658,23 @@ static NSPredicate *OISCompare(NSExpression *left, NSPredicateOperatorType type,
   }
   BOOL all = [e.name isEqualToString:@"all"];
   NSExpression *zero = [NSExpression expressionForConstantValue:@0];
-  if (!e.body) {
-    if (all) return [self fail:400 message:@"all needs a condition"];
+  if (!e.body && all) return [self fail:400 message:@"all needs a condition"];
+  if (!e.body && !collection.elementType) {
     NSExpression *count = [self pathExpression:collection];
     count = [NSExpression expressionForFunction:@"count:" arguments:@[ count ]];
-    return OISCompare(count, NSGreaterThanPredicateOperatorType, zero, 0);
+    return [self guarded:OISCompare(count, NSGreaterThanPredicateOperatorType, zero, 0) terms:@[ collection ] whenNull:NO];
   }
 
-  NSString *variable = [NSString stringWithFormat:@"v%ld", (long)self.variables++];
-  OISTerm *element = [[OISTerm alloc] init];
-  element.kind = OISTermEntity;
-  element.variable = variable;
-  element.entity = collection.entity;
+  OISTerm *element = [self elementOf:collection];
+  if (!e.body) {
+    NSExpression *subquery = [NSExpression expressionForSubquery:[self pathExpression:collection]
+                                            usingIteratorVariable:element.variable
+                                                        predicate:[self member:element of:collection test:nil]];
+    NSExpression *count = [NSExpression expressionForFunction:@"count:" arguments:@[ subquery ]];
+    return [self guarded:OISCompare(count, NSGreaterThanPredicateOperatorType, zero, 0) terms:@[ collection ] whenNull:NO];
+  }
   element.wireName = e.variable;
+  NSString *variable = element.variable;
   OISTerm *outer = self.scope[e.variable];
   self.scope[e.variable] = element;
   NSPredicate *body = [self predicate:e.body];
@@ -509,13 +685,26 @@ static NSPredicate *OISCompare(NSExpression *left, NSPredicateOperatorType type,
   }
   if (!body) return nil;
 
-  // any: some element matches; all: none fails to.
+  // any: some element matches; all: none fails to. Of a cast collection,
+  // its elements of the type.
   NSPredicate *test = all ? [NSCompoundPredicate notPredicateWithSubpredicate:body] : body;
+  test = [self member:element of:collection test:test];
   NSExpression *subquery = [NSExpression expressionForSubquery:[self pathExpression:collection]
                                           usingIteratorVariable:variable
                                                       predicate:test];
   NSExpression *count = [NSExpression expressionForFunction:@"count:" arguments:@[ subquery ]];
-  return OISCompare(count, all ? NSEqualToPredicateOperatorType : NSGreaterThanPredicateOperatorType, zero, 0);
+  NSPredicate *p = OISCompare(count, all ? NSEqualToPredicateOperatorType : NSGreaterThanPredicateOperatorType, zero, 0);
+  return [self guarded:p terms:@[ collection ] whenNull:NO];
+}
+
+// A new variable for the members of a collection.
+- (OISTerm *)elementOf:(OISTerm *)collection
+{
+  OISTerm *element = [[OISTerm alloc] init];
+  element.kind = OISTermEntity;
+  element.variable = [NSString stringWithFormat:@"v%ld", (long)self.variables++];
+  element.entity = collection.entity;
+  return element;
 }
 
 @end
@@ -539,6 +728,7 @@ static NSPredicate *OISCompare(NSExpression *left, NSPredicateOperatorType type,
   build.root = entity;
   build.aliases = aliases ?: @{};
   build.scope = [NSMutableDictionary dictionary];
+  build.entitiesByTypeName = self.entitiesByTypeName ?: @{};
   return build;
 }
 
@@ -559,7 +749,7 @@ static NSPredicate *OISCompare(NSExpression *left, NSPredicateOperatorType type,
   NSMutableArray *descriptors = [NSMutableArray array];
   for (ODataOrderItem *item in items) {
     OISTerm *t = [build term:item.expression];
-    if (t && (t.kind != OISTermValue || t.expression || t.caseFunction || t.variable || !t.keyPath)) {
+    if (t && (t.kind != OISTermValue || t.expression || t.caseFunction || t.variable || !t.keyPath || t.guard)) {
       [build unsupported:[NSString stringWithFormat:@"Ordering by %@", item.expression]];
       t = nil;
     }

@@ -28,11 +28,23 @@ NS_ASSUME_NONNULL_BEGIN
 - (instancetype)initWithMapper:(ODataPropertyMapper *)mapper NS_DESIGNATED_INITIALIZER;
 - (instancetype)init NS_UNAVAILABLE;
 @property (nonatomic, readonly) ODataPropertyMapper *mapper;
+// The entity each qualified type name stands for, for casts and isof.
+@property (nonatomic, copy, nullable) NSDictionary<NSString *, NSEntityDescription *> *entitiesByTypeName;
 
 // A boolean expression over the entity's properties: eq ne gt ge lt le in,
 // and or not, add sub mul div (and mod, on Apple), contains startswith
 // endswith, tolower toupper length now, any and all over to-many
-// relationships, $count of a to-many relationship, parameter aliases.
+// relationships, $count of a to-many relationship, parameter aliases; type
+// casts (NS.Manager/Budget, Boss/NS.Manager, Staff/NS.Manager/$count,
+// cast(Boss,NS.Manager)) and isof(NS.Manager), isof(Boss,NS.Manager).
+//
+// A cast asks an object's type with "entity IN {the type, its
+// subentities}", which Apple's stores and FreeCoreData's answer, of the
+// fetched object and of one it reaches. What reads a cast object is behind
+// that test, in an AND, so a store that evaluates the predicate itself
+// never asks an Employee for a Manager's property; where the object is not
+// of the type, the cast is null (Default.Manager/Budget eq null holds for
+// every Employee that is not a Manager).
 - (nullable NSPredicate *)predicateForExpression:(ODataExpression *)expression
                                           entity:(NSEntityDescription *)entity
                                          aliases:(nullable NSDictionary<NSString *, ODataExpression *> *)aliases

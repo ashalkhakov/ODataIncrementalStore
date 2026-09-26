@@ -428,13 +428,29 @@ that every `$filter` the translator writes parses.
 `NSComparisonPredicate`, `NSCompoundPredicate` and `NSExpression` objects:
 comparisons, `in`, `and`/`or`/`not`, arithmetic, `contains`,
 `startswith`, `endswith`, `tolower`/`toupper`, `length`, `now`, `any` and
-`all` (as `SUBQUERY`), `$count` of a to-many relationship, and parameter
-aliases. `has`, casts, the date and math functions, and a service's own
-functions answer `501`. Literals are typed by the attribute they meet.
+`all` (as `SUBQUERY`), `$count` of a to-many relationship, parameter
+aliases, and type casts and `isof` (below). `has`, casts to primitive
+types, the date and math functions, and a service's own functions answer
+`501`. Literals are typed by the attribute they meet.
 `tolower(Name) eq 'abc'` becomes `name ==[c] 'abc'`, which a SQL store can
 use without lowering every row. gnustep-base names its arithmetic
 functions differently from Apple (`_add`, not `add:to:`) and has no
 modulo, so `mod` is Apple only.
+Type casts (`Default.Manager/Budget`, `Manager/Default.Manager/Budget`,
+`Reports/Default.Manager/any(…)`, `Reports/Default.Manager/$count`,
+`cast(Manager,Default.Manager)`) and `isof` (`isof(Default.Manager)`,
+`isof(Manager,Default.Manager)`) ask an object's type with `entity IN
+{the type and its subentities}`. Apple's stores all answer `entity` in a
+predicate, of the fetched object, of one it reaches through a
+relationship and of a `SUBQUERY`'s variable, in SQL or evaluated on their
+nodes; FreeCoreData's do too since its atomic stores' nodes answer it.
+Whatever reads a cast object is behind that test in an `AND`, since a
+store that evaluates a predicate itself raises when asked an Employee's
+`budget`; and where the object is not of the type the cast is null, as
+the URL conventions have it: `Default.Manager/Budget eq null` holds for
+every Employee that is not a Manager (`NOT test OR budget == nil`).
+Ordering by a cast is `501`: a store that sorts objects would ask them
+all.
 **It never builds a predicate by formatting a string for
 `+predicateWithFormat:`**. The one exception is a key path off a lambda's
 variable (`$v0.unitPrice`), which is made from a generated name and the
@@ -521,8 +537,7 @@ before the split rather than after.
    path (`Employees/Default.Manager`, `Employees(2)/Default.Manager/Budget`,
    and inserting through one) and in `$select` (`Default.Manager/Budget`);
    references (`Products(1)/Category/$ref`, `Categories(1)/Products/$ref`).
-   Not yet: casts in `$filter` and `isof`, which need a way to test an
-   object's entity that every store supports (`501`).
+   Also casts in `$filter` and `isof`, as above.
 3. ~~**Writes.**~~ Done: POST (to a set or through a navigation property),
    PATCH, PUT, DELETE, ETags with `If-Match` and `If-None-Match`,
    `@odata.bind`, `Prefer: return`. The client round trip passes. Also:
@@ -533,9 +548,15 @@ before the split rather than after.
      changes relationships;
    - deep inserts, to any depth, each entity through its set's handler (one
      that answers later cannot be waited for there, `501`), answered with
-     what was created expanded.
-
-   Not yet: deep updates (`501`: bind, or update each entity).
+     what was created expanded;
+   - deep updates (Part 1 section 11.4.3.1): a nested entity that names
+     one there (by `@id`, or its key) updates it, as by PATCH, and one
+     that names none is created; a to-one takes an entity or null, a
+     to-many the full set, those it leaves out unlinked, not deleted; and
+     `Nav@delta` changes a collection: entries added or updated, `@removed`
+     ones unlinked, or deleted for the reason `deleted`. Each nested
+     change goes through its set's handler as the set allows it (`405`
+     otherwise), and a nested `@odata.etag` must match (`412`).
 4. ~~**HTTP adapter.**~~ Done: GCDWebServer vendored and ported,
    `ODataHTTPServer`, `ois-serve`, the loopback check in CI on both
    platforms, example units and proxy configurations.

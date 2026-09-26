@@ -254,12 +254,24 @@
   NSPersistentStoreCoordinator *_coordinator;
   ODataService *_service;
   dispatch_semaphore_t _finished;
+  NSMutableArray<NSURL *> *_storeFiles;
 }
 
 - (void)setUp
 {
   [super setUp];
+  _storeFiles = [NSMutableArray array];
   [self serveModel:OISCatalogModel()];
+}
+
+- (void)tearDown
+{
+  for (NSURL *url in _storeFiles) {
+    for (NSString *suffix in @[ @"", @"-wal", @"-shm" ]) {
+      [[NSFileManager defaultManager] removeItemAtPath:[url.path stringByAppendingString:suffix] error:NULL];
+    }
+  }
+  [super tearDown];
 }
 
 // A service over the Catalog rows in memory, in this model.
@@ -1176,9 +1188,15 @@
 #pragma mark Derived types and $levels
 
 // A model of its own, made here since the Catalog has neither inheritance
-// nor a relationship to its own entity: employees, managers among them,
-// each with a manager and reports.
+// nor a relationship to its own entity: employees, managers among them
+// (and executives among those, though there are none yet), each with a
+// manager and reports.
 - (void)serveStaff
+{
+  [self serveStaffInStoreOfType:NSInMemoryStoreType];
+}
+
+- (void)serveStaffInStoreOfType:(NSString *)storeType
 {
   NSEntityDescription *employee = [[NSEntityDescription alloc] init];
   employee.name = @"Employee";
@@ -1186,6 +1204,9 @@
   NSEntityDescription *manager = [[NSEntityDescription alloc] init];
   manager.name = @"Manager";
   manager.managedObjectClassName = @"NSManagedObject";
+  NSEntityDescription *executive = [[NSEntityDescription alloc] init];
+  executive.name = @"Executive";
+  executive.managedObjectClassName = @"NSManagedObject";
 
   NSAttributeDescription *identifier = [[NSAttributeDescription alloc] init];
   identifier.name = @"id";
@@ -1213,15 +1234,19 @@
   reports.inverseRelationship = boss;
   employee.properties = @[ identifier, name, boss, reports ];
   manager.properties = @[ budget ];
-  // FreeCoreData's -properties of a sub-entity leaves out what it inherits
-  // (Apple's includes it), so the service looks properties up by name.
+  manager.subentities = @[ executive ];
   employee.subentities = @[ manager ];
   NSManagedObjectModel *model = [[NSManagedObjectModel alloc] init];
-  model.entities = @[ employee, manager ];
+  model.entities = @[ employee, manager, executive ];
 
   _coordinator = [[NSPersistentStoreCoordinator alloc] initWithManagedObjectModel:model];
   NSError *error = nil;
-  XCTAssertNotNil([_coordinator addPersistentStoreWithType:NSInMemoryStoreType configuration:nil URL:nil options:nil error:&error], @"%@", error);
+  NSURL *url = nil;
+  if (![storeType isEqualToString:NSInMemoryStoreType]) {
+    url = [NSURL fileURLWithPath:[NSTemporaryDirectory() stringByAppendingPathComponent:[[NSProcessInfo processInfo] globallyUniqueString]]];
+    [_storeFiles addObject:url];
+  }
+  XCTAssertNotNil([_coordinator addPersistentStoreWithType:storeType configuration:nil URL:url options:nil error:&error], @"%@", error);
   NSManagedObjectContext *context = [[NSManagedObjectContext alloc] init];
   context.persistentStoreCoordinator = _coordinator;
   // Ann manages Bob, who manages Cy and Di.
@@ -1264,7 +1289,67 @@
                         @"the context names the type, so minimal metadata needs no @odata.type");
   XCTAssertEqualObjects(created.json[@"Budget"], @100);
   XCTAssertEqualObjects([self get:@"Employees/Default.Manager/$count"].text, @"3", @"created as the cast's type");
-  XCTAssertEqual([self get:@"Employees?$filter=isof(Default.Manager)"].status, 501);
+}
+
+- (NSArray *)sortedEmployeeNames:(NSString *)path
+{
+  OISServiceResponse *response = [self get:path];
+  XCTAssertEqual(response.status, 200, @"%@: %@", path, response.text);
+  return [[self employeeNames:response] sortedArrayUsingSelector:@selector(compare:)];
+}
+
+- (void)testTypeCastsAndIsOfInFilters
+{
+  // Each store asks an object's type its own way: SQL, or the predicate
+  // evaluated on its nodes, or on objects.
+  for (NSString *storeType in @[ NSInMemoryStoreType, NSSQLiteStoreType, NSXMLStoreType ]) {
+    [self serveStaffInStoreOfType:storeType];
+    NSManagedObjectContext *context = [[NSManagedObjectContext alloc] init];
+    context.persistentStoreCoordinator = _coordinator;
+    NSFetchRequest *annRequest = [NSFetchRequest fetchRequestWithEntityName:@"Employee"];
+    annRequest.predicate = [NSPredicate predicateWithFormat:@"id == 1"];
+    NSManagedObject *ann = [[context executeFetchRequest:annRequest error:NULL] firstObject];
+    [self insert:@"Executive" into:context values:@{ @"id": @5, @"name": @"Zed", @"budget": [NSDecimalNumber decimalNumberWithString:@"100"], @"manager": ann }];
+    NSError *error = nil;
+    XCTAssertTrue([context save:&error], @"%@", error);
+
+    NSDictionary *expected = @{
+      @"isof(Default.Manager)": @[ @"Ann", @"Bob", @"Zed" ],
+      @"isof(Default.Executive)": @[ @"Zed" ],
+      @"isof(Default.Employee)": @[ @"Ann", @"Bob", @"Cy", @"Di", @"Zed" ],
+      @"isof('Default.Executive')": @[ @"Zed" ],
+      @"not isof(Default.Manager)": @[ @"Cy", @"Di" ],
+      @"isof(Manager,Default.Manager)": @[ @"Bob", @"Cy", @"Di", @"Zed" ],
+      @"Default.Manager/Budget gt 500": @[ @"Ann", @"Bob" ],
+      @"Default.Manager/Budget eq null": @[ @"Cy", @"Di" ],
+      @"Default.Manager/Budget ne 800": @[ @"Ann", @"Cy", @"Di", @"Zed" ],
+      @"Default.Manager/Budget in (800,100)": @[ @"Bob", @"Zed" ],
+      @"Default.Employee/Name eq 'Ann'": @[ @"Ann" ],
+      @"Manager/Default.Manager/Budget lt 1000": @[ @"Cy", @"Di" ],
+      @"Name eq 'Cy' or Default.Manager/Budget ge 5000": @[ @"Ann", @"Cy" ],
+      @"Reports/Default.Manager/any(m:m/Budget lt 1000)": @[ @"Ann" ],
+      @"Reports/Default.Executive/any()": @[ @"Ann" ],
+      @"Reports/Default.Manager/$count eq 2": @[ @"Ann" ],
+      @"Reports/any(r:isof(r,Default.Manager))": @[ @"Ann" ],
+      @"Reports/all(r:isof(r,Default.Manager))": @[ @"Ann", @"Cy", @"Di", @"Zed" ],
+      @"cast(Manager,Default.Manager)/Budget gt 1000": @[ @"Bob", @"Zed" ],
+      @"cast(Manager,Default.Manager) eq null": @[ @"Ann" ],
+      @"cast(Default.Manager)/Budget lt 1000": @[ @"Bob", @"Zed" ],
+    };
+    for (NSString *filter in expected) {
+      NSString *path = [@"Employees?$filter=" stringByAppendingString:filter];
+      XCTAssertEqualObjects([self sortedEmployeeNames:path], expected[filter], @"%@: %@", storeType, filter);
+    }
+    XCTAssertEqualObjects([self get:@"Employees/$count?$filter=isof(Default.Manager)"].text, @"3", @"%@", storeType);
+    OISServiceResponse *expanded = [self get:@"Employees(1)?$expand=Reports($filter=isof(Default.Executive))"];
+    XCTAssertEqualObjects([expanded.json[@"Reports"] valueForKey:@"Name"], @[ @"Zed" ], @"%@: %@", storeType, expanded.text);
+
+    XCTAssertEqual([self get:@"Employees?$orderby=Default.Manager/Budget"].status, 501, @"a store that sorts objects cannot ask an Employee for its budget");
+    XCTAssertEqual([self get:@"Employees?$filter=isof(Name,Edm.String)"].status, 501);
+    XCTAssertEqual([self get:@"Employees?$filter=isof(Default.Nobody)"].status, 400);
+    XCTAssertEqual([self get:@"Employees?$filter=Default.Manager/Nothing eq 1"].status, 400);
+    XCTAssertEqual([self get:@"Employees?$filter=isof(Reports,Default.Manager)"].status, 400, @"a collection");
+  }
 }
 
 - (void)testLevels
@@ -1322,7 +1407,77 @@
   XCTAssertEqualObjects([self get:@"Categories/$count"].text, @"5", @"nothing of it was saved");
   XCTAssertEqual(([self send:@"POST" path:@"Categories" headers:nil body:@{ @"CategoryName": @"G", @"Products": @{ @"ProductName": @"R" } }].status), 400,
                  @"a to-many takes an array");
-  XCTAssertEqual(([self send:@"PATCH" path:@"Categories(1)" headers:nil body:@{ @"Products": @[ @{ @"ProductName": @"R" } ] }].status), 501);
+}
+
+#pragma mark Deep updates
+
+- (NSArray *)productIDsOf:(NSString *)path
+{
+  OISServiceResponse *response = [self get:[path stringByAppendingString:@"?$select=ProductID&$orderby=ProductID"]];
+  XCTAssertEqual(response.status, 200, @"%@: %@", path, response.text);
+  return [response.json[@"value"] valueForKey:@"ProductID"];
+}
+
+- (void)testDeepUpdate
+{
+  // A to-many's full set: one updated, one bound by @id, one created; the
+  // one left out (Chang) unlinked, not deleted.
+  OISServiceResponse *full = [self send:@"PATCH" path:@"Categories(1)" headers:@{ @"Prefer": @"return=representation" } body:@{
+    @"CategoryName": @"Drinks",
+    @"Products": @[ @{ @"ProductID": @1, @"ProductName": @"Chai Tea" }, @{ @"@id": @"Products(3)" }, @{ @"ProductName": @"Mate", @"UnitPrice": @12 } ] }];
+  XCTAssertEqual(full.status, 200, @"%@", full.text);
+  XCTAssertEqualObjects(full.json[@"CategoryName"], @"Drinks");
+  XCTAssertEqualObjects([[full.json[@"Products"] valueForKey:@"ProductID"] sortedArrayUsingSelector:@selector(compare:)], (@[ @1, @3, @6 ]),
+                        @"what it relates comes back expanded");
+  XCTAssertEqualObjects([self productIDsOf:@"Categories(1)/Products"], (@[ @1, @3, @6 ]));
+  XCTAssertEqualObjects([self get:@"Products(1)/ProductName"].json[@"value"], @"Chai Tea");
+  XCTAssertEqualObjects([self get:@"Products(6)/UnitPrice"].json[@"value"], @12);
+  XCTAssertEqual([self get:@"Products(2)/Category"].status, 204, @"Chang is unlinked");
+  XCTAssertEqual([self get:@"Products(2)"].status, 200, @"and still there");
+
+  // A to-one: the entity it names, updated; null; a new one.
+  XCTAssertEqual(([self send:@"PATCH" path:@"Products(2)" headers:nil body:@{ @"Category": @{ @"CategoryID": @2, @"CategoryName": @"Sauces" } }].status), 204);
+  XCTAssertEqualObjects([self get:@"Products(2)/Category/CategoryName"].json[@"value"], @"Sauces");
+  XCTAssertEqual(([self send:@"PATCH" path:@"Products(2)" headers:nil body:@{ @"Category": [NSNull null] }].status), 204);
+  XCTAssertEqual([self get:@"Products(2)/Category"].status, 204);
+  XCTAssertEqual(([self send:@"PATCH" path:@"Products(2)" headers:nil body:@{ @"Category": @{ @"CategoryName": @"Snacks" } }].status), 204);
+  XCTAssertEqualObjects([self get:@"Products(2)/Category/CategoryID"].json[@"value"], @3);
+
+  // A delta: Chang added, Cajun Seasoning unlinked, Gumbo Mix deleted.
+  OISServiceResponse *delta = [self send:@"PATCH" path:@"Categories(2)" headers:nil body:@{
+    @"Products@delta": @[ @{ @"@id": @"Products(2)" },
+                          @{ @"@removed": @{ @"reason": @"changed" }, @"@id": @"Products(4)" },
+                          @{ @"@removed": @{ @"reason": @"deleted" }, @"ProductID": @5 } ] }];
+  XCTAssertEqual(delta.status, 204, @"%@", delta.text);
+  NSArray *sauces = [self productIDsOf:@"Categories(2)/Products"];
+  XCTAssertEqualObjects(sauces, (@[ @2 ]), @"%@", sauces);
+  XCTAssertEqual([self get:@"Products(4)/Category"].status, 204);
+  XCTAssertEqual([self get:@"Products(5)"].status, 404);
+
+  // Failures change nothing.
+  OISServiceResponse *bad = [self send:@"PATCH" path:@"Categories(1)" headers:nil body:@{
+    @"CategoryName": @"Nothing", @"Products": @[ @{ @"ProductID": @1, @"UnitPrice": @"cheap" } ] }];
+  XCTAssertEqual(bad.status, 400);
+  XCTAssertEqualObjects([self get:@"Categories(1)/CategoryName"].json[@"value"], @"Drinks");
+  XCTAssertEqual(([self send:@"PATCH" path:@"Categories(1)" headers:nil body:@{ @"Products": @[ @{ @"@id": @"Products(99)" } ] }].status), 400);
+  XCTAssertEqual(([self send:@"PATCH" path:@"Products(1)" headers:nil body:@{ @"Category@delta": @[] }].status), 400, @"a delta is of a collection");
+  XCTAssertEqual(([self send:@"PATCH" path:@"Categories(1)" headers:nil body:@{ @"Products": @{ @"ProductID": @1 } }].status), 400, @"a to-many takes an array");
+  OISServiceResponse *stale = [self send:@"PATCH" path:@"Categories(1)" headers:nil body:@{
+    @"Products": @[ @{ @"ProductID": @1, @"@odata.etag": @"W/\"999\"", @"ProductName": @"Old" } ] }];
+  XCTAssertEqual(stale.status, 412, @"%@", stale.text);
+  XCTAssertEqualObjects([self productIDsOf:@"Categories(1)/Products"], (@[ @1, @3, @6 ]));
+
+  // Each nested entity as its set allows.
+  ODataEntitySetHandler *products = [[ODataEntitySetHandler alloc] initWithEntity:OISCatalogEntity(@"Product")];
+  products.allowsUpdate = NO;
+  products.allowsDelete = NO;
+  [_service setHandler:products forEntitySet:@"Products"];
+  XCTAssertEqual(([self send:@"PATCH" path:@"Categories(1)" headers:nil body:@{ @"Products": @[ @{ @"ProductID": @1, @"ProductName": @"Chai" } ] }].status), 405);
+  XCTAssertEqual(([self send:@"PATCH" path:@"Categories(1)" headers:nil body:@{
+    @"Products@delta": @[ @{ @"@removed": @{ @"reason": @"deleted" }, @"@id": @"Products(6)" } ] }].status), 405);
+  XCTAssertEqual(([self send:@"PATCH" path:@"Categories(1)" headers:nil body:@{ @"Products": @[ @{ @"ProductID": @1 }, @{ @"@id": @"Products(3)" } ] }].status), 204,
+                 @"naming entities, without changing them, only links them");
+  XCTAssertEqualObjects([self productIDsOf:@"Categories(1)/Products"], (@[ @1, @3 ]));
 }
 
 - (void)testRestrictionsInMetadata

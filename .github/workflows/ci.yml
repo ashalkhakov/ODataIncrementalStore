@@ -180,7 +180,7 @@ jobs:
       # and object IDs in predicates match on every store, and count (#41);
       # its momc keeps a model version's Identifier, which models generated
       # from $metadata carry (#40).
-      FREECOREDATA_REF: ad97a83899562a2df84bcda692f8e8953b9e2b76
+      FREECOREDATA_REF: 1e5f54c8fbedfcdac9785dd11c0950798d1728c1
     defaults:
       run:
         working-directory: ${{ github.workspace }}/source
