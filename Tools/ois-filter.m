@@ -5,17 +5,19 @@
 // Links FreeCoreData (https://github.com/ashalkhakov/FreeCoreData).
 //
 //   ./ois-filter 'unitPrice > 20 AND discontinued == NO'
-//   UnitPrice gt 20 and Discontinued eq false
+//   (UnitPrice gt 20) and (Discontinued eq false)
 
 #import "ODataIncrementalStore.h"
 #import <stdio.h>
 
+// Core Data loads compiled models only: the Makefile compiles
+// Examples/Catalog/Catalog.xcdatamodeld to Catalog.momd with momc.
 static NSManagedObjectModel *OISLoadCatalogModel(void)
 {
   NSString *here = [@(__FILE__) stringByDeletingLastPathComponent];
   NSArray *candidates = @[
-    [here stringByAppendingPathComponent:@"../Examples/Catalog/Catalog.xcdatamodeld"],
-    [here stringByAppendingPathComponent:@"Catalog.xcdatamodeld"],
+    [here stringByAppendingPathComponent:@"../Catalog.momd"],
+    @"Catalog.momd",
   ];
   for (NSString *path in candidates) {
     if ([[NSFileManager defaultManager] fileExistsAtPath:path]) {
@@ -35,7 +37,7 @@ int main(int argc, const char *argv[])
     NSManagedObjectModel *model = OISLoadCatalogModel();
     NSEntityDescription *entity = model.entitiesByName[@"Product"];
     if (!entity) {
-      fprintf(stderr, "ois-filter: could not load Catalog.xcdatamodeld\n");
+      fprintf(stderr, "ois-filter: could not load Catalog.momd (run make -f Makefile)\n");
       return 1;
     }
 

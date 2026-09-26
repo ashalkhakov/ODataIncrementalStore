@@ -58,7 +58,7 @@ Without gnustep-make, clang + `gnustep-config` is enough:
 ```sh
 make -f Makefile
 ./ois-filter 'unitPrice > 20 AND discontinued == NO'
-# UnitPrice gt 20 and Discontinued eq false
+# (UnitPrice gt 20) and (Discontinued eq false)
 ```
 
 ## Tests (XCTest, no network)

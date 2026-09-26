@@ -110,6 +110,11 @@
 {
   switch (expression.expressionType) {
     case NSConstantValueExpressionType:
+      // gnustep-base rewrites BETWEEN into >= AND <= and wraps each bound,
+      // already an NSExpression, in a second constant expression.
+      if ([expression.constantValue isKindOfClass:[NSExpression class]]) {
+        return [self translateExpression:expression.constantValue error:error];
+      }
       return [self literal:expression.constantValue];
     case NSKeyPathExpressionType:
       return [self mapKeyPath:expression.keyPath];
@@ -183,8 +188,9 @@
 {
   if (!value || value == [NSNull null]) return @"null";
   if ([value isKindOfClass:[NSNumber class]]) {
-    const char *t = [value objCType];
-    if (t && (t[0] == 'c' || t[0] == 'B')) return [value boolValue] ? @"true" : @"false";
+    // Booleans are their own NSNumber subclass on both platforms, but the
+    // type code differs: 'c' on Apple, 'C' on gnustep-base's NSBoolNumber.
+    if ([value isKindOfClass:[@YES class]]) return [value boolValue] ? @"true" : @"false";
     return [value stringValue];
   }
   if ([value isKindOfClass:[NSString class]]) {

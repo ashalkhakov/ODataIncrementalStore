@@ -4,7 +4,7 @@ name: CI
 #
 # pull_request fires for a PR against any branch, and uses the workflow file
 # from the PR's own head -- so a branch can run CI through a PR before this
-# file has ever existed on main.
+# file has ever existed on master.
 #
 # workflow_dispatch is the opposite: GitHub only offers the "Run workflow"
 # button for workflows present on the repository's DEFAULT branch.
@@ -31,7 +31,7 @@ jobs:
   # Data.
   #
   # macOS minutes bill at 10x on a private repository. Adding
-  #   if: github.event_name != 'push' || github.ref == 'refs/heads/main'
+  #   if: github.event_name != 'push' || github.ref == 'refs/heads/master'
   # confines this job to pull requests and the default branch.
   macos:
     name: macOS
@@ -194,11 +194,14 @@ jobs:
           make -j"$(nproc)"
 
       # The same sources through the sibling Makefile, which needs only
-      # clang and gnustep-config.
+      # clang and gnustep-config, and the README's ois-filter example.
       - name: Build without gnustep-make
         run: |
           . $PREFIX/System/Library/Makefiles/GNUstep.sh
           make -f Makefile
+          got=$(LD_LIBRARY_PATH=".:$LD_LIBRARY_PATH" ./ois-filter 'unitPrice > 20 AND discontinued == NO')
+          want='(UnitPrice gt 20) and (Discontinued eq false)'
+          [ "$got" = "$want" ] || { echo "::error::ois-filter printed '$got', expected '$want'"; exit 1; }
           make -f Makefile clean
 
       # Before the suite, so a red test does not hide a compile break here.

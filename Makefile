@@ -53,7 +53,7 @@ OBJS = $(SRCS:.m=.o)
 
 .PHONY: all clean test
 
-all: libODataIncrementalStore.so ois-filter
+all: libODataIncrementalStore.so ois-filter Catalog.momd
 
 libODataIncrementalStore.so: $(OBJS)
 	$(CC) -shared -o $@ $(OBJS) $(GNUSTEP_LIBS)
@@ -64,9 +64,18 @@ $(SRC_DIR)/%.o: $(SRC_DIR)/%.m
 ois-filter: Tools/ois-filter.m libODataIncrementalStore.so
 	$(CC) $(OBJCFLAGS) -o $@ Tools/ois-filter.m -L. -lODataIncrementalStore $(GNUSTEP_LIBS)
 
+# FreeCoreData's model compiler (make -C Tools/momc install there).
+MOMC ?= momc
+
+# Rebuilt every time: a directory's mtime does not follow its contents.
+.PHONY: Catalog.momd
+Catalog.momd: Examples/Catalog/Catalog.xcdatamodeld
+	$(MOMC) $< $@
+
 # XCTest bundle needs gnustep-make. This target documents the entry point.
 test:
 	$(MAKE) -C Tests run-tests
 
 clean:
 	rm -f $(OBJS) libODataIncrementalStore.so ois-filter
+	rm -rf Catalog.momd

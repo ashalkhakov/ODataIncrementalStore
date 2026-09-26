@@ -84,8 +84,15 @@
 {
   [self assertPredicate:@"name IN {\"Chai\", \"Chang\"}"
                  filter:@"ProductName in ('Chai', 'Chang')"];
-  [self assertPredicate:@"unitPrice BETWEEN {10, 20}"
-                 filter:@"(UnitPrice ge 10 and UnitPrice le 20)"];
+  // gnustep-base's parser rewrites BETWEEN as >= AND <= before the
+  // translator sees it. Both filters select the same rows.
+  NSError *error = nil;
+  NSPredicate *between = [NSPredicate predicateWithFormat:@"unitPrice BETWEEN {10, 20}"];
+  NSString *got = [_translator translatePredicate:between error:&error];
+  XCTAssertNil(error);
+  NSArray *accepted = @[ @"(UnitPrice ge 10 and UnitPrice le 20)",
+                         @"(UnitPrice ge 10) and (UnitPrice le 20)" ];
+  XCTAssertTrue([accepted containsObject:got], @"BETWEEN → %@", got);
 }
 
 - (void)testTrueFalsePredicate
