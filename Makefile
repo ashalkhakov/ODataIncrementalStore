@@ -27,7 +27,7 @@ ifeq ($(strip $(GNUSTEP_FLAGS)),)
   GNUSTEP_LIBS  = -lgnustep-base -lobjc -lpthread
 endif
 
-GNUSTEP_LIBS += -lCoreData -ldispatch
+GNUSTEP_LIBS += -lCoreData -ldispatch -lgnutls
 
 OBJCFLAGS = $(GNUSTEP_FLAGS) \
 	-fobjc-runtime=gnustep-2.0 \
@@ -62,7 +62,9 @@ SRCS = \
 	$(SRC_DIR)/ODataMetadataWriter.m \
 	$(SRC_DIR)/ODataOperationCatalog.m \
 	$(SRC_DIR)/ODataService.m \
-	$(SRC_DIR)/ODataServiceBatch.m
+	$(SRC_DIR)/ODataServiceBatch.m \
+	$(SRC_DIR)/ODataAuthentication.m \
+	$(SRC_DIR)/OISSignature.m
 
 OBJS = $(SRCS:.m=.o)
 

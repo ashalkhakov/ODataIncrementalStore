@@ -23,12 +23,17 @@ NS_ASSUME_NONNULL_BEGIN
 
 @interface ODataService (OISBatchSupport)
 // An exchange answered in this context, which is saved only when saves is
-// YES; nil: a context of its own, saved.
-- (void)startExchange:(ODataExchange *)exchange inContext:(nullable NSManagedObjectContext *)context saves:(BOOL)saves;
+// YES; nil: a context of its own, saved. authenticated: from principal
+// (nil: anonymous), without asking the authenticator.
+- (void)startExchange:(ODataExchange *)exchange inContext:(nullable NSManagedObjectContext *)context saves:(BOOL)saves
+        authenticated:(BOOL)authenticated principal:(nullable ODataPrincipal *)principal;
 @end
 
 @interface OISBatchCall : NSObject
-- (instancetype)initWithService:(ODataService *)service exchange:(ODataExchange *)exchange version:(NSString *)version;
+// The batch's requests are principal's: the batch was authenticated as a
+// whole, and headers inside it do not change who is asking.
+- (instancetype)initWithService:(ODataService *)service exchange:(ODataExchange *)exchange version:(NSString *)version
+                      principal:(nullable ODataPrincipal *)principal;
 // Reads the batch and answers its requests, then the exchange.
 - (void)start;
 @end

@@ -622,6 +622,31 @@ before the split rather than after.
 - ~~Paging~~: `maxPageSize` on the service, and the client's
   `Prefer: odata.maxpagesize`, whichever is smaller; the client follows
   `@odata.nextLink` already.
-- Authentication: left to the reverse proxy at first. If per-user data
-  arrives, the data source needs to see the caller, which means the
-  request, not only the query.
+- ~~Authentication~~: the service is a relying party, and signs no one
+  in. An identity provider (OIDC; passwords, passkeys or FIDO2 keys are
+  its business) signs the user in, and the service's `authenticator`
+  (`ODataAuthentication.h`) says who each request is from, as an
+  `ODataPrincipal` on the request, which handlers see (a
+  `-predicateForVisibleObjectsInRequest:` that scopes rows to the caller)
+  and operations too. `ODataTrustedHeaderAuthenticator` takes it from the
+  headers a reverse proxy sets once it has checked the user
+  (oauth2-proxy, Authelia, Caddy's `forward_auth`, nginx's
+  `auth_request`; `ois-serve -TrustedUserHeader`), with a secret header
+  the proxy adds so that a request that did not come through it is
+  refused. Without such a proxy, the client sends its access token
+  (`Authorization: Bearer`), and `ODataJWTAuthenticator` checks a JWT by
+  its signature, as RFC 8725 has it (the algorithm from an allow-list,
+  never `none` or HMAC; the key from the issuer's JWK Set, found through
+  its discovery document and fetched again when it rotates, never from
+  the token; `iss`, `aud`, `exp`, `nbf`, `sub`, scopes), or
+  `ODataTokenIntrospectionAuthenticator` asks the provider about any
+  token (RFC 7662), keeping the answer a minute. The signatures are the
+  platform's to check: Security.framework on Apple, GnuTLS (which
+  gnustep-base links already) elsewhere; JOSE libraries would bring more
+  dependencies (libjwt needs jansson and OpenSSL, and has no Apple
+  backend) than the parsing they save. A request that names no one is `401` with `WWW-Authenticate`,
+  unless the service allows anonymous requests. An authenticator answers
+  through an `ODataReply`, so one that asks elsewhere (introspecting a
+  bearer token, say) can take its time. A `$batch` is authenticated once:
+  its requests are its principal's, whatever headers they carry inside
+  it, since the proxy never sees those.

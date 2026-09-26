@@ -48,6 +48,9 @@
 		AA000000000000000000002C /* ODataQueryBuilder.m in Sources */ = {isa = PBXBuildFile; fileRef = AA000000000000000000002D /* ODataQueryBuilder.m */; };
 		AC00000000000000005E0009 /* ODataService.m in Sources */ = {isa = PBXBuildFile; fileRef = AC00000000000000005E000A /* ODataService.m */; };
 		AE00000000000000000B0001 /* ODataServiceBatch.m in Sources */ = {isa = PBXBuildFile; fileRef = AE00000000000000000B0002 /* ODataServiceBatch.m */; };
+		AF00000000000000000A0001 /* ODataAuthentication.m in Sources */ = {isa = PBXBuildFile; fileRef = AF00000000000000000A0002 /* ODataAuthentication.m */; };
+		AF00000000000000000A0005 /* OISSignature.m in Sources */ = {isa = PBXBuildFile; fileRef = AF00000000000000000A0006 /* OISSignature.m */; };
+		AF00000000000000000A0003 /* ODataAuthentication.h in Headers */ = {isa = PBXBuildFile; fileRef = AF00000000000000000A0004 /* ODataAuthentication.h */; settings = {ATTRIBUTES = (Public, ); }; };
 		AD00000000000000000C0001 /* ODataOperationCatalog.m in Sources */ = {isa = PBXBuildFile; fileRef = AD00000000000000000C0002 /* ODataOperationCatalog.m */; };
 		AC00000000000000005E0005 /* ODataMetadataWriter.m in Sources */ = {isa = PBXBuildFile; fileRef = AC00000000000000005E0006 /* ODataMetadataWriter.m */; };
 		AC00000000000000005E0001 /* ODataPredicateBuilder.m in Sources */ = {isa = PBXBuildFile; fileRef = AC00000000000000005E0002 /* ODataPredicateBuilder.m */; };
@@ -127,6 +130,10 @@
 		AA000000000000000000002D /* ODataQueryBuilder.m */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.objc; path = ODataQueryBuilder.m; sourceTree = "<group>"; };
 		AC00000000000000005E000A /* ODataService.m */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.objc; path = ODataService.m; sourceTree = "<group>"; };
 		AE00000000000000000B0002 /* ODataServiceBatch.m */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.objc; path = ODataServiceBatch.m; sourceTree = "<group>"; };
+		AF00000000000000000A0002 /* ODataAuthentication.m */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.objc; path = ODataAuthentication.m; sourceTree = "<group>"; };
+		AF00000000000000000A0006 /* OISSignature.m */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.objc; path = OISSignature.m; sourceTree = "<group>"; };
+		AF00000000000000000A0008 /* OISSignature.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = OISSignature.h; sourceTree = "<group>"; };
+		AF00000000000000000A0004 /* ODataAuthentication.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = ODataAuthentication.h; sourceTree = "<group>"; };
 		AD00000000000000000C0002 /* ODataOperationCatalog.m */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.objc; path = ODataOperationCatalog.m; sourceTree = "<group>"; };
 		AC00000000000000005E0006 /* ODataMetadataWriter.m */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.objc; path = ODataMetadataWriter.m; sourceTree = "<group>"; };
 		AC00000000000000005E0002 /* ODataPredicateBuilder.m */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.objc; path = ODataPredicateBuilder.m; sourceTree = "<group>"; };
@@ -213,6 +220,9 @@
 				AA000000000000000000002D /* ODataQueryBuilder.m */,
 				AC00000000000000005E000A /* ODataService.m */,
 				AE00000000000000000B0002 /* ODataServiceBatch.m */,
+				AF00000000000000000A0002 /* ODataAuthentication.m */,
+				AF00000000000000000A0006 /* OISSignature.m */,
+				AF00000000000000000A0008 /* OISSignature.h */,
 				AD00000000000000000C0002 /* ODataOperationCatalog.m */,
 				AC00000000000000005E0006 /* ODataMetadataWriter.m */,
 				AC00000000000000005E0002 /* ODataPredicateBuilder.m */,
@@ -299,6 +309,7 @@
 				AA000000000000000000001D /* ODataPredicateTranslator.h */,
 				AA000000000000000000001F /* ODataQueryBuilder.h */,
 				AC00000000000000005E000C /* ODataService.h */,
+				AF00000000000000000A0004 /* ODataAuthentication.h */,
 				AC00000000000000005E0008 /* ODataMetadataWriter.h */,
 				AC00000000000000005E0004 /* ODataPredicateBuilder.h */,
 			);
@@ -332,6 +343,7 @@
 				AA000000000000000000001C /* ODataPredicateTranslator.h in Headers */,
 				AA000000000000000000001E /* ODataQueryBuilder.h in Headers */,
 				AC00000000000000005E000B /* ODataService.h in Headers */,
+				AF00000000000000000A0003 /* ODataAuthentication.h in Headers */,
 				AC00000000000000005E0007 /* ODataMetadataWriter.h in Headers */,
 				AC00000000000000005E0003 /* ODataPredicateBuilder.h in Headers */,
 			);
@@ -456,6 +468,8 @@
 				AA000000000000000000002C /* ODataQueryBuilder.m in Sources */,
 				AC00000000000000005E0009 /* ODataService.m in Sources */,
 				AE00000000000000000B0001 /* ODataServiceBatch.m in Sources */,
+				AF00000000000000000A0001 /* ODataAuthentication.m in Sources */,
+				AF00000000000000000A0005 /* OISSignature.m in Sources */,
 				AD00000000000000000C0001 /* ODataOperationCatalog.m in Sources */,
 				AC00000000000000005E0005 /* ODataMetadataWriter.m in Sources */,
 				AC00000000000000005E0001 /* ODataPredicateBuilder.m in Sources */,

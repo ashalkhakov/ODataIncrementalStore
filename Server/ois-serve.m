@@ -23,6 +23,30 @@
 //   MaxPageSize   server-driven paging, 0 for none
 //   MaxVersion    4.01 (default) or 4.0
 //   Namespace, Container   the names $metadata gives the schema
+//   TrustedUserHeader   who is asking, from this header the proxy sets once
+//                 it has signed them in with the identity provider
+//                 (X-Forwarded-User from oauth2-proxy, Remote-User from
+//                 Authelia); a request without it is answered 401. Unset
+//                 (the default): no one is asked. See ODataAuthentication.h
+//   TrustedClaimHeaders   a dictionary, claim name to header (default:
+//                 email, preferred_username, groups from X-Forwarded-*)
+//   ProxySecretHeader, ProxySecretEnvironment   a header the proxy adds,
+//                 and the environment variable holding the secret it
+//                 carries: a request without it did not come through the
+//                 proxy
+//   JWTIssuer, JWTAudience   instead of a proxy: who is asking, from the
+//                 access token the client sends (Authorization: Bearer), a
+//                 JWT from this issuer (as its iss has it) for this
+//                 audience, checked with the keys the issuer's discovery
+//                 document names
+//   JWTKeysURL    the issuer's JWK Set, when discovery is not to be used
+//   IntrospectionEndpoint, IntrospectionClientID,
+//   IntrospectionSecretEnvironment   or: any access token, checked by
+//                 asking the provider (RFC 7662) as this client, its secret
+//                 in the environment variable named
+//   RequiredScopes  scopes every token needs (JWT or introspection)
+//   AllowAnonymous  YES: a request that names no one is answered too, as
+//                 no one's
 //   Bundles       paths of bundles to load; a principal class that
 //                 conforms to ODataServiceConfiguring is sent
 //                 +configureService: before the first request, to register
@@ -108,6 +132,52 @@ int main(int argc, const char *argv[])
     if (settings[@"Container"]) service.containerName = settings[@"Container"];
     if (settings[@"MaxVersion"]) service.maxVersion = settings[@"MaxVersion"];
     if (settings[@"MaxPageSize"]) service.maxPageSize = (NSUInteger)[settings[@"MaxPageSize"] integerValue];
+    NSString *userHeader = settings[@"TrustedUserHeader"];
+    NSString *secretHeader = settings[@"ProxySecretHeader"];
+    if (userHeader.length) {
+      ODataTrustedHeaderAuthenticator *proxy = [[ODataTrustedHeaderAuthenticator alloc] initWithSubjectHeader:userHeader];
+      if ([settings[@"TrustedClaimHeaders"] isKindOfClass:[NSDictionary class]]) proxy.claimHeaders = settings[@"TrustedClaimHeaders"];
+      if (secretHeader.length) {
+        // From the environment, not the command line, where anyone on the
+        // machine can read it.
+        NSString *variable = settings[@"ProxySecretEnvironment"];
+        NSString *secret = variable.length ? [NSProcessInfo processInfo].environment[variable] : nil;
+        if (!secret.length) OISFail(@"-ProxySecretHeader needs the secret in the environment variable -ProxySecretEnvironment names");
+        proxy.secretHeader = secretHeader;
+        proxy.secret = secret;
+      }
+      service.authenticator = proxy;
+    } else if (secretHeader.length) {
+      OISFail(@"-ProxySecretHeader without -TrustedUserHeader: name the header the proxy puts the user in");
+    }
+    NSString *issuer = settings[@"JWTIssuer"];
+    NSString *introspection = settings[@"IntrospectionEndpoint"];
+    if ((userHeader.length > 0) + (issuer.length > 0) + (introspection.length > 0) > 1) {
+      OISFail(@"one of -TrustedUserHeader, -JWTIssuer and -IntrospectionEndpoint: who is asking is known one way");
+    }
+    id scopes = settings[@"RequiredScopes"];
+    if ([scopes isKindOfClass:[NSString class]]) scopes = [scopes componentsSeparatedByString:@" "];
+    NSSet *requiredScopes = [scopes isKindOfClass:[NSArray class]] ? [NSSet setWithArray:scopes] : nil;
+    if (issuer.length) {
+      ODataJWTAuthenticator *jwt = [[ODataJWTAuthenticator alloc] initWithIssuer:issuer audience:settings[@"JWTAudience"]];
+      if (!settings[@"JWTAudience"]) fprintf(stderr, "ois-serve: warning: no -JWTAudience: a token %s issued for anything is taken\n", issuer.UTF8String);
+      if (settings[@"JWTKeysURL"]) jwt.keySetURL = OISURL(settings[@"JWTKeysURL"]);
+      jwt.requiredScopes = requiredScopes;
+      service.authenticator = jwt;
+    }
+    if (introspection.length) {
+      NSString *variable = settings[@"IntrospectionSecretEnvironment"];
+      NSString *secret = variable.length ? [NSProcessInfo processInfo].environment[variable] : nil;
+      NSString *client = settings[@"IntrospectionClientID"];
+      if (!client.length || !secret.length) {
+        OISFail(@"-IntrospectionEndpoint needs -IntrospectionClientID, and the secret in the environment variable -IntrospectionSecretEnvironment names");
+      }
+      ODataTokenIntrospectionAuthenticator *introspector =
+        [[ODataTokenIntrospectionAuthenticator alloc] initWithEndpoint:OISURL(introspection) clientID:client clientSecret:secret];
+      introspector.requiredScopes = requiredScopes;
+      service.authenticator = introspector;
+    }
+    if (settings[@"AllowAnonymous"]) service.allowsAnonymousRequests = [settings[@"AllowAnonymous"] boolValue];
     for (Class configurer in configurers) [(id<ODataServiceConfiguring>)configurer configureService:service];
 
     if ([settings[@"PrintMetadata"] boolValue]) {
@@ -123,6 +193,10 @@ int main(int argc, const char *argv[])
     ODataHTTPServer *server = [[ODataHTTPServer alloc] initWithService:service];
     id localhost = settings[@"Localhost"];
     server.bindToLocalhost = localhost ? [localhost boolValue] : YES;
+    if (userHeader.length && !server.bindToLocalhost && !secretHeader.length) {
+      fprintf(stderr, "ois-serve: warning: anyone who reaches port %lu can send %s; set -ProxySecretHeader, or listen on loopback\n",
+              (unsigned long)port, userHeader.UTF8String);
+    }
     fprintf(stderr, "ois-serve: %s on port %lu%s, %lu entity sets\n", root.absoluteString.UTF8String, (unsigned long)port,
             server.bindToLocalhost ? " (loopback)" : "", (unsigned long)service.entitySets.count);
     if (![server runOnPort:port error:&error]) OISFail([NSString stringWithFormat:@"cannot listen on %lu: %@", (unsigned long)port, error.localizedDescription]);

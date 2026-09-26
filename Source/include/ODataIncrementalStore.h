@@ -28,6 +28,7 @@
 #import "ODataPredicateBuilder.h"
 #import "ODataMetadataWriter.h"
 #import "ODataService.h"
+#import "ODataAuthentication.h"
 
 NS_ASSUME_NONNULL_BEGIN
 

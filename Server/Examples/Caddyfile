@@ -4,3 +4,29 @@ api.example.com {
 	encode gzip
 	reverse_proxy /odata/* 127.0.0.1:8080
 }
+
+# With sign-in: oauth2-proxy (or Authelia) checks the user with the OIDC
+# provider, and Caddy passes who they are on in headers it sets itself, so
+# a client's own X-Forwarded-User never reaches the service. ois-serve runs
+# with -TrustedUserHeader X-Forwarded-User, and, the secret in OIS_PROXY_SECRET
+# for both, -ProxySecretHeader X-OIS-Proxy-Secret -ProxySecretEnvironment
+# OIS_PROXY_SECRET.
+#
+# api.example.com {
+# 	encode gzip
+# 	handle /oauth2/* {
+# 		reverse_proxy 127.0.0.1:4180
+# 	}
+# 	handle /odata/* {
+# 		request_header -X-Forwarded-User
+# 		request_header -X-Forwarded-Email
+# 		request_header -X-Forwarded-Groups
+# 		forward_auth 127.0.0.1:4180 {
+# 			uri /oauth2/auth
+# 			copy_headers X-Auth-Request-User>X-Forwarded-User X-Auth-Request-Email>X-Forwarded-Email X-Auth-Request-Groups>X-Forwarded-Groups
+# 		}
+# 		reverse_proxy 127.0.0.1:8080 {
+# 			header_up X-OIS-Proxy-Secret {env.OIS_PROXY_SECRET}
+# 		}
+# 	}
+# }

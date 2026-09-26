@@ -51,7 +51,9 @@ ODataIncrementalStore_OBJC_FILES = \
 	Source/ODataMetadataWriter.m \
 	Source/ODataOperationCatalog.m \
 	Source/ODataService.m \
-	Source/ODataServiceBatch.m
+	Source/ODataServiceBatch.m \
+	Source/ODataAuthentication.m \
+	Source/OISSignature.m
 
 ODataIncrementalStore_HEADER_FILES = \
 	ODataIncrementalStore.h \
@@ -75,12 +77,13 @@ ODataIncrementalStore_HEADER_FILES = \
 	ODataQueryBuilder.h \
 	ODataPredicateBuilder.h \
 	ODataMetadataWriter.h \
-	ODataService.h
+	ODataService.h \
+	ODataAuthentication.h
 
 ODataIncrementalStore_HEADER_FILES_DIR = Source/include
 ODataIncrementalStore_HEADER_FILES_INSTALL_DIR = ODataIncrementalStore
 ODataIncrementalStore_INCLUDE_DIRS = -ISource/include
-ODataIncrementalStore_LIBRARIES_DEPEND_UPON += -lCoreData -ldispatch
+ODataIncrementalStore_LIBRARIES_DEPEND_UPON += -lCoreData -ldispatch -lgnutls
 
 ADDITIONAL_OBJCFLAGS += -fobjc-arc -fblocks -fobjc-runtime=gnustep-2.0 \
 	-fconstant-string-class=NSConstantString -fobjc-exceptions -Wall -Wno-unused-parameter

@@ -235,6 +235,20 @@ int main(int argc, const char *argv[])
     dispatch_group_wait(group, dispatch_time(DISPATCH_TIME_NOW, (int64_t)(30 * NSEC_PER_SEC)));
     check(ok == 24, @"concurrent", [NSString stringWithFormat:@"%ld of 24 answered", (long)ok]);
 
+    // Behind a proxy that signs users in: who is asking, from its headers.
+    ODataTrustedHeaderAuthenticator *proxy = [[ODataTrustedHeaderAuthenticator alloc] init];
+    proxy.secretHeader = @"X-OIS-Proxy-Secret";
+    proxy.secret = @"s3cret";
+    service.authenticator = proxy;
+    OISReply *anonymous = OISSend(@"GET", @"/odata/Products", nil, nil);
+    check(anonymous.status == 401 && [anonymous.headers[@"www-authenticate"] isEqual:@"Bearer"], @"sign-in-required",
+          [NSString stringWithFormat:@"%ld %@", (long)anonymous.status, anonymous.headers]);
+    OISReply *signedIn = OISSend(@"GET", @"/odata/Products", @{ @"x-forwarded-user": @"ann", @"X-OIS-Proxy-Secret": @"s3cret" }, nil);
+    check(signedIn.status == 200 && [signedIn.json[@"value"] count] == expected, @"signed-in", [NSString stringWithFormat:@"%ld %@", (long)signedIn.status, signedIn.text]);
+    OISReply *bypassed = OISSend(@"GET", @"/odata/Products", @{ @"X-Forwarded-User": @"ann" }, nil);
+    check(bypassed.status == 401, @"proxy-bypassed", [NSString stringWithFormat:@"%ld", (long)bypassed.status]);
+    service.authenticator = nil;
+
     [server stop];
     printf("%s: %d failure(s)\n", failures ? "FAILED" : "OK", failures);
   }

@@ -35,7 +35,8 @@
 
 NS_ASSUME_NONNULL_BEGIN
 
-@class ODataService, ODataRequest;
+@class ODataService, ODataRequest, ODataPrincipal;
+@protocol ODataAuthenticator;
 
 // userInfo on an Integer attribute: the entity's version, sent as its ETag
 // and incremented by every update. Without one, an entity's ETag is a hash
@@ -136,6 +137,9 @@ FOUNDATION_EXPORT NSString * const ODataUserInfoETag;  // @"OData.etag"
 @property (nonatomic, readonly, copy) NSDictionary<NSString *, NSString *> *preferences;
 // The application's own, for the length of the request.
 @property (nonatomic, readonly, strong) NSMutableDictionary *userInfo;
+// Who is asking, as the service's authenticator found them; nil without
+// one, or for an anonymous request it allows (ODataAuthentication.h).
+@property (nonatomic, readonly, strong, nullable) ODataPrincipal *principal;
 @end
 
 // What an entity set does. The default does everything over the request's
@@ -213,6 +217,11 @@ FOUNDATION_EXPORT NSString * const ODataUserInfoETag;  // @"OData.etag"
 // How long a deferred reply may take before the request is answered 504
 // Gateway Timeout. 0: no limit. Default: 60 seconds.
 @property (nonatomic) NSTimeInterval replyTimeout;
+// Who each request is from (ODataAuthentication.h). A request that names
+// no one is answered 401, unless allowsAnonymousRequests; without an
+// authenticator (the default) every request is anonymous and answered.
+@property (nonatomic, strong, nullable) id<ODataAuthenticator> authenticator;
+@property (nonatomic) BOOL allowsAnonymousRequests;
 // The object whose methods are the service's unbound operations; see
 // ODataFunctions. Set it before the first request.
 @property (nonatomic, strong, nullable) id serviceOperations;

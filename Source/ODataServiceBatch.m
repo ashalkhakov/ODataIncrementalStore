@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: LGPL-2.1-or-later
 
 #import "ODataServiceBatch.h"
+#import "ODataAuthentication.h"
 #import "ODataBatch.h"
 #import "ODataError.h"
 
@@ -64,13 +65,16 @@ static void OISAppendText(NSMutableData *data, NSString *text)
   // Whether the item in flight finished while it was being started.
   BOOL _starting;
   BOOL _finishedWhileStarting;
+  ODataPrincipal *_principal;
 }
 
 - (instancetype)initWithService:(ODataService *)service exchange:(ODataExchange *)exchange version:(NSString *)version
+                      principal:(ODataPrincipal *)principal
 {
   self = [super init];
   if (!self) return nil;
   _service = service;
+  _principal = principal;
   _exchange = exchange;
   _version = [version copy];
   _locations = [NSMutableDictionary dictionary];
@@ -289,7 +293,7 @@ static void OISAppendText(NSMutableData *data, NSString *text)
       _starting = YES;
       _finishedWhileStarting = NO;
     }
-    [_service startExchange:exchange inContext:_groupContext saves:(item.group == nil)];
+    [_service startExchange:exchange inContext:_groupContext saves:(item.group == nil) authenticated:YES principal:_principal];
     BOOL finished;
     @synchronized (self) {
       _starting = NO;

@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: LGPL-2.1-or-later
 
 #import "ODataService.h"
+#import "ODataAuthentication.h"
 #import "ODataError.h"
 #import "ODataValue.h"
 #import "ODataSchema.h"
@@ -126,6 +127,7 @@ NSString * const ODataUserInfoETag = @"OData.etag";
 @property (nonatomic, readwrite, copy) NSDictionary *preferences;
 @property (nonatomic, readwrite, strong) NSMutableDictionary *userInfo;
 @property (nonatomic, readwrite, strong, nullable) NSFetchRequest *collectionFetchRequest;
+@property (nonatomic, readwrite, strong, nullable) ODataPrincipal *principal;
 @end
 
 @implementation ODataRequest
@@ -341,6 +343,9 @@ typedef NS_ENUM(NSInteger, OISTargetKind) {
 // NO in a change set: its requests share a context, saved once they have
 // all succeeded.
 @property (nonatomic) BOOL saves;
+// Who is asking is known: the authenticator has answered, or a batch
+// the request is part of has been authenticated.
+@property (nonatomic) BOOL authenticated;
 @end
 
 @implementation OISServiceCall
@@ -440,7 +445,13 @@ typedef NS_ENUM(NSInteger, OISTargetKind) {
   body[@"message"] = error.localizedDescription ?: @"";
   if (target) body[@"target"] = target;
   if (details.count) body[@"details"] = details;
-  NSDictionary *headers = status == 405 && error.userInfo[@"Allow"] ? @{ @"Allow": error.userInfo[@"Allow"] } : @{};
+  NSMutableDictionary *headers = [NSMutableDictionary dictionary];
+  if (status == 405 && error.userInfo[@"Allow"]) headers[@"Allow"] = error.userInfo[@"Allow"];
+  if (status == 401) {
+    id<ODataAuthenticator> authenticator = self.service.authenticator;
+    NSString *challenge = [authenticator respondsToSelector:@selector(challengeForRequest:)] ? [authenticator challengeForRequest:self.request] : nil;
+    headers[@"WWW-Authenticate"] = challenge.length ? challenge : @"Bearer";
+  }
   [self respondJSON:@{ @"error": body } status:status headers:headers];
 }
 
@@ -640,6 +651,34 @@ typedef NS_ENUM(NSInteger, OISTargetKind) {
 - (void)run
 {
   self.request.method = [self.request.method isEqualToString:@"HEAD"] ? @"GET" : self.request.method;
+  if (self.authenticated || !self.service.authenticator) {
+    [self answer];
+    return;
+  }
+  // Who is asking, first: an authenticator may take its time.
+  ODataReply *reply = [self replyWithAction:@selector(didAuthenticate:)];
+  [self.service.authenticator authenticateRequest:self.request reply:reply];
+  [reply returned:nil];
+}
+
+- (void)didAuthenticate:(ODataReply *)reply
+{
+  self.authenticated = YES;
+  if (reply.error) {
+    [self respondError:reply.error];
+    return;
+  }
+  ODataPrincipal *principal = [reply.result isKindOfClass:[ODataPrincipal class]] ? reply.result : nil;
+  if (!principal && !self.service.allowsAnonymousRequests) {
+    [self fail:401 message:@"The request names no one: sign in"];
+    return;
+  }
+  self.request.principal = principal;
+  [self answer];
+}
+
+- (void)answer
+{
   if (![self negotiateVersion] || ![self readURL]) return;
   [self readPreferences];
 
@@ -662,7 +701,8 @@ typedef NS_ENUM(NSInteger, OISTargetKind) {
     }
     // The batch answers the exchange itself, once its requests have.
     self.done = YES;
-    OISBatchCall *batch = [[OISBatchCall alloc] initWithService:self.service exchange:self.exchange version:self.request.version];
+    OISBatchCall *batch = [[OISBatchCall alloc] initWithService:self.service exchange:self.exchange version:self.request.version
+                                                      principal:self.request.principal];
     [batch start];
     return;
   }
@@ -2893,10 +2933,11 @@ static NSNumber *OISScalarReturnValue(NSInvocation *invocation, char type)
 
 - (void)startExchange:(ODataExchange *)exchange
 {
-  [self startExchange:exchange inContext:nil saves:YES];
+  [self startExchange:exchange inContext:nil saves:YES authenticated:NO principal:nil];
 }
 
 - (void)startExchange:(ODataExchange *)exchange inContext:(NSManagedObjectContext *)shared saves:(BOOL)saves
+        authenticated:(BOOL)authenticated principal:(ODataPrincipal *)principal
 {
   [self prepare];
   OISServiceCall *call = [[OISServiceCall alloc] init];
@@ -2911,6 +2952,8 @@ static NSNumber *OISScalarReturnValue(NSInvocation *invocation, char type)
   call.coder = coder;
 
   call.saves = saves;
+  call.authenticated = authenticated;
+  call.request.principal = principal;
   NSManagedObjectContext *context = shared;
   if (!context) {
     context = [[NSManagedObjectContext alloc] initWithConcurrencyType:NSPrivateQueueConcurrencyType];
