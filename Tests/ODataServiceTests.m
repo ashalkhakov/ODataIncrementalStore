@@ -72,6 +72,169 @@
 
 @end
 
+#pragma mark Operations, declared in protocols
+
+@class OISServedProduct;
+
+@protocol OISProductFunctions <ODataFunctions>
+- (NSDecimalNumber *)discountedPriceByPercent:(double)percent reply:(ODataReply *)reply;
+- (OISServedProduct *)cheapestInCategory:(ODataReply *)reply;
++ (NSArray *)pricierThanPrice:(double)price reply:(ODataReply *)reply;
+@end
+
+@protocol OISProductActions <ODataActions>
+- (void)raisePriceByPercent:(double)percent reply:(ODataReply *)reply;
+- (NSDecimalNumber *)discontinueWithReason:(NSString *)reason reply:(ODataReply *)reply;
+@end
+
+@interface OISServedProduct : NSManagedObject <OISProductFunctions, OISProductActions>
+@end
+
+@implementation OISServedProduct
+
++ (NSDictionary *)ODataOperationTypes
+{
+  return @{ @"pricierThanPrice:reply:": @"Collection(Default.Product)" };
+}
+
+- (NSDecimalNumber *)discountedPriceByPercent:(double)percent reply:(ODataReply *)reply
+{
+  NSDecimalNumber *factor = [NSDecimalNumber decimalNumberWithMantissa:(unsigned long long)(100 - percent) exponent:-2 isNegative:NO];
+  return [[self valueForKey:@"unitPrice"] decimalNumberByMultiplyingBy:factor];
+}
+
+- (OISServedProduct *)cheapestInCategory:(ODataReply *)reply
+{
+  NSArray *siblings = [[self valueForKeyPath:@"category.products"] allObjects];
+  return [siblings sortedArrayUsingDescriptors:@[ [NSSortDescriptor sortDescriptorWithKey:@"unitPrice" ascending:YES] ]].firstObject;
+}
+
+// Bound to the collection it is called on: all of Products, or a
+// category's.
++ (NSArray *)pricierThanPrice:(double)price reply:(ODataReply *)reply
+{
+  NSFetchRequest *fetch = [reply.request.collectionFetchRequest copy];
+  NSPredicate *pricier = [NSComparisonPredicate predicateWithLeftExpression:[NSExpression expressionForKeyPath:@"unitPrice"]
+                                                            rightExpression:[NSExpression expressionForConstantValue:@(price)]
+                                                                   modifier:NSDirectPredicateModifier
+                                                                       type:NSGreaterThanPredicateOperatorType
+                                                                    options:0];
+  fetch.predicate = [NSCompoundPredicate andPredicateWithSubpredicates:@[ fetch.predicate, pricier ]];
+  fetch.sortDescriptors = @[ [NSSortDescriptor sortDescriptorWithKey:@"name" ascending:YES] ];
+  NSError *error = nil;
+  NSArray *rows = [reply.request.context executeFetchRequest:fetch error:&error];
+  if (!rows) [reply failWithError:error];
+  return rows;
+}
+
+- (void)raisePriceByPercent:(double)percent reply:(ODataReply *)reply
+{
+  NSDecimalNumber *factor = [NSDecimalNumber decimalNumberWithMantissa:(unsigned long long)(100 + percent) exponent:-2 isNegative:NO];
+  [self setValue:[[self valueForKey:@"unitPrice"] decimalNumberByMultiplyingBy:factor] forKey:@"unitPrice"];
+}
+
+// Answers later, from another thread, through the request's context.
+- (NSDecimalNumber *)discontinueWithReason:(NSString *)reason reply:(ODataReply *)reply
+{
+  [reply defer];
+  NSManagedObjectContext *context = reply.request.context;
+  NSManagedObjectID *objectID = self.objectID;
+  dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(20 * NSEC_PER_MSEC)), dispatch_get_global_queue(0, 0), ^{
+    [context performBlock:^{
+      NSManagedObject *product = [context objectWithID:objectID];
+      if ([reason length] == 0) {
+        [reply failWithError:ODataServiceError(400, @"Say why")];
+        return;
+      }
+      [product setValue:@YES forKey:@"discontinued"];
+      [reply finishWithResult:[product valueForKey:@"unitPrice"]];
+    }];
+  });
+  return nil;
+}
+
+@end
+
+@protocol OISCatalogFunctions <ODataFunctions>
+- (int32_t)countProductsCheaperThanPrice:(double)price reply:(ODataReply *)reply;
+- (NSString *)echoWithText:(NSString *)text times:(int32_t)times reply:(ODataReply *)reply;
+- (NSDecimalNumber *)sumOfPrices:(NSArray *)prices reply:(ODataReply *)reply;
+- (NSArray *)namesInCategory:(ODataReply *)reply;
+@end
+
+@protocol OISCatalogActions <ODataActions>
+- (void)failWithCode:(int32_t)code reply:(ODataReply *)reply;
+@end
+
+@interface OISCatalogOperations : NSObject <OISCatalogFunctions, OISCatalogActions>
+@end
+
+@implementation OISCatalogOperations
+
++ (NSDictionary *)ODataOperationTypes
+{
+  return @{ @"sumOfPrices:reply:.prices": @"Collection(Edm.Decimal)",
+            @"namesInCategory:": @"Collection(Edm.String)" };
+}
+
++ (NSDictionary *)ODataOperationNames
+{
+  return @{ @"namesInCategory:": @"ProductNames" };
+}
+
+- (int32_t)countProductsCheaperThanPrice:(double)price reply:(ODataReply *)reply
+{
+  NSFetchRequest *fetch = [NSFetchRequest fetchRequestWithEntityName:@"Product"];
+  fetch.predicate = [NSComparisonPredicate predicateWithLeftExpression:[NSExpression expressionForKeyPath:@"unitPrice"]
+                                                       rightExpression:[NSExpression expressionForConstantValue:@(price)]
+                                                              modifier:NSDirectPredicateModifier
+                                                                  type:NSLessThanPredicateOperatorType
+                                                               options:0];
+  return (int32_t)[reply.request.context countForFetchRequest:fetch error:NULL];
+}
+
+- (NSString *)echoWithText:(NSString *)text times:(int32_t)times reply:(ODataReply *)reply
+{
+  NSMutableString *echo = [NSMutableString string];
+  for (int32_t i = 0; i < times; i++) [echo appendString:text ?: @"?"];
+  return echo;
+}
+
+- (NSDecimalNumber *)sumOfPrices:(NSArray *)prices reply:(ODataReply *)reply
+{
+  NSDecimalNumber *sum = [NSDecimalNumber zero];
+  for (NSDecimalNumber *price in prices) sum = [sum decimalNumberByAdding:price];
+  return sum;
+}
+
+- (NSArray *)namesInCategory:(ODataReply *)reply
+{
+  return @[ @"Chai", @"Chang" ];
+}
+
+- (void)failWithCode:(int32_t)code reply:(ODataReply *)reply
+{
+  [reply failWithError:ODataServiceError(code, @"Failing on purpose")];
+}
+
+@end
+
+// Declarations the service cannot use, each for its own reason.
+@protocol OISBadFunctions <ODataFunctions>
+- (NSNumber *)mystery:(ODataReply *)reply;
+- (NSString *)noReply;
+- (void)nothing:(ODataReply *)reply;
+@end
+
+@interface OISBadOperations : NSObject <OISBadFunctions>
+@end
+
+@implementation OISBadOperations
+- (NSNumber *)mystery:(ODataReply *)reply { return @1; }
+- (NSString *)noReply { return @""; }
+- (void)nothing:(ODataReply *)reply {}
+@end
+
 @interface ODataServiceTests : XCTestCase
 @end
 
@@ -84,7 +247,13 @@
 - (void)setUp
 {
   [super setUp];
-  _coordinator = [[NSPersistentStoreCoordinator alloc] initWithManagedObjectModel:OISCatalogModel()];
+  [self serveModel:OISCatalogModel()];
+}
+
+// A service over the Catalog rows in memory, in this model.
+- (void)serveModel:(NSManagedObjectModel *)model
+{
+  _coordinator = [[NSPersistentStoreCoordinator alloc] initWithManagedObjectModel:model];
   NSError *error = nil;
   XCTAssertNotNil([_coordinator addPersistentStoreWithType:NSInMemoryStoreType configuration:nil URL:nil options:nil error:&error], @"%@", error);
   [self seed];
@@ -486,6 +655,150 @@
   XCTAssertTrue([backing save:&error], @"%@", error);
   [seasoning setValue:[NSDecimalNumber decimalNumberWithString:@"24"] forKey:@"unitPrice"];
   XCTAssertFalse([context save:&error]);
+}
+
+#pragma mark Operations
+
+// The Catalog model, with Product's objects of a class that declares
+// operations, and the service's own.
+- (void)serveOperations
+{
+  // A model of its own to change: a copy (FreeCoreData's can be copied
+  // since #43), else loaded again.
+  NSManagedObjectModel *model = [OISCatalogModel() conformsToProtocol:@protocol(NSCopying)]
+      ? [OISCatalogModel() copy]
+      : [[NSManagedObjectModel alloc] initWithContentsOfURL:OISCatalogModelURL()];
+  NSEntityDescription *product = model.entitiesByName[@"Product"];
+  product.managedObjectClassName = @"OISServedProduct";
+  [self serveModel:model];
+  _service.serviceOperations = [[OISCatalogOperations alloc] init];
+}
+
+- (void)testOperationsInMetadata
+{
+  [self serveOperations];
+  XCTAssertEqualObjects(_service.operationProblems, @[]);
+  NSError *error = nil;
+  ODataSchema *schema = [ODataSchema schemaWithData:[self get:@"$metadata"].data error:&error];
+  XCTAssertNotNil(schema, @"%@", error);
+  ODataSchemaEntityType *product = [schema entityTypeNamed:@"Default.Product"];
+
+  ODataSchemaOperation *discount = [schema operationNamed:@"DiscountedPriceByPercent" boundToEntityType:product collection:NO parameterNames:nil];
+  XCTAssertNotNil(discount);
+  XCTAssertFalse(discount.isAction);
+  XCTAssertEqualObjects([discount.callerParameters valueForKey:@"name"], @[ @"Percent" ]);
+  XCTAssertEqualObjects([discount.callerParameters valueForKey:@"type"], @[ @"Edm.Double" ]);
+  XCTAssertEqualObjects(discount.returnType, @"Edm.Decimal");
+
+  ODataSchemaOperation *pricier = [schema operationNamed:@"PricierThanPrice" boundToEntityType:product collection:YES parameterNames:nil];
+  XCTAssertEqualObjects(pricier.returnType, @"Collection(Default.Product)");
+  XCTAssertEqualObjects([schema operationNamed:@"CheapestInCategory" boundToEntityType:product collection:NO parameterNames:nil].returnType, @"Default.Product");
+  ODataSchemaOperation *discontinue = [schema operationNamed:@"Discontinue" boundToEntityType:product collection:NO parameterNames:nil];
+  XCTAssertTrue(discontinue.isAction);
+  XCTAssertEqualObjects([discontinue.callerParameters valueForKey:@"name"], @[ @"Reason" ]);
+
+  XCTAssertEqualObjects(schema.operationImports[@"CountProductsCheaperThanPrice"].operation, @"Default.CountProductsCheaperThanPrice");
+  XCTAssertEqualObjects(schema.operationImports[@"ProductNames"].operation, @"Default.ProductNames", @"renamed");
+  XCTAssertTrue(schema.operationImports[@"Fail"].isAction);
+  NSArray *echo = [schema.operations[@"Default.Echo"] valueForKey:@"callerParameters"];
+  XCTAssertEqualObjects([echo.firstObject valueForKey:@"name"], (@[ @"Text", @"Times" ]));
+}
+
+- (void)testFunctions
+{
+  [self serveOperations];
+  OISServiceResponse *discount = [self get:@"Products(1)/Default.DiscountedPriceByPercent(Percent=10)"];
+  XCTAssertEqual(discount.status, 200, @"%@", discount.text);
+  XCTAssertEqualObjects([discount.json[@"value"] description], @"16.2");
+  XCTAssertEqualObjects(discount.json[@"@odata.context"], @"http://example.test/odata/$metadata#Edm.Decimal");
+
+  OISServiceResponse *cheapest = [self get:@"Products(4)/Default.CheapestInCategory()"];
+  XCTAssertEqualObjects(cheapest.json[@"ProductName"], @"Aniseed Syrup");
+  XCTAssertEqualObjects(cheapest.json[@"@odata.context"], @"http://example.test/odata/$metadata#Products/$entity");
+
+  XCTAssertEqualObjects([self names:[self get:@"Products/Default.PricierThanPrice(Price=19)"]],
+                        (@[ @"Chef Anton's Cajun Seasoning", @"Chef Anton's Gumbo Mix" ]));
+  XCTAssertEqualObjects([self names:[self get:@"Categories(1)/Products/Default.PricierThanPrice(Price=18)"]], @[ @"Chang" ],
+                        @"bound to the category's products only");
+
+  XCTAssertEqualObjects([self get:@"CountProductsCheaperThanPrice(Price=19)"].json[@"value"], @2);
+  XCTAssertEqualObjects([self get:@"Echo(Text='ha',Times=3)"].json[@"value"], @"hahaha");
+  XCTAssertEqualObjects([self get:@"Echo(Text=@t,Times=2)?@t='yo'"].json[@"value"], @"yoyo", @"a parameter alias");
+  XCTAssertEqualObjects([[self get:@"SumOfPrices(Prices=@p)?@p=[1.5,2.25]"].json[@"value"] description], @"3.75", @"a JSON alias");
+  OISServiceResponse *names = [self get:@"ProductNames()"];
+  XCTAssertEqualObjects(names.json[@"value"], (@[ @"Chai", @"Chang" ]));
+  XCTAssertEqualObjects(names.json[@"@odata.context"], @"http://example.test/odata/$metadata#Collection(Edm.String)");
+
+  XCTAssertEqual(([self send:@"POST" path:@"Products(1)/Default.DiscountedPriceByPercent(Percent=10)" headers:nil body:@{}].status), 405);
+  XCTAssertEqual([self get:@"Products(1)/Default.DiscountedPriceByPercent()"].status, 400, @"needs Percent");
+  XCTAssertEqual([self get:@"Products(1)/Default.DiscountedPriceByPercent(Percent=10,Extra=1)"].status, 400);
+  XCTAssertEqual([self get:@"Products(1)/Default.DiscountedPriceByPercent(Percent='x')"].status, 400);
+  XCTAssertEqual([self get:@"Products(1)/Default.Nothing()"].status, 501);
+  XCTAssertEqual([self get:@"Products(1)/Default.DiscountedPriceByPercent(Percent=10)/Foo"].status, 501);
+}
+
+- (void)testActions
+{
+  [self serveOperations];
+  OISServiceResponse *raised = [self send:@"POST" path:@"Products(1)/Default.RaisePriceByPercent" headers:nil body:@{ @"Percent": @50 }];
+  XCTAssertEqual(raised.status, 204, @"%@", raised.text);
+  XCTAssertEqualObjects([self get:@"Products(1)/UnitPrice/$value"].text, @"27", @"saved");
+  XCTAssertEqual([self get:@"Products(1)/Default.RaisePriceByPercent"].status, 405);
+
+  OISServiceResponse *discontinued = [self send:@"POST" path:@"Products(2)/Default.Discontinue" headers:nil body:@{ @"Reason": @"old" }];
+  XCTAssertEqual(discontinued.status, 200, @"%@", discontinued.text);
+  XCTAssertEqualObjects([discontinued.json[@"value"] description], @"19", @"answered later");
+  XCTAssertEqualObjects([self get:@"Products(2)/Discontinued"].json[@"value"], @YES, @"and saved");
+  XCTAssertEqual(([self send:@"POST" path:@"Products(3)/Default.Discontinue" headers:nil body:@{ @"Reason": @"" }].status), 400,
+                 @"a deferred failure");
+  XCTAssertEqualObjects([self get:@"Products(3)/Discontinued"].json[@"value"], @NO);
+
+  OISServiceResponse *failed = [self send:@"POST" path:@"Fail" headers:nil body:@{ @"Code": @409 }];
+  XCTAssertEqual(failed.status, 409);
+  XCTAssertEqualObjects(failed.json[@"error"][@"message"], @"Failing on purpose");
+  XCTAssertEqual(([self send:@"POST" path:@"Fail" headers:nil body:@{ @"Colour": @1 }].status), 400);
+}
+
+- (void)testDeclarationsTheServiceCannotUse
+{
+  _service.serviceOperations = [[OISBadOperations alloc] init];
+  NSArray *problems = _service.operationProblems;
+  XCTAssertEqual(problems.count, 3u, @"%@", problems);
+  NSString *all = [problems componentsJoinedByString:@"\n"];
+  for (NSString *selector in @[ @"mystery:", @"noReply", @"nothing:" ]) {
+    XCTAssertTrue([all rangeOfString:selector].location != NSNotFound, @"%@ in %@", selector, all);
+  }
+  XCTAssertTrue([[self get:@"$metadata"].text rangeOfString:@"Mystery"].location == NSNotFound);
+}
+
+// The client, calling the service's operations as it calls any service's.
+- (void)testClientCallsOperations
+{
+  [self serveOperations];
+  [ODataIncrementalStore registerStore];
+  NSPersistentStoreCoordinator *client = [[NSPersistentStoreCoordinator alloc] initWithManagedObjectModel:OISCatalogModel()];
+  NSError *error = nil;
+  XCTAssertNotNil([client addPersistentStoreWithType:[ODataIncrementalStore storeType] configuration:nil
+                                                 URL:[NSURL URLWithString:@"http://example.test/odata/"]
+                                             options:@{ ODataIncrementalStoreTransportOption: _service } error:&error], @"%@", error);
+  NSManagedObjectContext *context = [[NSManagedObjectContext alloc] init];
+  context.persistentStoreCoordinator = client;
+  NSFetchRequest *fetch = [NSFetchRequest fetchRequestWithEntityName:@"Product"];
+  fetch.predicate = [NSPredicate predicateWithFormat:@"name == 'Chai'"];
+  NSManagedObject *chai = [[context executeFetchRequest:fetch error:&error] firstObject];
+  XCTAssertNotNil(chai, @"%@", error);
+
+  id discounted = [chai invokeODataOperation:@"DiscountedPriceByPercent" parameters:@{ @"Percent": @10 } error:&error];
+  XCTAssertEqualObjects([discounted description], @"16.2", @"%@", error);
+  ODataOperationCall *call = [ODataOperationCall callOfOperation:@"CountProductsCheaperThanPrice" inContext:context];
+  call.parameters = @{ @"Price": @19 };
+  XCTAssertEqualObjects([call invoke:&error], @2, @"%@", error);
+  id nothing = [chai invokeODataOperation:@"RaisePriceByPercent" parameters:@{ @"Percent": @50 } error:&error];
+  XCTAssertTrue(nothing == nil || nothing == [NSNull null], @"%@", nothing);
+  XCTAssertNil(error);
+  NSManagedObjectContext *backing = [[NSManagedObjectContext alloc] init];
+  backing.persistentStoreCoordinator = _coordinator;
+  XCTAssertEqualObjects([[self productWithID:1 in:backing] valueForKey:@"unitPrice"], [NSDecimalNumber decimalNumberWithString:@"27"]);
 }
 
 @end

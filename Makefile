@@ -60,6 +60,7 @@ SRCS = \
 	$(SRC_DIR)/ODataIncrementalStore.m \
 	$(SRC_DIR)/ODataPredicateBuilder.m \
 	$(SRC_DIR)/ODataMetadataWriter.m \
+	$(SRC_DIR)/ODataOperationCatalog.m \
 	$(SRC_DIR)/ODataService.m
 
 OBJS = $(SRCS:.m=.o)

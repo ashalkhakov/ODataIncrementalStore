@@ -7,6 +7,7 @@
 #import "ODataSchema.h"
 #import "ODataMetadataWriter.h"
 #import "ODataPredicateBuilder.h"
+#import "ODataOperationCatalog.h"
 
 NSString * const ODataUserInfoETag = @"OData.etag";
 
@@ -21,6 +22,7 @@ NSString * const ODataUserInfoETag = @"OData.etag";
 @property (nonatomic, readwrite, strong, nullable) id result;
 @property (nonatomic, readwrite, strong, nullable) NSError *error;
 @property (nonatomic) BOOL fired;
+@property (nonatomic, readwrite, weak, nullable) ODataRequest *request;
 @end
 
 @implementation ODataReply
@@ -113,6 +115,7 @@ NSString * const ODataUserInfoETag = @"OData.etag";
 @property (nonatomic, readwrite, copy) NSString *version;
 @property (nonatomic, readwrite, copy) NSDictionary *preferences;
 @property (nonatomic, readwrite, strong) NSMutableDictionary *userInfo;
+@property (nonatomic, readwrite, strong, nullable) NSFetchRequest *collectionFetchRequest;
 @end
 
 @implementation ODataRequest
@@ -241,6 +244,7 @@ NSString * const ODataUserInfoETag = @"OData.etag";
 @property (nonatomic, strong) NSMutableDictionary<NSString *, ODataEntitySetHandler *> *handlers;
 @property (nonatomic, strong) NSMutableDictionary<NSString *, NSString *> *metadataByVersion;
 @property (nonatomic, strong) ODataMetadataWriter *writer;
+@property (nonatomic, strong) OISOperationCatalog *catalog;
 @property (nonatomic) BOOL prepared;
 - (ODataEntitySetHandler *)handlerForEntity:(NSEntityDescription *)entity;
 - (NSString *)entitySetForEntity:(NSEntityDescription *)entity;
@@ -265,7 +269,8 @@ typedef NS_ENUM(NSInteger, OISTargetKind) {
   OISTargetEntity,
   OISTargetProperty,
   OISTargetValue,
-  OISTargetCount
+  OISTargetCount,
+  OISTargetOperation
 };
 
 #pragma mark - One call
@@ -291,6 +296,11 @@ typedef NS_ENUM(NSInteger, OISTargetKind) {
 @property (nonatomic, strong, nullable) NSManagedObject *parent;
 @property (nonatomic, strong, nullable) NSRelationshipDescription *navigation;
 @property (nonatomic, strong, nullable) NSAttributeDescription *attribute;
+@property (nonatomic, strong, nullable) OISServedOperation *operation;
+@property (nonatomic, copy, nullable) NSDictionary<NSString *, ODataExpression *> *operationArguments;
+// Parameter aliases whose values are JSON (@p=[...], @p={...}): an
+// operation's complex and collection arguments.
+@property (nonatomic, copy, nullable) NSDictionary<NSString *, id> *JSONAliases;
 
 // A read in progress.
 @property (nonatomic, strong, nullable) NSFetchRequest *fetch;
@@ -314,7 +324,9 @@ typedef NS_ENUM(NSInteger, OISTargetKind) {
 
 - (ODataReply *)replyWithAction:(SEL)action
 {
-  return [[ODataReply alloc] initWithTarget:self action:action context:self.request.context];
+  ODataReply *reply = [[ODataReply alloc] initWithTarget:self action:action context:self.request.context];
+  reply.request = self.request;
+  return reply;
 }
 
 #pragma mark Responses
@@ -451,18 +463,32 @@ typedef NS_ENUM(NSInteger, OISTargetKind) {
   self.request.path = resourcePath;
 
   NSMutableDictionary *query = [NSMutableDictionary dictionary];
+  NSMutableDictionary *JSONAliases = [NSMutableDictionary dictionary];
   NSString *raw = url.query;
   for (NSString *pair in raw.length ? [raw componentsSeparatedByString:@"&"] : @[]) {
     if (!pair.length) continue;
     NSRange equals = [pair rangeOfString:@"="];
     NSString *key = OISPercentDecoded(equals.location == NSNotFound ? pair : [pair substringToIndex:equals.location]);
     NSString *value = equals.location == NSNotFound ? @"" : OISPercentDecoded([pair substringFromIndex:equals.location + 1]);
-    if (query[key]) {
+    if (query[key] || JSONAliases[key]) {
       [self fail:400 message:[NSString stringWithFormat:@"%@ is given twice", key]];
       return NO;
     }
+    NSString *trimmed = [value stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceCharacterSet]];
+    if ([key hasPrefix:@"@"] && trimmed.length && strchr("[{\"", (char)[trimmed characterAtIndex:0])) {
+      id json = [NSJSONSerialization JSONObjectWithData:[trimmed dataUsingEncoding:NSUTF8StringEncoding]
+                                                options:NSJSONReadingAllowFragments
+                                                  error:NULL];
+      if (!json) {
+        [self fail:400 message:[NSString stringWithFormat:@"%@ is not JSON", key]];
+        return NO;
+      }
+      JSONAliases[[key substringFromIndex:1]] = json;
+      continue;
+    }
     query[key] = value;
   }
+  self.JSONAliases = JSONAliases;
   for (NSString *key in query) {
     if ([@[ @"$apply", @"$compute", @"$index", @"$schemaversion", @"$deltatoken" ] containsObject:key]) {
       [self fail:501 message:[NSString stringWithFormat:@"%@ is not supported", key]];
@@ -604,6 +630,19 @@ typedef NS_ENUM(NSInteger, OISTargetKind) {
     return;
   }
   ODataEntitySetHandler *handler = first.isCall ? nil : [self.service handlerForEntitySet:first.name];
+  OISServedOperation *import = handler ? nil : [self.service.catalog importNamed:first.name];
+  if (import) {
+    // CountProducts(), Echo(Text='x'): an unqualified name's parentheses
+    // read as a key predicate, by name.
+    NSDictionary *arguments = first.keys ?: first.arguments;
+    if (arguments[@""]) {
+      [self fail:400 message:[NSString stringWithFormat:@"The arguments of %@ are given by name", import.name]];
+      return;
+    }
+    self.index = 1;
+    [self callOperation:import arguments:arguments];
+    return;
+  }
   if (!handler) {
     [self fail:404 message:[NSString stringWithFormat:@"The service has no entity set %@", first.name]];
     return;
@@ -632,12 +671,21 @@ typedef NS_ENUM(NSInteger, OISTargetKind) {
     NSString *name = segment.name;
     switch (self.kind) {
       case OISTargetCollection:
+        if ([name rangeOfString:@"."].location != NSNotFound) {
+          OISServedOperation *operation = [self.service.catalog operationNamed:name boundTo:self.entity collection:YES];
+          if (operation) {
+            self.index++;
+            [self callOperation:operation arguments:segment.arguments];
+            return;
+          }
+        }
         if ([name isEqualToString:@"$count"] && self.index + 1 == segments.count && !segment.keys) {
           self.kind = OISTargetCount;
           self.index++;
           continue;
         }
-        if (!segment.keys && !segment.isCall && ![name hasPrefix:@"$"] && [self.mapper keyAttributesForEntity:OISRootEntity(self.entity)].count == 1) {
+        if (!segment.keys && !segment.isCall && ![name hasPrefix:@"$"] && [name rangeOfString:@"."].location == NSNotFound &&
+            [self.mapper keyAttributesForEntity:OISRootEntity(self.entity)].count == 1) {
           // A key as a segment: Products/1 (Part 2 section 4.3.6).
           [self findObjectWithParts:@{ @"": [self literalForKeySegment:name] }];
           return;
@@ -646,6 +694,14 @@ typedef NS_ENUM(NSInteger, OISTargetKind) {
            message:[NSString stringWithFormat:@"%@ cannot follow a collection here", name]];
         return;
       case OISTargetEntity: {
+        if ([name rangeOfString:@"."].location != NSNotFound) {
+          OISServedOperation *operation = [self.service.catalog operationNamed:name boundTo:self.object.entity collection:NO];
+          if (operation) {
+            self.index++;
+            [self callOperation:operation arguments:segment.arguments];
+            return;
+          }
+        }
         if ([name isEqualToString:@"$ref"] || [name isEqualToString:@"$value"] || [name rangeOfString:@"."].location != NSNotFound) {
           [self fail:501 message:[NSString stringWithFormat:@"%@ is not supported", name]];
           return;
@@ -825,6 +881,10 @@ typedef NS_ENUM(NSInteger, OISTargetKind) {
       else if ([method isEqualToString:@"PUT"]) [self updateReplacing:YES];
       else if ([method isEqualToString:@"DELETE"]) [self remove];
       else [self methodNotAllowed:@[ @"GET", @"PATCH", @"PUT", @"DELETE" ]];
+      return;
+    case OISTargetOperation:
+      if ([method isEqualToString:(self.operation.isAction ? @"POST" : @"GET")]) [self invokeOperation];
+      else [self methodNotAllowed:@[ self.operation.isAction ? @"POST" : @"GET" ]];
       return;
     case OISTargetProperty:
     case OISTargetValue:
@@ -1378,6 +1438,311 @@ static NSPredicate *OISEquals(NSString *keyPath, id value, NSComparisonPredicate
   [self respondJSON:body status:200 headers:headers];
 }
 
+#pragma mark Operations
+
+- (void)callOperation:(OISServedOperation *)operation arguments:(NSDictionary *)arguments
+{
+  if (self.index < self.request.path.segments.count) {
+    [self fail:501 message:[NSString stringWithFormat:@"Composing on the result of %@ is not supported", operation.name]];
+    return;
+  }
+  self.operation = operation;
+  self.operationArguments = arguments;
+  self.kind = OISTargetOperation;
+  [self dispatch];
+}
+
+// A JSON value as the value a parameter takes: an entity from its
+// reference, anything else by its type.
+- (id)valueOfJSON:(id)json parameter:(OISServedParameter *)parameter error:(NSError **)error
+{
+  if (!json || json == [NSNull null]) return nil;
+  BOOL collection = [parameter.type hasPrefix:@"Collection("];
+  NSString *element = collection ? [parameter.type substringWithRange:NSMakeRange(11, parameter.type.length - 12)] : parameter.type;
+  if (parameter.entity) {
+    NSArray *references = collection ? ([json isKindOfClass:[NSArray class]] ? json : nil) : @[ json ];
+    if (!references) {
+      if (error) *error = ODataServiceError(400, [NSString stringWithFormat:@"%@ takes a collection", parameter.name]);
+      return nil;
+    }
+    NSMutableArray *objects = [NSMutableArray array];
+    for (id reference in references) {
+      id text = [reference isKindOfClass:[NSDictionary class]] ? reference[@"@odata.id"] : reference;
+      NSManagedObject *object = [self objectForReference:text error:error];
+      if (!object) return nil;
+      [objects addObject:object];
+    }
+    return collection ? objects : objects.firstObject;
+  }
+  if (collection) {
+    if (![json isKindOfClass:[NSArray class]]) {
+      if (error) *error = ODataServiceError(400, [NSString stringWithFormat:@"%@ takes a collection", parameter.name]);
+      return nil;
+    }
+    NSMutableArray *values = [NSMutableArray array];
+    for (id item in json) {
+      id value = item == [NSNull null] ? item : [self.coder valueForJSON:item typeName:element];
+      if (!value) {
+        if (error) *error = ODataServiceError(400, [NSString stringWithFormat:@"%@ is not a value of %@", item, element]);
+        return nil;
+      }
+      [values addObject:value];
+    }
+    return values;
+  }
+  // A number for a C number: a JSON number, or a string that reads as one
+  // (IEEE754Compatible, INF, NaN).
+  if (parameter.scalar && ![json isKindOfClass:[NSNumber class]]) {
+    NSScanner *scanner = [json isKindOfClass:[NSString class]] ? [NSScanner scannerWithString:json] : nil;
+    double number;
+    BOOL numeric = scanner && ([scanner scanDouble:&number] && scanner.isAtEnd);
+    if (!numeric && ![@[ @"INF", @"-INF", @"NaN" ] containsObject:json ?: @""]) {
+      if (error) *error = ODataServiceError(400, [NSString stringWithFormat:@"%@ is not a value of %@", json, parameter.name]);
+      return nil;
+    }
+  }
+  id value = [self.coder valueForJSON:json typeName:element];
+  if (!value || value == [NSNull null]) {
+    if (error) *error = ODataServiceError(400, [NSString stringWithFormat:@"%@ is not a value of %@", json, parameter.name]);
+  }
+  return value == [NSNull null] ? nil : value;
+}
+
+// The arguments, by parameter, from a function's URL or an action's body;
+// nil after answering with an error.
+- (NSArray *)operationValues
+{
+  OISServedOperation *operation = self.operation;
+  NSMutableDictionary *given = [NSMutableDictionary dictionary];  // name -> JSON
+  NSMutableSet *names = [NSMutableSet setWithArray:[operation.parameters valueForKey:@"name"]];
+  if (operation.isAction) {
+    NSDictionary *body = @{};
+    if (self.exchange.request.HTTPBody.length) {
+      body = [self bodyJSON];
+      if (!body) return nil;
+    }
+    for (NSString *key in body) {
+      if ([key hasPrefix:@"@"]) continue;
+      if (![names containsObject:key]) {
+        [self fail:400 message:[NSString stringWithFormat:@"%@ has no parameter %@", operation.name, key]];
+        return nil;
+      }
+      given[key] = body[key];
+    }
+  } else {
+    for (NSString *key in self.operationArguments) {
+      if (![names containsObject:key]) {
+        [self fail:400 message:[NSString stringWithFormat:@"%@ has no parameter %@", operation.name, key]];
+        return nil;
+      }
+      ODataExpression *argument = self.operationArguments[key];
+      id json = nil;
+      for (NSInteger depth = 0; argument.kind == ODataExpressionAlias && depth < 8; depth++) {
+        json = self.JSONAliases[argument.name];
+        if (json) break;
+        argument = self.request.options.aliases[argument.name];
+      }
+      if (!json) {
+        if (argument.kind != ODataExpressionLiteral) {
+          [self fail:(argument ? 501 : 400) message:[NSString stringWithFormat:@"%@: an argument is a value or a parameter alias", key]];
+          return nil;
+        }
+        json = argument.value ?: [NSNull null];
+      }
+      given[key] = json;
+    }
+  }
+
+  NSMutableArray *values = [NSMutableArray array];
+  for (OISServedParameter *parameter in operation.parameters) {
+    NSError *error = nil;
+    id value = [self valueOfJSON:given[parameter.name] parameter:parameter error:&error];
+    if (error) {
+      [self respondError:error];
+      return nil;
+    }
+    if (!value && parameter.scalar) {
+      [self fail:400 message:[NSString stringWithFormat:@"%@ needs %@", operation.name, parameter.name]];
+      return nil;
+    }
+    [values addObject:value ?: [NSNull null]];
+  }
+  return values;
+}
+
+static void OISSetScalarArgument(NSInvocation *invocation, NSInteger index, char type, NSNumber *number)
+{
+  switch (type) {
+    case 'c': { char v = (char)number.boolValue; [invocation setArgument:&v atIndex:index]; break; }
+    case 'C': { unsigned char v = (unsigned char)number.boolValue; [invocation setArgument:&v atIndex:index]; break; }
+    case 'B': { bool v = number.boolValue; [invocation setArgument:&v atIndex:index]; break; }
+    case 's': { int16_t v = number.shortValue; [invocation setArgument:&v atIndex:index]; break; }
+    case 'S': { uint16_t v = number.unsignedShortValue; [invocation setArgument:&v atIndex:index]; break; }
+    case 'i':
+    case 'l': { int32_t v = number.intValue; [invocation setArgument:&v atIndex:index]; break; }
+    case 'I':
+    case 'L': { uint32_t v = number.unsignedIntValue; [invocation setArgument:&v atIndex:index]; break; }
+    case 'q': { int64_t v = number.longLongValue; [invocation setArgument:&v atIndex:index]; break; }
+    case 'Q': { uint64_t v = number.unsignedLongLongValue; [invocation setArgument:&v atIndex:index]; break; }
+    case 'f': { float v = number.floatValue; [invocation setArgument:&v atIndex:index]; break; }
+    default: { double v = number.doubleValue; [invocation setArgument:&v atIndex:index]; break; }
+  }
+}
+
+static NSNumber *OISScalarReturnValue(NSInvocation *invocation, char type)
+{
+  switch (type) {
+    case 'c': { char v; [invocation getReturnValue:&v]; return @(v != 0); }
+    case 'C': { unsigned char v; [invocation getReturnValue:&v]; return @(v != 0); }
+    case 'B': { bool v; [invocation getReturnValue:&v]; return @(v); }
+    case 's': { int16_t v; [invocation getReturnValue:&v]; return @(v); }
+    case 'S': { uint16_t v; [invocation getReturnValue:&v]; return @(v); }
+    case 'i':
+    case 'l': { int32_t v; [invocation getReturnValue:&v]; return @(v); }
+    case 'I':
+    case 'L': { uint32_t v; [invocation getReturnValue:&v]; return @(v); }
+    case 'q': { int64_t v; [invocation getReturnValue:&v]; return @(v); }
+    case 'Q': { uint64_t v; [invocation getReturnValue:&v]; return @(v); }
+    case 'f': { float v; [invocation getReturnValue:&v]; return @(v); }
+    default: { double v; [invocation getReturnValue:&v]; return @(v); }
+  }
+}
+
+- (void)invokeOperation
+{
+  OISServedOperation *operation = self.operation;
+  NSArray *values = [self operationValues];
+  if (!values) return;
+
+  id target;
+  if (!operation.boundEntity) {
+    target = self.service.serviceOperations;
+  } else if (operation.boundToCollection) {
+    target = NSClassFromString(operation.boundEntity.managedObjectClassName);
+    NSError *error = nil;
+    NSFetchRequest *collection = [NSFetchRequest fetchRequestWithEntityName:self.entity.name];
+    collection.predicate = [self collectionPredicateWithFilter:NO error:&error];
+    if (!collection.predicate) {
+      [self respondError:error];
+      return;
+    }
+    self.request.collectionFetchRequest = collection;
+  } else {
+    target = self.object;
+  }
+  if (!target) {
+    [self fail:500 message:[NSString stringWithFormat:@"%@ has nothing to call", operation.signature]];
+    return;
+  }
+
+  NSMethodSignature *signature = [target methodSignatureForSelector:operation.selector];
+  NSInvocation *invocation = [NSInvocation invocationWithMethodSignature:signature];
+  invocation.target = target;
+  invocation.selector = operation.selector;
+  for (NSUInteger i = 0; i < operation.parameters.count; i++) {
+    OISServedParameter *parameter = operation.parameters[i];
+    id value = values[i] == [NSNull null] ? nil : values[i];
+    if (parameter.scalar) {
+      OISSetScalarArgument(invocation, (NSInteger)i + 2, parameter.scalar, value);
+    } else {
+      [invocation setArgument:&value atIndex:(NSInteger)i + 2];
+    }
+  }
+  ODataReply *reply = [self replyWithAction:@selector(didInvokeOperation:)];
+  [invocation setArgument:&reply atIndex:(NSInteger)operation.parameters.count + 2];
+  [invocation invoke];
+
+  id result = nil;
+  if (operation.returns.scalar) {
+    result = OISScalarReturnValue(invocation, operation.returns.scalar);
+  } else if (operation.returns) {
+    __unsafe_unretained id returned = nil;
+    [invocation getReturnValue:&returned];
+    result = returned;
+  }
+  [reply returned:result];
+}
+
+- (void)didInvokeOperation:(ODataReply *)reply
+{
+  OISServedOperation *operation = self.operation;
+  if (reply.error) {
+    [self.request.context rollback];
+    [self respondError:reply.error];
+    return;
+  }
+  // An action may have changed things; a function has no business to.
+  if (operation.isAction && self.request.context.hasChanges && ![self save]) return;
+  if (!operation.isAction) [self.request.context rollback];
+
+  id result = reply.result;
+  OISServedParameter *returns = operation.returns;
+  if (!returns || !result || result == [NSNull null]) {
+    [self respondStatus:204 headers:@{} body:nil];
+    return;
+  }
+  BOOL collection = [returns.type hasPrefix:@"Collection("];
+  NSString *element = collection ? [returns.type substringWithRange:NSMakeRange(11, returns.type.length - 12)] : returns.type;
+  NSArray *items = nil;
+  if (collection) {
+    if ([result isKindOfClass:[NSArray class]]) items = result;
+    else if ([result isKindOfClass:[NSSet class]]) items = [result allObjects];
+    else if ([result isKindOfClass:[NSOrderedSet class]]) items = [result array];
+    if (!items) {
+      [self fail:500 message:[NSString stringWithFormat:@"%@ returned %@, not a collection", operation.signature, [result class]]];
+      return;
+    }
+  }
+  NSError *error = nil;
+  NSMutableDictionary *body = [NSMutableDictionary dictionary];
+  BOOL none = [self.metadataLevel isEqualToString:@"none"];
+
+  if (returns.entity) {
+    NSEntityDescription *root = OISRootEntity(returns.entity);
+    for (id item in items ?: @[ result ]) {
+      if (![item isKindOfClass:[NSManagedObject class]]) {
+        [self fail:500 message:[NSString stringWithFormat:@"%@ returned %@, not an entity", operation.signature, [item class]]];
+        return;
+      }
+    }
+    if (!collection) {
+      NSDictionary *json = [self entityBodyFor:result error:&error];
+      if (!json) {
+        [self respondError:error];
+        return;
+      }
+      [self respondJSON:json status:200 headers:@{ @"ETag": [self etagOf:result] }];
+      return;
+    }
+    NSMutableArray *values = [NSMutableArray array];
+    for (NSManagedObject *item in items) {
+      NSDictionary *json = [self JSONForObject:item options:self.request.options expected:returns.entity error:&error];
+      if (!json) {
+        [self respondError:error];
+        return;
+      }
+      [values addObject:json];
+    }
+    if (!none) {
+      body[@"@odata.context"] = [NSString stringWithFormat:@"%@#%@%@", [self contextBase], [self.service entitySetForEntity:root],
+                                 [self selectListForOptions:self.request.options]];
+    }
+    body[@"value"] = values;
+    [self respondJSON:body status:200 headers:nil];
+    return;
+  }
+
+  if (collection) {
+    NSMutableArray *values = [NSMutableArray array];
+    for (id item in items) [values addObject:[self.coder JSONForValue:(item == [NSNull null] ? nil : item) typeName:element]];
+    body[@"value"] = values;
+  } else {
+    body[@"value"] = [self.coder JSONForValue:result typeName:element];
+  }
+  if (!none) body[@"@odata.context"] = [NSString stringWithFormat:@"%@#%@", [self contextBase], returns.type];
+  [self respondJSON:body status:200 headers:nil];
+}
+
 #pragma mark Writes
 
 - (NSDictionary *)bodyJSON
@@ -1754,6 +2119,13 @@ static NSPredicate *OISEquals(NSString *keyPath, id value, NSComparisonPredicate
       if (version && !entity.superentity) concurrency[entity.name] = version;
     }
     writer.concurrencyAttributes = concurrency;
+    OISOperationCatalog *catalog = [[OISOperationCatalog alloc] initWithModel:self.model
+                                                                       mapper:self.mapper
+                                                                       writer:writer
+                                                            serviceOperations:self.serviceOperations];
+    writer.additionalSchemaXML = catalog.schemaXML;
+    writer.additionalContainerXML = catalog.containerXML;
+    self.catalog = catalog;
     NSString *xml = [writer XMLStringForVersion:@"4.01"];
     ODataSchema *schema = [ODataSchema schemaWithData:[xml dataUsingEncoding:NSUTF8StringEncoding] error:NULL];
     if (schema) self.mapper.schema = schema;
@@ -1827,6 +2199,12 @@ static NSPredicate *OISEquals(NSString *keyPath, id value, NSComparisonPredicate
     }
     return xml;
   }
+}
+
+- (NSArray *)operationProblems
+{
+  [self prepare];
+  return self.catalog.problems;
 }
 
 - (NSArray *)metadataProblems

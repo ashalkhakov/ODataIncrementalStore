@@ -47,6 +47,7 @@
 		AA000000000000000000002A /* ODataPredicateTranslator.m in Sources */ = {isa = PBXBuildFile; fileRef = AA000000000000000000002B /* ODataPredicateTranslator.m */; };
 		AA000000000000000000002C /* ODataQueryBuilder.m in Sources */ = {isa = PBXBuildFile; fileRef = AA000000000000000000002D /* ODataQueryBuilder.m */; };
 		AC00000000000000005E0009 /* ODataService.m in Sources */ = {isa = PBXBuildFile; fileRef = AC00000000000000005E000A /* ODataService.m */; };
+		AD00000000000000000C0001 /* ODataOperationCatalog.m in Sources */ = {isa = PBXBuildFile; fileRef = AD00000000000000000C0002 /* ODataOperationCatalog.m */; };
 		AC00000000000000005E0005 /* ODataMetadataWriter.m in Sources */ = {isa = PBXBuildFile; fileRef = AC00000000000000005E0006 /* ODataMetadataWriter.m */; };
 		AC00000000000000005E0001 /* ODataPredicateBuilder.m in Sources */ = {isa = PBXBuildFile; fileRef = AC00000000000000005E0002 /* ODataPredicateBuilder.m */; };
 		AA000000000000000000002E /* ODataIncrementalStore.m in Sources */ = {isa = PBXBuildFile; fileRef = AA000000000000000000002F /* ODataIncrementalStore.m */; };
@@ -124,6 +125,7 @@
 		AA000000000000000000002B /* ODataPredicateTranslator.m */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.objc; path = ODataPredicateTranslator.m; sourceTree = "<group>"; };
 		AA000000000000000000002D /* ODataQueryBuilder.m */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.objc; path = ODataQueryBuilder.m; sourceTree = "<group>"; };
 		AC00000000000000005E000A /* ODataService.m */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.objc; path = ODataService.m; sourceTree = "<group>"; };
+		AD00000000000000000C0002 /* ODataOperationCatalog.m */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.objc; path = ODataOperationCatalog.m; sourceTree = "<group>"; };
 		AC00000000000000005E0006 /* ODataMetadataWriter.m */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.objc; path = ODataMetadataWriter.m; sourceTree = "<group>"; };
 		AC00000000000000005E0002 /* ODataPredicateBuilder.m */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.objc; path = ODataPredicateBuilder.m; sourceTree = "<group>"; };
 		AA000000000000000000002F /* ODataIncrementalStore.m */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.objc; path = ODataIncrementalStore.m; sourceTree = "<group>"; };
@@ -208,6 +210,7 @@
 				AA000000000000000000002B /* ODataPredicateTranslator.m */,
 				AA000000000000000000002D /* ODataQueryBuilder.m */,
 				AC00000000000000005E000A /* ODataService.m */,
+				AD00000000000000000C0002 /* ODataOperationCatalog.m */,
 				AC00000000000000005E0006 /* ODataMetadataWriter.m */,
 				AC00000000000000005E0002 /* ODataPredicateBuilder.m */,
 				AA000000000000000000002F /* ODataIncrementalStore.m */,
@@ -449,6 +452,7 @@
 				AA000000000000000000002A /* ODataPredicateTranslator.m in Sources */,
 				AA000000000000000000002C /* ODataQueryBuilder.m in Sources */,
 				AC00000000000000005E0009 /* ODataService.m in Sources */,
+				AD00000000000000000C0001 /* ODataOperationCatalog.m in Sources */,
 				AC00000000000000005E0005 /* ODataMetadataWriter.m in Sources */,
 				AC00000000000000005E0001 /* ODataPredicateBuilder.m in Sources */,
 				AA000000000000000000002E /* ODataIncrementalStore.m in Sources */,

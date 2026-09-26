@@ -25,7 +25,9 @@
 //   Namespace, Container   the names $metadata gives the schema
 //   Bundles       paths of bundles to load; a principal class that
 //                 conforms to ODataServiceConfiguring is sent
-//                 +configureService: before the first request
+//                 +configureService: before the first request, to register
+//                 handlers and set serviceOperations; an operation the
+//                 service cannot declare stops it from starting
 //   PrintMetadata YES: write $metadata to standard output and exit
 //
 // It serves until SIGINT or SIGTERM, logs to standard error, and exits 0
@@ -113,6 +115,10 @@ int main(int argc, const char *argv[])
       return 0;
     }
     for (NSString *problem in service.metadataProblems) fprintf(stderr, "ois-serve: $metadata: %s\n", problem.UTF8String);
+    // An operation that cannot be declared would answer 404 until someone
+    // noticed; better not to start.
+    for (NSString *problem in service.operationProblems) fprintf(stderr, "ois-serve: operation: %s\n", problem.UTF8String);
+    if (service.operationProblems.count) OISFail(@"fix the operations above, or leave them out of the bundle");
 
     ODataHTTPServer *server = [[ODataHTTPServer alloc] initWithService:service];
     id localhost = settings[@"Localhost"];

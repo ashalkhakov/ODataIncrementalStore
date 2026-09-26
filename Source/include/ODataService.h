@@ -24,7 +24,8 @@
 // what is not supported yet.
 //
 // An application changes what an entity set does with an
-// ODataEntitySetHandler, and answers through an ODataReply.
+// ODataEntitySetHandler, adds actions and functions by declaring them in
+// protocols (below), and answers through an ODataReply.
 
 #pragma once
 #import "OISCoreData.h"
@@ -34,7 +35,7 @@
 
 NS_ASSUME_NONNULL_BEGIN
 
-@class ODataService;
+@class ODataService, ODataRequest;
 
 // userInfo on an Integer attribute: the entity's version, sent as its ETag
 // and incremented by every update. Without one, an entity's ETag is a hash
@@ -57,6 +58,55 @@ FOUNDATION_EXPORT NSString * const ODataUserInfoETag;  // @"OData.etag"
 @property (nonatomic, readonly, getter=isFinished) BOOL finished;
 @property (nonatomic, readonly, strong, nullable) id result;
 @property (nonatomic, readonly, strong, nullable) NSError *error;
+// The request being answered: its context, its headers, and for an
+// operation bound to a collection, the collection.
+@property (nonatomic, readonly, weak, nullable) ODataRequest *request;
+@end
+
+// Operations. Objective-C has no annotations, so a protocol declares them:
+// one that inherits ODataFunctions declares functions (no side effects,
+// called with GET), one that inherits ODataActions actions (POST). Every
+// method takes an ODataReply as its last parameter.
+//
+//   @protocol ProductFunctions <ODataFunctions>
+//   - (NSDecimalNumber *)discountedPriceByPercent:(double)percent reply:(ODataReply *)reply;
+//   + (NSArray *)pricierThanPrice:(double)price reply:(ODataReply *)reply;
+//   @end
+//   @interface Product : NSManagedObject <ProductFunctions>
+//
+// An instance method of an entity's managed object class is bound to the
+// entity (Products(1)/Default.DiscountedPriceByPercent(Percent=10)), a class
+// method to its collection (Products/Default.PricierThanPrice(Price=20)),
+// and a method of the service's serviceOperations object is unbound,
+// reached through an import (CountProducts()). Only protocols a class
+// adopts itself count, not those it inherits.
+//
+// Names come from the selector, by the mapper's naming: the first keyword
+// up to "With" names the operation and the rest the first parameter
+// (shareTripWithUserName:tripId:reply: is ShareTrip(UserName, TripId));
+// without "With", the whole keyword names the operation and its last word
+// the parameter (pricierThanPrice: is PricierThanPrice(Price)). Types come
+// from the protocol's extended type encodings, which name each object
+// parameter's class: int32_t is Edm.Int32, int64_t Edm.Int64, int16_t
+// Edm.Int16, double Edm.Double, float Edm.Single, BOOL Edm.Boolean,
+// NSString Edm.String, NSDate Edm.DateTimeOffset, NSDecimalNumber
+// Edm.Decimal, NSUUID Edm.Guid, NSData Edm.Binary, a managed object class
+// its entity type. What the runtime cannot see, a collection's element type
+// or which number an NSNumber is, the class says in a class method, and it
+// can rename what the rules get wrong:
+//
+//   + (NSDictionary *)ODataOperationTypes
+//   { return @{ @"pricierThanPrice:reply:": @"Collection(Default.Product)",
+//               @"countWithLimit:reply:.limit": @"Edm.Int32" }; }
+//   + (NSDictionary *)ODataOperationNames
+//   { return @{ @"pricierThanPrice:reply:": @"MorePricey",
+//               @"pricierThanPrice:reply:.price": @"Floor" }; }
+//
+// A declaration the service cannot type is listed in operationProblems and
+// left out; ois-serve refuses to start with any.
+@protocol ODataFunctions
+@end
+@protocol ODataActions
 @end
 
 // A request as the service read it.
@@ -72,6 +122,9 @@ FOUNDATION_EXPORT NSString * const ODataUserInfoETag;  // @"OData.etag"
 // The entity the request is about: its entity set's, or the type an
 // inserted entity's @odata.type names.
 @property (nonatomic, readonly, strong, nullable) NSEntityDescription *entity;
+// For an operation bound to a collection: the collection's rows, as a fetch
+// request (its navigation, and what the set lets the caller see).
+@property (nonatomic, readonly, strong, nullable) NSFetchRequest *collectionFetchRequest;
 // The request's own private-queue context. Handler methods run inside its
 // -performBlockAndWait:.
 @property (nonatomic, readonly, strong) NSManagedObjectContext *context;
@@ -155,6 +208,12 @@ FOUNDATION_EXPORT NSString * const ODataUserInfoETag;  // @"OData.etag"
 // link for the rest. 0, the default: as many as the client asks for
 // (Prefer: odata.maxpagesize), else all of them.
 @property (nonatomic) NSUInteger maxPageSize;
+// The object whose methods are the service's unbound operations; see
+// ODataFunctions. Set it before the first request.
+@property (nonatomic, strong, nullable) id serviceOperations;
+// The operations that could not be declared, one sentence each, naming the
+// selector.
+@property (nonatomic, readonly) NSArray<NSString *> *operationProblems;
 
 - (void)setHandler:(ODataEntitySetHandler *)handler forEntitySet:(NSString *)entitySet;
 - (nullable ODataEntitySetHandler *)handlerForEntitySet:(NSString *)entitySet;

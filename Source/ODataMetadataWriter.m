@@ -259,6 +259,7 @@ static NSString *OISElementTypeOf(NSString *type)
     }
     [xml appendString:@"</EntitySet>"];
   }
+  if (self.additionalContainerXML) [xml appendString:self.additionalContainerXML];
   [xml appendString:@"</EntityContainer>"];
   return xml;
 }
@@ -276,6 +277,7 @@ static NSString *OISElementTypeOf(NSString *type)
     [self writeEntity:entity into:schemas used:usedTypes];
   }
   [self writeSchemaTypes:usedTypes into:schemas];
+  if (self.additionalSchemaXML) [self append:self.additionalSchemaXML toNamespace:self.namespaceName in:schemas];
   [self append:[self containerXML] toNamespace:self.namespaceName in:schemas];
 
   NSMutableString *xml = [NSMutableString stringWithString:@"<?xml version=\"1.0\" encoding=\"utf-8\"?>\n"];

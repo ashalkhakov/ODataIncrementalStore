@@ -36,6 +36,11 @@ NS_ASSUME_NONNULL_BEGIN
 // (Core.OptimisticConcurrency). Set by the service.
 @property (nonatomic, copy, nullable) NSDictionary<NSString *, NSAttributeDescription *> *concurrencyAttributes;
 
+// More elements for the schema of namespaceName (Function, Action) and for
+// the entity container (FunctionImport, ActionImport), as CSDL XML.
+@property (nonatomic, copy, nullable) NSString *additionalSchemaXML;
+@property (nonatomic, copy, nullable) NSString *additionalContainerXML;
+
 // The document, in the CSDL of this OData-Version: 4.0 or 4.01.
 - (NSString *)XMLStringForVersion:(NSString *)version;
 

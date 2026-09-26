@@ -1,11 +1,11 @@
 # OData server: design
 
-**Status: milestones 1 to 4 are implemented** (see Milestones): the core
+**Status: milestones 1 to 5 are implemented** (see Milestones): the core
 (`ODataService`, `ODataEntitySetHandler`, `ODataReply`), `$metadata` from
 the model (`ODataMetadataWriter`), `$filter` to `NSPredicate`
-(`ODataPredicateBuilder`), and the HTTP adapter with `ois-serve`
-(`Server/`). Operations, `$batch` and the Workbench's move to the server
-are next. Where the code went differently from the plan, the sections below
+(`ODataPredicateBuilder`), the HTTP adapter with `ois-serve` (`Server/`),
+and operations declared in protocols (`ODataOperationCatalog`). `$batch`
+and the Workbench's move to the server are next. Where the code went differently from the plan, the sections below
 say so.
 
 ODataIncrementalStore is a client: Core Data on one side, a remote OData v4
@@ -204,11 +204,11 @@ operation comes from something the language already has:
 
 | OData needs | Read from |
 |---|---|
-| operation and parameter names | the selector. `shareTripWithUserName:tripId:reply:` is `ShareTrip(UserName, TripId)`, named by `ODataPropertyMapper`'s rules, as properties are. |
+| operation and parameter names | the selector. `shareTripWithUserName:tripId:reply:` is `ShareTrip(UserName, TripId)`: the first keyword up to `With` names the operation, the rest the first parameter. Without `With`, the whole keyword names the operation and its last word the parameter: `pricierThanPrice:reply:` is `PricierThanPrice(Price)`. Named by `ODataPropertyMapper`'s rules, as properties are. |
 | parameter and return types | the extended encoding: `int32_t` is `Edm.Int32`, `int64_t` `Edm.Int64`, `double` `Edm.Double`, `BOOL` `Edm.Boolean`, `NSString *` `Edm.String`, `NSDate *` `Edm.DateTimeOffset`, `NSDecimalNumber *` `Edm.Decimal`, `NSUUID *` `Edm.Guid`, `NSData *` `Edm.Binary`, a managed object class its entity type |
 | function or action | the protocol it inherits from: `<ODataFunctions>` or `<ODataActions>` |
-| binding | an instance method of an entity's class is bound to the entity; a class method (`+`) is bound to its collection; a method of the service's delegate is unbound, reached through an import |
-| nullability | a scalar is non-nullable; an object is nullable unless declared `nonnull` |
+| binding | an instance method of an entity's class is bound to the entity; a class method (`+`) is bound to its collection; a method of the service's `serviceOperations` object is unbound, reached through an import. Only protocols a class adopts itself count. |
+| nullability | a scalar is non-nullable; an object is nullable |
 
 The runtime cannot see two things. Generics are erased, so
 `NSArray<Person *> *` reads as `NSArray`. And an `NSNumber *` parameter,
@@ -222,15 +222,47 @@ the conventions get wrong:
   return @{ @"peopleNearAirport:reply:": @"Collection(Microsoft.OData.SampleService.Models.TripPin.Person)",
             @"shareTripWithUserName:tripId:reply:.tripId": @"Edm.Int32" };
 }
+
++ (NSDictionary<NSString *, NSString *> *)ODataOperationNames
+{
+  return @{ @"namesInCategory:": @"ProductNames" };
+}
 ```
 
-A declaration the framework cannot type fully stops the service at
-startup, naming the selector, rather than failing on the first call.
+The keys are selectors as written, a parameter after a dot by the name
+the rules give it. A declaration the framework cannot type is listed in
+`operationProblems`, naming the selector and the key that would fix it,
+and left out of `$metadata`; `ois-serve` refuses to start with any. So a
+mistake shows at startup, not at the first call.
 `ois-model --classes` already gives the client the same methods
 (`-[Person getFavoriteAirline:]`); it will also write these protocols
 from `$metadata`, so client and server can share one. Declarations in
 CSDL, generating the protocol, can come later on top of this. The
 protocol stays what the framework reads.
+
+As built:
+
+- **Arguments.** A function's come from the URL: literals, parameter
+  aliases, and aliases whose value is JSON (`SumOfPrices(Prices=@p)?@p=[1.5,2.25]`),
+  which is how the client passes complex values and collections. An
+  action's come from its JSON body. Entities are passed by reference
+  (`{"@odata.id": "Products(1)"}`). A missing number, an unknown
+  parameter, or a value of the wrong type is a `400`.
+- **The call.** Through `NSInvocation`, inside the request's context. The
+  reply's `request` gives the method the context; for an operation bound
+  to a collection, `request.collectionFetchRequest` is the collection:
+  `Categories(1)/Products/Default.PricierThanPrice(Price=18)` sees the
+  category's products only.
+- **After it.** An action's changes are saved, as a write's are; a
+  function's are rolled back. The result is written by its declared type:
+  an entity with `$select` and `$expand` applied, a collection of them, a
+  value or a collection of values, each with its context URL; nothing is
+  a `204`. Composing on a result (`…/Default.F()/Name`) is a `501`.
+- libobjc2's `Protocol` objects cannot be retained, so the catalog keeps
+  them as pointers; Apple's can.
+- The client calls these operations as it calls any service's
+  (`-invokeODataOperation:parameters:error:`, `ODataOperationCall`), in
+  `ODataServiceTests testClientCallsOperations`.
 
 **Replies.** Every operation and every entity-set handler method takes
 an `ODataReply` as its last parameter. The framework is the method's
@@ -486,7 +518,9 @@ before the split rather than after.
 4. ~~**HTTP adapter.**~~ Done: GCDWebServer vendored and ported,
    `ODataHTTPServer`, `ois-serve`, the loopback check in CI on both
    platforms, example units and proxy configurations.
-5. **Operations**, declared in protocols, as above.
+5. ~~**Operations**~~, declared in protocols, as above. Done: functions and
+   actions bound to entities and collections, and unbound ones through
+   imports, answering at once or later. Not yet: composing on a result.
 6. **`$batch`**, multipart and JSON. The client falls back to one request
    at a time without it, so a multi-object save is not atomic until then.
 7. **Workbench on the server.** Replace `WorkbenchEngine` with an

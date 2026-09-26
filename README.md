@@ -335,7 +335,10 @@ ODataService *service = [[ODataService alloc] initWithPersistentStoreCoordinator
 
 An `ODataEntitySetHandler` subclass changes what a set does (which rows a
 caller sees, what an insert fills in), and answers at once or, through its
-`ODataReply`, later. A service is an `ODataTransport`, so a store can talk
+`ODataReply`, later. Actions and functions are ordinary methods, declared
+in a protocol that inherits `ODataActions` or `ODataFunctions`: the
+service reads their names and types from it, writes them into
+`$metadata`, and routes calls to them (see `ODataService.h`). A service is an `ODataTransport`, so a store can talk
 to it in-process. On the network it runs behind a reverse proxy, from
 `ois-serve`:
 
@@ -347,7 +350,7 @@ Server/obj/ois-serve -Model Catalog.momd -StoreType SQLite -StoreURL /var/lib/ca
 
 `Server/Examples/` has a configuration file, systemd and launchd units, and
 nginx and Caddy configurations. The design, and what is still to come
-(operations, `$batch`): [docs/server-design.md](docs/server-design.md).
+(`$batch`, the Workbench on the server): [docs/server-design.md](docs/server-design.md).
 
 ## Threading
 
