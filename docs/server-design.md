@@ -369,8 +369,10 @@ Requests map onto fetch requests, the reverse of `ODataQueryBuilder`:
 | `Categories(1)/Products` | the destination's rows whose inverse leads to the parent's key: `category.id == 1`, `ANY suppliers.id == 1` |
 
 Navigation compares keys, not objects. Every store compares attributes,
-but not every store compares managed objects in a fetch: FreeCoreData's
-in-memory store matches none, and raises when counting them.
+and a SQL store turns them into a plain `WHERE`; managed objects in a
+predicate are harder on a store (FreeCoreData matched none of them in its
+in-memory store, and raised when counting them, until FreeCoreData #41 and
+gnustep-patches' `constant-expression-copy`).
 | `/$count`, `$count=true` | `countForFetchRequest:` |
 | `If-Match` | compare the ETag, `412 Precondition Failed` on mismatch |
 
