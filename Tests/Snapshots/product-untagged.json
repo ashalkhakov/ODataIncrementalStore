@@ -1,12 +1,11 @@
 {
-  "comment": "Second and last page: the next link, relative to the request URL, followed as given.",
-  "spec": "OASIS OData 4.01 Part 1 \u00a711.2.6.7",
+  "comment": "No @odata.etag: the service does not use optimistic concurrency here.",
+  "spec": "OASIS OData 4.01 Part 1 \u00a711.4.1.1",
   "request": {
     "method": "GET",
     "path": "Products",
     "query": {
-      "$filter": "UnitPrice lt 10",
-      "$skiptoken": "24",
+      "$filter": "ProductName eq 'Tofu'",
       "$expand": "Category($select=CategoryID)"
     }
   },
@@ -20,13 +19,11 @@
       "@odata.context": "https://odata.test/V4/Northwind.svc/$metadata#Products",
       "value": [
         {
-          "@odata.etag": "W/\"33\"",
-          "ProductID": 33,
-          "ProductName": "Geitost",
-          "UnitPrice": 2.5,
-          "Discontinued": false,
+          "ProductID": 14,
+          "ProductName": "Tofu",
+          "UnitPrice": 23.25,
           "Category": {
-            "CategoryID": 4
+            "CategoryID": 7
           }
         }
       ]

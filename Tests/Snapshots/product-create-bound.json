@@ -1,0 +1,27 @@
+{
+  "spec": "OASIS OData 4.01 JSON Format \u00a78.5; Part 1 \u00a711.4.2.2 Link to Related Entities When Creating an Entity",
+  "request": {
+    "method": "POST",
+    "path": "Products",
+    "body": {
+      "ProductName": "Bound Blend",
+      "UnitPrice": 5,
+      "Category@odata.bind": "Categories(2)"
+    }
+  },
+  "response": {
+    "status": 201,
+    "headers": {
+      "Content-Type": "application/json;odata.metadata=minimal;charset=utf-8",
+      "OData-Version": "4.0",
+      "Location": "https://odata.test/V4/Northwind.svc/Products(80)"
+    },
+    "body": {
+      "@odata.context": "https://odata.test/V4/Northwind.svc/$metadata#Products/$entity",
+      "ProductID": 80,
+      "ProductName": "Bound Blend",
+      "@odata.etag": "W/\"1\"",
+      "UnitPrice": 5
+    }
+  }
+}

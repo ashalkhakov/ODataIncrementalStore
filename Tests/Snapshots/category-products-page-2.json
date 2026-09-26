@@ -5,7 +5,8 @@
     "method": "GET",
     "path": "Categories(2)/Products",
     "query": {
-      "$skiptoken": "3"
+      "$skiptoken": "3",
+      "$expand": "Category($select=CategoryID)"
     }
   },
   "response": {
@@ -18,11 +19,14 @@
       "@odata.context": "https://odata.test/V4/Northwind.svc/$metadata#Products",
       "value": [
         {
-          "@odata.etag": "W/\"4\"",
+          "@odata.etag": "W/\"1\"",
           "ProductID": 4,
           "ProductName": "Chef Anton's Cajun Seasoning",
           "UnitPrice": 22,
-          "Discontinued": false
+          "Discontinued": false,
+          "Category": {
+            "CategoryID": 2
+          }
         }
       ]
     }

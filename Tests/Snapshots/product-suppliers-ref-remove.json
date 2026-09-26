@@ -1,0 +1,16 @@
+{
+  "spec": "OASIS OData 4.01 Part 1 \u00a711.4.6.2 Remove a Reference to an Entity",
+  "request": {
+    "method": "DELETE",
+    "path": "Products(4)/Suppliers/$ref",
+    "query": {
+      "$id": "https://odata.test/V4/Northwind.svc/Suppliers(2)"
+    }
+  },
+  "response": {
+    "status": 204,
+    "headers": {
+      "OData-Version": "4.0"
+    }
+  }
+}

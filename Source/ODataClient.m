@@ -12,7 +12,15 @@
 @implementation ODataHTTPResponse
 - (NSString *)etag
 {
-  return self.headers[@"Etag"] ?: self.headers[@"ETag"] ?: self.headers[@"etag"];
+  return [self valueForHeader:@"ETag"];
+}
+
+- (NSString *)valueForHeader:(NSString *)name
+{
+  for (NSString *key in self.headers) {
+    if ([key caseInsensitiveCompare:name] == NSOrderedSame) return self.headers[key];
+  }
+  return nil;
 }
 @end
 
@@ -153,6 +161,11 @@
     if (!req.HTTPBody) return nil;
   }
   if (etag) [req setValue:etag forHTTPHeaderField:@"If-Match"];
+  // The entity back in the response, with its new key and ETag, saves a
+  // GET (Part 1 section 8.2.8.7). Not for $ref, which has no entity.
+  BOOL entity = ([method isEqualToString:@"POST"] || [method isEqualToString:@"PATCH"]) &&
+                ![url.path hasSuffix:@"/$ref"];
+  if (entity) [req setValue:@"return=representation" forHTTPHeaderField:@"Prefer"];
   return [self sendRequest:req error:error];
 }
 

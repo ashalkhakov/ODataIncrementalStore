@@ -1,4 +1,5 @@
-# ois-live: the store against Microsoft's public Northwind v4 service.
+# ois-live: the store against Microsoft's public reference services,
+# Northwind v4 (read) and TripPin (write).
 #
 #   make -C Tests/Live live
 #
@@ -28,13 +29,16 @@ MOMC ?= momc
 include $(GNUSTEP_MAKEFILES)/tool.make
 -include GNUmakefile.postamble
 
-.PHONY: live Catalog.momd
+.PHONY: live Catalog.momd TripPin.momd
 Catalog.momd: ../../Examples/Catalog/Catalog.xcdatamodeld
 	$(MOMC) $< $@
 
-live: all Catalog.momd
+TripPin.momd: TripPin.xcdatamodeld
+	$(MOMC) $< $@
+
+live: all Catalog.momd TripPin.momd
 	LD_LIBRARY_PATH="$(CURDIR)/../../obj$${LD_LIBRARY_PATH:+:$$LD_LIBRARY_PATH}" \
-	./$(GNUSTEP_OBJ_DIR_NAME)/ois-live Catalog.momd
+	./$(GNUSTEP_OBJ_DIR_NAME)/ois-live .
 
 after-clean::
-	rm -rf Catalog.momd
+	rm -rf Catalog.momd TripPin.momd

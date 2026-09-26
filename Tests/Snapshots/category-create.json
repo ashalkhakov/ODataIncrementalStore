@@ -1,0 +1,25 @@
+{
+  "comment": "Posted first: the new product binds to it.",
+  "spec": "OASIS OData 4.01 Part 1 \u00a711.4.2 Create an Entity",
+  "request": {
+    "method": "POST",
+    "path": "Categories",
+    "body": {
+      "CategoryName": "Teas"
+    }
+  },
+  "response": {
+    "status": 201,
+    "headers": {
+      "Content-Type": "application/json;odata.metadata=minimal;charset=utf-8",
+      "OData-Version": "4.0",
+      "Location": "https://odata.test/V4/Northwind.svc/Categories(9)"
+    },
+    "body": {
+      "@odata.context": "https://odata.test/V4/Northwind.svc/$metadata#Categories/$entity",
+      "@odata.etag": "W/\"1\"",
+      "CategoryID": 9,
+      "CategoryName": "Teas"
+    }
+  }
+}

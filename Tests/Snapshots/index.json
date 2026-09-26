@@ -85,6 +85,116 @@
       "file": "products-by-category.json",
       "spec": "OASIS OData 4.01 Part 2 \u00a75.1.1.15 Path Expressions; \u00a75.1.1.1.1 eq",
       "predicate": "category == <Categories(2)>"
+    },
+    {
+      "id": "categories",
+      "file": "categories.json",
+      "spec": "OASIS OData 4.01 Part 1 \u00a711.2.1 Requesting Entity Collections"
+    },
+    {
+      "id": "category-1-products",
+      "file": "category-1-products.json",
+      "spec": "OASIS OData 4.01 Part 1 \u00a711.2.6"
+    },
+    {
+      "id": "suppliers",
+      "file": "suppliers.json",
+      "spec": "OASIS OData 4.01 Part 1 \u00a711.2.1"
+    },
+    {
+      "id": "product-suppliers",
+      "file": "product-suppliers.json",
+      "spec": "OASIS OData 4.01 Part 1 \u00a711.2.6"
+    },
+    {
+      "id": "supplier-1-products",
+      "file": "supplier-1-products.json",
+      "spec": "OASIS OData 4.01 Part 1 \u00a711.2.6"
+    },
+    {
+      "id": "supplier-2-products",
+      "file": "supplier-2-products.json",
+      "spec": "OASIS OData 4.01 Part 1 \u00a711.2.6"
+    },
+    {
+      "id": "product-opaque",
+      "file": "product-opaque.json",
+      "spec": "OASIS OData 4.01 Part 1 \u00a711.4.1.1 Use of ETags for Avoiding Update Conflicts"
+    },
+    {
+      "id": "product-opaque-patch-1",
+      "file": "product-opaque-patch-1.json",
+      "spec": "OASIS OData 4.01 Part 1 \u00a711.4.1.1; \u00a711.4.3 Update an Entity"
+    },
+    {
+      "id": "product-opaque-patch-2",
+      "file": "product-opaque-patch-2.json",
+      "spec": "OASIS OData 4.01 Part 1 \u00a711.4.3; \u00a78.2.8.7 Preference return=representation"
+    },
+    {
+      "id": "product-untagged",
+      "file": "product-untagged.json",
+      "spec": "OASIS OData 4.01 Part 1 \u00a711.4.1.1"
+    },
+    {
+      "id": "product-untagged-patch",
+      "file": "product-untagged-patch.json",
+      "spec": "OASIS OData 4.01 Part 1 \u00a711.4.1.1"
+    },
+    {
+      "id": "product-rebind",
+      "file": "product-rebind.json",
+      "spec": "OASIS OData 4.01 Part 1 \u00a711.4.6.3 Change the Reference in a Single-Valued Navigation Property"
+    },
+    {
+      "id": "product-unbind",
+      "file": "product-unbind.json",
+      "spec": "OASIS OData 4.01 Part 1 \u00a711.4.6.2 Remove a Reference to an Entity"
+    },
+    {
+      "id": "product-create-bound",
+      "file": "product-create-bound.json",
+      "spec": "OASIS OData 4.01 JSON Format \u00a78.5; Part 1 \u00a711.4.2.2 Link to Related Entities When Creating an Entity"
+    },
+    {
+      "id": "category-create",
+      "file": "category-create.json",
+      "spec": "OASIS OData 4.01 Part 1 \u00a711.4.2 Create an Entity"
+    },
+    {
+      "id": "product-create-in-new-category",
+      "file": "product-create-in-new-category.json",
+      "spec": "OASIS OData 4.01 Part 1 \u00a711.4.2.2"
+    },
+    {
+      "id": "product-create-204",
+      "file": "product-create-204.json",
+      "spec": "OASIS OData 4.01 Part 1 \u00a711.4.2; \u00a78.3.4 Header Location"
+    },
+    {
+      "id": "product-79",
+      "file": "product-79.json",
+      "spec": "OASIS OData 4.01 Part 1 \u00a711.2.2 Requesting an Individual Entity"
+    },
+    {
+      "id": "product-create-keyed",
+      "file": "product-create-keyed.json",
+      "spec": "OASIS OData 4.01 Part 1 \u00a711.4.2"
+    },
+    {
+      "id": "product-suppliers-ref-add",
+      "file": "product-suppliers-ref-add.json",
+      "spec": "OASIS OData 4.01 Part 1 \u00a711.4.6.1 Add a Reference to a Collection-Valued Navigation Property"
+    },
+    {
+      "id": "product-suppliers-ref-remove",
+      "file": "product-suppliers-ref-remove.json",
+      "spec": "OASIS OData 4.01 Part 1 \u00a711.4.6.2 Remove a Reference to an Entity"
+    },
+    {
+      "id": "category-2",
+      "file": "category-2.json",
+      "spec": "OASIS OData 4.01 Part 1 \u00a711.2.2 Requesting an Individual Entity"
     }
   ]
 }

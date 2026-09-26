@@ -2,11 +2,17 @@
 // Copyright (C) 2026 OIS contributors
 // SPDX-License-Identifier: LGPL-2.1-or-later
 //
-// The snapshot suite checks what the store sends; this checks that a real
-// service agrees. It reads Microsoft's public Northwind v4 service through
-// the Catalog model, whose Product and Category match Northwind's:
+// The snapshot suite checks what the store sends; this checks that real
+// services agree, using two of Microsoft's public reference services:
 //
-//   ois-live [path/to/Catalog.momd] [service root]
+// - Northwind v4, read-only, through the Catalog model, whose Product and
+//   Category match Northwind's: paging, filters, sorting, relationships.
+// - TripPin RW, through Tests/Live/TripPin.xcdatamodeld: creating a person
+//   with a client-chosen key, updates carrying ETags, to-one and to-many
+//   references, a 412 conflict, and a delete. TripPin gives each
+//   client a session of its own, so these writes touch nobody's data.
+//
+//   ois-live <directory holding Catalog.momd and TripPin.momd>
 //
 // Exits 1 if any check fails. The service is not ours, so CI runs this
 // without letting it fail a build.
@@ -29,31 +35,39 @@ static NSString *describe(NSArray *rows, NSError *error)
   return rows ? [NSString stringWithFormat:@"%lu rows", (unsigned long)rows.count] : @"nil";
 }
 
-int main(int argc, const char *argv[])
+static NSPersistentStoreCoordinator *openStore(NSString *modelPath, NSURL *root)
 {
-  @autoreleasepool {
-    NSString *modelPath = argc > 1 ? @(argv[1]) : @"Catalog.momd";
-    NSString *root = argc > 2 ? @(argv[2]) : @"https://services.odata.org/V4/Northwind/Northwind.svc/";
+  NSManagedObjectModel *model = [[NSManagedObjectModel alloc] initWithContentsOfURL:[NSURL fileURLWithPath:modelPath]];
+  if (!model) {
+    check(NO, @"load the model", modelPath);
+    return nil;
+  }
+  NSPersistentStoreCoordinator *psc = [[NSPersistentStoreCoordinator alloc] initWithManagedObjectModel:model];
+  NSError *error = nil;
+  id store = [psc addPersistentStoreWithType:[ODataIncrementalStore storeType]
+                               configuration:nil
+                                         URL:root
+                                     options:nil
+                                       error:&error];
+  check(store != nil, [NSString stringWithFormat:@"open %@ ($metadata)", root.host], error.localizedDescription);
+  return store ? psc : nil;
+}
 
-    NSManagedObjectModel *model = [[NSManagedObjectModel alloc] initWithContentsOfURL:[NSURL fileURLWithPath:modelPath]];
-    if (!model) {
-      fprintf(stderr, "ois-live: cannot load %s\n", modelPath.UTF8String);
-      return 2;
-    }
-    [ODataIncrementalStore registerStore];
-    NSPersistentStoreCoordinator *psc = [[NSPersistentStoreCoordinator alloc] initWithManagedObjectModel:model];
-    NSError *error = nil;
-    id store = [psc addPersistentStoreWithType:[ODataIncrementalStore storeType]
-                                 configuration:nil
-                                           URL:[NSURL URLWithString:root]
-                                       options:nil
-                                         error:&error];
-    check(store != nil, @"open the store ($metadata)", error.localizedDescription);
-    if (!store) return 1;
+static NSManagedObjectContext *newContext(NSPersistentStoreCoordinator *psc)
+{
+  NSManagedObjectContext *moc = [[NSManagedObjectContext alloc] initWithConcurrencyType:NSPrivateQueueConcurrencyType];
+  moc.persistentStoreCoordinator = psc;
+  return moc;
+}
 
-    NSManagedObjectContext *moc = [[NSManagedObjectContext alloc] initWithConcurrencyType:NSPrivateQueueConcurrencyType];
-    moc.persistentStoreCoordinator = psc;
-    [moc performBlockAndWait:^{
+static void northwind(NSString *models)
+{
+  fprintf(stderr, "== Northwind (read)\n");
+  NSURL *root = [NSURL URLWithString:@"https://services.odata.org/V4/Northwind/Northwind.svc/"];
+  NSPersistentStoreCoordinator *psc = openStore([models stringByAppendingPathComponent:@"Catalog.momd"], root);
+  if (!psc) return;
+  NSManagedObjectContext *moc = newContext(psc);
+  [moc performBlockAndWait:^{
       NSError *e = nil;
       NSFetchRequest *all = [NSFetchRequest fetchRequestWithEntityName:@"Product"];
       NSUInteger count = [moc countForFetchRequest:all error:&e];
@@ -110,8 +124,146 @@ int main(int argc, const char *argv[])
       NSUInteger categoryCount = [moc countForFetchRequest:[NSFetchRequest fetchRequestWithEntityName:@"Category"] error:NULL];
       check(allCheap.count > 0 && allCheap.count == categoryCount, @"ALL over a to-many relationship (all())",
             [NSString stringWithFormat:@"%@ of %lu", describe(allCheap, e), (unsigned long)categoryCount]);
-    }];
+  }];
+}
 
+// TripPin keeps each client's writes in a session named in the URL,
+// /(S(<24 characters>))/TripPinServiceRW/, and creates one on first use.
+// Its entry URL hands out a session by a relative redirect, which
+// gnustep-base's NSURLConnection does not follow (it resolves Location
+// without the request URL and times out), so the session is named here.
+static NSURL *tripPinSession(void)
+{
+  static const char alphabet[] = "abcdefghijklmnopqrstuvwxyz0123456789";
+  char session[25] = "ois";
+  for (int i = 3; i < 24; i++) session[i] = alphabet[arc4random_uniform(sizeof alphabet - 1)];
+  session[24] = 0;
+  return [NSURL URLWithString:[NSString stringWithFormat:@"https://services.odata.org/V4/(S(%s))/TripPinServiceRW/", session]];
+}
+
+// A write the store knows nothing about, as another client would make it:
+// the person's ETag changes behind the store's back.
+static BOOL changeBehindTheStoresBack(NSURL *root, NSString *userName)
+{
+  NSURL *url = [NSURL URLWithString:[NSString stringWithFormat:@"People('%@')", userName] relativeToURL:root];
+  NSMutableURLRequest *get = [NSMutableURLRequest requestWithURL:url];
+  [get setValue:@"application/json" forHTTPHeaderField:@"Accept"];
+  NSHTTPURLResponse *response = nil;
+#pragma clang diagnostic push
+#pragma clang diagnostic ignored "-Wdeprecated-declarations"
+  [NSURLConnection sendSynchronousRequest:get returningResponse:(NSURLResponse **)&response error:NULL];
+  NSString *etag = response.allHeaderFields[@"ETag"] ?: response.allHeaderFields[@"Etag"];
+  NSMutableURLRequest *patch = [NSMutableURLRequest requestWithURL:url];
+  patch.HTTPMethod = @"PATCH";
+  patch.HTTPBody = [@"{\"LastName\":\"Elsewhere\"}" dataUsingEncoding:NSUTF8StringEncoding];
+  [patch setValue:@"application/json" forHTTPHeaderField:@"Content-Type"];
+  [patch setValue:@"4.0" forHTTPHeaderField:@"OData-Version"];
+  if (etag) [patch setValue:etag forHTTPHeaderField:@"If-Match"];
+  response = nil;
+  [NSURLConnection sendSynchronousRequest:patch returningResponse:(NSURLResponse **)&response error:NULL];
+#pragma clang diagnostic pop
+  return response.statusCode / 100 == 2;
+}
+
+static NSManagedObject *personNamed(NSManagedObjectContext *moc, NSString *userName, NSError **error)
+{
+  NSFetchRequest *fetch = [NSFetchRequest fetchRequestWithEntityName:@"Person"];
+  fetch.predicate = [NSPredicate predicateWithFormat:@"userName == %@", userName];
+  return [[moc executeFetchRequest:fetch error:error] firstObject];
+}
+
+static void tripPin(NSString *models)
+{
+  fprintf(stderr, "== TripPin (write)\n");
+  NSURL *root = tripPinSession();
+  check(root != nil, @"start a TripPin session", root.absoluteString);
+  if (!root) return;
+  NSPersistentStoreCoordinator *psc = openStore([models stringByAppendingPathComponent:@"TripPin.momd"], root);
+  if (!psc) return;
+  NSString *userName = [NSString stringWithFormat:@"ois%u", (unsigned)(arc4random() % 1000000)];
+
+  NSManagedObjectContext *moc = newContext(psc);
+  [moc performBlockAndWait:^{
+    NSError *e = nil;
+    NSManagedObject *person = [NSEntityDescription insertNewObjectForEntityForName:@"Person" inManagedObjectContext:moc];
+    [person setValue:userName forKey:@"userName"];
+    [person setValue:@"Ois" forKey:@"firstName"];
+    [person setValue:@"Live" forKey:@"lastName"];
+    BOOL saved = [moc save:&e];
+    check(saved && !person.objectID.isTemporaryID, @"insert with a client-chosen key (POST)", e.localizedDescription ?: userName);
+    if (!saved) return;
+
+    // Two updates in a row: the second has to send the ETag the first
+    // came back with.
+    e = nil;
+    [person setValue:@"Ois2" forKey:@"firstName"];
+    BOOL first = [moc save:&e];
+    [person setValue:@"Ois3" forKey:@"firstName"];
+    BOOL second = first && [moc save:&e];
+    NSManagedObjectContext *check1 = newContext(psc);
+    __block NSString *firstName = nil;
+    [check1 performBlockAndWait:^{ firstName = [personNamed(check1, userName, NULL) valueForKey:@"firstName"]; }];
+    check(second && [firstName isEqualToString:@"Ois3"], @"update twice, each with the current ETag (PATCH, If-Match)",
+          e.localizedDescription ?: firstName);
+
+    e = nil;
+    NSFetchRequest *photos = [NSFetchRequest fetchRequestWithEntityName:@"Photo"];
+    photos.fetchLimit = 1;
+    NSManagedObject *photo = [[moc executeFetchRequest:photos error:&e] firstObject];
+    [person setValue:photo forKey:@"photo"];
+    BOOL bound = photo && [moc save:&e];
+    NSManagedObjectContext *check2 = newContext(psc);
+    __block id photoID = nil;
+    [check2 performBlockAndWait:^{ photoID = [[personNamed(check2, userName, NULL) valueForKey:@"photo"] valueForKey:@"id"]; }];
+    check(bound && [photoID isEqual:[photo valueForKey:@"id"]], @"change a to-one relationship (PUT $ref)",
+          e.localizedDescription ?: [NSString stringWithFormat:@"photo %@", photoID]);
+
+    e = nil;
+    NSManagedObject *russell = personNamed(moc, @"russellwhyte", &e);
+    [[person mutableSetValueForKey:@"friends"] addObject:russell];
+    BOOL added = russell && [moc save:&e];
+    NSManagedObjectContext *check3 = newContext(psc);
+    __block NSUInteger friends = NSNotFound;
+    [check3 performBlockAndWait:^{ friends = [[personNamed(check3, userName, NULL) valueForKey:@"friends"] count]; }];
+    check(added && friends == 1, @"add to a to-many relationship (POST $ref)",
+          e.localizedDescription ?: [NSString stringWithFormat:@"%lu friends", (unsigned long)friends]);
+
+    e = nil;
+    [[person mutableSetValueForKey:@"friends"] removeObject:russell];
+    BOOL removed = [moc save:&e];
+    NSManagedObjectContext *check4 = newContext(psc);
+    [check4 performBlockAndWait:^{ friends = [[personNamed(check4, userName, NULL) valueForKey:@"friends"] count]; }];
+    check(removed && friends == 0, @"remove from a to-many relationship (DELETE $ref)",
+          e.localizedDescription ?: [NSString stringWithFormat:@"%lu friends", (unsigned long)friends]);
+
+    // Someone else changes the person; saving over it has to fail.
+    e = nil;
+    BOOL elsewhere = changeBehindTheStoresBack(root, userName);
+    [person setValue:@"Stale" forKey:@"firstName"];
+    BOOL overwrote = [moc save:&e];
+    check(elsewhere && !overwrote, @"a stale ETag is refused (412)",
+          overwrote ? @"the save went through" : e.localizedDescription);
+    [moc rollback];
+
+    e = nil;
+    [moc refreshObject:person mergeChanges:NO];
+    NSManagedObject *fresh = personNamed(moc, userName, &e);
+    if (fresh) [moc deleteObject:fresh];
+    BOOL deleted = fresh && [moc save:&e];
+    NSManagedObjectContext *check5 = newContext(psc);
+    __block NSManagedObject *gone = nil;
+    [check5 performBlockAndWait:^{ gone = personNamed(check5, userName, NULL); }];
+    check(deleted && !gone, @"delete with the current ETag (DELETE)", e.localizedDescription);
+  }];
+}
+
+int main(int argc, const char *argv[])
+{
+  @autoreleasepool {
+    NSString *models = argc > 1 ? @(argv[1]) : @".";
+    [ODataIncrementalStore registerStore];
+    northwind(models);
+    tripPin(models);
     fprintf(stderr, "%s\n", failures ? "ois-live: FAILED" : "ois-live: all checks passed");
     return failures ? 1 : 0;
   }

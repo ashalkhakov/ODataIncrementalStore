@@ -3,7 +3,10 @@
   "spec": "OASIS OData 4.01 Part 1 \u00a711.2.6 Requesting Related Entities; \u00a711.2.6.7",
   "request": {
     "method": "GET",
-    "path": "Categories(2)/Products"
+    "path": "Categories(2)/Products",
+    "query": {
+      "$expand": "Category($select=CategoryID)"
+    }
   },
   "response": {
     "status": 200,
@@ -19,10 +22,13 @@
           "ProductID": 3,
           "ProductName": "Aniseed Syrup",
           "UnitPrice": 10,
-          "Discontinued": false
+          "Discontinued": false,
+          "Category": {
+            "CategoryID": 2
+          }
         }
       ],
-      "@odata.nextLink": "https://odata.test/V4/Northwind.svc/Categories(2)/Products?$skiptoken=3"
+      "@odata.nextLink": "https://odata.test/V4/Northwind.svc/Categories(2)/Products?$expand=Category($select=CategoryID)&$skiptoken=3"
     }
   }
 }

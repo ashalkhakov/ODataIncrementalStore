@@ -1,12 +1,11 @@
 {
-  "comment": "Second and last page: the next link, relative to the request URL, followed as given.",
-  "spec": "OASIS OData 4.01 Part 1 \u00a711.2.6.7",
+  "comment": "An ETag is opaque: the client sends back exactly what it was given.",
+  "spec": "OASIS OData 4.01 Part 1 \u00a711.4.1.1 Use of ETags for Avoiding Update Conflicts",
   "request": {
     "method": "GET",
     "path": "Products",
     "query": {
-      "$filter": "UnitPrice lt 10",
-      "$skiptoken": "24",
+      "$filter": "ProductName eq 'Uncle Bob''s Organic Dried Pears'",
       "$expand": "Category($select=CategoryID)"
     }
   },
@@ -20,13 +19,12 @@
       "@odata.context": "https://odata.test/V4/Northwind.svc/$metadata#Products",
       "value": [
         {
-          "@odata.etag": "W/\"33\"",
-          "ProductID": 33,
-          "ProductName": "Geitost",
-          "UnitPrice": 2.5,
-          "Discontinued": false,
+          "ProductID": 7,
+          "ProductName": "Uncle Bob's Organic Dried Pears",
+          "@odata.etag": "W/\"08DF1B8F9A07F1B8\"",
+          "UnitPrice": 30,
           "Category": {
-            "CategoryID": 4
+            "CategoryID": 7
           }
         }
       ]

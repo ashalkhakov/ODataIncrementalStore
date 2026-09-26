@@ -1,0 +1,16 @@
+{
+  "spec": "OASIS OData 4.01 Part 1 \u00a711.4.6.1 Add a Reference to a Collection-Valued Navigation Property",
+  "request": {
+    "method": "POST",
+    "path": "Products(4)/Suppliers/$ref",
+    "body": {
+      "@odata.id": "https://odata.test/V4/Northwind.svc/Suppliers(1)"
+    }
+  },
+  "response": {
+    "status": 204,
+    "headers": {
+      "OData-Version": "4.0"
+    }
+  }
+}

@@ -1,0 +1,20 @@
+{
+  "spec": "OASIS OData 4.01 Part 1 \u00a711.2.2 Requesting an Individual Entity",
+  "request": {
+    "method": "GET",
+    "path": "Categories(2)"
+  },
+  "response": {
+    "status": 200,
+    "headers": {
+      "Content-Type": "application/json;odata.metadata=minimal;charset=utf-8",
+      "OData-Version": "4.0"
+    },
+    "body": {
+      "@odata.context": "https://odata.test/V4/Northwind.svc/$metadata#Categories/$entity",
+      "@odata.etag": "W/\"1\"",
+      "CategoryID": 2,
+      "CategoryName": "Condiments"
+    }
+  }
+}

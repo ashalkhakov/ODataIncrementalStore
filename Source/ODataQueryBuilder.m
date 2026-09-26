@@ -61,6 +61,36 @@ static NSString *OISPercentEncode(NSString *value)
   return url;
 }
 
+// Nav($select=Key) for each to-one relationship not already expanded.
+// Core Data asks for every to-one relationship as soon as a fault fires,
+// and a row does not name its related entities; without this, firing N
+// faults costs N more requests. A service that ignores the nested $select
+// sends the whole related entity, which is cached too.
+- (NSArray *)toOneKeyExpansionsForEntity:(NSEntityDescription *)entity except:(NSSet *)expanded
+{
+  NSMutableArray *out = [NSMutableArray array];
+  NSArray *names = [entity.relationshipsByName.allKeys sortedArrayUsingSelector:@selector(compare:)];
+  for (NSString *name in names) {
+    NSRelationshipDescription *rel = entity.relationshipsByName[name];
+    if (rel.isToMany || !rel.destinationEntity) continue;
+    NSString *wire = [self.mapper propertyForRelationship:rel];
+    if ([expanded containsObject:wire]) continue;
+    NSMutableArray *keys = [NSMutableArray array];
+    for (NSAttributeDescription *key in [self.mapper keyAttributesForEntity:rel.destinationEntity]) {
+      [keys addObject:[self.mapper propertyForAttribute:key]];
+    }
+    if (!keys.count) continue;
+    [out addObject:[NSString stringWithFormat:@"%@($select=%@)", wire, [keys componentsJoinedByString:@","]]];
+  }
+  return out;
+}
+
+- (NSArray *)readingQueryForEntity:(NSEntityDescription *)entity
+{
+  NSArray *expansions = [self toOneKeyExpansionsForEntity:entity except:[NSSet set]];
+  return expansions.count ? @[ @[ @"$expand", [expansions componentsJoinedByString:@","] ] ] : @[];
+}
+
 - (NSURL *)URLForFetch:(NSFetchRequest *)fetch entity:(NSEntityDescription *)entity error:(NSError **)error
 {
   NSString *set = [self.mapper entitySetForEntity:entity];
@@ -117,17 +147,18 @@ static NSString *OISPercentEncode(NSString *value)
     if (names.count) [items addObject:@[ @"$select", [names componentsJoinedByString:@","] ]];
   }
 
-  if (fetch.relationshipKeyPathsForPrefetching.count) {
-    NSMutableArray *names = [NSMutableArray array];
-    for (NSString *path in fetch.relationshipKeyPathsForPrefetching) {
-      NSMutableArray *segs = [NSMutableArray array];
-      for (NSString *segment in [path componentsSeparatedByString:@"."]) {
-        NSRelationshipDescription *rel = entity.relationshipsByName[segment];
-        [segs addObject:rel ? [self.mapper propertyForRelationship:rel] : [self.mapper wireName:segment]];
-      }
-      [names addObject:[segs componentsJoinedByString:@"/"]];
-    }
-    [items addObject:@[ @"$expand", [names componentsJoinedByString:@","] ]];
+  NSMutableArray *expansions = [NSMutableArray array];
+  NSMutableSet *expanded = [NSMutableSet set];
+  for (NSString *path in fetch.relationshipKeyPathsForPrefetching) {
+    NSString *mapped = [self.mapper propertyPathForKeyPath:path entity:entity];
+    [expansions addObject:mapped];
+    [expanded addObject:[[mapped componentsSeparatedByString:@"/"] firstObject]];
+  }
+  if (fetch.resultType == NSManagedObjectResultType || fetch.resultType == NSManagedObjectIDResultType) {
+    [expansions addObjectsFromArray:[self toOneKeyExpansionsForEntity:entity except:expanded]];
+  }
+  if (expansions.count) {
+    [items addObject:@[ @"$expand", [expansions componentsJoinedByString:@","] ]];
   }
 
   return [self composePath:set query:items error:error];
@@ -138,12 +169,29 @@ static NSString *OISPercentEncode(NSString *value)
   return [self composePath:identifier.path query:@[] error:error];
 }
 
+- (NSURL *)URLForReferenceFromIdentifier:(ODataResourceIdentifier *)identifier
+                             relationship:(NSRelationshipDescription *)relationship
+                                   target:(NSURL *)target
+                                    error:(NSError **)error
+{
+  NSString *path = [NSString stringWithFormat:@"%@/%@/$ref", identifier.path, [self.mapper propertyForRelationship:relationship]];
+  return [self composePath:path query:@[ @[ @"$id", target.absoluteString ?: @"" ] ] error:error];
+}
+
 - (NSURL *)URLForIdentifier:(ODataResourceIdentifier *)identifier
                relationship:(NSRelationshipDescription *)relationship
                       error:(NSError **)error
 {
   NSString *path = [NSString stringWithFormat:@"%@/%@", identifier.path, [self.mapper propertyForRelationship:relationship]];
-  return [self composePath:path query:@[] error:error];
+  NSArray *query = relationship.destinationEntity ? [self readingQueryForEntity:relationship.destinationEntity] : @[];
+  return [self composePath:path query:query error:error];
+}
+
+- (NSURL *)URLForReadingIdentifier:(ODataResourceIdentifier *)identifier
+                            entity:(NSEntityDescription *)entity
+                             error:(NSError **)error
+{
+  return [self composePath:identifier.path query:[self readingQueryForEntity:entity] error:error];
 }
 
 @end

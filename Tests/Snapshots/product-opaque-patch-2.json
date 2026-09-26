@@ -1,0 +1,29 @@
+{
+  "comment": "The second write carries the ETag the first one returned.",
+  "spec": "OASIS OData 4.01 Part 1 \u00a711.4.3; \u00a78.2.8.7 Preference return=representation",
+  "request": {
+    "method": "PATCH",
+    "path": "Products(7)",
+    "headers": {
+      "If-Match": "W/\"08DF1B8F9A07F1B9\"",
+      "Prefer": "return=representation"
+    },
+    "body": {
+      "UnitPrice": 32
+    }
+  },
+  "response": {
+    "status": 200,
+    "headers": {
+      "Content-Type": "application/json;odata.metadata=minimal;charset=utf-8",
+      "OData-Version": "4.0"
+    },
+    "body": {
+      "@odata.context": "https://odata.test/V4/Northwind.svc/$metadata#Products/$entity",
+      "ProductID": 7,
+      "ProductName": "Uncle Bob's Organic Dried Pears",
+      "@odata.etag": "W/\"08DF1B8F9A07F1BA\"",
+      "UnitPrice": 32
+    }
+  }
+}

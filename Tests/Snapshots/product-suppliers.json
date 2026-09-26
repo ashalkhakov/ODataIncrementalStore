@@ -1,0 +1,23 @@
+{
+  "spec": "OASIS OData 4.01 Part 1 \u00a711.2.6",
+  "request": {
+    "method": "GET",
+    "path": "Products(4)/Suppliers"
+  },
+  "response": {
+    "status": 200,
+    "headers": {
+      "Content-Type": "application/json;odata.metadata=minimal;charset=utf-8",
+      "OData-Version": "4.0"
+    },
+    "body": {
+      "@odata.context": "https://odata.test/V4/Northwind.svc/$metadata#Suppliers",
+      "value": [
+        {
+          "SupplierID": 2,
+          "CompanyName": "New Orleans Cajun Delights"
+        }
+      ]
+    }
+  }
+}

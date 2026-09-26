@@ -29,7 +29,7 @@ calling the client conformant.
 | 1 | MUST send `OData-MaxVersion` | ✅ | `4.0` on every request. |
 | 2 | MUST send `OData-Version` and `Content-Type` with a payload | ✅ | `OData-Version` on every request; `Content-Type` only with a body. |
 | 3 | MUST be a conforming consumer of the JSON format | ⚠️ | See section 2. |
-| 4 | MUST follow redirects (§9.1.5) | ⚠️ | Left to `NSURLSession` / `NSURLConnection`. GET redirects work; 307/308 on PATCH, POST and DELETE are untested on GNUstep. |
+| 4 | MUST follow redirects (§9.1.5) | ⚠️ **live** | Left to `NSURLSession` / `NSURLConnection`. On GNUstep, `NSURLConnection` does not follow a relative `Location` (such as TripPin's `/V4/(S(…))/TripPinServiceRW/`): gnustep-base's `NSURLProtocol` builds the new URL with `+URLWithString:` alone, not relative to the request, and the request times out. Absolute redirects work. A fix belongs in gnustep-patches. |
 | 5 | MUST handle next links (§11.2.6.7) | ✅ **live** | Followed, relative or absolute, for collections and to-many relationships, until the collection ends or `fetchLimit` is reached. Northwind pages at 20; all 77 products arrive. |
 | 6 | MUST accept properties not in metadata (§11.2) | ✅ | Unknown properties are ignored. |
 | 7 | MUST use PATCH for updates (§11.4.3) | ✅ | |
@@ -50,7 +50,7 @@ calling the client conformant.
 | 6 | Not require `streaming=true` | ✅ | |
 | 7a | Accept the `odata.` prefix on control information | ✅ | 4.0 payloads always carry it. |
 | 7b | Accept `#` in `@odata.type` | — | `@odata.type` is not read yet; see 4.3. |
-| 7c | Bind related entities with `@odata.bind` in POST / PATCH | ❌ | Relationship changes are never sent; see 4.2. |
+| 7c | Bind related entities with `@odata.bind` in POST / PATCH | ✅ | Inserts bind (`Nav@odata.bind`). Updates use the `$ref` operations instead; see 4.2. |
 | 7e | Accept `-INF`, `INF`, `NaN` strings for Single and Double | ❌ | The string is stored as-is in a numeric attribute. |
 | 7f | Property annotations before or after the property | ✅ | Ignored. |
 
@@ -65,12 +65,12 @@ calling the client conformant.
 | Content negotiation for `$count` | §11.2.10 | ✅ **live** | Requested as `text/plain`. |
 | Server-driven paging | §11.2.6.7 | ✅ **live** | See 1.5. `$orderby` always ends with the key, because a service resumes a page after its last row's sort values: sorted by category name alone, Northwind skips 17 of 77 products. |
 | `Prefer: odata.maxpagesize` | §8.2.8.3 | ❌ | Would let `fetchBatchSize` shape pages. |
-| `Prefer: return=representation` | §8.2.8.7 | ❌ | POST parses the body for the new key. A service that answers `204` with a `Location` header breaks inserts. |
-| Create | §11.4.2 | ⚠️ | POST works when the service returns the entity. Keys the client must supply (string keys like TripPin's `UserName`) are omitted from the body. |
-| Update | §11.4.3 | ⚠️ | PATCH sends changed attributes only; see 4.2. |
+| `Prefer: return=representation` | §8.2.8.7 | ✅ | Sent with entity POSTs and PATCHes. A `204` anyway: the new entity is read from `Location` (or `OData-EntityId`), a new ETag from the `ETag` header. |
+| Create | §11.4.2 | ✅ **live** | Keys go in the body when the client set them (non-zero, non-empty), so TripPin's `UserName` works and server-assigned integer keys stay unset. |
+| Update | §11.4.3 | ✅ **live** | PATCH with the changed attributes; relationships per 4.2. |
 | Delete | §11.4.5 | ✅ | |
-| **ETags / optimistic concurrency** | §11.4.1.1 | ❌ **live** | The client keeps only the digits of an ETag and sends back `W/"<digits>"`. TripPin answers `412` for every update or delete of an entity with an ETag; the real ETag is accepted. Objects with no ETag get an invented `W/"1"`. |
-| Relationship changes (`@odata.bind`, `$ref`) | §11.4.2.2, §11.4.6 | ❌ | Setting or clearing a relationship is never sent. |
+| ETags / optimistic concurrency | §11.4.1.1 | ✅ **live** | Kept exactly as sent (`@odata.etag` or the `ETag` header) and sent back in `If-Match`; none is sent when the service gave none. A write's response updates it, and after `$ref` requests the entity is read back, since they can change the ETag without returning it. A changed ETag bumps the node version, so Core Data sees a conflict before the service does. |
+| Relationship changes (`@odata.bind`, `$ref`) | §11.4.2.2, §11.4.6 | ✅ **live** | See 4.2. |
 | Atomic saves (`$batch` change sets) | §11.7 | ❌ | One request per object. A failure part-way leaves the service partly updated. |
 | Redirects | §9.1.5 | ⚠️ | See 1.4. |
 | Key-as-segment URLs (`Products/1`) | §4.3.6 | ❌ | Parentheses only. Needed only where a service requires it. |
@@ -91,21 +91,22 @@ calling the client conformant.
 | `fetchLimit`, `fetchOffset` | `$top`, `$skip` | ✅ **live** | |
 | `countForFetchRequest:` | `/$count` | ✅ **live** | |
 | `propertiesToFetch` (dictionary results) | `$select` | ⚠️ | Only for `NSDictionaryResultType`. Could also trim managed-object fetches. |
-| `relationshipKeyPathsForPrefetching` | `$expand` | ⚠️ | Requested, then the inline entities are thrown away. Every relationship access is another request. |
+| `relationshipKeyPathsForPrefetching` | `$expand` | ⚠️ | Inline entities are cached, and a to-one's object ID goes in the row. A prefetched to-many's membership is not, so reading the relationship is still a request. |
 | `fetchBatchSize` | `Prefer: odata.maxpagesize` | ❌ | |
 | To-one fault | `GET Entity(key)/Nav` | ✅ **live** | |
-| To-many fault | `GET Entity(key)/Nav` | ⚠️ **live** | Every page. Rows are not cached, so each object faults again. |
-| Refreshing | | ❌ | Cached rows are never refreshed for the life of the store. |
+| To-many fault | `GET Entity(key)/Nav` | ✅ **live** | Every page; the rows are cached. |
+| Firing faults | | ✅ | Every fetched row is cached, and each to-one relationship is expanded to its key (`Nav($select=Key)`), because Core Data asks for every to-one as soon as a fault fires. Firing N faults used to cost N or 2N requests; it costs none. Northwind ignores the nested `$select` and sends the whole related entity, which is cached as well. |
+| Refreshing | | ⚠️ | Every fetch and relationship read refreshes the rows it returns. A row faulted in earlier is not re-read until one does. |
 
 ### 4.2 Saving
 
 | Core Data | OData | Status | Notes |
 |---|---|---|---|
-| Insert | `POST EntitySet` | ⚠️ | See Create above. |
-| Update attributes | `PATCH Entity(key)` | ⚠️ | Broken by ETags where the service uses them. |
-| Update a to-one relationship | `PATCH` with `Nav@odata.bind`, or `PUT Entity(key)/Nav/$ref` | ❌ | |
-| Update a to-many relationship | `POST` / `DELETE Entity(key)/Nav/$ref` | ❌ | |
-| Insert with relationships | `POST` with `@odata.bind` | ❌ | Relationships are dropped. |
+| Insert | `POST EntitySet` | ✅ **live** | New objects are posted each after the new objects they refer to, so a new Product can bind to a new Category in the same save; a cycle is closed by a `$ref` after the inserts. |
+| Update attributes | `PATCH Entity(key)` | ✅ **live** | |
+| Update a to-one relationship | `PUT Entity(key)/Nav/$ref`; `DELETE` it to clear | ✅ **live** | Not a bind in the PATCH: TripPin answers `204` to one and ignores it. |
+| Update a to-many relationship | `POST` / `DELETE Entity(key)/Nav/$ref?$id=…` | ✅ **live** | Written from one side only: never from a to-many whose inverse is to-one (that side's reference says it), and for many-to-many from the side whose entity name sorts first. |
+| Insert with relationships | `POST` with `@odata.bind` | ✅ | The only way to create an entity whose relationship is required. TripPin answers `500` to a POST with binds, in breach of JSON Format §24 item 7c. |
 | Delete | `DELETE Entity(key)` | ✅ | |
 | Save atomicity | `$batch` change set | ❌ | |
 | Merge conflicts | `412` → `NSMergeConflict` | ⚠️ | `412` becomes an error, but not one Core Data's merge policies understand. |
@@ -176,7 +177,7 @@ calling the client conformant.
 | Timeouts | ✅ | |
 | SAP Gateway CSRF token | ❌ | Vendor-specific: fetch `X-CSRF-Token` before writes. Needed only for SAP services. |
 | Tests that exercise headers | ✅ | The snapshot transport refuses what a service would: no `OData-MaxVersion`, a body without a JSON `Content-Type` or `OData-Version`, an `Accept` that rules out the response (`406`). |
-| Live smoke test in CI | ⚠️ | `Tests/Live/ois-live` reads Northwind on both platforms in CI, reported without failing the build. Writes against TripPin come with step 2. |
+| Live smoke test in CI | ✅ | `Tests/Live/ois-live` reads Northwind and writes to TripPin, in a session of its own, on both platforms in CI, reported without failing the build. |
 
 ## 7. XML format (Atom)
 
@@ -244,10 +245,10 @@ route 2 against our own services, whatever third-party services do.
    relationships, managed objects in predicates, `ANY` / `ALL`. Make the
    snapshot transport check headers, and add the live smoke test.~~
    Done.
-2. **Can write correctly:** keep the real ETag and send it back unchanged
+2. ~~**Can write correctly:** keep the real ETag and send it back unchanged
    (and send none when there is none); send relationships with
    `@odata.bind`; `Prefer: return=representation`; client-supplied keys
-   in POST.
+   in POST.~~ Done.
 3. **Types:** `DateTimeOffset` in full, `Date`, `IEEE754Compatible` for
    Int64 and Decimal, `INF` / `NaN`, Binary.
 4. **Robustness:** `$batch` change sets for atomic saves, OData error

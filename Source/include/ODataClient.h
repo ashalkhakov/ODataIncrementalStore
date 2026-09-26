@@ -13,6 +13,9 @@ NS_ASSUME_NONNULL_BEGIN
 @property (nonatomic, copy) NSDictionary *headers;
 @property (nonatomic, copy, nullable) NSURL *URL;
 @property (nonatomic, readonly, nullable) NSString *etag;
+// Header names are case-insensitive (RFC 9110), whatever case the
+// transport kept them in.
+- (nullable NSString *)valueForHeader:(NSString *)name;
 @end
 
 /* Swap this in tests. The default path uses NSURLConnection (GNUstep)

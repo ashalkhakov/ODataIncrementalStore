@@ -1,0 +1,19 @@
+{
+  "comment": "A service may answer 204 whatever Prefer says; Location names the new entity.",
+  "spec": "OASIS OData 4.01 Part 1 \u00a711.4.2; \u00a78.3.4 Header Location",
+  "request": {
+    "method": "POST",
+    "path": "Products",
+    "body": {
+      "ProductName": "Quiet Blend"
+    }
+  },
+  "response": {
+    "status": 204,
+    "headers": {
+      "OData-Version": "4.0",
+      "Location": "https://odata.test/V4/Northwind.svc/Products(79)",
+      "OData-EntityId": "https://odata.test/V4/Northwind.svc/Products(79)"
+    }
+  }
+}

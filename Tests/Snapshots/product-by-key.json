@@ -3,7 +3,10 @@
   "spec": "OASIS OData 4.0 Protocol \u00a711.2.2",
   "request": {
     "method": "GET",
-    "path": "Products(4)"
+    "path": "Products(4)",
+    "query": {
+      "$expand": "Category($select=CategoryID)"
+    }
   },
   "response": {
     "status": 200,
@@ -20,7 +23,10 @@
       "UnitPrice": 22.0,
       "Discontinued": false,
       "UnitsInStock": 53,
-      "QuantityPerUnit": "48 - 6 oz jars"
+      "QuantityPerUnit": "48 - 6 oz jars",
+      "Category": {
+        "CategoryID": 2
+      }
     }
   }
 }

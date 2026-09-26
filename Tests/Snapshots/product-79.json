@@ -1,0 +1,20 @@
+{
+  "spec": "OASIS OData 4.01 Part 1 \u00a711.2.2 Requesting an Individual Entity",
+  "request": {
+    "method": "GET",
+    "path": "Products(79)"
+  },
+  "response": {
+    "status": 200,
+    "headers": {
+      "Content-Type": "application/json;odata.metadata=minimal;charset=utf-8",
+      "OData-Version": "4.0"
+    },
+    "body": {
+      "@odata.context": "https://odata.test/V4/Northwind.svc/$metadata#Products/$entity",
+      "ProductID": 79,
+      "ProductName": "Quiet Blend",
+      "@odata.etag": "W/\"1\""
+    }
+  }
+}

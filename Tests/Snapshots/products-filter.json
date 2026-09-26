@@ -8,7 +8,8 @@
     "query": {
       "$filter": "(UnitPrice gt 20) and (Discontinued eq false)",
       "$orderby": "ProductName,ProductID",
-      "$top": "25"
+      "$top": "25",
+      "$expand": "Category($select=CategoryID)"
     }
   },
   "response": {
@@ -27,7 +28,10 @@
           "UnitPrice": 22.0,
           "Discontinued": false,
           "UnitsInStock": 53,
-          "QuantityPerUnit": "48 - 6 oz jars"
+          "QuantityPerUnit": "48 - 6 oz jars",
+          "Category": {
+            "CategoryID": 2
+          }
         },
         {
           "@odata.etag": "W/\"1\"",
@@ -36,7 +40,10 @@
           "UnitPrice": 25.0,
           "Discontinued": false,
           "UnitsInStock": 120,
-          "QuantityPerUnit": "12 - 8 oz jars"
+          "QuantityPerUnit": "12 - 8 oz jars",
+          "Category": {
+            "CategoryID": 2
+          }
         }
       ]
     }

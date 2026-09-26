@@ -1,0 +1,21 @@
+{
+  "comment": "204 with the new ETag in the header: the next write must send it.",
+  "spec": "OASIS OData 4.01 Part 1 \u00a711.4.1.1; \u00a711.4.3 Update an Entity",
+  "request": {
+    "method": "PATCH",
+    "path": "Products(7)",
+    "headers": {
+      "If-Match": "W/\"08DF1B8F9A07F1B8\""
+    },
+    "body": {
+      "UnitPrice": 31
+    }
+  },
+  "response": {
+    "status": 204,
+    "headers": {
+      "OData-Version": "4.0",
+      "ETag": "W/\"08DF1B8F9A07F1B9\""
+    }
+  }
+}

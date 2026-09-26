@@ -146,7 +146,12 @@ static BOOL OISJSONEqual(id a, id b)
   if ([wantHeaders isKindOfClass:[NSDictionary class]]) {
     for (NSString *key in wantHeaders) {
       NSString *got = [request valueForHTTPHeaderField:key];
-      if (![got isEqual:wantHeaders[key]]) return NO;
+      // null in a snapshot: the header must not be sent.
+      if (wantHeaders[key] == [NSNull null]) {
+        if (got) return NO;
+      } else if (![got isEqual:wantHeaders[key]]) {
+        return NO;
+      }
     }
   }
   return YES;

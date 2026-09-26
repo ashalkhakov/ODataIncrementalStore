@@ -1,12 +1,9 @@
 {
-  "comment": "Second and last page: the next link, relative to the request URL, followed as given.",
-  "spec": "OASIS OData 4.01 Part 1 \u00a711.2.6.7",
+  "spec": "OASIS OData 4.01 Part 1 \u00a711.2.6",
   "request": {
     "method": "GET",
-    "path": "Products",
+    "path": "Suppliers(2)/Products",
     "query": {
-      "$filter": "UnitPrice lt 10",
-      "$skiptoken": "24",
       "$expand": "Category($select=CategoryID)"
     }
   },
@@ -20,13 +17,12 @@
       "@odata.context": "https://odata.test/V4/Northwind.svc/$metadata#Products",
       "value": [
         {
-          "@odata.etag": "W/\"33\"",
-          "ProductID": 33,
-          "ProductName": "Geitost",
-          "UnitPrice": 2.5,
-          "Discontinued": false,
+          "ProductID": 4,
+          "ProductName": "Chef Anton's Cajun Seasoning",
+          "@odata.etag": "W/\"1\"",
+          "UnitPrice": 22,
           "Category": {
-            "CategoryID": 4
+            "CategoryID": 2
           }
         }
       ]

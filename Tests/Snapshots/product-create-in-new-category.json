@@ -1,0 +1,25 @@
+{
+  "spec": "OASIS OData 4.01 Part 1 \u00a711.4.2.2",
+  "request": {
+    "method": "POST",
+    "path": "Products",
+    "body": {
+      "ProductName": "Earl Grey",
+      "Category@odata.bind": "Categories(9)"
+    }
+  },
+  "response": {
+    "status": 201,
+    "headers": {
+      "Content-Type": "application/json;odata.metadata=minimal;charset=utf-8",
+      "OData-Version": "4.0",
+      "Location": "https://odata.test/V4/Northwind.svc/Products(81)"
+    },
+    "body": {
+      "@odata.context": "https://odata.test/V4/Northwind.svc/$metadata#Products/$entity",
+      "ProductID": 81,
+      "ProductName": "Earl Grey",
+      "@odata.etag": "W/\"1\""
+    }
+  }
+}

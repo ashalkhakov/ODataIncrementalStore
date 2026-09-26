@@ -59,16 +59,18 @@ jobs:
               -derivedDataPath "$RUNNER_TEMP/DerivedData" build
           done
 
-      # The snapshots check what the store sends; this checks that a real
-      # service agrees, against Microsoft's public Northwind v4 service.
-      # That service is not ours, so a failure here is reported, not fatal.
-      - name: Live service checks (Northwind)
+      # The snapshots check what the store sends; this checks that real
+      # services agree: Microsoft's public Northwind v4 (read) and TripPin
+      # (write, in a session of its own). They are not ours, so a failure
+      # here is reported, not fatal.
+      - name: Live service checks (Northwind, TripPin)
         continue-on-error: true
         run: |
           xcrun momc Examples/Catalog/Catalog.xcdatamodeld "$RUNNER_TEMP/Catalog.momd"
+          xcrun momc Tests/Live/TripPin.xcdatamodeld "$RUNNER_TEMP/TripPin.momd"
           clang -fobjc-arc -fmodules -ISource/include Source/*.m Tests/Live/ois-live.m \
             -framework Foundation -framework CoreData -o "$RUNNER_TEMP/ois-live"
-          "$RUNNER_TEMP/ois-live" "$RUNNER_TEMP/Catalog.momd"
+          "$RUNNER_TEMP/ois-live" "$RUNNER_TEMP"
 
       - name: Upload test results
         uses: actions/upload-artifact@v4
@@ -227,8 +229,8 @@ jobs:
           . $PREFIX/System/Library/Makefiles/GNUstep.sh
           make test
 
-      # As on macOS: a real service, reported but not fatal.
-      - name: Live service checks (Northwind)
+      # As on macOS: real services, reported but not fatal.
+      - name: Live service checks (Northwind, TripPin)
         continue-on-error: true
         run: |
           . $PREFIX/System/Library/Makefiles/GNUstep.sh

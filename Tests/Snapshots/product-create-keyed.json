@@ -1,0 +1,26 @@
+{
+  "comment": "A key the client chose is sent; one it left unset is not.",
+  "spec": "OASIS OData 4.01 Part 1 \u00a711.4.2",
+  "request": {
+    "method": "POST",
+    "path": "Products",
+    "body": {
+      "ProductID": 90,
+      "ProductName": "Keyed Blend"
+    }
+  },
+  "response": {
+    "status": 201,
+    "headers": {
+      "Content-Type": "application/json;odata.metadata=minimal;charset=utf-8",
+      "OData-Version": "4.0",
+      "Location": "https://odata.test/V4/Northwind.svc/Products(90)"
+    },
+    "body": {
+      "@odata.context": "https://odata.test/V4/Northwind.svc/$metadata#Products/$entity",
+      "ProductID": 90,
+      "ProductName": "Keyed Blend",
+      "@odata.etag": "W/\"1\""
+    }
+  }
+}

@@ -1,0 +1,20 @@
+{
+  "comment": "No ETag was given, so none is sent: If-Match must be absent.",
+  "spec": "OASIS OData 4.01 Part 1 \u00a711.4.1.1",
+  "request": {
+    "method": "PATCH",
+    "path": "Products(14)",
+    "headers": {
+      "If-Match": null
+    },
+    "body": {
+      "UnitPrice": 24
+    }
+  },
+  "response": {
+    "status": 204,
+    "headers": {
+      "OData-Version": "4.0"
+    }
+  }
+}

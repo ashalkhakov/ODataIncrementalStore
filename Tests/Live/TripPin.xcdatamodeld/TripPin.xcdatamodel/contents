@@ -1,0 +1,35 @@
+<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<!-- The part of Microsoft's TripPin reference service (TripPinServiceRW)
+     that Tests/Live/ois-live writes to: people, their friends, their photo. -->
+<model type="com.apple.IDECoreDataModeler.DataModel" documentVersion="1.0" lastSavedToolsVersion="24299" systemVersion="24G720" minimumToolsVersion="Automatic" sourceLanguage="Objective-C" userDefinedModelVersionIdentifier="">
+    <entity name="Person" syncable="YES">
+        <attribute name="userName" attributeType="String">
+            <userInfo>
+                <entry key="OData.key" value="YES"/>
+            </userInfo>
+        </attribute>
+        <attribute name="firstName" optional="YES" attributeType="String"/>
+        <attribute name="lastName" optional="YES" attributeType="String"/>
+        <relationship name="friends" optional="YES" toMany="YES" deletionRule="Nullify" destinationEntity="Person"/>
+        <relationship name="photo" optional="YES" maxCount="1" deletionRule="Nullify" destinationEntity="Photo"/>
+        <userInfo>
+            <entry key="OData.entitySet" value="People"/>
+        </userInfo>
+    </entity>
+    <entity name="Photo" syncable="YES">
+        <attribute name="id" optional="NO" attributeType="Integer 64" defaultValueString="0" usesScalarValueType="NO">
+            <userInfo>
+                <entry key="OData.property" value="Id"/>
+                <entry key="OData.key" value="YES"/>
+            </userInfo>
+        </attribute>
+        <attribute name="name" optional="YES" attributeType="String"/>
+        <userInfo>
+            <entry key="OData.entitySet" value="Photos"/>
+        </userInfo>
+    </entity>
+    <elements>
+        <element name="Person" positionX="0" positionY="0" width="140" height="118"/>
+        <element name="Photo" positionX="200" positionY="0" width="140" height="73"/>
+    </elements>
+</model>
