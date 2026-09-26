@@ -1,6 +1,6 @@
 // ODataIncrementalStore — NSIncrementalStore over OData v4.
 // Copyright (C) 2026 OIS contributors
-// SPDX-License-Identifier: GPL-3.0-or-later
+// SPDX-License-Identifier: LGPL-2.1-or-later
 //
 // Modern Objective-C (libobjc2 / ARC / blocks / properties / zeroing weak).
 // Builds on GNUstep (clang + gnustep-base) and Apple Core Data.

@@ -1,6 +1,6 @@
 // Loads Examples/Catalog/Catalog.xcdatamodeld for the XCTest suite.
 // Copyright (C) 2026 OIS contributors
-// SPDX-License-Identifier: GPL-3.0-or-later
+// SPDX-License-Identifier: LGPL-2.1-or-later
 
 #pragma once
 #import "ODataIncrementalStore.h"

@@ -1,6 +1,6 @@
 // ois-filter — NSPredicate → OData $filter, on GNUstep.
 // Copyright (C) 2026 OIS contributors
-// SPDX-License-Identifier: GPL-3.0-or-later
+// SPDX-License-Identifier: LGPL-2.1-or-later
 //
 // Links FreeCoreData (https://github.com/ashalkhakov/FreeCoreData).
 //

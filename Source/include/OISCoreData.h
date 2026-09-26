@@ -1,6 +1,6 @@
 // ODataIncrementalStore — Core Data import.
 // Copyright (C) 2026 OIS contributors
-// SPDX-License-Identifier: GPL-3.0-or-later
+// SPDX-License-Identifier: LGPL-2.1-or-later
 //
 // Apple:   <CoreData/CoreData.h>
 // GNUstep: FreeCoreData (https://github.com/ashalkhakov/FreeCoreData)

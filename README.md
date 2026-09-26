@@ -1,6 +1,6 @@
 # ODataIncrementalStore
 
-**GPL-3.0-or-later.** An `NSIncrementalStore` that talks to a remote OData v4
+**LGPL-2.1-or-later.** An `NSIncrementalStore` that talks to a remote OData v4
 service. Written in **modern Objective-C** for **libobjc2** so it builds on
 GNUstep (clang + gnustep-base + [FreeCoreData](https://github.com/ashalkhakov/FreeCoreData))
 and on Apple Core Data.
@@ -168,5 +168,5 @@ main queue.** Use a private-queue context.
 
 ## License
 
-GNU General Public License v3.0 or later. See `LICENSE`.
+GNU Lesser General Public License v2.1 or later. See `LICENSE`.
 FreeCoreData is separate and MIT.

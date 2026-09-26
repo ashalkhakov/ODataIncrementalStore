@@ -1,6 +1,6 @@
 // Snapshot HTTP transport — no network.
 // Copyright (C) 2026 OIS contributors
-// SPDX-License-Identifier: GPL-3.0-or-later
+// SPDX-License-Identifier: LGPL-2.1-or-later
 //
 // Each JSON file is one OData v4 request/response pair. Matching is
 // method + path relative to the service root + query dictionary.

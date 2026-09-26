@@ -1,5 +1,5 @@
 // Copyright (C) 2026 OIS contributors
-// SPDX-License-Identifier: GPL-3.0-or-later
+// SPDX-License-Identifier: LGPL-2.1-or-later
 
 #import "ODataConfiguration.h"
 
@@ -30,7 +30,7 @@ NSString * const ODataIncrementalStoreType = @"ODataIncrementalStore";
   _naming = ODataPropertyNamingPascalCase;
   id post = options[ODataIncrementalStorePostOnObtainPermanentIDsOption];
   _postOnObtainPermanentIDs = post ? [post boolValue] : YES;
-  _userAgent = @"ODataIncrementalStore/1.0 (GPL-3.0; libobjc2)";
+  _userAgent = @"ODataIncrementalStore/1.0 (LGPL-2.1; libobjc2)";
   return self;
 }
 

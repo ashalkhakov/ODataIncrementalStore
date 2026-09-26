@@ -1,6 +1,6 @@
 // ODataIncrementalStore — modern Objective-C runtime contract.
 // Copyright (C) 2026 OIS contributors
-// SPDX-License-Identifier: GPL-3.0-or-later
+// SPDX-License-Identifier: LGPL-2.1-or-later
 //
 // This library targets libobjc2 (the GNUstep modern runtime) or Apple's
 // runtime. GCC's libobjc (fragile ABI, no ARC, no non-fragile ivars, no

@@ -1,6 +1,6 @@
 // NSFetchRequest → OData system query options. No network.
 // Copyright (C) 2026 OIS contributors
-// SPDX-License-Identifier: GPL-3.0-or-later
+// SPDX-License-Identifier: LGPL-2.1-or-later
 //
 // Spec: OASIS OData 4.0 Protocol §11.2.5 System Query Options
 // ($filter, $orderby, $top, $skip, $select, $expand) and §11.2.5.5 /$count.

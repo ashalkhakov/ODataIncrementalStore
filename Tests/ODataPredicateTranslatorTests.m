@@ -1,6 +1,6 @@
 // NSPredicate → OData ABNF commonExpr. No network.
 // Copyright (C) 2026 OIS contributors
-// SPDX-License-Identifier: GPL-3.0-or-later
+// SPDX-License-Identifier: LGPL-2.1-or-later
 //
 // Spec: OASIS OData Version 4.0 ABNF (eq / ne / gt / ge / lt / le,
 // andExpr / orExpr / notExpr, boolMethodCallExpr startswith/endswith/contains,
