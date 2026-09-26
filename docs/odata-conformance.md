@@ -365,6 +365,100 @@ stream's name and kept while its media ETag is current, and uploads one
 from a file (`PUT` with `If-Match`). Rows keep only the stream's links,
 content type and ETag.
 
+## 9. Vocabularies
+
+A vocabulary is a set of *terms* that a service applies to its model with
+annotations (CSDL §14): inline on an element of `$metadata`, or collected in
+`<Annotations Target="…">`, under an alias the document declares with
+`<edmx:Reference>`/`<edmx:Include>`. Terms can also appear in payloads as
+instance annotations (`"@Core.Messages": […]`). OASIS standardises nine
+vocabularies in
+[odata-vocabularies](https://github.com/oasis-tcs/odata-vocabularies/tree/master/vocabularies)
+(`Org.OData.<Name>.V1`, as XML, JSON and Markdown).
+
+Each one has two sides here. The client reads the terms and acts on
+them. The server (see [server-design.md](server-design.md)) writes them
+into its `$metadata` from the Core Data model, and enforces the ones that
+constrain requests. Where Core Data has the concept already, the model
+is the source of truth and the annotation is derived from it. Anything
+else is kept in `userInfo`, as the other `OData.*` mappings are.
+
+Today the client reads exactly one term,
+`Capabilities.KeyAsSegmentSupported`, under any alias. Everything below
+is ❌ unless marked otherwise.
+
+**Wanted first: Core, Validation, Authorization.**
+
+- **Core** (44 terms). The ones that change behaviour:
+  - `Computed` and `Immutable`. The client should leave computed
+    properties out of POST and PATCH, and immutable ones out of PATCH. The
+    server should refuse writes to them.
+  - `Permissions` (`Read`, `ReadWrite`): a read-only attribute.
+  - `OptimisticConcurrency`: the properties an ETag is made of. This
+    answers the server's ETag open question with a standard spelling.
+  - `Description` and `LongDescription`: documentation. They become
+    comments in generated classes, and the model's element descriptions
+    in `$metadata`.
+  - `Messages`, as an instance annotation: warnings and details alongside
+    a success or an error. The client surfaces them in the `NSError` or
+    the save result.
+  - `MediaType`, `AcceptableMediaTypes`, `IsMediaType`, `IsURL`: for
+    streams (section 8).
+  - `Revisions`: deprecation. The client could warn when a request uses a
+    deprecated element.
+  - `ContentID`, `DefaultNamespace`, `Ordered`, `PositionalInsert`:
+    later.
+- **Validation** (14 terms): `Pattern`, `Minimum`/`Maximum` with
+  `Exclusive`, `AllowedValues`, `MultipleOf`, `MinItems`/`MaxItems`,
+  `Constraint`, `DerivedTypeConstraint`. These map onto Core Data's own
+  validation:
+  - `Pattern` is a `MATCHES` validation predicate.
+  - `Minimum` and `Maximum` are the attribute's min and max values.
+  - `AllowedValues` is an `IN` predicate.
+  - `MinItems` and `MaxItems` are a to-many relationship's min and max
+    counts.
+
+  The client adds them to models it builds from `$metadata`, so an
+  invalid object fails at `-save:` locally rather than as a `400`. The
+  server writes them from the model and gets enforcement for free:
+  `-save:` validates, and the failure becomes a `400` whose `details`
+  name each property.
+- **Authorization** (2 terms: `SecuritySchemes`, `Authorizations`, with
+  API key, HTTP basic or bearer, OAuth 2 flows and OpenID Connect). This
+  vocabulary describes authentication; it does not perform it.
+  - The server declares whatever its reverse proxy or its own hooks
+    enforce.
+  - The client could use it to tell the caller which credentials a
+    service expects, and to attach a bearer token or API key from a
+    credential source it is given.
+
+**Later.**
+
+- **Capabilities** (40 terms): what a service allows, per set.
+  - Examples: `FilterRestrictions` (non-filterable properties, required
+    filters), `SortRestrictions`, `ExpandRestrictions`,
+    `CountRestrictions`, `TopSupported`/`SkipSupported`,
+    `Insert/Update/DeleteRestrictions`, `ChangeTracking`,
+    `BatchSupported`.
+  - The client could use them to evaluate in memory, or fail with a clear
+    error, instead of sending a query the service will answer with `400`
+    or `501`.
+  - The server derives them from what the application allows. An entity
+    set whose insert is switched off says so here.
+- **Measures** (`ISOCurrency`, `Unit`, `Scale`), **Temporal**, **JSON**
+  (`Schema`), **Repeatability** (`Repeatability-Request-ID` headers for
+  retrying a POST safely, worth having once async requests exist).
+- **Aggregation**: only with `$apply`, which is out of scope for now.
+
+The work common to all of them:
+
+- Read `<Annotation>` and `<Annotations Target>` in general, with their
+  constant and dynamic expressions (`Path`, `Collection`, `Record`, `If`,
+  `Apply`), into `ODataSchema`. The one term read today is special-cased.
+- Resolve terms through the aliases the document declares.
+- Carry the terms the client does not act on through to the generated
+  model's `userInfo`, so an application can read them.
+
 ## Order of work
 
 1. ~~**Can connect and read correctly:** request headers, errors from
@@ -397,3 +491,6 @@ content type and ETag.
    works with every service; then Atom as a second wire format where a
    service offers it (section 7). Parsing CSDL XML in step 5 builds the
    XML reading this needs.
+10. **Vocabularies:** general annotation reading first. Then Core,
+   Validation and Authorization on both the client and the server, and
+   Capabilities after them (section 9).
