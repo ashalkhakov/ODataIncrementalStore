@@ -166,6 +166,12 @@ GET Products?$filter=UnitPrice gt 20 and Discontinued eq false
 `NSIncrementalStore` callbacks are synchronous. **Do not load this store on the
 main queue.** Use a private-queue context.
 
+## Roadmap
+
+A matching OData server in Objective-C, over Core Data, on GNUstep and
+Cocoa. Not started; the design is in
+[docs/server-design.md](docs/server-design.md).
+
 ## License
 
 GNU Lesser General Public License v2.1 or later. See `LICENSE`.
