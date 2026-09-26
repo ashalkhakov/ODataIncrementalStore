@@ -36,7 +36,10 @@ NS_ASSUME_NONNULL_BEGIN
 // endswith, tolower toupper length now, any and all over to-many
 // relationships, $count of a to-many relationship, parameter aliases; type
 // casts (NS.Manager/Budget, Boss/NS.Manager, Staff/NS.Manager/$count,
-// cast(Boss,NS.Manager)) and isof(NS.Manager), isof(Boss,NS.Manager).
+// cast(Boss,NS.Manager)) and isof(NS.Manager), isof(Boss,NS.Manager);
+// year, date, floor, ceiling and round compared with a literal, as a range
+// of their argument (year(d) eq 2025 is 2025-01-01 <= d < 2026-01-01);
+// has, of an enumeration kept as a number, as IN the values with the bits.
 //
 // A cast asks an object's type with "entity IN {the type, its
 // subentities}", which Apple's stores and FreeCoreData's answer, of the

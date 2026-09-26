@@ -587,7 +587,7 @@
   XCTAssertEqual([self get:@"Products?$filter=ProductName eq 1 add"].status, 400);
   XCTAssertEqual([self get:@"Products?$apply=groupby((Category))"].status, 501);
   XCTAssertEqual([self get:@"Products?$search=chai"].status, 501);
-  XCTAssertEqual([self get:@"Products?$filter=Flags has Default.Colour'Red'"].status, 501);
+  XCTAssertEqual([self get:@"Products?$filter=Flags has Default.Colour'Red'"].status, 400, @"no such property");
   XCTAssertEqual([self get:@"$batch"].status, 405, @"$batch takes POST");
   XCTAssertEqual([self get:@"Products?$format=xml"].status, 406);
   XCTAssertEqual(([self send:@"GET" path:@"Products" headers:@{ @"Accept": @"application/xml" } body:nil].status), 406);
@@ -1216,6 +1216,10 @@
   name.name = @"name";
   name.attributeType = NSStringAttributeType;
   name.optional = YES;
+  NSAttributeDescription *hired = [[NSAttributeDescription alloc] init];
+  hired.name = @"hired";
+  hired.attributeType = NSDateAttributeType;
+  hired.optional = YES;
   NSAttributeDescription *budget = [[NSAttributeDescription alloc] init];
   budget.name = @"budget";
   budget.attributeType = NSDecimalAttributeType;
@@ -1232,7 +1236,7 @@
   reports.optional = YES;
   boss.inverseRelationship = reports;
   reports.inverseRelationship = boss;
-  employee.properties = @[ identifier, name, boss, reports ];
+  employee.properties = @[ identifier, name, hired, boss, reports ];
   manager.properties = @[ budget ];
   manager.subentities = @[ executive ];
   employee.subentities = @[ manager ];
@@ -1249,10 +1253,12 @@
   XCTAssertNotNil([_coordinator addPersistentStoreWithType:storeType configuration:nil URL:url options:nil error:&error], @"%@", error);
   NSManagedObjectContext *context = [[NSManagedObjectContext alloc] init];
   context.persistentStoreCoordinator = _coordinator;
-  // Ann manages Bob, who manages Cy and Di.
-  NSManagedObject *ann = [self insert:@"Manager" into:context values:@{ @"id": @1, @"name": @"Ann", @"budget": [NSDecimalNumber decimalNumberWithString:@"5000"] }];
-  NSManagedObject *bob = [self insert:@"Manager" into:context values:@{ @"id": @2, @"name": @"Bob", @"budget": [NSDecimalNumber decimalNumberWithString:@"800"], @"manager": ann }];
-  [self insert:@"Employee" into:context values:@{ @"id": @3, @"name": @"Cy", @"manager": bob }];
+  // Ann manages Bob, who manages Cy and Di (hired when, no one knows).
+  NSManagedObject *ann = [self insert:@"Manager" into:context values:@{ @"id": @1, @"name": @"Ann", @"budget": [NSDecimalNumber decimalNumberWithString:@"5000"],
+                                                                        @"hired": ODataDateFromString(@"2019-06-01T09:00:00Z") }];
+  NSManagedObject *bob = [self insert:@"Manager" into:context values:@{ @"id": @2, @"name": @"Bob", @"budget": [NSDecimalNumber decimalNumberWithString:@"800"], @"manager": ann,
+                                                                        @"hired": ODataDateFromString(@"2024-12-31T23:30:00Z") }];
+  [self insert:@"Employee" into:context values:@{ @"id": @3, @"name": @"Cy", @"manager": bob, @"hired": ODataDateFromString(@"2025-01-01T00:00:00Z") }];
   [self insert:@"Employee" into:context values:@{ @"id": @4, @"name": @"Di", @"manager": bob }];
   XCTAssertTrue([context save:&error], @"%@", error);
   _service = [[ODataService alloc] initWithPersistentStoreCoordinator:_coordinator serviceRoot:[NSURL URLWithString:@"http://example.test/odata/"]];
@@ -1407,6 +1413,176 @@
   XCTAssertEqualObjects([self get:@"Categories/$count"].text, @"5", @"nothing of it was saved");
   XCTAssertEqual(([self send:@"POST" path:@"Categories" headers:nil body:@{ @"CategoryName": @"G", @"Products": @{ @"ProductName": @"R" } }].status), 400,
                  @"a to-many takes an array");
+}
+
+#pragma mark Date and number functions
+
+- (void)testYearAndDateInFilters
+{
+  for (NSString *storeType in @[ NSInMemoryStoreType, NSSQLiteStoreType, NSXMLStoreType ]) {
+    [self serveStaffInStoreOfType:storeType];
+    NSDictionary *expected = @{
+      @"year(Hired) eq 2025": @[ @"Cy" ],
+      @"2025 eq year(Hired)": @[ @"Cy" ],
+      @"year(Hired) ne 2025": @[ @"Ann", @"Bob", @"Di" ],
+      @"year(Hired) lt 2025": @[ @"Ann", @"Bob" ],
+      @"year(Hired) le 2024": @[ @"Ann", @"Bob" ],
+      @"year(Hired) gt 2019": @[ @"Bob", @"Cy" ],
+      @"year(Hired) ge 2024": @[ @"Bob", @"Cy" ],
+      @"year(Hired) eq null": @[ @"Di" ],
+      @"year(Hired) in (2019,2025)": @[ @"Ann", @"Cy" ],
+      @"year(Manager/Hired) eq 2024": @[ @"Cy", @"Di" ],
+      @"date(Hired) eq 2024-12-31": @[ @"Bob" ],
+      @"date(Hired) gt 2024-12-31": @[ @"Cy" ],
+      @"date(Hired) le 2019-06-01": @[ @"Ann" ],
+      @"date(Hired) ne 2024-12-31": @[ @"Ann", @"Cy", @"Di" ],
+    };
+    for (NSString *filter in expected) {
+      NSString *path = [@"Employees?$filter=" stringByAppendingString:filter];
+      XCTAssertEqualObjects([self sortedEmployeeNames:path], expected[filter], @"%@: %@", storeType, filter);
+    }
+  }
+  XCTAssertEqual([self get:@"Employees?$filter=month(Hired) eq 3"].status, 501, @"not a range of the date");
+  XCTAssertEqual([self get:@"Employees?$filter=year(Hired) add 1 eq 2026"].status, 501, @"only compared with a literal");
+  XCTAssertEqual([self get:@"Employees?$filter=year(Hired) eq year(Hired)"].status, 501);
+  XCTAssertEqual([self get:@"Employees?$orderby=year(Hired)"].status, 501);
+  XCTAssertEqual([self get:@"Employees?$filter=year(Name) eq 2025"].status, 400);
+  XCTAssertEqual([self get:@"Employees?$filter=date(Hired) eq 2025"].status, 400);
+}
+
+- (NSArray *)productIDsWhere:(NSString *)filter
+{
+  NSString *path = [NSString stringWithFormat:@"Products?$filter=%@&$select=ProductID&$orderby=ProductID", filter];
+  OISServiceResponse *response = [self get:path];
+  XCTAssertEqual(response.status, 200, @"%@: %@", filter, response.text);
+  return [response.json[@"value"] valueForKey:@"ProductID"];
+}
+
+- (void)testRoundingInFilters
+{
+  // Prices 18, 19, 10, 22, 21.35.
+  NSDictionary *expected = @{
+    @"floor(UnitPrice) eq 21": @[ @5 ],
+    @"ceiling(UnitPrice) eq 22": @[ @4, @5 ],
+    @"round(UnitPrice) eq 21": @[ @5 ],
+    @"round(UnitPrice) gt 19": @[ @4, @5 ],
+    @"floor(UnitPrice) le 18": @[ @1, @3 ],
+    @"ceiling(UnitPrice) lt 20": @[ @1, @2, @3 ],
+    @"round(UnitPrice) ne 18": @[ @2, @3, @4, @5 ],
+    @"floor(UnitPrice) in (10,22)": @[ @3, @4 ],
+    @"floor(UnitPrice) eq 21.5": @[],
+    @"floor(UnitPrice) ne 21.5": @[ @1, @2, @3, @4, @5 ],
+    @"floor(UnitPrice) gt 18.5": @[ @2, @4, @5 ],
+    @"round(UnitPrice) lt 21.5": @[ @1, @2, @3, @5 ],
+    @"ceiling(UnitPrice) ge 21.2": @[ @4, @5 ],
+  };
+  for (NSString *filter in expected) {
+    XCTAssertEqualObjects([self productIDsWhere:filter], expected[filter], @"%@", filter);
+  }
+  // Half away from zero: round(-4.5) is -5.
+  XCTAssertEqual(([self send:@"POST" path:@"Products" headers:nil body:@{ @"ProductName": @"Refund", @"UnitPrice": @(-4.5) }].status), 201);
+  XCTAssertEqualObjects([self productIDsWhere:@"round(UnitPrice) eq -5"], @[ @6 ]);
+  XCTAssertEqualObjects([self productIDsWhere:@"round(UnitPrice) eq -4"], @[]);
+  XCTAssertEqualObjects([self productIDsWhere:@"floor(UnitPrice) eq -5"], @[ @6 ]);
+  XCTAssertEqualObjects([self productIDsWhere:@"ceiling(UnitPrice) eq -4"], @[ @6 ]);
+  XCTAssertEqualObjects([self productIDsWhere:@"floor(UnitPrice) lt -4.5"], @[ @6 ]);
+  XCTAssertEqual([self get:@"Products?$filter=round(ProductName) eq 1"].status, 400);
+}
+
+#pragma mark Enumerations
+
+static NSAttributeDescription *OISSwatchAttribute(NSString *name, NSAttributeType type, NSString *odataType)
+{
+  NSAttributeDescription *attribute = [[NSAttributeDescription alloc] init];
+  attribute.name = name;
+  attribute.attributeType = type;
+  attribute.optional = ![name isEqualToString:@"id"];
+  if (odataType) attribute.userInfo = @{ @"OData.type": odataType };
+  return attribute;
+}
+
+// Swatches, with a flags enumeration kept as a number and as text, and a
+// plain one.
+- (void)serveSwatchesInStoreOfType:(NSString *)storeType
+{
+  NSEntityDescription *swatch = [[NSEntityDescription alloc] init];
+  swatch.name = @"Swatch";
+  swatch.managedObjectClassName = @"NSManagedObject";
+  swatch.userInfo = @{ @"OData.entitySet": @"Swatches" };
+  NSAttributeDescription *identifier = OISSwatchAttribute(@"id", NSInteger32AttributeType, nil);
+  identifier.userInfo = @{ @"OData.property": @"SwatchID", @"OData.key": @"YES" };
+  swatch.properties = @[ identifier,
+                         OISSwatchAttribute(@"name", NSStringAttributeType, nil),
+                         OISSwatchAttribute(@"colours", NSInteger32AttributeType, @"Default.Colour"),
+                         OISSwatchAttribute(@"label", NSStringAttributeType, @"Default.Colour"),
+                         OISSwatchAttribute(@"shade", NSInteger16AttributeType, @"Default.Shade") ];
+  NSManagedObjectModel *model = [[NSManagedObjectModel alloc] init];
+  model.entities = @[ swatch ];
+  _coordinator = [[NSPersistentStoreCoordinator alloc] initWithManagedObjectModel:model];
+  NSURL *url = nil;
+  if (![storeType isEqualToString:NSInMemoryStoreType]) {
+    url = [NSURL fileURLWithPath:[NSTemporaryDirectory() stringByAppendingPathComponent:[[NSProcessInfo processInfo] globallyUniqueString]]];
+    [_storeFiles addObject:url];
+  }
+  NSError *error = nil;
+  XCTAssertNotNil([_coordinator addPersistentStoreWithType:storeType configuration:nil URL:url options:nil error:&error], @"%@", error);
+  NSManagedObjectContext *context = [[NSManagedObjectContext alloc] init];
+  context.persistentStoreCoordinator = _coordinator;
+  NSArray *rows = @[ @[ @1, @"none", @0, @1 ], @[ @2, @"red", @1, @2 ], @[ @3, @"orange", @3, @3 ],
+                     @[ @4, @"white", @7, [NSNull null] ], @[ @5, @"blue", @4, [NSNull null] ], @[ @6, @"unknown", [NSNull null], [NSNull null] ] ];
+  for (NSArray *row in rows) {
+    NSMutableDictionary *values = [@{ @"id": row[0], @"name": row[1], @"label": @"Red" } mutableCopy];
+    if (row[2] != [NSNull null]) values[@"colours"] = row[2];
+    if (row[3] != [NSNull null]) values[@"shade"] = row[3];
+    [self insert:@"Swatch" into:context values:values];
+  }
+  XCTAssertTrue([context save:&error], @"%@", error);
+  NSString *csdl = @"<?xml version=\"1.0\"?><edmx:Edmx xmlns:edmx=\"http://docs.oasis-open.org/odata/ns/edmx\" Version=\"4.0\">"
+                   @"<edmx:DataServices><Schema xmlns=\"http://docs.oasis-open.org/odata/ns/edm\" Namespace=\"Default\">"
+                   @"<EnumType Name=\"Colour\" IsFlags=\"true\"><Member Name=\"Red\" Value=\"1\"/><Member Name=\"Green\" Value=\"2\"/><Member Name=\"Blue\" Value=\"4\"/></EnumType>"
+                   @"<EnumType Name=\"Shade\"><Member Name=\"Light\" Value=\"1\"/><Member Name=\"Dark\" Value=\"2\"/><Member Name=\"Darker\" Value=\"3\"/></EnumType>"
+                   @"<EntityType Name=\"Swatch\"><Key><PropertyRef Name=\"SwatchID\"/></Key><Property Name=\"SwatchID\" Type=\"Edm.Int32\" Nullable=\"false\"/>"
+                   @"<Property Name=\"Name\" Type=\"Edm.String\"/><Property Name=\"Colours\" Type=\"Default.Colour\"/>"
+                   @"<Property Name=\"Label\" Type=\"Default.Colour\"/><Property Name=\"Shade\" Type=\"Default.Shade\"/></EntityType>"
+                   @"<EntityContainer Name=\"Container\"><EntitySet Name=\"Swatches\" EntityType=\"Default.Swatch\"/></EntityContainer>"
+                   @"</Schema></edmx:DataServices></edmx:Edmx>";
+  ODataSchema *schema = [ODataSchema schemaWithData:[csdl dataUsingEncoding:NSUTF8StringEncoding] error:&error];
+  XCTAssertNotNil(schema, @"%@", error);
+  _service = [[ODataService alloc] initWithPersistentStoreCoordinator:_coordinator serviceRoot:[NSURL URLWithString:@"http://example.test/odata/"]];
+  _service.mapper.schema = schema;
+}
+
+- (NSArray *)swatchIDsWhere:(NSString *)filter
+{
+  OISServiceResponse *response = [self get:[NSString stringWithFormat:@"Swatches?$filter=%@&$select=SwatchID&$orderby=SwatchID", filter]];
+  XCTAssertEqual(response.status, 200, @"%@: %@", filter, response.text);
+  return [response.json[@"value"] valueForKey:@"SwatchID"];
+}
+
+- (void)testHas
+{
+  for (NSString *storeType in @[ NSInMemoryStoreType, NSSQLiteStoreType, NSXMLStoreType ]) {
+    [self serveSwatchesInStoreOfType:storeType];
+    OISServiceResponse *metadata = [self get:@"$metadata"];
+    XCTAssertTrue([metadata.text rangeOfString:@"<EnumType Name=\"Colour\" IsFlags=\"true\">"].location != NSNotFound, @"%@", metadata.text);
+    NSDictionary *expected = @{
+      @"Colours has Default.Colour'Red'": @[ @2, @3, @4 ],
+      @"Colours has Default.Colour'Red,Green'": @[ @3, @4 ],
+      @"Colours has Default.Colour'Blue'": @[ @4, @5 ],
+      @"Colours has Default.Colour'Red,Blue'": @[ @4 ],
+      @"Colours has Default.Colour'1'": @[ @2, @3, @4 ],
+      @"Colours has Default.Colour'Red' and Name ne 'white'": @[ @2, @3 ],
+      @"Shade has Default.Shade'Dark'": @[ @2, @3 ],
+      @"Shade has Default.Shade'Light'": @[ @1, @3 ],
+    };
+    for (NSString *filter in expected) {
+      XCTAssertEqualObjects([self swatchIDsWhere:filter], expected[filter], @"%@: %@", storeType, filter);
+    }
+    XCTAssertEqual([self get:@"Swatches?$filter=Label has Default.Colour'Red'"].status, 501, @"kept as text");
+    XCTAssertEqual([self get:@"Swatches?$filter=Name has Default.Colour'Red'"].status, 400);
+    XCTAssertEqual([self get:@"Swatches?$filter=Colours has Default.Shade'Dark'"].status, 400);
+    XCTAssertEqual([self get:@"Swatches?$filter=Colours has Default.Colour'Purple'"].status, 400);
+  }
 }
 
 #pragma mark Deep updates

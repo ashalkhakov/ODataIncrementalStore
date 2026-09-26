@@ -4,6 +4,7 @@
 #import "ODataPredicateBuilder.h"
 #import "ODataError.h"
 #import "ODataValue.h"
+#include <math.h>
 
 typedef NS_ENUM(NSInteger, OISTermKind) {
   OISTermValue,       // a scalar: an attribute's value, a count, a computed value
@@ -23,6 +24,9 @@ typedef NS_ENUM(NSInteger, OISTermKind) {
 @property (nonatomic, copy, nullable) NSString *wireName;  // for messages
 @property (nonatomic, strong, nullable) ODataExpression *literal;
 @property (nonatomic, copy, nullable) NSString *caseFunction;  // tolower or toupper around `inner`
+// year, date, floor, ceiling or round around `inner`: compared with a
+// literal, a range of `inner`.
+@property (nonatomic, copy, nullable) NSString *stepFunction;
 @property (nonatomic, strong, nullable) OISTerm *inner;
 // What a type cast on the way asks of an object's entity: the term has a
 // value only where it holds, and is null elsewhere.
@@ -33,6 +37,39 @@ typedef NS_ENUM(NSInteger, OISTermKind) {
 
 @implementation OISTerm
 @end
+
+// The values of `inner` where f(inner) is n: from lower to upper, each
+// bound in or out.
+@interface OISInterval : NSObject
+@property (nonatomic, strong) id lower;
+@property (nonatomic) BOOL lowerIn;
+@property (nonatomic, strong) id upper;
+@property (nonatomic) BOOL upperIn;
+@end
+
+@implementation OISInterval
+@end
+
+static OISInterval *OISIntervalMake(id lower, BOOL lowerIn, id upper, BOOL upperIn)
+{
+  OISInterval *interval = [[OISInterval alloc] init];
+  interval.lower = lower;
+  interval.lowerIn = lowerIn;
+  interval.upper = upper;
+  interval.upperIn = upperIn;
+  return interval;
+}
+
+static NSDate *OISStartOfYear(long long year)
+{
+  NSCalendar *calendar = [[NSCalendar alloc] initWithCalendarIdentifier:NSCalendarIdentifierGregorian];
+  calendar.timeZone = [NSTimeZone timeZoneForSecondsFromGMT:0];
+  NSDateComponents *components = [[NSDateComponents alloc] init];
+  components.year = (NSInteger)year;
+  components.month = 1;
+  components.day = 1;
+  return [calendar dateFromComponents:components];
+}
 
 static BOOL OISIsPlainName(NSString *name)
 {
@@ -289,6 +326,9 @@ static NSPredicate *OISCompare(NSExpression *left, NSPredicateOperatorType type,
     id value = [self valueOfLiteral:t.literal attribute:other.attribute ?: other.inner.attribute ok:&ok];
     return ok ? [NSExpression expressionForConstantValue:value] : nil;
   }
+  if (t.stepFunction) {
+    return [self unsupported:[NSString stringWithFormat:@"%@() but compared with a literal", t.stepFunction]];
+  }
   if (t.caseFunction) {
     NSExpression *inner = [self valueExpression:t.inner typedBy:other];
     if (!inner) return nil;
@@ -452,6 +492,32 @@ static NSPredicate *OISCompare(NSExpression *left, NSPredicateOperatorType type,
     t.guard = inner.guard;
     return t;
   }
+  NSSet *dateSteps = [NSSet setWithObjects:@"year", @"date", nil];
+  NSSet *numberSteps = [NSSet setWithObjects:@"floor", @"ceiling", @"round", nil];
+  if ([dateSteps containsObject:e.name] || [numberSteps containsObject:e.name]) {
+    if (args.count != 1) return [self fail:400 message:[NSString stringWithFormat:@"%@ takes one argument", e.name]];
+    OISTerm *inner = [self term:args[0]];
+    if (!inner) return nil;
+    BOOL date = [dateSteps containsObject:e.name];
+    NSAttributeType type = inner.attribute.attributeType;
+    BOOL fits = date ? type == NSDateAttributeType
+                     : (type == NSInteger16AttributeType || type == NSInteger32AttributeType || type == NSInteger64AttributeType ||
+                        type == NSDecimalAttributeType || type == NSDoubleAttributeType || type == NSFloatAttributeType);
+    if (inner.kind != OISTermValue || inner.caseFunction || inner.stepFunction || !fits) {
+      return [self fail:400 message:[NSString stringWithFormat:@"%@ takes %@", e.name, date ? @"a date" : @"a number"]];
+    }
+    OISTerm *t = [[OISTerm alloc] init];
+    t.kind = OISTermValue;
+    t.stepFunction = e.name;
+    t.inner = inner;
+    t.guard = inner.guard;
+    t.wireName = e.description;
+    return t;
+  }
+  if ([@[ @"month", @"day", @"hour", @"minute", @"second", @"fractionalseconds", @"time", @"totaloffsetminutes", @"totalseconds" ] containsObject:e.name]) {
+    // Not a range of the date: no predicate every store evaluates.
+    return [self unsupported:[NSString stringWithFormat:@"The function %@ (year and date are)", e.name]];
+  }
   if ([e.name isEqualToString:@"length"]) {
     if (args.count != 1) return [self fail:400 message:@"length takes one argument"];
     OISTerm *inner = [self term:args[0]];
@@ -498,7 +564,7 @@ static NSPredicate *OISCompare(NSExpression *left, NSPredicateOperatorType type,
       }
       if ([@[ @"eq", @"ne", @"gt", @"ge", @"lt", @"le" ] containsObject:e.name]) return [self compare:e.name left:e.left right:e.right];
       if ([e.name isEqualToString:@"in"]) return [self in:e.left list:e.right];
-      if ([e.name isEqualToString:@"has"]) return [self unsupported:@"has"];
+      if ([e.name isEqualToString:@"has"]) return [self has:e.left flags:e.right];
       return [self fail:400 message:[NSString stringWithFormat:@"%@ is not a condition", e]];
     }
     case ODataExpressionUnary: {
@@ -570,7 +636,111 @@ static NSPredicate *OISCompare(NSExpression *left, NSPredicateOperatorType type,
     if (type == NSEqualToPredicateOperatorType) whenNull = null;
     if (type == NSNotEqualToPredicateOperatorType) whenNull = !null;
   }
+  if (l.stepFunction && r.kind == OISTermLiteral) {
+    return [self guarded:[self step:l type:type literal:r.literal] terms:@[ l ] whenNull:whenNull];
+  }
+  if (l.stepFunction || r.stepFunction) {
+    return [self unsupported:[NSString stringWithFormat:@"%@() but compared with a literal", l.stepFunction ?: r.stepFunction]];
+  }
   return [self guarded:[self comparison:type left:l right:r] terms:@[ l, r ] whenNull:whenNull];
+}
+
+#pragma mark Step functions
+
+// f(x) op literal, as a range of x: year(d) eq 2025 is 2025-01-01 <= d <
+// 2026-01-01 (in UTC, as dates are written), floor(p) le 18 is p < 19,
+// round(p) eq 5 is 4.5 <= p < 5.5 (half away from zero). A store can use
+// an index for that, and needs no function of its own.
+- (NSPredicate *)step:(OISTerm *)t type:(NSPredicateOperatorType)type literal:(ODataExpression *)literal
+{
+  NSString *f = t.stepFunction;
+  NSExpression *x = [self valueExpression:t.inner typedBy:nil];
+  if (!x) return nil;
+  id value = literal.value;
+  if (!value || value == [NSNull null]) {
+    if (type != NSEqualToPredicateOperatorType && type != NSNotEqualToPredicateOperatorType) return [NSPredicate predicateWithValue:NO];
+    return OISCompare(x, type, [NSExpression expressionForConstantValue:nil], 0);
+  }
+
+  // The integer n the comparison is about; a fraction makes eq false, ne
+  // true, and moves lt, le, gt, ge to the integer next to it.
+  NSDecimalNumber *half = [NSDecimalNumber decimalNumberWithString:@"0.5"];
+  NSDecimalNumber *one = [NSDecimalNumber one];
+  OISInterval *(^interval)(id n);
+  id n;
+  if ([f isEqualToString:@"date"]) {
+    NSDate *day = [literal.literalType isEqualToString:@"Edm.Date"] ? ODataDateFromString(value) : nil;
+    if (!day) return [self fail:400 message:[NSString stringWithFormat:@"date() is compared with a date, not %@", literal]];
+    n = day;
+    interval = ^OISInterval *(id start) {
+      return OISIntervalMake(start, YES, [start dateByAddingTimeInterval:86400], NO);
+    };
+  } else {
+    if (![value isKindOfClass:[NSNumber class]] || [literal.literalType isEqualToString:@"Edm.Boolean"]) {
+      return [self fail:400 message:[NSString stringWithFormat:@"%@() is compared with a number, not %@", f, literal]];
+    }
+    NSDecimalNumber *given = [value isKindOfClass:[NSDecimalNumber class]] ? value : [NSDecimalNumber decimalNumberWithDecimal:[value decimalValue]];
+    NSDecimalNumber *whole = [NSDecimalNumber decimalNumberWithDecimal:[@((long long)floor(given.doubleValue)) decimalValue]];
+    if ([whole compare:given] != NSOrderedSame) {
+      if (type == NSEqualToPredicateOperatorType || type == NSNotEqualToPredicateOperatorType) {
+        return [NSPredicate predicateWithValue:type == NSNotEqualToPredicateOperatorType];
+      }
+      // f takes whole values: f < 4.5 is f <= 4, f > 4.5 is f >= 5.
+      if (type == NSLessThanPredicateOperatorType) type = NSLessThanOrEqualToPredicateOperatorType;
+      if (type == NSGreaterThanPredicateOperatorType) type = NSGreaterThanOrEqualToPredicateOperatorType;
+      if (type == NSGreaterThanOrEqualToPredicateOperatorType) whole = [whole decimalNumberByAdding:one];
+    }
+    if ([f isEqualToString:@"year"]) {
+      n = whole;
+      interval = ^OISInterval *(NSDecimalNumber *year) {
+        return OISIntervalMake(OISStartOfYear(year.longLongValue), YES, OISStartOfYear(year.longLongValue + 1), NO);
+      };
+    } else if ([f isEqualToString:@"floor"]) {
+      n = whole;
+      interval = ^OISInterval *(NSDecimalNumber *m) {
+        return OISIntervalMake(m, YES, [m decimalNumberByAdding:one], NO);
+      };
+    } else if ([f isEqualToString:@"ceiling"]) {
+      n = whole;
+      interval = ^OISInterval *(NSDecimalNumber *m) {
+        return OISIntervalMake([m decimalNumberBySubtracting:one], NO, m, YES);
+      };
+    } else {
+      n = whole;
+      interval = ^OISInterval *(NSDecimalNumber *m) {
+        NSComparisonResult sign = [m compare:[NSDecimalNumber zero]];
+        return OISIntervalMake([m decimalNumberBySubtracting:half], sign != NSOrderedAscending && sign != NSOrderedSame,
+                              [m decimalNumberByAdding:half], sign == NSOrderedAscending);
+      };
+    }
+  }
+
+  OISInterval *i = interval(n);
+  NSExpression *lo = [NSExpression expressionForConstantValue:i.lower];
+  NSExpression *hi = [NSExpression expressionForConstantValue:i.upper];
+  NSPredicate *aboveLower = OISCompare(x, i.lowerIn ? NSGreaterThanOrEqualToPredicateOperatorType : NSGreaterThanPredicateOperatorType, lo, 0);
+  NSPredicate *belowUpper = OISCompare(x, i.upperIn ? NSLessThanOrEqualToPredicateOperatorType : NSLessThanPredicateOperatorType, hi, 0);
+  switch (type) {
+    case NSEqualToPredicateOperatorType:
+      return OISAnd(aboveLower, belowUpper);
+    case NSNotEqualToPredicateOperatorType: {
+      // null ne n, as for any value.
+      NSPredicate *none = OISCompare(x, NSEqualToPredicateOperatorType, [NSExpression expressionForConstantValue:nil], 0);
+      NSPredicate *below = OISCompare(x, i.lowerIn ? NSLessThanPredicateOperatorType : NSLessThanOrEqualToPredicateOperatorType, lo, 0);
+      NSPredicate *above = OISCompare(x, i.upperIn ? NSGreaterThanPredicateOperatorType : NSGreaterThanOrEqualToPredicateOperatorType, hi, 0);
+      return [NSCompoundPredicate orPredicateWithSubpredicates:@[ none, below, above ]];
+    }
+    case NSLessThanPredicateOperatorType:
+      return OISCompare(x, i.lowerIn ? NSLessThanPredicateOperatorType : NSLessThanOrEqualToPredicateOperatorType, lo, 0);
+    case NSLessThanOrEqualToPredicateOperatorType:
+      return belowUpper;
+    case NSGreaterThanPredicateOperatorType:
+      return OISCompare(x, i.upperIn ? NSGreaterThanPredicateOperatorType : NSGreaterThanOrEqualToPredicateOperatorType, hi, 0);
+    case NSGreaterThanOrEqualToPredicateOperatorType:
+      return aboveLower;
+    default:
+      return [self unsupported:[NSString stringWithFormat:@"%@() with that operator", f]];
+  }
 }
 
 - (NSPredicate *)comparison:(NSPredicateOperatorType)type left:(OISTerm *)l right:(OISTerm *)r
@@ -626,6 +796,57 @@ static NSPredicate *OISCompare(NSExpression *left, NSPredicateOperatorType type,
   return re ? OISCompare(le, type, re, 0) : nil;
 }
 
+// Flags has NS.Colour'Red,Blue': the value has every bit the member has.
+// A predicate has no bitwise and a store evaluates, but an enumeration's
+// values are few: the flags one's are the combinations of its members'
+// bits, a plain one's its members'. So it is Flags IN those that have
+// the bits.
+- (NSPredicate *)has:(ODataExpression *)left flags:(ODataExpression *)right
+{
+  OISTerm *l = [self term:left];
+  if (!l) return nil;
+  ODataExpression *literal = [self resolve:right];
+  if (!literal) return nil;
+  NSAttributeDescription *attribute = l.attribute;
+  ODataSchemaEnumType *type = attribute ? [self.mapper.schema enumTypeNamed:[self.mapper.values typeNameOfAttribute:attribute] ?: @""] : nil;
+  if (l.kind != OISTermValue || l.caseFunction || l.stepFunction || l.expression || !type) {
+    return [self fail:400 message:[NSString stringWithFormat:@"has: %@ is not an enumeration", left]];
+  }
+  NSAttributeType core = attribute.attributeType;
+  if (core != NSInteger16AttributeType && core != NSInteger32AttributeType && core != NSInteger64AttributeType) {
+    return [self unsupported:[NSString stringWithFormat:@"has on %@, an enumeration kept as text", left]];
+  }
+  if (literal.kind != ODataExpressionLiteral || ![[self.mapper.schema qualifiedName:literal.literalType ?: @""] isEqualToString:type.qualifiedName]) {
+    return [self fail:400 message:[NSString stringWithFormat:@"has takes a value of %@, not %@", type.qualifiedName, literal]];
+  }
+  id mask = [self.mapper.values coreDataValueForJSON:literal.value attribute:attribute];
+  if (![mask isKindOfClass:[NSNumber class]]) {
+    return [self fail:400 message:[NSString stringWithFormat:@"%@ is not a value of %@", literal, type.qualifiedName]];
+  }
+  long long bits = [mask longLongValue];
+  NSMutableArray *values = [NSMutableArray array];
+  if (type.isFlags) {
+    long long all = 0;
+    for (NSString *member in type.memberNames) all |= type.values[member].longLongValue;
+    if (all < 0 || __builtin_popcountll((unsigned long long)all) > 16) {
+      return [self unsupported:[NSString stringWithFormat:@"has on %@, with more than 16 flags", type.qualifiedName]];
+    }
+    // Every subset of the members' bits, from all of them down to none.
+    for (long long subset = all;; subset = (subset - 1) & all) {
+      if ((subset & bits) == bits) [values addObject:@(subset)];
+      if (subset == 0) break;
+    }
+  } else {
+    for (NSString *member in type.memberNames) {
+      long long value = type.values[member].longLongValue;
+      if ((value & bits) == bits) [values addObject:@(value)];
+    }
+  }
+  NSPredicate *p = values.count ? OISCompare([self pathExpression:l], NSInPredicateOperatorType, [NSExpression expressionForConstantValue:values], 0)
+                                : [NSPredicate predicateWithValue:NO];
+  return [self guarded:p terms:@[ l ] whenNull:NO];
+}
+
 - (NSPredicate *)in:(ODataExpression *)left list:(ODataExpression *)list
 {
   OISTerm *l = [self term:left];
@@ -634,6 +855,19 @@ static NSPredicate *OISCompare(NSExpression *left, NSPredicateOperatorType type,
   if (!list) return nil;
   if (list.kind != ODataExpressionList) return [self unsupported:@"in with anything but a list of values"];
   if (l.kind != OISTermValue) return [self fail:400 message:[NSString stringWithFormat:@"%@ is not a value", left]];
+  if (l.stepFunction) {
+    // year(d) in (2024,2025): each, as eq.
+    NSMutableArray *each = [NSMutableArray array];
+    for (ODataExpression *item in list.arguments) {
+      ODataExpression *value = [self resolve:item];
+      if (!value) return nil;
+      if (value.kind != ODataExpressionLiteral) return [self unsupported:@"in with anything but a list of values"];
+      NSPredicate *p = [self step:l type:NSEqualToPredicateOperatorType literal:value];
+      if (!p) return nil;
+      [each addObject:p];
+    }
+    return [self guarded:[NSCompoundPredicate orPredicateWithSubpredicates:each] terms:@[ l ] whenNull:NO];
+  }
   NSMutableArray *values = [NSMutableArray array];
   for (ODataExpression *item in list.arguments) {
     ODataExpression *value = [self resolve:item];

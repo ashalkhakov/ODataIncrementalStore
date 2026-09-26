@@ -429,9 +429,10 @@ that every `$filter` the translator writes parses.
 comparisons, `in`, `and`/`or`/`not`, arithmetic, `contains`,
 `startswith`, `endswith`, `tolower`/`toupper`, `length`, `now`, `any` and
 `all` (as `SUBQUERY`), `$count` of a to-many relationship, parameter
-aliases, and type casts and `isof` (below). `has`, casts to primitive
-types, the date and math functions, and a service's own functions answer
-`501`. Literals are typed by the attribute they meet.
+aliases, type casts and `isof`, and `year`, `date`, `floor`, `ceiling`
+and `round` compared with a literal, and `has` (all below). Casts to
+primitive types, the other date functions (`month`, `day`, `hour`, …), and
+a service's own functions answer `501`. Literals are typed by the attribute they meet.
 `tolower(Name) eq 'abc'` becomes `name ==[c] 'abc'`, which a SQL store can
 use without lowering every row. gnustep-base names its arithmetic
 functions differently from Apple (`_add`, not `add:to:`) and has no
@@ -451,6 +452,23 @@ the URL conventions have it: `Default.Manager/Budget eq null` holds for
 every Employee that is not a Manager (`NOT test OR budget == nil`).
 Ordering by a cast is `501`: a store that sorts objects would ask them
 all.
+`year`, `date`, `floor`, `ceiling` and `round` have no `NSPredicate`
+function a store evaluates, but each is a step function: compared with a
+literal, it is a range of its argument. `year(Hired) eq 2025` is
+`hired >= 2025-01-01T00:00Z AND hired < 2026-01-01T00:00Z` (in UTC, as
+dates are written), `floor(Price) le 18` is `price < 19`, `round(Price)
+eq -5` is `-5.5 < price <= -4.5` (half away from zero); `ne` is outside
+the range or null, `in` each value's range, and a fraction makes `eq`
+false and moves the others to the whole number beside it. A SQL store can
+use an index for that. Compared with anything but a literal, or ordered
+by, they are `501`; `month`, `day` and the rest are not ranges, and are
+`501` too.
+`has` has no bitwise `and` a store evaluates either, but an enumeration
+has few values: a flags one's are the combinations of its members' bits,
+a plain one's its members'. `Colours has Default.Colour'Red'` is
+`colours IN {1, 3, 5, 7}`, the values that have the bit, which every
+store takes. An enumeration kept as text, or of more than 16 flags, is
+`501`.
 **It never builds a predicate by formatting a string for
 `+predicateWithFormat:`**. The one exception is a key path off a lambda's
 variable (`$v0.unitPrice`), which is made from a generated name and the
