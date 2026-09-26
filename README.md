@@ -168,6 +168,9 @@ main queue.** Use a private-queue context.
 
 ## Roadmap
 
+Client conformance with OData v4, item by item, and the order the gaps
+are being closed in: [docs/odata-conformance.md](docs/odata-conformance.md).
+
 A matching OData server in Objective-C, over Core Data, on GNUstep and
 Cocoa. Not started; the design is in
 [docs/server-design.md](docs/server-design.md).
