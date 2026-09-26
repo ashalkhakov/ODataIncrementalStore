@@ -251,6 +251,13 @@ static NSString *OISElementTypeOf(NSString *type)
          OISXML([self.mapper entitySetForEntity:[self rootOf:rel.destinationEntity]])];
       }
     }
+    NSString *setName = [self.mapper entitySetForEntity:entity];
+    for (NSString *restriction in @[ @"Insert", @"Update", @"Delete" ]) {
+      if (![self.restrictions[setName] containsObject:restriction]) continue;
+      [xml appendFormat:@"<Annotation Term=\"Org.OData.Capabilities.V1.%@Restrictions\"><Record>"
+                        @"<PropertyValue Property=\"%@\" Bool=\"false\"/></Record></Annotation>",
+       restriction, [@{ @"Insert": @"Insertable", @"Update": @"Updatable", @"Delete": @"Deletable" } objectForKey:restriction]];
+    }
     NSAttributeDescription *concurrency = self.concurrencyAttributes[entity.name];
     if (concurrency) {
       [xml appendFormat:@"<Annotation Term=\"Org.OData.Core.V1.OptimisticConcurrency\"><Collection>"
@@ -285,6 +292,10 @@ static NSString *OISElementTypeOf(NSString *type)
   if (self.concurrencyAttributes.count) {
     [xml appendString:@"<edmx:Reference Uri=\"https://oasis-tcs.github.io/odata-vocabularies/vocabularies/Org.OData.Core.V1.xml\">"
                       @"<edmx:Include Namespace=\"Org.OData.Core.V1\" Alias=\"Core\"/></edmx:Reference>"];
+  }
+  if (self.restrictions.count) {
+    [xml appendString:@"<edmx:Reference Uri=\"https://oasis-tcs.github.io/odata-vocabularies/vocabularies/Org.OData.Capabilities.V1.xml\">"
+                      @"<edmx:Include Namespace=\"Org.OData.Capabilities.V1\" Alias=\"Capabilities\"/></edmx:Reference>"];
   }
   [xml appendString:@"<edmx:DataServices>"];
   for (NSString *ns in [schemas.allKeys sortedArrayUsingSelector:@selector(compare:)]) {

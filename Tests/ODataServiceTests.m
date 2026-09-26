@@ -235,6 +235,18 @@
 - (void)nothing:(ODataReply *)reply {}
 @end
 
+// Defers, and never answers.
+@interface OISSilentProducts : ODataEntitySetHandler
+@end
+
+@implementation OISSilentProducts
+- (NSArray *)objectsForFetchRequest:(NSFetchRequest *)fetchRequest request:(ODataRequest *)request reply:(ODataReply *)reply
+{
+  [reply defer];
+  return nil;
+}
+@end
+
 @interface ODataServiceTests : XCTestCase
 @end
 
@@ -734,7 +746,7 @@
   XCTAssertEqual([self get:@"Products(1)/Default.DiscountedPriceByPercent(Percent=10,Extra=1)"].status, 400);
   XCTAssertEqual([self get:@"Products(1)/Default.DiscountedPriceByPercent(Percent='x')"].status, 400);
   XCTAssertEqual([self get:@"Products(1)/Default.Nothing()"].status, 501);
-  XCTAssertEqual([self get:@"Products(1)/Default.DiscountedPriceByPercent(Percent=10)/Foo"].status, 501);
+  XCTAssertEqual([self get:@"Products(1)/Default.DiscountedPriceByPercent(Percent=10)/Foo"].status, 400, @"a value cannot be read on from");
 }
 
 - (void)testActions
@@ -1030,6 +1042,303 @@
   XCTAssertFalse([context save:&error], @"the name the client has is not the service's");
   [backing reset];
   XCTAssertEqualObjects([[self productWithID:1 in:backing] valueForKey:@"name"], @"Chai tea", @"not overwritten");
+}
+
+#pragma mark Timeouts, single properties, references
+
+- (void)testAReplyThatNeverComesIsATimeout
+{
+  [_service setHandler:[[OISSilentProducts alloc] initWithEntity:OISCatalogEntity(@"Product")] forEntitySet:@"Products"];
+  _service.replyTimeout = 0.2;
+  OISServiceResponse *r = [self get:@"Products"];
+  XCTAssertEqual(r.status, 504);
+  XCTAssertTrue([r.json[@"error"][@"message"] length] > 0);
+}
+
+- (OISServiceResponse *)send:(NSString *)method path:(NSString *)path type:(NSString *)type text:(NSString *)text
+{
+  NSMutableURLRequest *request = [NSMutableURLRequest requestWithURL:[NSURL URLWithString:[@"http://example.test/odata/" stringByAppendingString:path]]];
+  request.HTTPMethod = method;
+  [request setValue:type forHTTPHeaderField:@"Content-Type"];
+  request.HTTPBody = [text dataUsingEncoding:NSUTF8StringEncoding];
+  return [self exchange:request];
+}
+
+- (void)testWritingOneProperty
+{
+  OISServiceResponse *put = [self send:@"PUT" path:@"Products(1)/ProductName" headers:nil body:@{ @"value": @"Chai tea" }];
+  XCTAssertEqual(put.status, 204, @"%@", put.text);
+  XCTAssertNotNil([put header:@"ETag"]);
+  XCTAssertEqualObjects([self get:@"Products(1)/ProductName"].json[@"value"], @"Chai tea");
+  XCTAssertEqual(([self send:@"PATCH" path:@"Products(1)/UnitPrice" headers:nil body:@{ @"value": @"18.5" }].status), 204);
+  XCTAssertEqualObjects([self get:@"Products(1)/UnitPrice/$value"].text, @"18.5");
+  XCTAssertEqual(([self send:@"PUT" path:@"Products(1)/UnitPrice/$value" type:@"text/plain" text:@"20"].status), 204);
+  XCTAssertEqualObjects([self get:@"Products(1)/UnitPrice/$value"].text, @"20");
+  XCTAssertEqual(([self send:@"DELETE" path:@"Products(1)/QuantityPerUnit" headers:nil body:nil].status), 204);
+  XCTAssertEqual([self get:@"Products(1)/QuantityPerUnit"].status, 204, @"null now");
+
+  XCTAssertEqual(([self send:@"PUT" path:@"Products(1)/ProductID" headers:nil body:@{ @"value": @9 }].status), 400, @"keys do not change");
+  XCTAssertEqual(([self send:@"PUT" path:@"Products(1)/UnitPrice" headers:nil body:@{ @"value": @"cheap" }].status), 400);
+  XCTAssertEqual(([self send:@"PUT" path:@"Products(1)/UnitPrice" headers:nil body:@{ @"price": @1 }].status), 400);
+  XCTAssertEqual(([self send:@"DELETE" path:@"Products(1)/ProductName" headers:nil body:nil].status), 400, @"a required property");
+  XCTAssertEqual(([self send:@"PUT" path:@"Products(1)/ProductName" headers:@{ @"If-Match": @"W/\"stale\"" } body:@{ @"value": @"x" }].status), 412);
+}
+
+- (void)testReferences
+{
+  OISServiceResponse *ref = [self get:@"Products(1)/Category/$ref"];
+  XCTAssertEqual(ref.status, 200, @"%@", ref.text);
+  XCTAssertEqualObjects(ref.json[@"@odata.id"], @"Categories(1)");
+  XCTAssertEqualObjects(ref.json[@"@odata.context"], @"http://example.test/odata/$metadata#$ref");
+
+  OISServiceResponse *list = [self get:@"Categories(1)/Products/$ref"];
+  NSMutableArray *ids = [NSMutableArray array];
+  for (NSDictionary *each in list.json[@"value"]) [ids addObject:each[@"@odata.id"]];
+  XCTAssertEqualObjects(ids, (@[ @"Products(1)", @"Products(2)" ]));
+  XCTAssertEqualObjects(list.json[@"@odata.context"], @"http://example.test/odata/$metadata#Collection($ref)");
+
+  XCTAssertEqual(([self send:@"PUT" path:@"Products(1)/Category/$ref" headers:nil
+                        body:@{ @"@odata.id": @"http://example.test/odata/Categories(2)" }].status), 204);
+  XCTAssertEqualObjects([self get:@"Products(1)/Category/CategoryName"].json[@"value"], @"Condiments");
+  XCTAssertEqual(([self send:@"DELETE" path:@"Products(1)/Category/$ref" headers:nil body:nil].status), 204);
+  XCTAssertEqual([self get:@"Products(1)/Category"].status, 204, @"no category now");
+  XCTAssertEqual([self get:@"Products(1)/Category/$ref"].status, 204);
+
+  XCTAssertEqual(([self send:@"POST" path:@"Suppliers(2)/Products/$ref" headers:nil body:@{ @"@odata.id": @"Products(1)" }].status), 204);
+  XCTAssertEqualObjects([self get:@"Suppliers(2)/Products/$count"].text, @"3");
+  XCTAssertEqual(([self send:@"DELETE" path:@"Suppliers(2)/Products/$ref?$id=http://example.test/odata/Products(1)" headers:nil body:nil].status), 204);
+  XCTAssertEqual(([self send:@"DELETE" path:@"Suppliers(2)/Products(4)/$ref" headers:nil body:nil].status), 204);
+  XCTAssertEqualObjects([self get:@"Suppliers(2)/Products/$count"].text, @"1");
+  XCTAssertEqualObjects([self get:@"Products(4)/ProductName"].json[@"value"], @"Chef Anton's Cajun Seasoning", @"the product stays");
+
+  XCTAssertEqual(([self send:@"DELETE" path:@"Suppliers(2)/Products/$ref?$id=Products(1)" headers:nil body:nil].status), 404, @"not a member");
+  XCTAssertEqual(([self send:@"PUT" path:@"Products(1)/Category/$ref" headers:nil body:@{ @"@odata.id": @"Suppliers(1)" }].status), 400);
+  XCTAssertEqual(([self send:@"POST" path:@"Products(1)/Category/$ref" headers:nil body:@{ @"@odata.id": @"Categories(1)" }].status), 405);
+  XCTAssertEqual(([self send:@"PUT" path:@"Products(1)/$ref" headers:nil body:@{ @"@odata.id": @"Products(2)" }].status), 405);
+  XCTAssertEqualObjects([self get:@"Products(3)/$ref"].json[@"@odata.id"], @"Products(3)");
+}
+
+// What the client sends for a changed relationship, $ref requests, the
+// service now takes.
+- (void)testClientChangesRelationships
+{
+  [ODataIncrementalStore registerStore];
+  NSPersistentStoreCoordinator *client = [[NSPersistentStoreCoordinator alloc] initWithManagedObjectModel:OISCatalogModel()];
+  NSError *error = nil;
+  XCTAssertNotNil([client addPersistentStoreWithType:[ODataIncrementalStore storeType] configuration:nil
+                                                 URL:[NSURL URLWithString:@"http://example.test/odata/"]
+                                             options:@{ ODataIncrementalStoreTransportOption: _service } error:&error], @"%@", error);
+  NSManagedObjectContext *context = [[NSManagedObjectContext alloc] init];
+  context.persistentStoreCoordinator = client;
+  NSFetchRequest *fetch = [NSFetchRequest fetchRequestWithEntityName:@"Product"];
+  fetch.predicate = [NSPredicate predicateWithFormat:@"name == 'Chai'"];
+  NSManagedObject *chai = [[context executeFetchRequest:fetch error:&error] firstObject];
+  NSFetchRequest *condiments = [NSFetchRequest fetchRequestWithEntityName:@"Category"];
+  condiments.predicate = [NSPredicate predicateWithFormat:@"name == 'Condiments'"];
+  [chai setValue:[[context executeFetchRequest:condiments error:&error] firstObject] forKey:@"category"];
+  NSFetchRequest *cajun = [NSFetchRequest fetchRequestWithEntityName:@"Supplier"];
+  cajun.predicate = [NSPredicate predicateWithFormat:@"city == 'New Orleans'"];
+  [[chai mutableSetValueForKey:@"suppliers"] addObject:[[context executeFetchRequest:cajun error:&error] firstObject]];
+  XCTAssertTrue([context save:&error], @"%@", error);
+
+  NSManagedObjectContext *backing = [[NSManagedObjectContext alloc] init];
+  backing.persistentStoreCoordinator = _coordinator;
+  NSManagedObject *saved = [self productWithID:1 in:backing];
+  XCTAssertEqualObjects([saved valueForKeyPath:@"category.name"], @"Condiments");
+  XCTAssertEqualObjects([[saved valueForKey:@"suppliers"] valueForKey:@"city"], ([NSSet setWithObjects:@"London", @"New Orleans", nil]));
+}
+
+- (void)testComposingOnFunctions
+{
+  [self serveOperations];
+  NSError *error = nil;
+  ODataSchema *schema = [ODataSchema schemaWithData:[self get:@"$metadata"].data error:&error];
+  ODataSchemaEntityType *product = [schema entityTypeNamed:@"Default.Product"];
+  XCTAssertTrue([schema operationNamed:@"PricierThanPrice" boundToEntityType:product collection:YES parameterNames:nil].isComposable);
+
+  OISServiceResponse *r = [self get:@"Products/Default.PricierThanPrice(Price=10)?$filter=startswith(ProductName,'Ch')&$orderby=UnitPrice desc&$top=2&$count=true"];
+  XCTAssertEqual(r.status, 200, @"%@", r.text);
+  XCTAssertEqualObjects([self names:r], (@[ @"Chef Anton's Cajun Seasoning", @"Chef Anton's Gumbo Mix" ]));
+  XCTAssertEqualObjects(r.json[@"@odata.count"], @4, @"Chai, Chang and both of Chef Anton's");
+  XCTAssertEqualObjects([self get:@"Products/Default.PricierThanPrice(Price=20)/$count"].text, @"2");
+  XCTAssertEqualObjects([self get:@"Categories(1)/Products/Default.PricierThanPrice(Price=18)/$count"].text, @"1");
+
+  XCTAssertEqualObjects([self get:@"Products(4)/Default.CheapestInCategory()/ProductName"].json[@"value"], @"Aniseed Syrup");
+  XCTAssertEqualObjects([self get:@"Products(4)/Default.CheapestInCategory()/Category/CategoryName"].json[@"value"], @"Condiments");
+  OISServiceResponse *selected = [self get:@"Products(4)/Default.CheapestInCategory()?$select=UnitPrice&$expand=Category($select=CategoryName)"];
+  XCTAssertEqualObjects(selected.json[@"Category"][@"CategoryName"], @"Condiments");
+  XCTAssertNil(selected.json[@"ProductName"]);
+
+  XCTAssertEqual([self get:@"CountProductsCheaperThanPrice(Price=19)/Foo"].status, 400, @"a value cannot be read on from");
+  XCTAssertEqual(([self send:@"POST" path:@"Products(1)/Default.RaisePriceByPercent/Category" headers:nil body:@{ @"Percent": @1 }].status), 400);
+}
+
+#pragma mark Derived types and $levels
+
+// A model of its own, made here since the Catalog has neither inheritance
+// nor a relationship to its own entity: employees, managers among them,
+// each with a manager and reports.
+- (void)serveStaff
+{
+  NSEntityDescription *employee = [[NSEntityDescription alloc] init];
+  employee.name = @"Employee";
+  employee.managedObjectClassName = @"NSManagedObject";
+  NSEntityDescription *manager = [[NSEntityDescription alloc] init];
+  manager.name = @"Manager";
+  manager.managedObjectClassName = @"NSManagedObject";
+
+  NSAttributeDescription *identifier = [[NSAttributeDescription alloc] init];
+  identifier.name = @"id";
+  identifier.attributeType = NSInteger32AttributeType;
+  identifier.optional = NO;
+  NSAttributeDescription *name = [[NSAttributeDescription alloc] init];
+  name.name = @"name";
+  name.attributeType = NSStringAttributeType;
+  name.optional = YES;
+  NSAttributeDescription *budget = [[NSAttributeDescription alloc] init];
+  budget.name = @"budget";
+  budget.attributeType = NSDecimalAttributeType;
+  budget.optional = YES;
+  NSRelationshipDescription *boss = [[NSRelationshipDescription alloc] init];
+  boss.name = @"manager";
+  boss.destinationEntity = employee;
+  boss.maxCount = 1;
+  boss.optional = YES;
+  NSRelationshipDescription *reports = [[NSRelationshipDescription alloc] init];
+  reports.name = @"reports";
+  reports.destinationEntity = employee;
+  reports.maxCount = 0;
+  reports.optional = YES;
+  boss.inverseRelationship = reports;
+  reports.inverseRelationship = boss;
+  employee.properties = @[ identifier, name, boss, reports ];
+  manager.properties = @[ budget ];
+  // FreeCoreData's -properties of a sub-entity leaves out what it inherits
+  // (Apple's includes it), so the service looks properties up by name.
+  employee.subentities = @[ manager ];
+  NSManagedObjectModel *model = [[NSManagedObjectModel alloc] init];
+  model.entities = @[ employee, manager ];
+
+  _coordinator = [[NSPersistentStoreCoordinator alloc] initWithManagedObjectModel:model];
+  NSError *error = nil;
+  XCTAssertNotNil([_coordinator addPersistentStoreWithType:NSInMemoryStoreType configuration:nil URL:nil options:nil error:&error], @"%@", error);
+  NSManagedObjectContext *context = [[NSManagedObjectContext alloc] init];
+  context.persistentStoreCoordinator = _coordinator;
+  // Ann manages Bob, who manages Cy and Di.
+  NSManagedObject *ann = [self insert:@"Manager" into:context values:@{ @"id": @1, @"name": @"Ann", @"budget": [NSDecimalNumber decimalNumberWithString:@"5000"] }];
+  NSManagedObject *bob = [self insert:@"Manager" into:context values:@{ @"id": @2, @"name": @"Bob", @"budget": [NSDecimalNumber decimalNumberWithString:@"800"], @"manager": ann }];
+  [self insert:@"Employee" into:context values:@{ @"id": @3, @"name": @"Cy", @"manager": bob }];
+  [self insert:@"Employee" into:context values:@{ @"id": @4, @"name": @"Di", @"manager": bob }];
+  XCTAssertTrue([context save:&error], @"%@", error);
+  _service = [[ODataService alloc] initWithPersistentStoreCoordinator:_coordinator serviceRoot:[NSURL URLWithString:@"http://example.test/odata/"]];
+}
+
+- (NSArray *)employeeNames:(OISServiceResponse *)response
+{
+  return [response.json[@"value"] valueForKey:@"Name"];
+}
+
+- (void)testTypeCasts
+{
+  [self serveStaff];
+  OISServiceResponse *managers = [self get:@"Employees/Default.Manager"];
+  XCTAssertEqual(managers.status, 200, @"%@", managers.text);
+  XCTAssertEqualObjects([self employeeNames:managers], (@[ @"Ann", @"Bob" ]));
+  XCTAssertEqualObjects(managers.json[@"@odata.context"], @"http://example.test/odata/$metadata#Employees/Default.Manager");
+  XCTAssertEqualObjects([self get:@"Employees/Default.Manager/$count"].text, @"2");
+  XCTAssertEqualObjects([self employeeNames:[self get:@"Employees/Default.Manager?$filter=Budget gt 1000"]], @[ @"Ann" ]);
+  XCTAssertEqualObjects([self get:@"Employees(2)/Default.Manager/Budget"].json[@"value"], @800);
+  XCTAssertEqual([self get:@"Employees(3)/Default.Manager"].status, 404, @"Cy manages no one");
+  XCTAssertEqual([self get:@"Employees/Default.Nobody"].status, 404);
+
+  OISServiceResponse *all = [self get:@"Employees?$select=Name,Default.Manager/Budget"];
+  NSArray *rows = all.json[@"value"];
+  XCTAssertEqualObjects(rows[0][@"Budget"], @5000);
+  XCTAssertNil(rows[2][@"Budget"], @"an employee who is not a manager has none");
+  XCTAssertEqualObjects(rows[2][@"@odata.type"], nil, @"the set's own type needs no @odata.type");
+  XCTAssertEqualObjects(rows[0][@"@odata.type"], @"#Default.Manager");
+
+  OISServiceResponse *created = [self send:@"POST" path:@"Employees/Default.Manager" headers:nil body:@{ @"Name": @"Eve", @"Budget": @100 }];
+  XCTAssertEqual(created.status, 201, @"%@", created.text);
+  XCTAssertEqualObjects(created.json[@"@odata.context"], @"http://example.test/odata/$metadata#Employees/Default.Manager/$entity",
+                        @"the context names the type, so minimal metadata needs no @odata.type");
+  XCTAssertEqualObjects(created.json[@"Budget"], @100);
+  XCTAssertEqualObjects([self get:@"Employees/Default.Manager/$count"].text, @"3", @"created as the cast's type");
+  XCTAssertEqual([self get:@"Employees?$filter=isof(Default.Manager)"].status, 501);
+}
+
+- (void)testLevels
+{
+  [self serveStaff];
+  OISServiceResponse *two = [self get:@"Employees(1)?$select=Name&$expand=Reports($select=Name;$levels=2)"];
+  XCTAssertEqual(two.status, 200, @"%@", two.text);
+  NSDictionary *bob = [two.json[@"Reports"] firstObject];
+  XCTAssertEqualObjects(bob[@"Name"], @"Bob");
+  XCTAssertEqualObjects([[bob[@"Reports"] valueForKey:@"Name"] sortedArrayUsingSelector:@selector(compare:)], (@[ @"Cy", @"Di" ]));
+  XCTAssertNil([bob[@"Reports"] firstObject][@"Reports"], @"two levels, no more");
+
+  OISServiceResponse *max = [self get:@"Employees(4)?$expand=Manager($levels=max)"];
+  XCTAssertEqualObjects(max.json[@"Manager"][@"Name"], @"Bob");
+  XCTAssertEqualObjects(max.json[@"Manager"][@"Manager"][@"Name"], @"Ann", @"to the top");
+  XCTAssertEqualObjects(max.json[@"Manager"][@"Manager"][@"Manager"], [NSNull null]);
+
+  OISServiceResponse *one = [self get:@"Employees(1)?$expand=Reports($levels=1)"];
+  XCTAssertNil([one.json[@"Reports"] firstObject][@"Reports"]);
+}
+
+#pragma mark Deep inserts
+
+- (void)testDeepInsert
+{
+  OISServiceResponse *category = [self send:@"POST" path:@"Categories" headers:nil body:@{
+    @"CategoryName": @"Seafood",
+    @"Products": @[ @{ @"ProductName": @"Ikura", @"UnitPrice": @31 }, @{ @"ProductName": @"Konbu", @"UnitPrice": @6 } ] }];
+  XCTAssertEqual(category.status, 201, @"%@", category.text);
+  XCTAssertEqualObjects(category.json[@"CategoryID"], @3);
+  NSArray *products = category.json[@"Products"];
+  XCTAssertEqualObjects([[products valueForKey:@"ProductName"] sortedArrayUsingSelector:@selector(compare:)], (@[ @"Ikura", @"Konbu" ]),
+                        @"what was created comes back expanded");
+  XCTAssertEqualObjects([[products valueForKey:@"ProductID"] sortedArrayUsingSelector:@selector(compare:)], (@[ @6, @7 ]));
+  XCTAssertEqualObjects([self get:@"Categories(3)/Products/$count"].text, @"2");
+
+  OISServiceResponse *product = [self send:@"POST" path:@"Products" headers:nil body:@{
+    @"ProductName": @"Tofu", @"Category": @{ @"CategoryName": @"Produce" }, @"Suppliers@odata.bind": @[ @"Suppliers(1)" ] }];
+  XCTAssertEqual(product.status, 201, @"%@", product.text);
+  XCTAssertEqualObjects(product.json[@"Category"][@"CategoryName"], @"Produce");
+  XCTAssertEqualObjects([self get:@"Products(8)/Category/CategoryID"].json[@"value"], @4);
+  XCTAssertEqualObjects([self get:@"Products(8)/Suppliers/$count"].text, @"1");
+
+  OISServiceResponse *deep = [self send:@"POST" path:@"Categories" headers:nil body:@{
+    @"CategoryName": @"Confections",
+    @"Products": @[ @{ @"ProductName": @"Teatime Biscuits",
+                       @"Stocks": @[ @{ @"StockID": @9, @"Quantity": @5, @"Location@odata.bind": @"Locations(1)" } ] } ] }];
+  XCTAssertEqual(deep.status, 201, @"%@", deep.text);
+  XCTAssertEqualObjects([deep.json[@"Products"] firstObject][@"Stocks"][0][@"Quantity"], @5, @"three levels down");
+  XCTAssertEqualObjects([self get:@"Stocks(9)/Location/LocationName"].json[@"value"], @"Warehouse");
+
+  OISServiceResponse *bad = [self send:@"POST" path:@"Categories" headers:nil body:@{
+    @"CategoryName": @"Grains", @"Products": @[ @{ @"ProductName": @"Rice", @"UnitPrice": @"cheap" } ] }];
+  XCTAssertEqual(bad.status, 400);
+  XCTAssertEqualObjects([self get:@"Categories/$count"].text, @"5", @"nothing of it was saved");
+  XCTAssertEqual(([self send:@"POST" path:@"Categories" headers:nil body:@{ @"CategoryName": @"G", @"Products": @{ @"ProductName": @"R" } }].status), 400,
+                 @"a to-many takes an array");
+  XCTAssertEqual(([self send:@"PATCH" path:@"Categories(1)" headers:nil body:@{ @"Products": @[ @{ @"ProductName": @"R" } ] }].status), 501);
+}
+
+- (void)testRestrictionsInMetadata
+{
+  XCTAssertTrue([[self get:@"$metadata"].text rangeOfString:@"Restrictions"].location == NSNotFound, @"everything allowed");
+  ODataEntitySetHandler *locations = [[ODataEntitySetHandler alloc] initWithEntity:OISCatalogEntity(@"Location")];
+  [_service setHandler:locations forEntitySet:@"Locations"];
+  locations.allowsInsert = NO;
+  locations.allowsDelete = NO;
+  NSString *xml = [self get:@"$metadata"].text;
+  XCTAssertTrue([xml rangeOfString:@"<EntitySet Name=\"Locations\" EntityType=\"Default.Location\">"].location != NSNotFound);
+  XCTAssertTrue([xml rangeOfString:@"Org.OData.Capabilities.V1.InsertRestrictions\"><Record><PropertyValue Property=\"Insertable\" Bool=\"false\"/>"].location != NSNotFound, @"%@", xml);
+  XCTAssertTrue([xml rangeOfString:@"Org.OData.Capabilities.V1.DeleteRestrictions"].location != NSNotFound);
+  XCTAssertTrue([xml rangeOfString:@"UpdateRestrictions"].location == NSNotFound);
+  XCTAssertNotNil([ODataSchema schemaWithData:[xml dataUsingEncoding:NSUTF8StringEncoding] error:NULL], @"still reads");
+  XCTAssertEqual(([self send:@"POST" path:@"Locations" headers:nil body:@{ @"LocationName": @"Shed" }].status), 405);
 }
 
 @end

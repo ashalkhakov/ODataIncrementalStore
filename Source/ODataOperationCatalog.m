@@ -403,6 +403,8 @@ static BOOL OISEntityIsOrInherits(NSEntityDescription *entity, NSEntityDescripti
     NSString *element = operation.isAction ? @"Action" : @"Function";
     [xml appendFormat:@"<%@ Name=\"%@\"", element, OISXMLEscaped(operation.name)];
     if (operation.boundEntity) [xml appendString:@" IsBound=\"true\""];
+    // A function's result can be read on from: the service composes on it.
+    if (!operation.isAction) [xml appendString:@" IsComposable=\"true\""];
     [xml appendString:@">"];
     if (operation.boundEntity) {
       NSString *type = [_writer typeNameForEntity:operation.boundEntity];

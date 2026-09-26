@@ -138,8 +138,9 @@ property.
   - insert: fill in server-side values;
   - delete: refuse, or mark as deleted instead.
 - `allowsInsert`, `allowsUpdate` and `allowsDelete` switch a method off;
-  it then answers `405`. (Planned: the set's `Capabilities.*Restrictions`
-  in `$metadata`, derived from these.)
+  it then answers `405`, and `$metadata` says so on the set
+  (`Capabilities.InsertRestrictions` and its siblings), as the handler
+  allows at the time of the request.
 - `-predicateForVisibleObjectsInRequest:` scopes the rows the caller may
   see however they are reached: fetched, by key, through navigation,
   through `$expand`, or named in `@odata.bind`. That is where per-caller
@@ -257,7 +258,12 @@ As built:
   function's are rolled back. The result is written by its declared type:
   an entity with `$select` and `$expand` applied, a collection of them, a
   value or a collection of values, each with its context URL; nothing is
-  a `204`. Composing on a result (`…/Default.F()/Name`) is a `501`.
+  a `204`.
+- **Composing.** Functions are composable: the entities one returns are
+  read on as any collection or entity, the rest of the path and the query
+  options included (`Products/Default.PricierThanPrice(Price=10)?$filter=…&$top=2`,
+  `…/$count`, `Products(4)/Default.CheapestInCategory()/Category`). An
+  action's result, and a value, cannot be read on from (`400`).
 - libobjc2's `Protocol` objects cannot be retained, so the catalog keeps
   them as pointers; Apple's can.
 - The client calls these operations as it calls any service's
@@ -282,9 +288,9 @@ So only the code that actually waits is asynchronous, and there are no
 blocks in the API. A deferred method runs its synchronous part inside
 the request context's `-performBlockAndWait:` like any other. Whatever
 it does with the context afterwards goes through `-performBlock:`. The
-reply keeps the context alive until it is finished. (Planned: a reply
-that is never finished is answered `504` after the request's timeout.
-Today the request waits.)
+reply keeps the context alive until it is finished. A deferred reply that
+is not answered within the service's `replyTimeout` (60 seconds by
+default) is answered `504`, and a later answer is ignored.
 
 The service's own steps continue through the same replies, target-action,
 with no blocks: each step names the method its reply goes on in.
@@ -510,17 +516,33 @@ before the split rather than after.
    entity by key (and key as segment), properties and `$value`, `$filter`,
    `$orderby`, `$top`, `$skip`, `$select`, `$count`, paging.
 2. ~~**Navigation.**~~ Done: navigation paths and `$expand` with nested
-   options, `$ref` and `/$count` within it. Not yet: `$levels`, casts.
+   options, `$ref` and `/$count` within it, `$levels` (a number, or `max`,
+   taken as 32 and never through the same entity twice); type casts in the
+   path (`Employees/Default.Manager`, `Employees(2)/Default.Manager/Budget`,
+   and inserting through one) and in `$select` (`Default.Manager/Budget`);
+   references (`Products(1)/Category/$ref`, `Categories(1)/Products/$ref`).
+   Not yet: casts in `$filter` and `isof`, which need a way to test an
+   object's entity that every store supports (`501`).
 3. ~~**Writes.**~~ Done: POST (to a set or through a navigation property),
    PATCH, PUT, DELETE, ETags with `If-Match` and `If-None-Match`,
-   `@odata.bind`, `Prefer: return`. The client round trip passes. Not yet:
-   deep inserts and updates, writing a single property.
+   `@odata.bind`, `Prefer: return`. The client round trip passes. Also:
+   - a single property (`PUT`/`PATCH` `{"value": …}`, `PUT` its `$value`,
+     `DELETE` it to null);
+   - references: `PUT` and `DELETE` a to-one `$ref`, `POST` to a to-many
+     one and `DELETE` from it by `$id` or by key, which is how the client
+     changes relationships;
+   - deep inserts, to any depth, each entity through its set's handler (one
+     that answers later cannot be waited for there, `501`), answered with
+     what was created expanded.
+
+   Not yet: deep updates (`501`: bind, or update each entity).
 4. ~~**HTTP adapter.**~~ Done: GCDWebServer vendored and ported,
    `ODataHTTPServer`, `ois-serve`, the loopback check in CI on both
    platforms, example units and proxy configurations.
 5. ~~**Operations**~~, declared in protocols, as above. Done: functions and
    actions bound to entities and collections, and unbound ones through
-   imports, answering at once or later. Not yet: composing on a result.
+   imports, answering at once or later, and composing on a function's
+   entities.
 6. ~~**`$batch`**~~, multipart and JSON. Done:
    - Each request is answered as any other, in order. A change set's (an
      atomicity group's) requests share one context, saved once they have

@@ -48,7 +48,9 @@ FOUNDATION_EXPORT NSString * const ODataUserInfoETag;  // @"OData.etag"
 // method that has to wait for something calls -defer, returns (what it
 // returns is then ignored), and later, on any thread, calls
 // -finishWithResult: or -failWithError:. Whatever it does with the
-// request's context after returning goes through -performBlock:.
+// request's context after returning goes through -performBlock:. A
+// deferred reply that is not answered within the service's replyTimeout
+// is answered 504 for it, and a later answer is ignored.
 @interface ODataReply : NSObject
 - (instancetype)init NS_UNAVAILABLE;
 - (void)defer;
@@ -208,6 +210,9 @@ FOUNDATION_EXPORT NSString * const ODataUserInfoETag;  // @"OData.etag"
 // link for the rest. 0, the default: as many as the client asks for
 // (Prefer: odata.maxpagesize), else all of them.
 @property (nonatomic) NSUInteger maxPageSize;
+// How long a deferred reply may take before the request is answered 504
+// Gateway Timeout. 0: no limit. Default: 60 seconds.
+@property (nonatomic) NSTimeInterval replyTimeout;
 // The object whose methods are the service's unbound operations; see
 // ODataFunctions. Set it before the first request.
 @property (nonatomic, strong, nullable) id serviceOperations;

@@ -80,7 +80,7 @@ ODataIncrementalStore_HEADER_FILES = \
 ODataIncrementalStore_HEADER_FILES_DIR = Source/include
 ODataIncrementalStore_HEADER_FILES_INSTALL_DIR = ODataIncrementalStore
 ODataIncrementalStore_INCLUDE_DIRS = -ISource/include
-ODataIncrementalStore_LIBRARIES_DEPEND_UPON += -lCoreData
+ODataIncrementalStore_LIBRARIES_DEPEND_UPON += -lCoreData -ldispatch
 
 ADDITIONAL_OBJCFLAGS += -fobjc-arc -fblocks -fobjc-runtime=gnustep-2.0 \
 	-fconstant-string-class=NSConstantString -fobjc-exceptions -Wall -Wno-unused-parameter

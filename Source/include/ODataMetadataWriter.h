@@ -36,6 +36,10 @@ NS_ASSUME_NONNULL_BEGIN
 // (Core.OptimisticConcurrency). Set by the service.
 @property (nonatomic, copy, nullable) NSDictionary<NSString *, NSAttributeDescription *> *concurrencyAttributes;
 
+// What each entity set does not allow, by set name: any of Insert, Update
+// and Delete, written as Org.OData.Capabilities.V1 restrictions.
+@property (nonatomic, copy, nullable) NSDictionary<NSString *, NSSet<NSString *> *> *restrictions;
+
 // More elements for the schema of namespaceName (Function, Action) and for
 // the entity container (FunctionImport, ActionImport), as CSDL XML.
 @property (nonatomic, copy, nullable) NSString *additionalSchemaXML;

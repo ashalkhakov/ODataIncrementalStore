@@ -27,7 +27,7 @@ ifeq ($(strip $(GNUSTEP_FLAGS)),)
   GNUSTEP_LIBS  = -lgnustep-base -lobjc -lpthread
 endif
 
-GNUSTEP_LIBS += -lCoreData
+GNUSTEP_LIBS += -lCoreData -ldispatch
 
 OBJCFLAGS = $(GNUSTEP_FLAGS) \
 	-fobjc-runtime=gnustep-2.0 \

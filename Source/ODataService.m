@@ -24,6 +24,7 @@ NSString * const ODataUserInfoETag = @"OData.etag";
 @property (nonatomic, readwrite, strong, nullable) NSError *error;
 @property (nonatomic) BOOL fired;
 @property (nonatomic, readwrite, weak, nullable) ODataRequest *request;
+@property (nonatomic) NSTimeInterval timeout;
 @end
 
 @implementation ODataReply
@@ -41,8 +42,16 @@ NSString * const ODataUserInfoETag = @"OData.etag";
 - (void)defer
 {
   @synchronized (self) {
+    if (self.deferred) return;
     self.deferred = YES;
   }
+  if (self.timeout <= 0) return;
+  // The timer keeps the reply: a handler that drops it must still be
+  // answered for.
+  ODataReply *reply = self;
+  dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(self.timeout * NSEC_PER_SEC)), dispatch_get_global_queue(0, 0), ^{
+    [reply failWithError:ODataServiceError(504, @"The service took too long to answer")];
+  });
 }
 
 // The first answer counts. A deferred one goes on in the request's context.
@@ -271,7 +280,8 @@ typedef NS_ENUM(NSInteger, OISTargetKind) {
   OISTargetProperty,
   OISTargetValue,
   OISTargetCount,
-  OISTargetOperation
+  OISTargetOperation,
+  OISTargetReference
 };
 
 #pragma mark - One call
@@ -298,6 +308,20 @@ typedef NS_ENUM(NSInteger, OISTargetKind) {
 @property (nonatomic, strong, nullable) NSRelationshipDescription *navigation;
 @property (nonatomic, strong, nullable) NSAttributeDescription *attribute;
 @property (nonatomic, strong, nullable) OISServedOperation *operation;
+// How the entity in hand was reached, when through a navigation property:
+// what $ref after it refers to.
+@property (nonatomic, strong, nullable) NSManagedObject *referrer;
+@property (nonatomic, strong, nullable) NSRelationshipDescription *referrerNavigation;
+// $id: the entity a DELETE of a collection's $ref removes.
+@property (nonatomic, copy, nullable) NSString *referenceID;
+@property (nonatomic) BOOL referencesCollection;  // Categories(1)/Products/$ref, Products/$ref
+@property (nonatomic) BOOL referencesOnly;        // a collection read as references
+// The entities a function returned, read on as a collection.
+@property (nonatomic, copy, nullable) NSArray<NSManagedObject *> *members;
+// A deep insert's response: the entity with what it created expanded.
+@property (nonatomic, strong, nullable) ODataQueryOptions *responseOptions;
+// A nested insert's answer, taken at once.
+@property (nonatomic, strong, nullable) ODataReply *nestedReply;
 @property (nonatomic, copy, nullable) NSDictionary<NSString *, ODataExpression *> *operationArguments;
 // Parameter aliases whose values are JSON (@p=[...], @p={...}): an
 // operation's complex and collection arguments.
@@ -330,6 +354,7 @@ typedef NS_ENUM(NSInteger, OISTargetKind) {
 {
   ODataReply *reply = [[ODataReply alloc] initWithTarget:self action:action context:self.request.context];
   reply.request = self.request;
+  reply.timeout = self.service.replyTimeout;
   return reply;
 }
 
@@ -490,6 +515,7 @@ typedef NS_ENUM(NSInteger, OISTargetKind) {
       JSONAliases[[key substringFromIndex:1]] = json;
       continue;
     }
+    if ([key isEqualToString:@"$id"]) self.referenceID = value;
     query[key] = value;
   }
   self.JSONAliases = JSONAliases;
@@ -682,6 +708,12 @@ typedef NS_ENUM(NSInteger, OISTargetKind) {
     NSString *name = segment.name;
     switch (self.kind) {
       case OISTargetCollection:
+        if ([name isEqualToString:@"$ref"] && self.index + 1 == segments.count && !segment.keys) {
+          self.kind = OISTargetReference;
+          self.referencesCollection = YES;
+          self.index++;
+          continue;
+        }
         if ([name rangeOfString:@"."].location != NSNotFound) {
           OISServedOperation *operation = [self.service.catalog operationNamed:name boundTo:self.entity collection:YES];
           if (operation) {
@@ -701,8 +733,16 @@ typedef NS_ENUM(NSInteger, OISTargetKind) {
           [self findObjectWithParts:@{ @"": [self literalForKeySegment:name] }];
           return;
         }
-        [self fail:([name rangeOfString:@"."].location != NSNotFound ? 501 : 404)
-           message:[NSString stringWithFormat:@"%@ cannot follow a collection here", name]];
+        if ([name rangeOfString:@"."].location != NSNotFound && !segment.keys && !segment.isCall) {
+          // A type cast: the members of that derived type (Part 2 section 4.11).
+          NSEntityDescription *derived = [self entityForTypeName:name];
+          if (derived && [derived isKindOfEntity:self.entity]) {
+            self.entity = derived;
+            self.index++;
+            continue;
+          }
+        }
+        [self fail:404 message:[NSString stringWithFormat:@"%@ cannot follow a collection here", name]];
         return;
       case OISTargetEntity: {
         if ([name rangeOfString:@"."].location != NSNotFound) {
@@ -711,6 +751,22 @@ typedef NS_ENUM(NSInteger, OISTargetKind) {
             self.index++;
             [self callOperation:operation arguments:segment.arguments];
             return;
+          }
+        }
+        if ([name isEqualToString:@"$ref"] && self.index + 1 == segments.count && !segment.keys) {
+          self.kind = OISTargetReference;
+          self.index++;
+          continue;
+        }
+        if ([name rangeOfString:@"."].location != NSNotFound && !segment.keys && !segment.isCall) {
+          NSEntityDescription *derived = [self entityForTypeName:name];
+          if (derived) {
+            if (![self.object.entity isKindOfEntity:derived]) {
+              [self fail:404 message:[NSString stringWithFormat:@"That %@ is not a %@", self.object.entity.name, name]];
+              return;
+            }
+            self.index++;
+            continue;
           }
         }
         if ([name isEqualToString:@"$ref"] || [name isEqualToString:@"$value"] || [name rangeOfString:@"."].location != NSNotFound) {
@@ -764,6 +820,16 @@ typedef NS_ENUM(NSInteger, OISTargetKind) {
         NSManagedObject *related = [self.object valueForKey:relationship.name];
         NSPredicate *visible = [handler predicateForVisibleObjectsInRequest:self.request];
         if (related && visible && ![visible evaluateWithObject:related]) related = nil;
+        self.referrer = self.object;
+        self.referrerNavigation = relationship;
+        if (self.index + 2 == segments.count && [segments[self.index + 1].name isEqualToString:@"$ref"]) {
+          // Products(1)/Category/$ref: the reference, which may be null.
+          self.object = related;
+          self.entity = relationship.destinationEntity;
+          self.kind = OISTargetReference;
+          self.index += 2;
+          continue;
+        }
         if (!related) {
           // A single-valued navigation property that is null (Part 1 section 11.2.6).
           [self respondStatus:204 headers:@{} body:nil];
@@ -852,6 +918,8 @@ typedef NS_ENUM(NSInteger, OISTargetKind) {
   self.object = object;
   self.entity = object.entity;
   self.kind = OISTargetEntity;
+  self.referrer = self.parent;
+  self.referrerNavigation = self.navigation;
   self.parent = nil;
   self.navigation = nil;
   self.index++;
@@ -900,8 +968,13 @@ typedef NS_ENUM(NSInteger, OISTargetKind) {
     case OISTargetProperty:
     case OISTargetValue:
       if ([method isEqualToString:@"GET"]) [self readProperty];
-      else if ([@[ @"PUT", @"PATCH", @"DELETE" ] containsObject:method]) [self fail:501 message:@"Writing a single property is not supported yet; PATCH the entity"];
-      else [self methodNotAllowed:@[ @"GET" ]];
+      else if ([@[ @"PUT", @"PATCH", @"DELETE" ] containsObject:method]) [self writeProperty];
+      else [self methodNotAllowed:@[ @"GET", @"PUT", @"PATCH", @"DELETE" ]];
+      return;
+    case OISTargetReference:
+      if ([method isEqualToString:@"GET"]) [self readReference];
+      else if ([@[ @"PUT", @"POST", @"DELETE" ] containsObject:method]) [self writeReference];
+      else [self methodNotAllowed:@[ @"GET", @"PUT", @"POST", @"DELETE" ]];
       return;
   }
 }
@@ -990,10 +1063,10 @@ typedef NS_ENUM(NSInteger, OISTargetKind) {
 
 - (NSArray<NSAttributeDescription *> *)servedAttributesOf:(NSEntityDescription *)entity
 {
+  // Sorted by name: -properties has no specified order.
   NSMutableArray *attributes = [NSMutableArray array];
-  for (NSPropertyDescription *property in entity.properties) {
-    if (![property isKindOfClass:[NSAttributeDescription class]]) continue;
-    NSAttributeDescription *attribute = (NSAttributeDescription *)property;
+  for (NSString *name in [entity.attributesByName.allKeys sortedArrayUsingSelector:@selector(compare:)]) {
+    NSAttributeDescription *attribute = entity.attributesByName[name];
     if ([self.service.writer typeNameForAttribute:attribute]) [attributes addObject:attribute];
   }
   return attributes;
@@ -1025,6 +1098,17 @@ typedef NS_ENUM(NSInteger, OISTargetKind) {
       star = YES;
       continue;
     }
+    if (item.path.count == 2 && [item.path[0] rangeOfString:@"."].location != NSNotFound) {
+      // Default.Manager/Budget: the property, of the objects of that type.
+      NSEntityDescription *derived = [self entityForTypeName:item.path[0]];
+      NSPropertyDescription *property = derived ? [self.mapper propertyForWireName:item.path[1] entity:derived] : nil;
+      if (!property) {
+        if (error) *error = ODataServiceError(400, [NSString stringWithFormat:@"$select=%@ names no property", [item.path componentsJoinedByString:@"/"]]);
+        return nil;
+      }
+      if ([object.entity isKindOfEntity:derived]) [selected addObject:property.name];
+      continue;
+    }
     if (item.path.count != 1) {
       if (error) *error = ODataServiceError(501, [NSString stringWithFormat:@"$select=%@ is not supported", [item.path componentsJoinedByString:@"/"]]);
       return nil;
@@ -1046,13 +1130,39 @@ typedef NS_ENUM(NSInteger, OISTargetKind) {
   return json;
 }
 
+// $levels=max is taken as this deep, and no object is expanded inside
+// itself (Part 2 section 5.1.3.1).
+static const NSInteger OISMaxLevels = 32;
+
 - (BOOL)expand:(ODataExpandItem *)item of:(NSManagedObject *)object into:(NSMutableDictionary *)json error:(NSError **)error
 {
+  NSNumber *levels = item.options.levels;
+  NSInteger depth = !levels ? 1 : levels.integerValue < 0 ? OISMaxLevels : MAX(levels.integerValue, 1);
+  return [self expand:item of:object into:json levels:depth path:[NSMutableSet setWithObject:object.objectID] error:error];
+}
+
+// One level further down the same navigation property, while $levels
+// allows and the object is not one it came through.
+- (BOOL)expandLevels:(ODataExpandItem *)item of:(NSManagedObject *)object into:(NSMutableDictionary *)json
+              levels:(NSInteger)levels path:(NSMutableSet *)path error:(NSError **)error
+{
+  if (levels <= 1 || item.isRef || item.isCount || item.path.count != 1) return YES;
+  if (![[self.mapper propertyForWireName:item.path[0] entity:object.entity] isKindOfClass:[NSRelationshipDescription class]]) return YES;
+  if ([path containsObject:object.objectID]) return YES;
+  [path addObject:object.objectID];
+  BOOL ok = [self expand:item of:object into:json levels:levels - 1 path:path error:error];
+  [path removeObject:object.objectID];
+  return ok;
+}
+
+- (BOOL)expand:(ODataExpandItem *)item
+            of:(NSManagedObject *)object
+          into:(NSMutableDictionary *)json
+        levels:(NSInteger)levels
+          path:(NSMutableSet *)path
+         error:(NSError **)error
+{
   ODataQueryOptions *options = item.options;
-  if (options.levels) {
-    if (error) *error = ODataServiceError(501, @"$levels is not supported");
-    return NO;
-  }
   NSMutableArray<NSRelationshipDescription *> *relationships = [NSMutableArray array];
   if (item.isStar) {
     for (NSRelationshipDescription *relationship in object.entity.relationshipsByName.allValues) {
@@ -1098,6 +1208,7 @@ typedef NS_ENUM(NSInteger, OISTargetKind) {
       } else {
         id nested = related ? [self JSONForObject:related options:options expected:destination error:error] : [NSNull null];
         if (!nested) return NO;
+        if (related && ![self expandLevels:item of:related into:nested levels:levels path:path error:error]) return NO;
         json[wire] = nested;
       }
       continue;
@@ -1124,8 +1235,9 @@ typedef NS_ENUM(NSInteger, OISTargetKind) {
         [values addObject:@{ @"@odata.id": [self canonicalPathOf:member] }];
         continue;
       }
-      NSDictionary *nested = [self JSONForObject:member options:options expected:destination error:error];
+      NSMutableDictionary *nested = [self JSONForObject:member options:options expected:destination error:error];
       if (!nested) return NO;
+      if (![self expandLevels:item of:member into:nested levels:levels path:path error:error]) return NO;
       [values addObject:nested];
     }
     json[wire] = values;
@@ -1162,6 +1274,7 @@ typedef NS_ENUM(NSInteger, OISTargetKind) {
     if (!filter) return nil;
     [parts addObject:filter];
   }
+  if (self.members) [parts addObject:[self predicateForObjects:self.members]];
   if (self.parent && self.navigation) {
     NSPredicate *members = [self membersOfNavigation];
     if (!members) {
@@ -1183,6 +1296,26 @@ static NSPredicate *OISEquals(NSString *keyPath, id value, NSComparisonPredicate
                                                    modifier:modifier
                                                        type:NSEqualToPredicateOperatorType
                                                     options:0];
+}
+
+// These objects, by key: id IN (1, 2), or one AND of the key's parts each.
+- (NSPredicate *)predicateForObjects:(NSArray<NSManagedObject *> *)objects
+{
+  NSArray<NSAttributeDescription *> *key = [self.mapper keyAttributesForEntity:OISRootEntity(self.entity)];
+  if (key.count == 1) {
+    return [NSComparisonPredicate predicateWithLeftExpression:[NSExpression expressionForKeyPath:key[0].name]
+                                              rightExpression:[NSExpression expressionForConstantValue:[objects valueForKey:key[0].name]]
+                                                     modifier:NSDirectPredicateModifier
+                                                         type:NSInPredicateOperatorType
+                                                      options:0];
+  }
+  NSMutableArray *each = [NSMutableArray array];
+  for (NSManagedObject *object in objects) {
+    NSMutableArray *parts = [NSMutableArray array];
+    for (NSAttributeDescription *attribute in key) [parts addObject:OISEquals(attribute.name, [object valueForKey:attribute.name], NSDirectPredicateModifier)];
+    [each addObject:[NSCompoundPredicate andPredicateWithSubpredicates:parts]];
+  }
+  return each.count ? [NSCompoundPredicate orPredicateWithSubpredicates:each] : [NSPredicate predicateWithValue:NO];
 }
 
 // The rows a navigation property leads to, by key rather than by object:
@@ -1371,6 +1504,10 @@ static NSPredicate *OISEquals(NSString *keyPath, id value, NSComparisonPredicate
   NSError *error = nil;
   NSMutableArray *values = [NSMutableArray array];
   for (NSManagedObject *object in self.objects) {
+    if (self.referencesOnly) {
+      [values addObject:@{ @"@odata.id": [self canonicalPathOf:object] }];
+      continue;
+    }
     NSDictionary *json = [self JSONForObject:object options:self.request.options expected:self.entity error:&error];
     if (!json) {
       [self respondError:error];
@@ -1380,7 +1517,10 @@ static NSPredicate *OISEquals(NSString *keyPath, id value, NSComparisonPredicate
   }
   NSMutableDictionary *body = [NSMutableDictionary dictionary];
   if (![self.metadataLevel isEqualToString:@"none"]) {
-    body[@"@odata.context"] = [NSString stringWithFormat:@"%@#%@%@", [self contextBase], [self setName], [self selectListForOptions:self.request.options]];
+    body[@"@odata.context"] = self.referencesOnly
+        ? [NSString stringWithFormat:@"%@#Collection($ref)", [self contextBase]]
+        : [NSString stringWithFormat:@"%@#%@%@%@", [self contextBase], [self setName], [self castSuffixFor:self.entity],
+                                     [self selectListForOptions:self.request.options]];
   }
   if (self.count) body[@"@odata.count"] = self.count;
   body[@"value"] = values;
@@ -1392,13 +1532,14 @@ static NSPredicate *OISEquals(NSString *keyPath, id value, NSComparisonPredicate
 
 - (NSDictionary *)entityBodyFor:(NSManagedObject *)object error:(NSError **)error
 {
-  NSMutableDictionary *json = [self JSONForObject:object options:self.request.options expected:nil error:error];
+  ODataQueryOptions *options = self.responseOptions ?: self.request.options;
+  NSMutableDictionary *json = [self JSONForObject:object options:options expected:nil error:error];
   if (!json) return nil;
   if (![self.metadataLevel isEqualToString:@"none"]) {
     NSEntityDescription *root = OISRootEntity(object.entity);
     NSString *cast = object.entity == root ? @"" : [@"/" stringByAppendingString:[self.service.writer typeNameForEntity:object.entity]];
     json[@"@odata.context"] = [NSString stringWithFormat:@"%@#%@%@%@/$entity", [self contextBase],
-                               [self.service entitySetForEntity:root], cast, [self selectListForOptions:self.request.options]];
+                               [self.service entitySetForEntity:root], cast, [self selectListForOptions:options]];
   }
   return json;
 }
@@ -1453,8 +1594,10 @@ static NSPredicate *OISEquals(NSString *keyPath, id value, NSComparisonPredicate
 
 - (void)callOperation:(OISServedOperation *)operation arguments:(NSDictionary *)arguments
 {
-  if (self.index < self.request.path.segments.count) {
-    [self fail:501 message:[NSString stringWithFormat:@"Composing on the result of %@ is not supported", operation.name]];
+  // A function's entities can be read on from (Part 2 section 4.5.2); an
+  // action's result, and a value, cannot.
+  if (self.index < self.request.path.segments.count && (operation.isAction || !operation.returns.entity)) {
+    [self fail:400 message:[NSString stringWithFormat:@"Nothing can follow %@", operation.name]];
     return;
   }
   self.operation = operation;
@@ -1674,6 +1817,57 @@ static NSNumber *OISScalarReturnValue(NSInvocation *invocation, char type)
   [reply returned:result];
 }
 
+// A function's entities, read as any collection or entity: the rest of the
+// path, and the query options.
+- (void)composeOn:(id)result
+{
+  OISServedOperation *operation = self.operation;
+  self.operation = nil;
+  NSEntityDescription *entity = operation.returns.entity;
+  ODataEntitySetHandler *handler = [self.service handlerForEntity:entity];
+  if (!handler) {
+    [self fail:500 message:[NSString stringWithFormat:@"%@ returns entities of no entity set", operation.signature]];
+    return;
+  }
+  self.handler = handler;
+  self.parent = nil;
+  self.navigation = nil;
+  self.referrer = nil;
+  self.referrerNavigation = nil;
+  if ([operation.returns.type hasPrefix:@"Collection("]) {
+    NSArray *items = [result isKindOfClass:[NSSet class]] ? [result allObjects]
+                   : [result isKindOfClass:[NSOrderedSet class]] ? [result array]
+                   : [result isKindOfClass:[NSArray class]] ? result : nil;
+    if (!items && result && result != [NSNull null]) {
+      [self fail:500 message:[NSString stringWithFormat:@"%@ returned %@, not a collection", operation.signature, [result class]]];
+      return;
+    }
+    for (id item in items) {
+      if (![item isKindOfClass:[NSManagedObject class]]) {
+        [self fail:500 message:[NSString stringWithFormat:@"%@ returned %@, not an entity", operation.signature, [item class]]];
+        return;
+      }
+    }
+    self.members = items ?: @[];
+    self.entity = entity;
+    self.object = nil;
+    self.kind = OISTargetCollection;
+  } else {
+    if (!result || result == [NSNull null]) {
+      [self respondStatus:204 headers:@{} body:nil];
+      return;
+    }
+    if (![result isKindOfClass:[NSManagedObject class]]) {
+      [self fail:500 message:[NSString stringWithFormat:@"%@ returned %@, not an entity", operation.signature, [result class]]];
+      return;
+    }
+    self.object = result;
+    self.entity = [result entity];
+    self.kind = OISTargetEntity;
+  }
+  [self walk];
+}
+
 - (void)didInvokeOperation:(ODataReply *)reply
 {
   OISServedOperation *operation = self.operation;
@@ -1685,6 +1879,10 @@ static NSNumber *OISScalarReturnValue(NSInvocation *invocation, char type)
   // An action may have changed things; a function has no business to.
   if (operation.isAction && self.request.context.hasChanges && ![self save]) return;
   if (!operation.isAction) [self.request.context rollback];
+  if (!operation.isAction && operation.returns.entity) {
+    [self composeOn:reply.result];
+    return;
+  }
 
   id result = reply.result;
   OISServedParameter *returns = operation.returns;
@@ -1752,6 +1950,175 @@ static NSNumber *OISScalarReturnValue(NSInvocation *invocation, char type)
   }
   if (!none) body[@"@odata.context"] = [NSString stringWithFormat:@"%@#%@", [self contextBase], returns.type];
   [self respondJSON:body status:200 headers:nil];
+}
+
+#pragma mark Types
+
+// The entity a qualified type name stands for (Default.Manager), among
+// those the service serves; nil when none.
+- (NSEntityDescription *)entityForTypeName:(NSString *)name
+{
+  for (NSEntityDescription *entity in self.service.writer.entities) {
+    if ([[self.service.writer typeNameForEntity:entity] isEqualToString:name]) return entity;
+  }
+  return nil;
+}
+
+// Collections of a derived type are written with a cast after their set:
+// Employees/Default.Manager.
+- (NSString *)castSuffixFor:(NSEntityDescription *)entity
+{
+  return entity == OISRootEntity(entity) ? @"" : [@"/" stringByAppendingString:[self.service.writer typeNameForEntity:entity]];
+}
+
+#pragma mark References and single properties
+
+- (void)readReference
+{
+  if (self.referencesCollection) {
+    self.referencesOnly = YES;
+    [self readCollection];
+    return;
+  }
+  if (!self.object) {
+    [self respondStatus:204 headers:@{} body:nil];
+    return;
+  }
+  NSMutableDictionary *body = [NSMutableDictionary dictionary];
+  if (![self.metadataLevel isEqualToString:@"none"]) body[@"@odata.context"] = [NSString stringWithFormat:@"%@#$ref", [self contextBase]];
+  body[@"@odata.id"] = [self canonicalPathOf:self.object];
+  [self respondJSON:body status:200 headers:nil];
+}
+
+// PUT a to-one reference, POST one to a collection, DELETE either (Part 1
+// section 11.4.6): an update of the entity that holds the relationship.
+- (void)writeReference
+{
+  NSString *method = self.request.method;
+  NSManagedObject *holder = self.referencesCollection ? self.parent : self.referrer;
+  NSRelationshipDescription *relationship = self.referencesCollection ? self.navigation : self.referrerNavigation;
+  if (!holder || !relationship) {
+    [self methodNotAllowed:@[ @"GET" ]];
+    return;
+  }
+  ODataEntitySetHandler *handler = [self.service handlerForEntity:holder.entity];
+  if (!handler.allowsUpdate) {
+    [self methodNotAllowed:@[ @"GET" ]];
+    return;
+  }
+  if (![self ifMatchAllows:holder]) {
+    [self fail:412 message:@"The entity has changed since that ETag"];
+    return;
+  }
+  NSManagedObject *target = nil;
+  if (![method isEqualToString:@"DELETE"]) {
+    NSDictionary *body = [self bodyJSON];
+    if (!body) return;
+    NSError *error = nil;
+    target = [self objectForReference:body[@"@odata.id"] error:&error];
+    if (!target) {
+      [self respondError:error];
+      return;
+    }
+  } else if (self.referencesCollection) {
+    if (!self.referenceID) {
+      [self fail:400 message:@"Name the entity to remove with $id"];
+      return;
+    }
+    NSError *error = nil;
+    target = [self objectForReference:self.referenceID error:&error];
+    if (!target) {
+      [self respondError:error];
+      return;
+    }
+  } else {
+    target = self.object;
+  }
+  if (target && ![target.entity isKindOfEntity:relationship.destinationEntity]) {
+    [self fail:400 message:[NSString stringWithFormat:@"%@ does not refer to a %@", [self.mapper propertyForRelationship:relationship], target.entity.name]];
+    return;
+  }
+
+  NSMutableDictionary *values = [NSMutableDictionary dictionary];
+  if (relationship.isToMany) {
+    BOOL adding = [method isEqualToString:@"POST"] && self.referencesCollection;
+    BOOL removing = [method isEqualToString:@"DELETE"];
+    if (!adding && !removing) {
+      [self methodNotAllowed:self.referencesCollection ? @[ @"GET", @"POST", @"DELETE" ] : @[ @"GET", @"DELETE" ]];
+      return;
+    }
+    NSMutableSet *members = [[holder valueForKey:relationship.name] mutableCopy] ?: [NSMutableSet set];
+    if (removing && ![members containsObject:target]) {
+      [self fail:404 message:@"The entity is not in the collection"];
+      return;
+    }
+    if (adding) [members addObject:target];
+    else [members removeObject:target];
+    values[relationship.name] = members;
+  } else {
+    if (self.referencesCollection || [method isEqualToString:@"POST"]) {
+      [self methodNotAllowed:@[ @"GET", @"PUT", @"DELETE" ]];
+      return;
+    }
+    values[relationship.name] = [method isEqualToString:@"DELETE"] ? [NSNull null] : target;
+  }
+  NSAttributeDescription *version = [self.service versionAttributeOfEntity:holder.entity];
+  if (version) values[version.name] = @([[holder valueForKey:version.name] longLongValue] + 1);
+  self.object = holder;
+  ODataReply *reply = [self replyWithAction:@selector(didUpdate:)];
+  [reply returned:[handler updateObject:holder values:values request:self.request reply:reply]];
+}
+
+// PUT or PATCH one property ({"value": ...}, or the raw text of its
+// $value), DELETE it to null (Part 1 sections 11.4.9.1-2).
+- (void)writeProperty
+{
+  if (!self.handler.allowsUpdate) {
+    [self methodNotAllowed:@[ @"GET" ]];
+    return;
+  }
+  if (![self ifMatchAllows:self.object]) {
+    [self fail:412 message:@"The entity has changed since that ETag"];
+    return;
+  }
+  NSAttributeDescription *attribute = self.attribute;
+  NSString *wire = [self.mapper propertyForAttribute:attribute];
+  if ([[self.mapper keyAttributesForEntity:OISRootEntity(self.object.entity)] containsObject:attribute]) {
+    [self fail:400 message:[NSString stringWithFormat:@"%@ is the key, and cannot change", wire]];
+    return;
+  }
+  id json = [NSNull null];
+  if (![self.request.method isEqualToString:@"DELETE"]) {
+    if (self.kind == OISTargetValue) {
+      NSData *data = self.exchange.request.HTTPBody ?: [NSData data];
+      json = attribute.attributeType == NSBinaryDataAttributeType ? (id)data : [[NSString alloc] initWithData:data encoding:NSUTF8StringEncoding];
+      if (!json) {
+        [self fail:400 message:@"The body is not text"];
+        return;
+      }
+    } else {
+      NSDictionary *body = [self bodyJSON];
+      if (!body) return;
+      if (!body[@"value"]) {
+        [self fail:400 message:@"A property is written as {\"value\": ...}"];
+        return;
+      }
+      json = body[@"value"];
+    }
+  }
+  id value = json;
+  if (json != [NSNull null] && ![json isKindOfClass:[NSData class]]) {
+    value = [self.coder coreDataValueForJSON:json attribute:attribute];
+    if (!value || value == [NSNull null]) {
+      [self fail:400 message:[NSString stringWithFormat:@"%@ is not a value of %@", json, wire]];
+      return;
+    }
+  }
+  NSMutableDictionary *values = [NSMutableDictionary dictionaryWithObject:value forKey:attribute.name];
+  NSAttributeDescription *version = [self.service versionAttributeOfEntity:self.object.entity];
+  if (version) values[version.name] = @([[self.object valueForKey:version.name] longLongValue] + 1);
+  ODataReply *reply = [self replyWithAction:@selector(didUpdate:)];
+  [reply returned:[self.handler updateObject:self.object values:values request:self.request reply:reply]];
 }
 
 #pragma mark Writes
@@ -1862,8 +2229,15 @@ static NSNumber *OISScalarReturnValue(NSInvocation *invocation, char type)
     }
     NSRelationshipDescription *relationship = (NSRelationshipDescription *)property;
     if (!annotation) {
-      [self fail:501 message:[NSString stringWithFormat:@"Deep inserts and updates (%@) are not supported yet: bind with %@@odata.bind", name, name]];
-      return nil;
+      if (object) {
+        [self fail:501 message:[NSString stringWithFormat:@"Deep updates (%@) are not supported: bind with %@@odata.bind, or update each entity", name, name]];
+        return nil;
+      }
+      // A deep insert: the related entities are created with this one.
+      id created = [self insertNested:value relationship:relationship];
+      if (!created) return nil;
+      values[relationship.name] = created;
+      continue;
     }
     NSError *error = nil;
     if (!relationship.isToMany) {
@@ -1896,6 +2270,85 @@ static NSNumber *OISScalarReturnValue(NSInvocation *invocation, char type)
     values[relationship.name] = members;
   }
   return values;
+}
+
+// The entities of a deep insert (Part 1 section 11.4.2.2): each through its
+// set's handler, nested ones first. An object, or a set of them.
+- (id)insertNested:(id)value relationship:(NSRelationshipDescription *)relationship
+{
+  NSString *name = [self.mapper propertyForRelationship:relationship];
+  NSArray *bodies = relationship.isToMany ? ([value isKindOfClass:[NSArray class]] ? value : nil)
+                                          : ([value isKindOfClass:[NSDictionary class]] ? @[ value ] : nil);
+  if (!bodies) {
+    [self fail:400 message:[NSString stringWithFormat:@"%@ takes %@", name, relationship.isToMany ? @"an array of entities" : @"an entity"]];
+    return nil;
+  }
+  NSMutableSet *created = [NSMutableSet set];
+  for (NSDictionary *body in bodies) {
+    if (![body isKindOfClass:[NSDictionary class]]) {
+      [self fail:400 message:[NSString stringWithFormat:@"%@ takes entities", name]];
+      return nil;
+    }
+    NSEntityDescription *entity = relationship.destinationEntity;
+    id type = body[@"@odata.type"];
+    if ([type isKindOfClass:[NSString class]]) {
+      NSEntityDescription *named = [self entityForTypeName:ODataTypeNameFromControlInformation(type)];
+      if (!named || ![named isKindOfEntity:entity]) {
+        [self fail:400 message:[NSString stringWithFormat:@"%@ is not a type of %@", type, name]];
+        return nil;
+      }
+      entity = named;
+    }
+    ODataEntitySetHandler *handler = [self.service handlerForEntity:entity];
+    if (!handler || !handler.allowsInsert) {
+      [self fail:(handler ? 405 : 400) message:[NSString stringWithFormat:@"%@ cannot be inserted here", entity.name]];
+      return nil;
+    }
+    NSMutableDictionary *values = [self valuesFromBody:body entity:entity forObject:nil];
+    if (!values || ![self fillKeys:values entity:entity]) return nil;
+    NSAttributeDescription *version = [self.service versionAttributeOfEntity:entity];
+    if (version) values[version.name] = @1;
+
+    NSEntityDescription *requested = self.request.entity;
+    self.request.entity = entity;
+    ODataReply *reply = [self replyWithAction:@selector(didInsertNested:)];
+    reply.timeout = 0;
+    self.nestedReply = nil;
+    [reply returned:[handler insertObjectWithValues:values request:self.request reply:reply]];
+    self.request.entity = requested;
+    if (reply.deferred) {
+      [self fail:501 message:[NSString stringWithFormat:@"%@'s handler answers later, which a deep insert cannot wait for", entity.name]];
+      return nil;
+    }
+    if (reply.error || ![reply.result isKindOfClass:[NSManagedObject class]]) {
+      [self respondError:reply.error ?: ODataServiceError(500, [NSString stringWithFormat:@"A nested %@ was not created", entity.name])];
+      return nil;
+    }
+    [created addObject:reply.result];
+  }
+  return relationship.isToMany ? created : created.anyObject;
+}
+
+- (void)didInsertNested:(ODataReply *)reply
+{
+  self.nestedReply = reply;
+}
+
+// What a deep insert's body nested, as $expand: the response shows it.
+- (NSString *)expansionOfBody:(NSDictionary *)body entity:(NSEntityDescription *)entity
+{
+  NSMutableArray *items = [NSMutableArray array];
+  for (NSString *key in [body.allKeys sortedArrayUsingSelector:@selector(compare:)]) {
+    if ([key rangeOfString:@"@"].location != NSNotFound) continue;
+    NSPropertyDescription *property = [self.mapper propertyForWireName:key entity:entity];
+    if (![property isKindOfClass:[NSRelationshipDescription class]]) continue;
+    NSRelationshipDescription *relationship = (NSRelationshipDescription *)property;
+    id value = body[key];
+    NSDictionary *first = [value isKindOfClass:[NSArray class]] ? [value firstObject] : value;
+    NSString *inner = [first isKindOfClass:[NSDictionary class]] ? [self expansionOfBody:first entity:relationship.destinationEntity] : nil;
+    [items addObject:inner.length ? [NSString stringWithFormat:@"%@($expand=%@)", key, inner] : key];
+  }
+  return [items componentsJoinedByString:@","];
 }
 
 - (BOOL)fillKeys:(NSMutableDictionary *)values entity:(NSEntityDescription *)entity
@@ -1955,6 +2408,8 @@ static NSNumber *OISScalarReturnValue(NSInvocation *invocation, char type)
   }
   NSMutableDictionary *values = [self valuesFromBody:body entity:entity forObject:nil];
   if (!values || ![self fillKeys:values entity:entity]) return;
+  NSString *expansion = [self expansionOfBody:body entity:entity];
+  if (expansion.length) self.responseOptions = [ODataQueryOptions optionsWithQuery:@{ @"$expand": expansion } error:NULL];
   // Inserted through a navigation property: related to its parent.
   if (self.parent && self.navigation.inverseRelationship) {
     NSRelationshipDescription *inverse = self.navigation.inverseRelationship;
@@ -2111,6 +2566,7 @@ static NSNumber *OISScalarReturnValue(NSInvocation *invocation, char type)
   _namespaceName = @"Default";
   _containerName = @"Container";
   _maxVersion = @"4.01";
+  _replyTimeout = 60;
   _handlers = [NSMutableDictionary dictionary];
   _metadataByVersion = [NSMutableDictionary dictionary];
   return self;
@@ -2204,10 +2660,26 @@ static NSNumber *OISScalarReturnValue(NSInvocation *invocation, char type)
 {
   [self prepare];
   @synchronized (self) {
-    NSString *xml = self.metadataByVersion[version];
+    // What the handlers allow, as they are now: a handler may be replaced,
+    // or change its mind, after the first request.
+    NSMutableDictionary *restrictions = [NSMutableDictionary dictionary];
+    NSMutableString *signature = [NSMutableString stringWithString:version];
+    for (NSString *set in [self.handlers.allKeys sortedArrayUsingSelector:@selector(compare:)]) {
+      ODataEntitySetHandler *handler = self.handlers[set];
+      NSMutableSet *refused = [NSMutableSet set];
+      if (!handler.allowsInsert) [refused addObject:@"Insert"];
+      if (!handler.allowsUpdate) [refused addObject:@"Update"];
+      if (!handler.allowsDelete) [refused addObject:@"Delete"];
+      if (refused.count) {
+        restrictions[set] = refused;
+        [signature appendFormat:@";%@:%@", set, [[refused.allObjects sortedArrayUsingSelector:@selector(compare:)] componentsJoinedByString:@","]];
+      }
+    }
+    NSString *xml = self.metadataByVersion[signature];
     if (!xml) {
+      self.writer.restrictions = restrictions;
       xml = [self.writer XMLStringForVersion:version];
-      self.metadataByVersion[version] = xml;
+      self.metadataByVersion[signature] = xml;
     }
     return xml;
   }
