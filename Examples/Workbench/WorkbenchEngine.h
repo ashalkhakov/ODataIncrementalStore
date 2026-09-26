@@ -1,10 +1,13 @@
-// The workbench's transports: an in-memory OData v4 service, and the
-// network with a log.
+// The workbench's transports: the built-in service, and the network, each
+// with a log.
 // Copyright (C) 2026 OIS contributors
 // SPDX-License-Identifier: LGPL-2.1-or-later
 //
 // Both implement <ODataTransport> and report every exchange as a
-// WorkbenchLogEntry. WorkbenchEngine never opens a socket.
+// WorkbenchLogEntry. WorkbenchEngine never opens a socket: it is the
+// library's own server, an ODataService over the Catalog model in an
+// in-memory Core Data store, seeded with a few of Northwind's rows, with a
+// few operations of its own.
 
 #pragma once
 #if __has_include(<ODataIncrementalStore/ODataIncrementalStore.h>)
@@ -31,11 +34,15 @@ NS_ASSUME_NONNULL_BEGIN
 @end
 
 @interface WorkbenchEngine : NSObject <ODataTransport>
-@property (copy) NSURL *serviceRoot;
+@property (nonatomic, readonly, copy) NSURL *serviceRoot;
 @property (nonatomic, readonly) NSArray<WorkbenchLogEntry *> *log;
 @property (nonatomic, copy, nullable) void (^didHandle)(WorkbenchLogEntry *entry);
-- (instancetype)initWithServiceRoot:(NSURL *)serviceRoot NS_DESIGNATED_INITIALIZER;
+// The service behind it, for a look at what it serves.
+@property (nonatomic, readonly) ODataService *service;
+// Nil when the model does not load.
+- (nullable instancetype)initWithServiceRoot:(NSURL *)serviceRoot modelURL:(NSURL *)modelURL NS_DESIGNATED_INITIALIZER;
 - (instancetype)init NS_UNAVAILABLE;
+// The seed rows again, and an empty log.
 - (void)reset;
 @end
 

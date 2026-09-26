@@ -81,8 +81,9 @@ protocol section they pin.
 ## Example apps
 
 `Examples/Workbench` is the testing bench: a Cocoa window that drives a
-real store against an in-memory OData v4 service (no network). Predicate
-→ `$filter`, fetch, fault, expand, PATCH/POST/DELETE, wire log.
+real store against the library's own server in the process (no network),
+or a service on the network. Predicate → `$filter`, fetch, fault, expand,
+PATCH/POST/DELETE, operations, wire log.
 
 `Examples/Catalog` is a smaller consumer: table + predicate + inspector.
 
@@ -314,8 +315,7 @@ ODataQueryOptions *options = [ODataQueryOptions optionsWithQuery:@{ @"$filter": 
                                                                    @"$expand": @"Category($select=Name)" } error:&error];
 ```
 
-The Workbench's in-memory service evaluates requests over it, and so does
-the server.
+The server (below) reads requests with it.
 
 ## Serving a model
 

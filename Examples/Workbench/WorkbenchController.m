@@ -302,7 +302,11 @@ static id WBCellValue(id value)
     self.statusField.stringValue = @"Catalog.xcdatamodeld not found.";
     return;
   }
-  _engine = [[WorkbenchEngine alloc] initWithServiceRoot:_serviceRoot];
+  _engine = [[WorkbenchEngine alloc] initWithServiceRoot:_serviceRoot modelURL:modelURL];
+  if (!_engine) {
+    self.statusField.stringValue = @"The built-in service did not start.";
+    return;
+  }
   __weak WorkbenchController *weak = self;
   _engine.didHandle = ^(WorkbenchLogEntry *entry) {
     [weak appendLog:entry];
@@ -1714,6 +1718,34 @@ static void WBCheck(BOOL ok, NSString *what, NSString *detail)
   return NO;
 }
 
+// The built-in service's own operations, declared in protocols and served
+// by ODataService: one of each kind the operations menu offers.
+- (void)checkBuiltInOperations
+{
+  [self.presetsPopup selectItemAtIndex:0];
+  [self applyPreset:self.presetsPopup];
+  [self runFetch:nil];
+  NSUInteger chai = [[_rows valueForKey:@"name"] indexOfObject:@"Chai"];
+  if (chai != NSNotFound) {
+    [self.tableView selectRowIndexes:[NSIndexSet indexSetWithIndex:chai] byExtendingSelection:NO];
+    [self rebuildOperations];
+  }
+  NSArray *cases = @[
+    @[ @"DiscountedPriceByPercent", @"Percent=10", @"16.2", @"an instance function: Chai.DiscountedPriceByPercent(Percent)" ],
+    @[ @"CheaperThanPrice", @"Price=10", @"Konbu", @"a function of the collection: Product (all).CheaperThanPrice(Price)" ],
+    @[ @"CountProductsInCategoryNamed", @"Name='Seafood'", @"2", @"a service function: CountProductsInCategoryNamed(Name)" ],
+    @[ @"RaisePriceByPercent", @"Percent=50", @"27", @"an action: Chai.RaisePriceByPercent(Percent)" ],
+  ];
+  for (NSArray *c in cases) {
+    BOOL found = chai != NSNotFound && [self selectOperationContaining:c[0]];
+    self.operationParametersField.stringValue = c[1];
+    if (found) [self invokeOperation:nil];
+    WBCheck(found && [self.inspectorView.string rangeOfString:c[2]].location != NSNotFound, c[3],
+            found ? [NSString stringWithFormat:@"%@ | %@", self.statusField.stringValue, self.inspectorView.string] : @"not in the operations menu");
+  }
+  self.operationParametersField.stringValue = @"";
+}
+
 - (void)runSelfTest
 {
   NSArray *names = @[ @"Built-in", @"Northwind", @"TripPin" ];
@@ -1750,6 +1782,7 @@ static void WBCheck(BOOL ok, NSString *what, NSString *detail)
               self.statusField.stringValue);
       [self checkScrolling];
       [self checkQueryPanel];
+      [self checkBuiltInOperations];
     }
     if (service != WBServiceTripPin) continue;
 

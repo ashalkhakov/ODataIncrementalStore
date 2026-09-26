@@ -1,12 +1,13 @@
 # OData server: design
 
-**Status: milestones 1 to 6 are implemented** (see Milestones): the core
+**Status: milestones 1 to 7 are implemented** (see Milestones): the core
 (`ODataService`, `ODataEntitySetHandler`, `ODataReply`), `$metadata` from
 the model (`ODataMetadataWriter`), `$filter` to `NSPredicate`
 (`ODataPredicateBuilder`), the HTTP adapter with `ois-serve` (`Server/`),
 operations declared in protocols (`ODataOperationCatalog`), and `$batch`
-(`ODataServiceBatch`). The Workbench's move to the server is next. Where
-the code went differently from the plan, the sections below say so.
+(`ODataServiceBatch`); and the Workbench's built-in service is this server
+(milestone 7). Where the code went differently from the plan, the sections
+below say so.
 
 ODataIncrementalStore is a client: Core Data on one side, a remote OData v4
 service on the other. The server is the same mapping run the other way: an
@@ -87,12 +88,11 @@ options = @{ ODataIncrementalStoreTransportOption: service };
 
 This gives a full round-trip test with no network on both platforms
 (`-[ODataServiceTests testIncrementalStoreOverTheService]`). It is also
-what the Workbench example does today with `WorkbenchEngine`, which is
-a hard-coded, dictionary-backed prototype of this core (routing, `$filter`,
-`$orderby`, `$select` and `$expand` evaluated over the library's parser,
-ETags, a hand-written `$metadata`). The server replaces it: Workbench
-becomes an `ODataService` over an in-memory Core Data store, seeded with
-the same rows.
+what the Workbench's built-in service is: `WorkbenchEngine` wraps an
+`ODataService` over the Catalog model in an in-memory Core Data store,
+seeded with Northwind's rows, logs each exchange, and declares a few
+operations of its own. It replaced a hand-written, dictionary-backed
+prototype of this core, about 900 lines.
 
 ### Handlers, not a data source
 
@@ -545,8 +545,13 @@ before the split rather than after.
      (`testReferencesDoNotRefreshTheClientsETag`). And with port 0,
      GCDWebServer can pick a port that is free for IPv4 and taken for
      IPv6; `ODataHTTPServer` tries another.
-7. **Workbench on the server.** Replace `WorkbenchEngine` with an
-   `ODataService` over an in-memory store.
+7. ~~**Workbench on the server.**~~ Done: `WorkbenchEngine` is an
+   `ODataService` over an in-memory store with operations of its own, and
+   the Workbench's self-test (59 checks, 4 of them the built-in
+   operations) passes on both platforms. The model is copied before its
+   Product entity gets its own class, since a model loaded again may be
+   the one the client already uses; FreeCoreData models can be copied
+   since #43.
 
 ## Open questions
 

@@ -6,12 +6,16 @@ A native Cocoa / GNUstep app for trying out an OData v4 service with
 
 Pick a service at the top:
 
-- **Built-in (in memory)**: `WorkbenchEngine`, an OData service in the
-  process, behind `ODataTransport`, with no network. It serves the Catalog
-  (`Examples/Catalog/Catalog.xcdatamodeld`: products, categories, suppliers,
-  stock at locations) and reads requests with the library's parser
-  (`ODataExpression.h`): `$filter`, `$orderby`, `$select`, `$expand` with
-  nested options, `$top`, `$skip`, `$count`.
+- **Built-in (in memory)**: the library's own server, `ODataService`,
+  in the process, behind `ODataTransport`, with no network
+  (`WorkbenchEngine` wraps it and logs each exchange). It serves the
+  Catalog (`Examples/Catalog/Catalog.xcdatamodeld`: products, categories,
+  suppliers, stock at locations) from an in-memory Core Data store seeded
+  with a few of Northwind's rows, and a few operations of its own, declared
+  in protocols in `WorkbenchEngine.m`: `DiscountedPriceByPercent` and
+  `RaisePriceByPercent` on a product, `CheaperThanPrice` on the products,
+  `CountProductsInCategoryNamed` on the service. What the store sends is
+  answered as any `ois-serve` would answer it, `$batch` included.
 - **Northwind (read-only)**: Microsoft's public Northwind v4.
 - **TripPin (read/write)**: Microsoft's public TripPin, in a session of its
   own, so writing is safe. Reset starts a new one.
