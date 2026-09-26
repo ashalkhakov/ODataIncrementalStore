@@ -8,7 +8,7 @@
       "If-Match": null
     },
     "body": {
-      "UnitPrice": 24
+      "UnitPrice": "24"
     }
   },
   "response": {

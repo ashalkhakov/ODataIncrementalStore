@@ -9,6 +9,9 @@ NS_ASSUME_NONNULL_BEGIN
 @interface ODataResourceIdentifier : NSObject
 @property (nonatomic, copy) NSString *entitySet;
 @property (nonatomic, copy) NSDictionary<NSString *, id> *keys;
+// Keys whose value is already an OData literal and goes into the path
+// unquoted: a Guid, a date. Every other string key is quoted.
+@property (nonatomic, copy) NSSet<NSString *> *unquotedKeys;
 
 - (instancetype)initWithEntitySet:(NSString *)entitySet keys:(NSDictionary<NSString *, id> *)keys NS_DESIGNATED_INITIALIZER;
 - (instancetype)init NS_UNAVAILABLE;

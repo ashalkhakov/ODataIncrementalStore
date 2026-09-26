@@ -10,6 +10,8 @@
         </attribute>
         <attribute name="firstName" optional="YES" attributeType="String"/>
         <attribute name="lastName" optional="YES" attributeType="String"/>
+        <!-- Computed by TripPin, and past 2^53: read exactly or not at all. -->
+        <attribute name="concurrency" optional="YES" attributeType="Integer 64" usesScalarValueType="NO"/>
         <relationship name="friends" optional="YES" toMany="YES" deletionRule="Nullify" destinationEntity="Person"/>
         <relationship name="photo" optional="YES" maxCount="1" deletionRule="Nullify" destinationEntity="Photo"/>
         <userInfo>

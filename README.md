@@ -163,6 +163,7 @@ followed until the collection ends or `fetchLimit` is reached.
 | attribute names | properties (`unitPrice` → `UnitPrice` by default) |
 | `userInfo[@"OData.property"]` | override a wire name |
 | `userInfo[@"OData.key"]` | key attribute(s) |
+| `userInfo[@"OData.type"]` | the Edm type, where one Core Data type stands for several: `Edm.Date` on a Date, `Edm.Duration` on a Double, `Edm.TimeOfDay` or `Edm.Guid` on a String |
 | `NSIncrementalStoreNode.version` | `@odata.etag` |
 
 ## Threading

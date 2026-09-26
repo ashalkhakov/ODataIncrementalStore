@@ -7,12 +7,14 @@
 //
 // - Northwind v4, read-only, through the Catalog model, whose Product and
 //   Category match Northwind's: paging, filters, sorting, relationships.
+// - Northwind v4 again, through Tests/Live/Northwind.xcdatamodeld, for
+//   data types: dates in filters and rows, exact decimals, binary.
 // - TripPin RW, through Tests/Live/TripPin.xcdatamodeld: creating a person
 //   with a client-chosen key, updates carrying ETags, to-one and to-many
 //   references, a 412 conflict, and a delete. TripPin gives each
 //   client a session of its own, so these writes touch nobody's data.
 //
-//   ois-live <directory holding Catalog.momd and TripPin.momd>
+//   ois-live <directory holding Catalog.momd, Northwind.momd and TripPin.momd>
 //
 // Exits 1 if any check fails. The service is not ours, so CI runs this
 // without letting it fail a build.
@@ -127,6 +129,54 @@ static void northwind(NSString *models)
   }];
 }
 
+static void northwindTypes(NSString *models)
+{
+  fprintf(stderr, "== Northwind (types)\n");
+  NSURL *root = [NSURL URLWithString:@"https://services.odata.org/V4/Northwind/Northwind.svc/"];
+  NSPersistentStoreCoordinator *psc = openStore([models stringByAppendingPathComponent:@"Northwind.momd"], root);
+  if (!psc) return;
+  NSManagedObjectContext *moc = newContext(psc);
+  [moc performBlockAndWait:^{
+    NSError *e = nil;
+    // A DateTimeOffset literal in $filter, and dates read back as NSDate.
+    NSDate *since = ODataDateFromString(@"1998-05-01T00:00:00Z");
+    NSFetchRequest *late = [NSFetchRequest fetchRequestWithEntityName:@"Order"];
+    late.predicate = [NSPredicate predicateWithFormat:@"orderDate >= %@", since];
+    NSArray *orders = [moc executeFetchRequest:late error:&e];
+    BOOL datesOK = orders.count > 0;
+    for (NSManagedObject *order in orders) {
+      NSDate *date = [order valueForKey:@"orderDate"];
+      datesOK = datesOK && [date isKindOfClass:[NSDate class]] && [date compare:since] != NSOrderedAscending;
+    }
+    check(datesOK, @"filter on a date, read dates back (DateTimeOffset)", describe(orders, e));
+
+    // Freight arrives as "32.3800" with IEEE754Compatible, and stays exact.
+    e = nil;
+    NSFetchRequest *first = [NSFetchRequest fetchRequestWithEntityName:@"Order"];
+    first.predicate = [NSPredicate predicateWithFormat:@"id == 10248"];
+    NSManagedObject *order = [[moc executeFetchRequest:first error:&e] firstObject];
+    NSDecimalNumber *freight = [order valueForKey:@"freight"];
+    check([freight isKindOfClass:[NSDecimalNumber class]] && [freight isEqual:[NSDecimalNumber decimalNumberWithString:@"32.38"]],
+          @"decimals keep every digit (IEEE754Compatible)", e.localizedDescription ?: freight.stringValue);
+
+    e = nil;
+    NSFetchRequest *filtered = [NSFetchRequest fetchRequestWithEntityName:@"Order"];
+    filtered.predicate = [NSPredicate predicateWithFormat:@"freight > %@", [NSDecimalNumber decimalNumberWithString:@"1000.5"]];
+    NSArray *heavy = [moc executeFetchRequest:filtered error:&e];
+    BOOL heavyOK = heavy.count > 0;
+    for (NSManagedObject *o in heavy) heavyOK = heavyOK && [[o valueForKey:@"freight"] compare:@1000.5] == NSOrderedDescending;
+    check(heavyOK, @"filter on a decimal", describe(heavy, e));
+
+    // Pictures are base64 (Northwind's is plain base64, not base64url).
+    e = nil;
+    NSFetchRequest *categories = [NSFetchRequest fetchRequestWithEntityName:@"Category"];
+    categories.fetchLimit = 1;
+    NSData *picture = [[[moc executeFetchRequest:categories error:&e] firstObject] valueForKey:@"picture"];
+    check([picture isKindOfClass:[NSData class]] && picture.length > 1000, @"read binary data (Binary)",
+          e.localizedDescription ?: [NSString stringWithFormat:@"%lu bytes", (unsigned long)picture.length]);
+  }];
+}
+
 // TripPin keeps each client's writes in a session named in the URL,
 // /(S(<24 characters>))/TripPinServiceRW/, and creates one on first use.
 // Its entry URL hands out a session by a relative redirect, which
@@ -192,6 +242,22 @@ static void tripPin(NSString *models)
     BOOL saved = [moc save:&e];
     check(saved && !person.objectID.isTemporaryID, @"insert with a client-chosen key (POST)", e.localizedDescription ?: userName);
     if (!saved) return;
+
+    // Concurrency is an Int64 past 2^53: the store's value has to be the
+    // service's, digit for digit.
+    NSURL *raw = [NSURL URLWithString:[NSString stringWithFormat:@"People('%@')?$select=Concurrency", userName] relativeToURL:root];
+    NSMutableURLRequest *get = [NSMutableURLRequest requestWithURL:raw];
+    [get setValue:@"application/json;IEEE754Compatible=true" forHTTPHeaderField:@"Accept"];
+#pragma clang diagnostic push
+#pragma clang diagnostic ignored "-Wdeprecated-declarations"
+    NSData *body = [NSURLConnection sendSynchronousRequest:get returningResponse:NULL error:NULL];
+#pragma clang diagnostic pop
+    NSString *digits = body ? [[NSJSONSerialization JSONObjectWithData:body options:0 error:NULL] objectForKey:@"Concurrency"] : nil;
+    NSManagedObjectContext *fetched = newContext(psc);
+    __block NSNumber *concurrency = nil;
+    [fetched performBlockAndWait:^{ concurrency = [personNamed(fetched, userName, NULL) valueForKey:@"concurrency"]; }];
+    check(digits.length && [[NSString stringWithFormat:@"%lld", concurrency.longLongValue] isEqualToString:digits],
+          @"Int64 keeps every digit (IEEE754Compatible)", [NSString stringWithFormat:@"%@ vs %@", concurrency, digits]);
 
     // Two updates in a row: the second has to send the ETag the first
     // came back with.
@@ -263,6 +329,7 @@ int main(int argc, const char *argv[])
     NSString *models = argc > 1 ? @(argv[1]) : @".";
     [ODataIncrementalStore registerStore];
     northwind(models);
+    northwindTypes(models);
     tripPin(models);
     fprintf(stderr, "%s\n", failures ? "ois-live: FAILED" : "ois-live: all checks passed");
     return failures ? 1 : 0;

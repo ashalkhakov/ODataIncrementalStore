@@ -83,6 +83,7 @@ typedef NS_ENUM(NSInteger, OISWriteMode) {
   }
   _mapper = [[ODataPropertyMapper alloc] init];
   _mapper.naming = configuration.naming;
+  _mapper.values.IEEE754Compatible = configuration.IEEE754Compatible;
   _builder = [[ODataQueryBuilder alloc] initWithMapper:_mapper serviceRoot:configuration.serviceRoot];
   // `category == %@` compares keys, which only this store can read out of
   // one of its object IDs.
@@ -206,7 +207,7 @@ typedef NS_ENUM(NSInteger, OISWriteMode) {
     } else {
       NSDictionary *keys = [self clientKeysForObject:object error:error];
       if (!keys) return nil;
-      ODataResourceIdentifier *identifier = [[ODataResourceIdentifier alloc] initWithEntitySet:[_mapper entitySetForEntity:entity] keys:keys];
+      ODataResourceIdentifier *identifier = [self identifierForEntity:entity keys:keys];
       oid = [self newObjectIDForEntity:entity referenceObject:identifier.data];
     }
     assigned[object.objectID] = oid;
@@ -569,11 +570,11 @@ static BOOL OISKeyIsSet(id value)
       if ([keyNames containsObject:name]) {
         // A key goes in a POST only when the client chose it; the service
         // assigns the rest. Keys are never PATCHed.
-        if (mode == OISWriteInsert && OISKeyIsSet(value)) write.body[[_mapper propertyForAttribute:attr]] = [self odataJSON:value];
+        if (mode == OISWriteInsert && OISKeyIsSet(value)) write.body[[_mapper propertyForAttribute:attr]] = [_mapper.values JSONForCoreDataValue:value attribute:attr];
         continue;
       }
       if (mode == OISWriteUpdate && !changed[name]) continue;
-      id json = [self odataJSON:value];
+      id json = [_mapper.values JSONForCoreDataValue:value attribute:attr];
       // POST omits unset optional properties (section 11.4.2); PATCH sends
       // null to clear one.
       if (mode == OISWriteInsert && json == [NSNull null]) continue;
@@ -666,21 +667,6 @@ static BOOL OISKeyIsSet(id value)
   return write;
 }
 
-- (id)odataJSON:(id)value
-{
-  if (!value || value == [NSNull null]) return [NSNull null];
-  if ([value isKindOfClass:[NSDate class]]) {
-    NSDateFormatter *f = [[NSDateFormatter alloc] init];
-    f.locale = [NSLocale localeWithLocaleIdentifier:@"en_US_POSIX"];
-    f.timeZone = [NSTimeZone timeZoneForSecondsFromGMT:0];
-    f.dateFormat = @"yyyy-MM-dd'T'HH:mm:ss'Z'";
-    return [f stringFromDate:value];
-  }
-  if ([value isKindOfClass:[NSUUID class]]) return [value UUIDString];
-  if ([value isKindOfClass:[NSDecimalNumber class]]) return value;
-  return value;
-}
-
 - (NSDictionary *)dictionaryFromPayload:(NSDictionary *)payload
                                  entity:(NSEntityDescription *)entity
                              properties:(NSArray *)properties
@@ -691,7 +677,8 @@ static BOOL OISKeyIsSet(id value)
     NSString *name = [prop isKindOfClass:[NSAttributeDescription class]] ? [prop name] : prop;
     NSAttributeDescription *attr = entity.attributesByName[name];
     if (!attr) continue;
-    id value = payload[[_mapper propertyForAttribute:attr]];
+    id raw = payload[[_mapper propertyForAttribute:attr]];
+    id value = raw ? [_mapper.values coreDataValueForJSON:raw attribute:attr] : nil;
     if (value) out[name] = value;
   }
   return out;
@@ -709,14 +696,17 @@ static BOOL OISKeyIsSet(id value)
   NSMutableDictionary *keys = [NSMutableDictionary dictionary];
   for (NSAttributeDescription *attr in keyAttrs) {
     NSString *wire = [_mapper propertyForAttribute:attr];
-    id value = payload[wire] ?: payload[attr.name];
-    if (!value) {
+    id raw = payload[wire] ?: payload[attr.name];
+    // With IEEE754Compatible an Int64 key arrives as "1": decoded, it is
+    // the same key, and the same object ID, as 1.
+    id value = raw ? [self referenceValue:[_mapper.values coreDataValueForJSON:raw attribute:attr]] : nil;
+    if (!value || value == [NSNull null]) {
       if (error) *error = OISError(ODataIncrementalStoreErrorDecoding, [NSString stringWithFormat:@"Missing key %@", wire]);
       return nil;
     }
     keys[wire] = value;
   }
-  ODataResourceIdentifier *identifier = [[ODataResourceIdentifier alloc] initWithEntitySet:[_mapper entitySetForEntity:entity] keys:keys];
+  ODataResourceIdentifier *identifier = [self identifierForEntity:entity keys:keys];
   NSManagedObjectID *oid = [self newObjectIDForEntity:entity referenceObject:identifier.data];
   [self rememberETag:payload[@"@odata.etag"] forObjectID:oid];
   return oid;
@@ -735,7 +725,10 @@ static BOOL OISKeyIsSet(id value)
     NSAttributeDescription *attr = obj;
     (void)stop;
     id raw = payload[[self->_mapper propertyForAttribute:attr]];
-    if (raw) values[name] = [self coerce:raw attribute:attr];
+    id value = raw ? [self->_mapper.values coreDataValueForJSON:raw attribute:attr] : nil;
+    // A value that cannot be this attribute's type (a date that does not
+    // parse) is left out rather than stored as the wrong class.
+    if (value) values[name] = value;
   }];
   // Expanded navigation properties: a to-one's object ID goes in the node,
   // so Core Data need not ask for it; a related entity that came whole is
@@ -781,35 +774,6 @@ static BOOL OISKeyIsSet(id value)
     if (![keys containsObject:attr.name] && payload[[_mapper propertyForAttribute:attr]]) return YES;
   }
   return NO;
-}
-
-- (id)coerce:(id)raw attribute:(NSAttributeDescription *)attribute
-{
-  if (raw == [NSNull null]) return [NSNull null];
-  switch (attribute.attributeType) {
-    case NSDateAttributeType:
-      if ([raw isKindOfClass:[NSString class]]) {
-        NSDateFormatter *f = [[NSDateFormatter alloc] init];
-        f.locale = [NSLocale localeWithLocaleIdentifier:@"en_US_POSIX"];
-        f.timeZone = [NSTimeZone timeZoneForSecondsFromGMT:0];
-        f.dateFormat = @"yyyy-MM-dd'T'HH:mm:ss'Z'";
-        NSDate *d = [f dateFromString:raw];
-        return d ?: raw;
-      }
-      return raw;
-    case NSBooleanAttributeType:
-      if ([raw isKindOfClass:[NSNumber class]]) return @([raw boolValue]);
-      return raw;
-    case NSDecimalAttributeType:
-      if ([raw isKindOfClass:[NSNumber class]]) return [NSDecimalNumber decimalNumberWithDecimal:[raw decimalValue]];
-      return raw;
-    default:
-      if (attribute.attributeType == NSUUIDAttributeType && [raw isKindOfClass:[NSString class]]) {
-        NSUUID *u = [[NSUUID alloc] initWithUUIDString:raw];
-        return u ?: raw;
-      }
-      return raw;
-  }
 }
 
 #pragma mark - ETags
@@ -881,11 +845,43 @@ static BOOL OISKeyIsSet(id value)
       value = [NSUUID UUID];
       [object setPrimitiveValue:value forKey:attr.name];
     }
-    // The key goes into the object ID's reference object, which is JSON.
-    if ([value isKindOfClass:[NSUUID class]]) value = [value UUIDString];
+    value = [self referenceValue:value];
     if (value) keys[[_mapper propertyForAttribute:attr]] = value;
   }
   return keys;
+}
+
+// An entity's identifier from its keys by wire name, marking the ones
+// whose literal is unquoted.
+- (ODataResourceIdentifier *)identifierForEntity:(NSEntityDescription *)entity keys:(NSDictionary *)keys
+{
+  ODataResourceIdentifier *identifier = [[ODataResourceIdentifier alloc] initWithEntitySet:[_mapper entitySetForEntity:entity] keys:keys];
+  NSMutableSet *unquoted = [NSMutableSet set];
+  for (NSAttributeDescription *attr in [_mapper keyAttributesForEntity:entity]) {
+    switch ([ODataValueCoder edmTypeForAttribute:attr]) {
+      case ODataEdmGuid:
+      case ODataEdmDateTimeOffset:
+      case ODataEdmDate:
+      case ODataEdmTimeOfDay:
+        [unquoted addObject:[_mapper propertyForAttribute:attr]];
+        break;
+      default:
+        break;
+    }
+  }
+  identifier.unquotedKeys = unquoted;
+  return identifier;
+}
+
+// A key as it goes into an object ID's reference object, which is JSON:
+// numbers and strings as they are, anything else in its OData form.
+- (id)referenceValue:(id)value
+{
+  if (!value || [value isKindOfClass:[NSNumber class]] || [value isKindOfClass:[NSString class]]) return value;
+  if ([value isKindOfClass:[NSUUID class]]) return [value UUIDString];
+  if ([value isKindOfClass:[NSDate class]]) return ODataDateTimeOffsetString(value);
+  if ([value isKindOfClass:[NSData class]]) return ODataBase64URLString(value);
+  return [value description];
 }
 
 - (NSEntityDescription *)resolvedEntity:(NSFetchRequest *)fetch

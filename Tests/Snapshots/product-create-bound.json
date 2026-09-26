@@ -5,7 +5,7 @@
     "path": "Products",
     "body": {
       "ProductName": "Bound Blend",
-      "UnitPrice": 5,
+      "UnitPrice": "5",
       "Category@odata.bind": "Categories(2)"
     }
   },

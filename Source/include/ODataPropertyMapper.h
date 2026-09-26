@@ -5,6 +5,7 @@
 #import <Foundation/Foundation.h>
 #import "OISCoreData.h"
 #import "ODataConfiguration.h"
+#import "ODataValue.h"
 
 NS_ASSUME_NONNULL_BEGIN
 
@@ -14,6 +15,8 @@ FOUNDATION_EXPORT NSString * const ODataUserInfoKey;
 
 @interface ODataPropertyMapper : NSObject
 @property (nonatomic) ODataPropertyNaming naming;
+// How values are written and read; see ODataValue.h.
+@property (nonatomic, strong) ODataValueCoder *values;
 
 - (NSString *)entitySetForEntity:(NSEntityDescription *)entity;
 - (NSString *)propertyForAttribute:(NSAttributeDescription *)attribute;

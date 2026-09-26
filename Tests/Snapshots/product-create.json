@@ -6,7 +6,7 @@
     "path": "Products",
     "body": {
       "ProductName": "New Blend",
-      "UnitPrice": 9.5,
+      "UnitPrice": "9.5",
       "Discontinued": false
     }
   },

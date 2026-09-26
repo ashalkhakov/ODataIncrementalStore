@@ -13,6 +13,7 @@
 #import "ODataConfiguration.h"
 #import "ODataClient.h"
 #import "ODataPropertyMapper.h"
+#import "ODataValue.h"
 #import "ODataResourceIdentifier.h"
 #import "ODataPredicateTranslator.h"
 #import "ODataQueryBuilder.h"

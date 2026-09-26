@@ -44,14 +44,14 @@ calling the client conformant.
 |---|---|---|---|
 | 1 | Understand `metadata=minimal`, or request `none` / `full` | ⚠️ | Requests `minimal`. Reads `@odata.etag`. Ignores `@odata.id` and `@odata.editLink`, so a service whose edit links do not follow the key convention is addressed wrongly. |
 | 2 | Consume `metadata=full` responses | ✅ | Extra control information is ignored. |
-| 3 | Receive every data type (§7.1) | ⚠️ | See section 5. Dates, Int64 and Decimal precision, and `INF` / `NaN` are the gaps. |
+| 3 | Receive every data type (§7.1) | ⚠️ **live** | Every primitive type the store can map; see section 5. Enumerations, complex types, collections and spatial types are not mapped. |
 | 4 | Interpret control information per the payload's `OData-Version` | ⚠️ | Only `@odata.etag`, `@odata.nextLink` (not yet followed) and `value` matter today. |
 | 5 | Accept unknown annotations and control information | ✅ | Ignored. |
 | 6 | Not require `streaming=true` | ✅ | |
 | 7a | Accept the `odata.` prefix on control information | ✅ | 4.0 payloads always carry it. |
 | 7b | Accept `#` in `@odata.type` | — | `@odata.type` is not read yet; see 4.3. |
 | 7c | Bind related entities with `@odata.bind` in POST / PATCH | ✅ | Inserts bind (`Nav@odata.bind`). Updates use the `$ref` operations instead; see 4.2. |
-| 7e | Accept `-INF`, `INF`, `NaN` strings for Single and Double | ❌ | The string is stored as-is in a numeric attribute. |
+| 7e | Accept `-INF`, `INF`, `NaN` strings for Single and Double | ✅ | Read into Float and Double attributes, and written that way, since JSON has no NaN or infinity. |
 | 7f | Property annotations before or after the property | ✅ | Ignored. |
 
 ## 3. Protocol behaviour (Part 1)
@@ -145,9 +145,9 @@ calling the client conformant.
 | `rel.@count` | `Nav/$count` | ❌ | |
 | `LIKE`, `MATCHES` | `matchesPattern` (4.01 only) | — | Not expressible in 4.0. Should be an error, and is. |
 | Arithmetic (`+ - * /`, `modulus:by:`) | `add`, `sub`, `mul`, `div`, `mod` | ❌ | |
-| Date literals | `2024-01-01T00:00:00Z` | ⚠️ | Whole seconds only. |
+| Date literals | `2024-01-01T12:00:00.5Z`, `2024-01-01` | ✅ **live** | Typed by the attribute compared with: a DateTimeOffset to the microsecond, an `Edm.Date` as the day. |
 | UUID literals | unquoted Guid | ✅ | |
-| Decimal and Int64 literals | | ⚠️ | Written through `stringValue`, which can use exponent notation for large or tiny decimals. |
+| Decimal and Int64 literals | `32.38`, `639260022539945567` | ✅ **live** | Every digit, never an exponent (gnustep-base writes `1E-10` for a small `NSDecimalNumber`; the literal is `0.0000000001`). A Boolean attribute compared with `@0` is `false`. |
 
 ## 5. Data types (JSON Format §7.1)
 
@@ -155,15 +155,15 @@ calling the client conformant.
 |---|---|---|---|
 | `Boolean` | Boolean | ✅ **live** | |
 | `Byte`, `SByte`, `Int16`, `Int32` | Integer 16/32 | ✅ | |
-| `Int64` | Integer 64 | ⚠️ | Parsed by `NSJSONSerialization`. Values past 2^53 may lose precision on some Foundations; `IEEE754Compatible=true` makes the service send them as strings, which would then need coercion. |
-| `Decimal` | Decimal | ⚠️ | Arrives as a JSON number, parsed through `double`. Precision loss beyond about 15 digits. Same `IEEE754Compatible` fix. |
-| `Single`, `Double` | Float, Double | ⚠️ | `INF`, `-INF`, `NaN` strings are not converted. |
+| `Int64` | Integer 64 | ✅ **live** | The store asks for `IEEE754Compatible=true` (JSON Format §3.2), so Int64 travels as a string both ways and keeps every digit: TripPin's `Concurrency`, past 2^53, reads exactly. Numbers are read too. `ODataIncrementalStoreIEEE754CompatibleOption` turns the parameter off for a service that rejects it. An Int64 key read as `"1"` is the same object as `1`. |
+| `Decimal` | Decimal | ✅ **live** | As Int64: a string both ways (`"32.3800"`), exact, and never written with an exponent. |
+| `Single`, `Double` | Float, Double | ✅ | Including `INF`, `-INF`, `NaN`. Literals are the shortest exact form (`0.1`). |
 | `String` | String | ✅ | |
-| `DateTimeOffset` | Date | ⚠️ | Parses `yyyy-MM-ddTHH:mm:ssZ` only. Fractional seconds (up to 12 digits) and offsets like `+02:00` fail, and the raw string ends up in a Date attribute. Writes drop sub-second precision. |
-| `Date` | Date | ❌ | `2024-01-01` is not parsed. |
-| `TimeOfDay`, `Duration` | | ❌ | No mapping. `Duration` could map to a Double of seconds. |
-| `Guid` | UUID | ✅ | |
-| `Binary` | Binary Data | ❌ | Base64url strings are not decoded or encoded. |
+| `DateTimeOffset` | Date | ✅ **live** | Any fraction and any offset read (`2024-03-01T14:34:56.1234567+02:00`); written in UTC to the microsecond. Parsed and written without `NSDateFormatter`, so both platforms agree whatever the locale. A value that is not a date is left out of the row rather than stored as a string. |
+| `Date` | Date with `OData.type` `Edm.Date` | ✅ | Midnight UTC of the day, written back as the day. Without `OData.type` a Date attribute is a DateTimeOffset; step 5 learns this from `$metadata` instead. |
+| `TimeOfDay`, `Duration` | String / Double with `OData.type` | ✅ | `TimeOfDay` stays a string (`13:20:00`) with an unquoted literal; `Duration` is seconds in a Double (`P1DT2H3M4.5S` is 93784.5), written `PT93784.5S`, with the literal `duration'…'`. |
+| `Guid` | UUID, or String with `OData.type` `Edm.Guid` | ✅ | Unquoted in literals and in key paths. |
+| `Binary` | Binary Data | ✅ **live** | Written as base64url, the spec's form; both base64url and plain base64 read, since Northwind sends plain base64. Literal `binary'…'`. |
 | `Stream`, media entities | | — | |
 | Geography, geometry | | — | |
 | Enumerations | | ❌ | See 4.3. |
@@ -249,8 +249,9 @@ route 2 against our own services, whatever third-party services do.
    (and send none when there is none); send relationships with
    `@odata.bind`; `Prefer: return=representation`; client-supplied keys
    in POST.~~ Done.
-3. **Types:** `DateTimeOffset` in full, `Date`, `IEEE754Compatible` for
-   Int64 and Decimal, `INF` / `NaN`, Binary.
+3. ~~**Types:** `DateTimeOffset` in full, `Date`, `IEEE754Compatible` for
+   Int64 and Decimal, `INF` / `NaN`, Binary.~~ Done, with `TimeOfDay` and
+   `Duration` as well.
 4. **Robustness:** `$batch` change sets for atomic saves, OData error
    bodies, percent-encoded keys, `@odata.editLink`, cache refresh,
    `Prefer: odata.maxpagesize` from `fetchBatchSize`.

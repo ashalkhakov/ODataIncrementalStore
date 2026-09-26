@@ -9,6 +9,7 @@ NSString * const ODataIncrementalStorePasswordOption = @"ODataIncrementalStorePa
 NSString * const ODataIncrementalStoreTimeoutOption = @"ODataIncrementalStoreTimeout";
 NSString * const ODataIncrementalStorePostOnObtainPermanentIDsOption = @"ODataIncrementalStorePostOnObtainPermanentIDs";
 NSString * const ODataIncrementalStoreTransportOption = @"ODataIncrementalStoreTransport";
+NSString * const ODataIncrementalStoreIEEE754CompatibleOption = @"ODataIncrementalStoreIEEE754Compatible";
 NSString * const ODataIncrementalStoreType = @"ODataIncrementalStore";
 
 @implementation ODataConfiguration
@@ -30,6 +31,8 @@ NSString * const ODataIncrementalStoreType = @"ODataIncrementalStore";
   _naming = ODataPropertyNamingPascalCase;
   id post = options[ODataIncrementalStorePostOnObtainPermanentIDsOption];
   _postOnObtainPermanentIDs = post ? [post boolValue] : YES;
+  id ieee = options[ODataIncrementalStoreIEEE754CompatibleOption];
+  _IEEE754Compatible = ieee ? [ieee boolValue] : YES;
   _userAgent = @"ODataIncrementalStore/1.0 (LGPL-2.1; libobjc2)";
   return self;
 }
@@ -38,11 +41,15 @@ NSString * const ODataIncrementalStoreType = @"ODataIncrementalStore";
 {
   // JSON is the default, not a rule: $metadata asks for XML and $count for
   // text, and a service answers 406 or 415 when Accept rules those out.
+  // IEEE754Compatible=true: Int64 and Decimal as strings, both ways
+  // (JSON Format section 3.2), so no digit goes through a double.
+  NSString *json = self.IEEE754Compatible ? @"application/json;odata.metadata=minimal;IEEE754Compatible=true"
+                                          : @"application/json;odata.metadata=minimal";
   if (![request valueForHTTPHeaderField:@"Accept"]) {
-    [request setValue:@"application/json;odata.metadata=minimal" forHTTPHeaderField:@"Accept"];
+    [request setValue:json forHTTPHeaderField:@"Accept"];
   }
   if (request.HTTPBody.length) {
-    [request setValue:@"application/json;odata.metadata=minimal" forHTTPHeaderField:@"Content-Type"];
+    [request setValue:json forHTTPHeaderField:@"Content-Type"];
   }
   [request setValue:@"4.0" forHTTPHeaderField:@"OData-Version"];
   [request setValue:@"4.0" forHTTPHeaderField:@"OData-MaxVersion"];

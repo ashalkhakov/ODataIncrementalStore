@@ -14,6 +14,7 @@ NSString * const ODataUserInfoKey = @"OData.key";
   self = [super init];
   if (!self) return nil;
   _naming = ODataPropertyNamingPascalCase;
+  _values = [[ODataValueCoder alloc] init];
   return self;
 }
 

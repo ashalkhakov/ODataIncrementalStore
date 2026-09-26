@@ -9,7 +9,7 @@
       "Prefer": "return=representation"
     },
     "body": {
-      "UnitPrice": 32
+      "UnitPrice": "32"
     }
   },
   "response": {

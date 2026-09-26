@@ -1,14 +1,15 @@
 {
-  "comment": "PATCH with If-Match from @odata.etag. \u00a711.4.3 / \u00a711.4.1.1",
+  "comment": "PATCH with If-Match from @odata.etag. \u00a711.4.3 / \u00a711.4.1.1 Decimals travel as strings, which the Content-Type declares with IEEE754Compatible=true (JSON Format \u00a73.2).",
   "spec": "OASIS OData 4.0 Protocol \u00a711.4.3",
   "request": {
     "method": "PATCH",
     "path": "Products(4)",
     "headers": {
-      "If-Match": "W/\"1\""
+      "If-Match": "W/\"1\"",
+      "Content-Type": "application/json;odata.metadata=minimal;IEEE754Compatible=true"
     },
     "body": {
-      "UnitPrice": 23
+      "UnitPrice": "23"
     }
   },
   "response": {

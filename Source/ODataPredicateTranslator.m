@@ -9,6 +9,10 @@
 // entity being fetched; nested lambdas number theirs by depth.
 @property (nonatomic, copy, nullable) NSString *lambdaVariable;
 @property (nonatomic) NSUInteger lambdaDepth;
+// The attribute a comparison's constant is compared with: it decides how
+// the constant is written (a Date as an Edm.Date, a Decimal without an
+// exponent, a Boolean from @0).
+@property (nonatomic, strong, nullable) NSAttributeDescription *comparedAttribute;
 - (nullable NSString *)translateExpression:(NSExpression *)expression error:(NSError **)error;
 @end
 
@@ -70,10 +74,13 @@
   if ([self comparesObjects:cmp.rightExpression]) {
     return [self translateObjectComparison:cmp error:error];
   }
+  self.comparedAttribute = [self attributeAtExpression:cmp.leftExpression] ?: [self attributeAtExpression:cmp.rightExpression];
   NSString *lhs = [self translateExpression:cmp.leftExpression error:error];
-  if (!lhs) return nil;
-  NSString *rhs = [self translateExpression:cmp.rightExpression error:error];
-  if (!rhs) return nil;
+  NSString *rhs = lhs ? [self translateExpression:cmp.rightExpression error:error] : nil;
+  if (!rhs) {
+    self.comparedAttribute = nil;
+    return nil;
+  }
   BOOL ci = (cmp.options & NSCaseInsensitivePredicateOption) != 0;
   switch (cmp.predicateOperatorType) {
     case NSEqualToPredicateOperatorType:
@@ -302,16 +309,16 @@ static NSArray *OISObjectsInExpression(NSExpression *expression)
   return keys;
 }
 
-// Guid keys are unquoted literals; the store keeps them as strings.
+// A key written as its attribute's type: a Guid key, kept as a string,
+// is still an unquoted Guid literal.
 - (NSString *)keyLiteral:(id)value property:(NSString *)wire entity:(NSEntityDescription *)entity
 {
   for (NSAttributeDescription *attr in [self.mapper keyAttributesForEntity:entity]) {
-    if ([[self.mapper propertyForAttribute:attr] isEqualToString:wire] &&
-        attr.attributeType == NSUUIDAttributeType && [value isKindOfClass:[NSString class]]) {
-      return value;
+    if ([[self.mapper propertyForAttribute:attr] isEqualToString:wire]) {
+      return [self.mapper.values literalForValue:value attribute:attr];
     }
   }
-  return [self literal:value];
+  return [self.mapper.values literalForValue:value attribute:nil];
 }
 
 // category == %@  ->  Category/CategoryID eq 2
@@ -388,32 +395,29 @@ static NSArray *OISObjectsInExpression(NSExpression *expression)
 
 - (NSString *)literal:(id)value
 {
-  if (!value || value == [NSNull null]) return @"null";
-  if ([value isKindOfClass:[NSNumber class]]) {
-    // Booleans are their own NSNumber subclass on both platforms, but the
-    // type code differs: 'c' on Apple, 'C' on gnustep-base's NSBoolNumber.
-    if ([value isKindOfClass:[@YES class]]) return [value boolValue] ? @"true" : @"false";
-    return [value stringValue];
-  }
-  if ([value isKindOfClass:[NSString class]]) {
-    NSString *s = [value stringByReplacingOccurrencesOfString:@"'" withString:@"''"];
-    return [NSString stringWithFormat:@"'%@'", s];
-  }
-  if ([value isKindOfClass:[NSDate class]]) {
-    NSDateFormatter *f = [[NSDateFormatter alloc] init];
-    f.locale = [NSLocale localeWithLocaleIdentifier:@"en_US_POSIX"];
-    f.timeZone = [NSTimeZone timeZoneForSecondsFromGMT:0];
-    f.dateFormat = @"yyyy-MM-dd'T'HH:mm:ss'Z'";
-    return [f stringFromDate:value];
-  }
-  if ([value isKindOfClass:[NSUUID class]]) return [value UUIDString];
-  if ([value isKindOfClass:[NSArray class]]) {
+  if ([value isKindOfClass:[NSArray class]] || [value isKindOfClass:[NSSet class]]) {
     NSMutableArray *parts = [NSMutableArray array];
     for (id v in value) [parts addObject:[self literal:v]];
     return [parts componentsJoinedByString:@", "];
   }
-  NSString *s = [[value description] stringByReplacingOccurrencesOfString:@"'" withString:@"''"];
-  return [NSString stringWithFormat:@"'%@'", s];
+  return [self.mapper.values literalForValue:value attribute:self.comparedAttribute];
+}
+
+// The attribute at the end of a key path, through to-one relationships.
+- (NSAttributeDescription *)attributeAtExpression:(NSExpression *)expression
+{
+  if (expression.expressionType != NSKeyPathExpressionType) return nil;
+  NSEntityDescription *current = self.entity;
+  NSAttributeDescription *found = nil;
+  for (NSString *part in [expression.keyPath componentsSeparatedByString:@"."]) {
+    if (found || !current) return nil;
+    found = current.attributesByName[part];
+    if (!found) {
+      NSRelationshipDescription *rel = current.relationshipsByName[part];
+      current = rel.destinationEntity;
+    }
+  }
+  return found;
 }
 
 @end

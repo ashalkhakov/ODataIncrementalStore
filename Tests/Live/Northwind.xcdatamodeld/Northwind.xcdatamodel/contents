@@ -1,0 +1,40 @@
+<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<!-- The part of Microsoft's Northwind v4 reference service that
+     Tests/Live/ois-live reads for data types: dates, decimals, binary. -->
+<model type="com.apple.IDECoreDataModeler.DataModel" documentVersion="1.0" lastSavedToolsVersion="24299" systemVersion="24G720" minimumToolsVersion="Automatic" sourceLanguage="Objective-C" userDefinedModelVersionIdentifier="">
+    <entity name="Order" syncable="YES">
+        <attribute name="id" optional="NO" attributeType="Integer 32" defaultValueString="0" usesScalarValueType="NO">
+            <userInfo>
+                <entry key="OData.property" value="OrderID"/>
+                <entry key="OData.key" value="YES"/>
+            </userInfo>
+        </attribute>
+        <attribute name="orderDate" optional="YES" attributeType="Date" usesScalarValueType="NO"/>
+        <attribute name="freight" optional="YES" attributeType="Decimal"/>
+        <attribute name="shipName" optional="YES" attributeType="String"/>
+        <userInfo>
+            <entry key="OData.entitySet" value="Orders"/>
+        </userInfo>
+    </entity>
+    <entity name="Category" syncable="YES">
+        <attribute name="id" optional="NO" attributeType="Integer 32" defaultValueString="0" usesScalarValueType="NO">
+            <userInfo>
+                <entry key="OData.property" value="CategoryID"/>
+                <entry key="OData.key" value="YES"/>
+            </userInfo>
+        </attribute>
+        <attribute name="name" optional="YES" attributeType="String">
+            <userInfo>
+                <entry key="OData.property" value="CategoryName"/>
+            </userInfo>
+        </attribute>
+        <attribute name="picture" optional="YES" attributeType="Binary"/>
+        <userInfo>
+            <entry key="OData.entitySet" value="Categories"/>
+        </userInfo>
+    </entity>
+    <elements>
+        <element name="Order" positionX="0" positionY="0" width="140" height="103"/>
+        <element name="Category" positionX="200" positionY="0" width="140" height="88"/>
+    </elements>
+</model>

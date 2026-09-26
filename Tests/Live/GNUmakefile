@@ -29,16 +29,19 @@ MOMC ?= momc
 include $(GNUSTEP_MAKEFILES)/tool.make
 -include GNUmakefile.postamble
 
-.PHONY: live Catalog.momd TripPin.momd
+.PHONY: live Catalog.momd Northwind.momd TripPin.momd
 Catalog.momd: ../../Examples/Catalog/Catalog.xcdatamodeld
 	$(MOMC) $< $@
 
 TripPin.momd: TripPin.xcdatamodeld
 	$(MOMC) $< $@
 
-live: all Catalog.momd TripPin.momd
+Northwind.momd: Northwind.xcdatamodeld
+	$(MOMC) $< $@
+
+live: all Catalog.momd Northwind.momd TripPin.momd
 	LD_LIBRARY_PATH="$(CURDIR)/../../obj$${LD_LIBRARY_PATH:+:$$LD_LIBRARY_PATH}" \
 	./$(GNUSTEP_OBJ_DIR_NAME)/ois-live .
 
 after-clean::
-	rm -rf Catalog.momd TripPin.momd
+	rm -rf Catalog.momd Northwind.momd TripPin.momd

@@ -44,6 +44,7 @@ SRCS = \
 	$(SRC_DIR)/ODataConfiguration.m \
 	$(SRC_DIR)/ODataClient.m \
 	$(SRC_DIR)/ODataPropertyMapper.m \
+	$(SRC_DIR)/ODataValue.m \
 	$(SRC_DIR)/ODataResourceIdentifier.m \
 	$(SRC_DIR)/ODataPredicateTranslator.m \
 	$(SRC_DIR)/ODataQueryBuilder.m \
