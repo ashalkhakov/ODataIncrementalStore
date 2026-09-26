@@ -48,4 +48,14 @@
   XCTAssertEqualObjects(id1.path, @"Employees('O''Brien')");
 }
 
+- (void)testKeyIsPercentEncodedInThePath
+{
+  // RFC 3986: a space, '/', '#', '?' and UTF-8 bytes are escaped; the
+  // quotes and parentheses of OData's key syntax are not.
+  ODataResourceIdentifier *identifier =
+      [[ODataResourceIdentifier alloc] initWithEntitySet:@"Customers" keys:@{ @"Name": @"Smith & Co/2 #1? \u00fc" }];
+  XCTAssertEqualObjects(identifier.path, @"Customers('Smith%20%26%20Co%2F2%20%231%3F%20%C3%BC')");
+  XCTAssertNotNil([NSURL URLWithString:[@"https://odata.test/" stringByAppendingString:identifier.path]]);
+}
+
 @end

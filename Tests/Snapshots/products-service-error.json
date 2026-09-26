@@ -1,0 +1,33 @@
+{
+  "comment": "A service error: its message becomes the NSError's description, its code, target and details the userInfo.",
+  "spec": "OASIS OData 4.01 JSON Format \u00a721 Error Response",
+  "request": {
+    "method": "GET",
+    "path": "Products",
+    "query": {
+      "$filter": "UnitPrice gt 5000",
+      "$expand": "Category($select=CategoryID)"
+    }
+  },
+  "response": {
+    "status": 400,
+    "headers": {
+      "Content-Type": "application/json;odata.metadata=minimal;charset=utf-8",
+      "OData-Version": "4.0"
+    },
+    "body": {
+      "error": {
+        "code": "InvalidFilter",
+        "message": "The filter is not valid.",
+        "target": "$filter",
+        "details": [
+          {
+            "code": "OutOfRange",
+            "message": "UnitPrice cannot exceed 1000.",
+            "target": "UnitPrice"
+          }
+        ]
+      }
+    }
+  }
+}

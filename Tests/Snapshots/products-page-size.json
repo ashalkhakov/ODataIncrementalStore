@@ -1,0 +1,37 @@
+{
+  "comment": "fetchBatchSize asks for pages of that size.",
+  "spec": "OASIS OData 4.01 Part 1 \u00a78.2.8.3 Preference odata.maxpagesize",
+  "request": {
+    "method": "GET",
+    "path": "Products",
+    "query": {
+      "$filter": "UnitPrice gt 100",
+      "$expand": "Category($select=CategoryID)"
+    },
+    "headers": {
+      "Prefer": "odata.maxpagesize=2"
+    }
+  },
+  "response": {
+    "status": 200,
+    "headers": {
+      "Content-Type": "application/json;odata.metadata=minimal;charset=utf-8",
+      "OData-Version": "4.0",
+      "Preference-Applied": "odata.maxpagesize=2"
+    },
+    "body": {
+      "@odata.context": "https://odata.test/V4/Northwind.svc/$metadata#Products",
+      "value": [
+        {
+          "@odata.etag": "W/\"1\"",
+          "ProductID": 38,
+          "ProductName": "C\u00f4te de Blaye",
+          "UnitPrice": 263.5,
+          "Category": {
+            "CategoryID": 1
+          }
+        }
+      ]
+    }
+  }
+}

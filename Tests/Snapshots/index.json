@@ -195,6 +195,26 @@
       "id": "category-2",
       "file": "category-2.json",
       "spec": "OASIS OData 4.01 Part 1 \u00a711.2.2 Requesting an Individual Entity"
+    },
+    {
+      "id": "products-service-error",
+      "file": "products-service-error.json",
+      "spec": "OASIS OData 4.01 JSON Format \u00a721 Error Response"
+    },
+    {
+      "id": "product-edit-link",
+      "file": "product-edit-link.json",
+      "spec": "OASIS OData 4.01 JSON Format \u00a74.5.8 Control Information: editLink"
+    },
+    {
+      "id": "product-edit-link-patch",
+      "file": "product-edit-link-patch.json",
+      "spec": "OASIS OData 4.01 Part 1 \u00a711.4.3 Update an Entity: the edit URL"
+    },
+    {
+      "id": "products-page-size",
+      "file": "products-page-size.json",
+      "spec": "OASIS OData 4.01 Part 1 \u00a78.2.8.3 Preference odata.maxpagesize"
     }
   ]
 }

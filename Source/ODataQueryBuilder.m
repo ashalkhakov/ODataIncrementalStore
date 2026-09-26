@@ -169,13 +169,13 @@ static NSString *OISPercentEncode(NSString *value)
   return [self composePath:identifier.path query:@[] error:error];
 }
 
-- (NSURL *)URLForReferenceFromIdentifier:(ODataResourceIdentifier *)identifier
-                             relationship:(NSRelationshipDescription *)relationship
-                                   target:(NSURL *)target
-                                    error:(NSError **)error
+- (NSURL *)URLForReferenceFromEntityURL:(NSURL *)entity
+                            relationship:(NSRelationshipDescription *)relationship
+                                  target:(NSURL *)target
 {
-  NSString *path = [NSString stringWithFormat:@"%@/%@/$ref", identifier.path, [self.mapper propertyForRelationship:relationship]];
-  return [self composePath:path query:@[ @[ @"$id", target.absoluteString ?: @"" ] ] error:error];
+  NSString *s = [NSString stringWithFormat:@"%@/%@/$ref?$id=%@", entity.absoluteString,
+                 [self.mapper propertyForRelationship:relationship], OISPercentEncode(target.absoluteString ?: @"")];
+  return [NSURL URLWithString:s];
 }
 
 - (NSURL *)URLForIdentifier:(ODataResourceIdentifier *)identifier

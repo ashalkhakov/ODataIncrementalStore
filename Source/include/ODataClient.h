@@ -34,6 +34,7 @@ NS_ASSUME_NONNULL_BEGIN
 - (instancetype)init NS_UNAVAILABLE;
 - (nullable ODataHTTPResponse *)sendRequest:(NSURLRequest *)request error:(NSError **)error;
 - (nullable id)JSONAtURL:(NSURL *)url error:(NSError **)error;
+- (nullable id)JSONAtURL:(NSURL *)url headers:(nullable NSDictionary<NSString *, NSString *> *)headers error:(NSError **)error;
 - (nullable NSString *)textAtURL:(NSURL *)url error:(NSError **)error;
 - (nullable ODataHTTPResponse *)sendJSONMethod:(NSString *)method
                                            URL:(NSURL *)url

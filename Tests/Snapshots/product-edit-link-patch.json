@@ -1,0 +1,20 @@
+{
+  "spec": "OASIS OData 4.01 Part 1 \u00a711.4.3 Update an Entity: the edit URL",
+  "request": {
+    "method": "PATCH",
+    "path": "Catalog/Products(10)",
+    "headers": {
+      "If-Match": "W/\"1\""
+    },
+    "body": {
+      "UnitPrice": "32"
+    }
+  },
+  "response": {
+    "status": 204,
+    "headers": {
+      "OData-Version": "4.0",
+      "ETag": "W/\"2\""
+    }
+  }
+}

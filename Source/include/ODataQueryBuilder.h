@@ -28,10 +28,9 @@ NS_ASSUME_NONNULL_BEGIN
                                       error:(NSError **)error;
 // Entity(key)/Nav/$ref?$id=<target>: removes one entity from a collection-
 // valued navigation property (Part 1 section 11.4.6.2).
-- (nullable NSURL *)URLForReferenceFromIdentifier:(ODataResourceIdentifier *)identifier
-                                     relationship:(NSRelationshipDescription *)relationship
-                                           target:(NSURL *)target
-                                            error:(NSError **)error;
+- (nullable NSURL *)URLForReferenceFromEntityURL:(NSURL *)entity
+                                    relationship:(NSRelationshipDescription *)relationship
+                                          target:(NSURL *)target;
 - (nullable NSURL *)URLForIdentifier:(ODataResourceIdentifier *)identifier
                         relationship:(NSRelationshipDescription *)relationship
                                error:(NSError **)error;

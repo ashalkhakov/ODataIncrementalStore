@@ -476,6 +476,45 @@
   XCTAssertTrue([_transport.hits containsObject:@"product-suppliers-ref-remove.json"]);
 }
 
+#pragma mark - Robustness
+
+- (void)testServiceErrorBecomesTheNSError
+{
+  NSFetchRequest *fetch = [self productFetch];
+  fetch.predicate = [NSPredicate predicateWithFormat:@"unitPrice > 5000"];
+  NSError *error = nil;
+  XCTAssertNil([_store executeRequest:fetch withContext:_context error:&error]);
+  XCTAssertEqual(error.code, ODataIncrementalStoreErrorHTTP + 400);
+  XCTAssertEqualObjects(error.localizedDescription, @"The filter is not valid.");
+  XCTAssertEqualObjects(error.userInfo[ODataErrorHTTPStatusKey], @400);
+  XCTAssertEqualObjects(error.userInfo[ODataErrorCodeKey], @"InvalidFilter");
+  XCTAssertEqualObjects(error.userInfo[ODataErrorTargetKey], @"$filter");
+  NSArray *details = error.userInfo[ODataErrorDetailsKey];
+  XCTAssertEqual(details.count, (NSUInteger)1);
+  XCTAssertEqualObjects(details.firstObject[@"target"], @"UnitPrice");
+}
+
+- (void)testWritesGoToTheEditLink
+{
+  NSManagedObject *ikura = [self fetch:@"Product" where:@"name == %@", @"Ikura"].firstObject;
+  [ikura setValue:[NSDecimalNumber decimalNumberWithString:@"32"] forKey:@"unitPrice"];
+  [self save];
+  XCTAssertTrue([_transport.hits containsObject:@"product-edit-link-patch.json"]);
+}
+
+- (void)testFetchBatchSizeAsksForThatPageSize
+{
+  NSFetchRequest *fetch = [self productFetch];
+  fetch.predicate = [NSPredicate predicateWithFormat:@"unitPrice > 100"];
+  fetch.fetchBatchSize = 2;
+  fetch.resultType = NSManagedObjectIDResultType;
+  NSError *error = nil;
+  NSArray *ids = [_store executeRequest:fetch withContext:_context error:&error];
+  XCTAssertNil(error, @"%@", error);
+  XCTAssertEqual(ids.count, (NSUInteger)1);
+  XCTAssertTrue([_transport.hits containsObject:@"products-page-size.json"]);
+}
+
 - (void)testUnmatchedRequestDoesNotHitTheNetwork
 {
   ODataConfiguration *configuration =

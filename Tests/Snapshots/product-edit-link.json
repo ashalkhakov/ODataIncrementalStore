@@ -1,0 +1,34 @@
+{
+  "comment": "An entity whose edit link is not its conventional URL: writes go to the edit link.",
+  "spec": "OASIS OData 4.01 JSON Format \u00a74.5.8 Control Information: editLink",
+  "request": {
+    "method": "GET",
+    "path": "Products",
+    "query": {
+      "$filter": "ProductName eq 'Ikura'",
+      "$expand": "Category($select=CategoryID)"
+    }
+  },
+  "response": {
+    "status": 200,
+    "headers": {
+      "Content-Type": "application/json;odata.metadata=minimal;charset=utf-8",
+      "OData-Version": "4.0"
+    },
+    "body": {
+      "@odata.context": "https://odata.test/V4/Northwind.svc/$metadata#Products",
+      "value": [
+        {
+          "@odata.etag": "W/\"1\"",
+          "@odata.editLink": "Catalog/Products(10)",
+          "ProductID": 10,
+          "ProductName": "Ikura",
+          "UnitPrice": 31,
+          "Category": {
+            "CategoryID": 8
+          }
+        }
+      ]
+    }
+  }
+}

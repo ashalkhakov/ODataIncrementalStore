@@ -40,6 +40,7 @@ typedef NS_ENUM(NSInteger, OISWriteMode) {
   NSMutableDictionary *_etags;      // object ID -> ETag, exactly as the service sent it
   NSMutableDictionary *_versions;   // object ID -> node version, bumped when the ETag changes
   NSMutableDictionary *_deferred;   // object ID -> relationship names to write after insert
+  NSMutableDictionary *_editLinks;  // object ID -> @odata.editLink, where the service gave one
   NSLock *_lock;
 }
 
@@ -64,6 +65,7 @@ typedef NS_ENUM(NSInteger, OISWriteMode) {
   _etags = [NSMutableDictionary dictionary];
   _versions = [NSMutableDictionary dictionary];
   _deferred = [NSMutableDictionary dictionary];
+  _editLinks = [NSMutableDictionary dictionary];
   _lock = [[NSLock alloc] init];
   return self;
 }
@@ -161,7 +163,7 @@ typedef NS_ENUM(NSInteger, OISWriteMode) {
     return nil;
   }
   if (relationship.isToMany) {
-    NSArray *rows = [self rowsAtURL:url limit:0 error:error];
+    NSArray *rows = [self rowsAtURL:url limit:0 pageSize:0 error:error];
     if (!rows) return nil;
     NSMutableArray *ids = [NSMutableArray array];
     for (NSDictionary *row in rows) {
@@ -268,7 +270,7 @@ typedef NS_ENUM(NSInteger, OISWriteMode) {
     return @[ @(count) ];
   }
 
-  NSArray *rows = [self rowsAtURL:url limit:fetch.fetchLimit error:error];
+  NSArray *rows = [self rowsAtURL:url limit:fetch.fetchLimit pageSize:fetch.fetchBatchSize error:error];
   if (!rows) return nil;
 
   if (fetch.resultType == NSDictionaryResultType) {
@@ -302,9 +304,12 @@ typedef NS_ENUM(NSInteger, OISWriteMode) {
 // The rows of a collection, across every page the service splits it into:
 // @odata.nextLink is followed until it stops, or until `limit` rows (0 for
 // no limit) are in hand (Part 1 section 11.2.6.7). A failed request fails
-// the whole read; it is never an empty result.
-- (NSArray *)rowsAtURL:(NSURL *)url limit:(NSUInteger)limit error:(NSError **)error
+// the whole read; it is never an empty result. A page size, from the
+// fetch's fetchBatchSize, is asked for with Prefer: odata.maxpagesize
+// (section 8.2.8.3); the service may page smaller, never larger.
+- (NSArray *)rowsAtURL:(NSURL *)url limit:(NSUInteger)limit pageSize:(NSUInteger)pageSize error:(NSError **)error
 {
+  NSDictionary *headers = pageSize ? @{ @"Prefer": [NSString stringWithFormat:@"odata.maxpagesize=%lu", (unsigned long)pageSize] } : nil;
   NSMutableArray *rows = [NSMutableArray array];
   NSMutableSet *seen = [NSMutableSet set];
   while (url) {
@@ -314,7 +319,7 @@ typedef NS_ENUM(NSInteger, OISWriteMode) {
       return nil;
     }
     [seen addObject:absolute];
-    id json = [_client JSONAtURL:url error:error];
+    id json = [_client JSONAtURL:url headers:headers error:error];
     if (!json) return nil;
     if (json == [NSNull null]) break;
     if (![json isKindOfClass:[NSDictionary class]]) {
@@ -360,9 +365,7 @@ typedef NS_ENUM(NSInteger, OISWriteMode) {
     if (![self patchWrite:[self writeForObject:object mode:OISWriteUpdate assigned:nil] object:object error:error]) return nil;
   }
   for (NSManagedObject *object in save.deletedObjects) {
-    ODataResourceIdentifier *identifier = [self identifierFromObjectID:object.objectID error:error];
-    if (!identifier) return nil;
-    NSURL *url = [_builder URLForIdentifier:identifier error:error];
+    NSURL *url = [self editURLForObjectID:object.objectID error:error];
     if (!url) return nil;
     if (![_client sendJSONMethod:@"DELETE" URL:url body:nil etag:[self currentETagForObjectID:object.objectID] error:error]) {
       return nil;
@@ -410,9 +413,7 @@ typedef NS_ENUM(NSInteger, OISWriteMode) {
 - (BOOL)patchWrite:(OISWrite *)write object:(NSManagedObject *)object error:(NSError **)error
 {
   if (write.body.count) {
-    ODataResourceIdentifier *identifier = [self identifierFromObjectID:object.objectID error:error];
-    if (!identifier) return NO;
-    NSURL *url = [_builder URLForIdentifier:identifier error:error];
+    NSURL *url = [self editURLForObjectID:object.objectID error:error];
     if (!url) return NO;
     ODataHTTPResponse *response = [_client sendJSONMethod:@"PATCH" URL:url body:write.body
                                                      etag:[self currentETagForObjectID:object.objectID] error:error];
@@ -582,8 +583,7 @@ static BOOL OISKeyIsSet(id value)
     }
   }
 
-  ODataResourceIdentifier *identifier = mode == OISWriteInsert ? nil : [self identifierFromObjectID:object.objectID error:NULL];
-  NSURL *entityURL = identifier ? [_builder URLForIdentifier:identifier error:NULL] : nil;
+  NSURL *entityURL = mode == OISWriteInsert ? nil : [self editURLForObjectID:object.objectID error:NULL];
   NSArray *relationships = [entity.relationshipsByName.allValues sortedArrayUsingComparator:^NSComparisonResult(id a, id b) {
     return [[a name] compare:[b name]];
   }];
@@ -655,12 +655,11 @@ static BOOL OISKeyIsSet(id value)
       [write.references addObject:@[ @"POST", refURL, reference ]];
     }
     for (NSManagedObjectID *oid in before) {
-      if ([after containsObject:oid] || !identifier) continue;
+      if ([after containsObject:oid] || !entityURL) continue;
       ODataResourceIdentifier *gone = [self identifierFromObjectID:oid error:NULL];
-      NSURL *url = gone ? [_builder URLForReferenceFromIdentifier:identifier
-                                                     relationship:rel
-                                                           target:[self absoluteURLForPath:gone.path]
-                                                            error:NULL] : nil;
+      NSURL *url = gone ? [_builder URLForReferenceFromEntityURL:entityURL
+                                                    relationship:rel
+                                                          target:[self absoluteURLForPath:gone.path]] : nil;
       if (url) [write.references addObject:@[ @"DELETE", url, [NSNull null] ]];
     }
   }
@@ -709,6 +708,17 @@ static BOOL OISKeyIsSet(id value)
   ODataResourceIdentifier *identifier = [self identifierForEntity:entity keys:keys];
   NSManagedObjectID *oid = [self newObjectIDForEntity:entity referenceObject:identifier.data];
   [self rememberETag:payload[@"@odata.etag"] forObjectID:oid];
+  // An edit link is sent when writes go somewhere other than the entity's
+  // conventional URL (JSON Format section 4.5.8); 4.01 drops the "odata."
+  id editLink = payload[@"@odata.editLink"] ?: payload[@"@editLink"];
+  if ([editLink isKindOfClass:[NSString class]]) {
+    NSURL *resolved = [NSURL URLWithString:editLink relativeToURL:_client.configuration.serviceRoot].absoluteURL;
+    if (resolved) {
+      [_lock lock];
+      _editLinks[oid] = resolved;
+      [_lock unlock];
+    }
+  }
   return oid;
 }
 
@@ -817,7 +827,36 @@ static BOOL OISKeyIsSet(id value)
   [_etags removeObjectForKey:objectID];
   [_versions removeObjectForKey:objectID];
   [_deferred removeObjectForKey:objectID];
+  [_editLinks removeObjectForKey:objectID];
   [_lock unlock];
+}
+
+// Where an object is written: its edit link when the service gave one,
+// else its conventional URL. An edit link on the service's own host keeps
+// the service root's scheme and port: TripPin, served over HTTPS, writes
+// http:// edit links, and a PATCH to one hangs.
+- (NSURL *)editURLForObjectID:(NSManagedObjectID *)objectID error:(NSError **)error
+{
+  [_lock lock];
+  NSURL *link = _editLinks[objectID];
+  [_lock unlock];
+  if (link) {
+    NSURL *root = _client.configuration.serviceRoot;
+    if ([link.host caseInsensitiveCompare:root.host ?: @""] != NSOrderedSame) return link;
+    NSString *s = link.absoluteString;
+    NSRange scheme = [s rangeOfString:@"://"];
+    NSRange path = [s rangeOfString:@"/" options:0 range:NSMakeRange(NSMaxRange(scheme), s.length - NSMaxRange(scheme))];
+    NSString *r = root.absoluteString;
+    NSRange rootScheme = [r rangeOfString:@"://"];
+    NSRange rootPath = [r rangeOfString:@"/" options:0 range:NSMakeRange(NSMaxRange(rootScheme), r.length - NSMaxRange(rootScheme))];
+    if (scheme.location != NSNotFound && path.location != NSNotFound && rootPath.location != NSNotFound) {
+      NSURL *rewritten = [NSURL URLWithString:[[r substringToIndex:rootPath.location] stringByAppendingString:[s substringFromIndex:path.location]]];
+      if (rewritten) return rewritten;
+    }
+    return link;
+  }
+  ODataResourceIdentifier *identifier = [self identifierFromObjectID:objectID error:error];
+  return identifier ? [_builder URLForIdentifier:identifier error:error] : nil;
 }
 
 - (ODataResourceIdentifier *)identifierFromObjectID:(NSManagedObjectID *)objectID error:(NSError **)error

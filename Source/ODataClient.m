@@ -63,21 +63,11 @@
     return nil;
   }
   NSData *body = data ?: [NSData data];
-  if (http.statusCode == 412) {
-    if (error) {
-      *error = OISError(ODataIncrementalStoreErrorOptimisticLocking,
-                        [NSString stringWithFormat:@"ETag mismatch at %@", http.URL.absoluteString ?: @"?"]);
-    }
-    return nil;
-  }
   if (http.statusCode >= 400) {
-    NSString *message = [[NSString alloc] initWithData:body encoding:NSUTF8StringEncoding]
-                        ?: [NSHTTPURLResponse localizedStringForStatusCode:http.statusCode];
-    if (error) {
-      *error = OISError((ODataIncrementalStoreErrorCode)(ODataIncrementalStoreErrorHTTP + http.statusCode),
-                        [NSString stringWithFormat:@"OData HTTP %ld at %@: %@",
-                         (long)http.statusCode, http.URL.absoluteString ?: @"?", message]);
-    }
+    ODataIncrementalStoreErrorCode code = http.statusCode == 412
+        ? ODataIncrementalStoreErrorOptimisticLocking
+        : (ODataIncrementalStoreErrorCode)(ODataIncrementalStoreErrorHTTP + http.statusCode);
+    if (error) *error = OISHTTPError(code, http.statusCode, http.URL ?: req.URL, body);
     return nil;
   }
   ODataHTTPResponse *out = [[ODataHTTPResponse alloc] init];
@@ -130,8 +120,14 @@
 
 - (id)JSONAtURL:(NSURL *)url error:(NSError **)error
 {
+  return [self JSONAtURL:url headers:nil error:error];
+}
+
+- (id)JSONAtURL:(NSURL *)url headers:(NSDictionary *)headers error:(NSError **)error
+{
   NSMutableURLRequest *req = [NSMutableURLRequest requestWithURL:url];
   req.HTTPMethod = @"GET";
+  for (NSString *name in headers) [req setValue:headers[name] forHTTPHeaderField:name];
   ODataHTTPResponse *response = [self sendRequest:req error:error];
   if (!response) return nil;
   if (response.status == 204) return [NSNull null];

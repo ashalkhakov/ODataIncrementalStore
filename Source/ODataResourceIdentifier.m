@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: LGPL-2.1-or-later
 
 #import "ODataResourceIdentifier.h"
+#include <string.h>
 
 NSString *OISKeyLiteral(id value)
 {
@@ -38,11 +39,31 @@ NSString *OISKeyLiteral(id value)
   return [NSString stringWithFormat:@"%@(%@)", self.entitySet, [parts componentsJoinedByString:@","]];
 }
 
+// A literal as it goes into a path segment: percent-encoded, except for
+// what RFC 3986 allows in a segment and OData's key syntax uses (quotes,
+// parentheses, '=' and ','). A key with a space, '/', '#', '?' or
+// non-ASCII text used to make an invalid URL, or the wrong one.
+static NSString *OISPathEncode(NSString *literal)
+{
+  static const char hex[] = "0123456789ABCDEF";
+  NSData *data = [literal dataUsingEncoding:NSUTF8StringEncoding];
+  const unsigned char *bytes = data.bytes;
+  NSMutableString *out = [NSMutableString stringWithCapacity:data.length];
+  for (NSUInteger i = 0; i < data.length; i++) {
+    unsigned char c = bytes[i];
+    BOOL keep = (c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z') || (c >= '0' && c <= '9') ||
+                (c != 0 && strchr("-._~'()=,:@!$*;", c) != NULL);
+    if (keep) [out appendFormat:@"%c", c];
+    else [out appendFormat:@"%%%c%c", hex[c >> 4], hex[c & 15]];
+  }
+  return out;
+}
+
 - (NSString *)literalForKey:(NSString *)name
 {
   id value = self.keys[name];
-  if ([self.unquotedKeys containsObject:name] && [value isKindOfClass:[NSString class]]) return value;
-  return OISKeyLiteral(value);
+  if ([self.unquotedKeys containsObject:name] && [value isKindOfClass:[NSString class]]) return OISPathEncode(value);
+  return OISPathEncode(OISKeyLiteral(value));
 }
 
 // "unquoted" only when there are any, so the reference of an object with

@@ -23,4 +23,15 @@ typedef NS_ENUM(NSInteger, ODataIncrementalStoreErrorCode) {
 
 FOUNDATION_EXPORT NSError *OISError(ODataIncrementalStoreErrorCode code, NSString *message);
 
+// What a service said about a failed request (JSON Format section 21,
+// Part 1 section 9.4), in the userInfo of an ODataIncrementalStoreErrorHTTP
+// + status error. Its message is the error's localizedDescription.
+FOUNDATION_EXPORT NSString * const ODataErrorHTTPStatusKey;    // NSNumber
+FOUNDATION_EXPORT NSString * const ODataErrorCodeKey;          // the service's error code
+FOUNDATION_EXPORT NSString * const ODataErrorTargetKey;        // the property or entity it concerns
+FOUNDATION_EXPORT NSString * const ODataErrorDetailsKey;       // NSArray of { code, message, target }
+FOUNDATION_EXPORT NSString * const ODataErrorResponseBodyKey;  // the body, as text
+
+FOUNDATION_EXPORT NSError *OISHTTPError(ODataIncrementalStoreErrorCode code, NSInteger status, NSURL * _Nullable url, NSData * _Nullable body);
+
 NS_ASSUME_NONNULL_END
