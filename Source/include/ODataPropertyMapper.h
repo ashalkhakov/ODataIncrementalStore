@@ -23,6 +23,9 @@ FOUNDATION_EXPORT NSString * const ODataUserInfoKey;
 - (NSString *)propertyForAttribute:(NSAttributeDescription *)attribute;
 - (NSString *)propertyForRelationship:(NSRelationshipDescription *)relationship;
 - (NSArray<NSAttributeDescription *> *)keyAttributesForEntity:(NSEntityDescription *)entity;
+// The other way: the attribute or relationship of an entity (its own or
+// inherited) that a service calls this; nil when there is none.
+- (nullable NSPropertyDescription *)propertyForWireName:(NSString *)name entity:(NSEntityDescription *)entity;
 - (NSString *)wireName:(NSString *)coreDataName;
 // A Core Data key path as an OData property path: each step by its wire
 // name, through relationships, joined with '/' (Part 2 section 5.1.1.15).

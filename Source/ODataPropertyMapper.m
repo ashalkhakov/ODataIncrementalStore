@@ -129,6 +129,20 @@ NSString * const ODataUserInfoKey = @"OData.key";
   return [self schemaName:[self wireName:relationship.name] inEntity:relationship.entity navigation:YES];
 }
 
+- (NSPropertyDescription *)propertyForWireName:(NSString *)name entity:(NSEntityDescription *)entity
+{
+  for (NSPropertyDescription *property in entity.properties) {
+    NSString *wire = nil;
+    if ([property isKindOfClass:[NSAttributeDescription class]]) {
+      wire = [self propertyForAttribute:(NSAttributeDescription *)property];
+    } else if ([property isKindOfClass:[NSRelationshipDescription class]]) {
+      wire = [self propertyForRelationship:(NSRelationshipDescription *)property];
+    }
+    if ([wire isEqualToString:name]) return property;
+  }
+  return nil;
+}
+
 - (NSString *)declaredTypeForAttribute:(NSAttributeDescription *)attribute
 {
   ODataSchemaEntityType *type = [self entityTypeForEntity:attribute.entity];

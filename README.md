@@ -314,7 +314,40 @@ ODataQueryOptions *options = [ODataQueryOptions optionsWithQuery:@{ @"$filter": 
                                                                    @"$expand": @"Category($select=Name)" } error:&error];
 ```
 
-The Workbench's in-memory service evaluates requests over it.
+The Workbench's in-memory service evaluates requests over it, and so does
+the server.
+
+## Serving a model
+
+The same mapping runs the other way too: `ODataService` answers OData 4.01
+(and 4.0) requests from a Core Data store, with its `$metadata` written from
+the model by the same `ODataPropertyMapper` and `userInfo` the client reads.
+It serves the service document and `$metadata`, entity sets, entities by
+key, navigation, properties, `$filter`, `$orderby`, `$top`, `$skip`,
+`$count`, `$select`, `$expand`, server-driven paging, and POST, PATCH, PUT
+and DELETE with ETags and `@odata.bind`.
+
+```objc
+ODataService *service = [[ODataService alloc] initWithPersistentStoreCoordinator:coordinator
+                                                                     serviceRoot:[NSURL URLWithString:@"https://api.example.com/odata/"]];
+[service setHandler:[[MyProducts alloc] initWithEntity:productEntity] forEntitySet:@"Products"];
+```
+
+An `ODataEntitySetHandler` subclass changes what a set does (which rows a
+caller sees, what an insert fills in), and answers at once or, through its
+`ODataReply`, later. A service is an `ODataTransport`, so a store can talk
+to it in-process. On the network it runs behind a reverse proxy, from
+`ois-serve`:
+
+```sh
+make -C Server
+Server/obj/ois-serve -Model Catalog.momd -StoreType SQLite -StoreURL /var/lib/catalog.sqlite \
+                     -ServiceRoot https://api.example.com/odata/ -Port 8080
+```
+
+`Server/Examples/` has a configuration file, systemd and launchd units, and
+nginx and Caddy configurations. The design, and what is still to come
+(operations, `$batch`): [docs/server-design.md](docs/server-design.md).
 
 ## Threading
 
@@ -350,8 +383,7 @@ that thread is waiting for `-finish`, not running its run loop.
 Client conformance with OData v4, item by item, and the order the gaps
 are being closed in: [docs/odata-conformance.md](docs/odata-conformance.md).
 
-A matching OData server in Objective-C, over Core Data, on GNUstep and
-Cocoa. Not started; the design is in
+The server's milestones, done and to come:
 [docs/server-design.md](docs/server-design.md).
 
 ## License

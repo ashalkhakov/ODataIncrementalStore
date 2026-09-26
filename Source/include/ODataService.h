@@ -1,0 +1,174 @@
+// ODataIncrementalStore — a Core Data model served over OData.
+// Copyright (C) 2026 OIS contributors
+// SPDX-License-Identifier: LGPL-2.1-or-later
+//
+// ODataService is the server's core: it takes an OData request and answers
+// it from a Core Data store, and never sees a socket (docs/server-design.md).
+// It is an ODataTransport, so an ODataIncrementalStore can be handed one
+// and talk to a Core Data store through OData in-process; the HTTP adapter
+// (ODataHTTPServer) hands it requests from the network the same way.
+//
+// What it serves, read from the model through ODataPropertyMapper:
+//   - the service document and $metadata (ODataMetadataWriter);
+//   - entity sets, entities by key (Products(1), and Products/1), their
+//     properties and raw values ($value), navigation (Categories(1)/Products),
+//     and /$count;
+//   - $filter, $orderby, $top, $skip, $count, $select, $expand with its
+//     own options, $skiptoken for server-driven paging, parameter aliases;
+//   - POST, PATCH, PUT, DELETE, with @odata.bind for relationships, ETags
+//     and If-Match, Prefer return=minimal|representation;
+//   - OData 4.01, and 4.0 for a client that asks for no more
+//     (OData-MaxVersion).
+// Every failure is an OData error body with its status: 400 for a request
+// that does not parse or does not fit the model, 404, 405, 412, and 501 for
+// what is not supported yet.
+//
+// An application changes what an entity set does with an
+// ODataEntitySetHandler, and answers through an ODataReply.
+
+#pragma once
+#import "OISCoreData.h"
+#import "ODataClient.h"
+#import "ODataExpression.h"
+#import "ODataPropertyMapper.h"
+
+NS_ASSUME_NONNULL_BEGIN
+
+@class ODataService;
+
+// userInfo on an Integer attribute: the entity's version, sent as its ETag
+// and incremented by every update. Without one, an entity's ETag is a hash
+// of its values.
+FOUNDATION_EXPORT NSString * const ODataUserInfoETag;  // @"OData.etag"
+
+// How a handler answers. The service is the only caller of a handler's
+// methods, and the reply is its end of the call. A method that can answer
+// at once returns its result, or calls -failWithError: and returns nil. A
+// method that has to wait for something calls -defer, returns (what it
+// returns is then ignored), and later, on any thread, calls
+// -finishWithResult: or -failWithError:. Whatever it does with the
+// request's context after returning goes through -performBlock:.
+@interface ODataReply : NSObject
+- (instancetype)init NS_UNAVAILABLE;
+- (void)defer;
+- (void)finishWithResult:(nullable id)result;
+- (void)failWithError:(NSError *)error;
+@property (nonatomic, readonly, getter=isDeferred) BOOL deferred;
+@property (nonatomic, readonly, getter=isFinished) BOOL finished;
+@property (nonatomic, readonly, strong, nullable) id result;
+@property (nonatomic, readonly, strong, nullable) NSError *error;
+@end
+
+// A request as the service read it.
+@interface ODataRequest : NSObject
+- (instancetype)init NS_UNAVAILABLE;
+@property (nonatomic, readonly, weak) ODataService *service;
+@property (nonatomic, readonly) NSURLRequest *URLRequest;
+@property (nonatomic, readonly, copy) NSString *method;
+// Header names are case-insensitive.
+- (nullable NSString *)valueForHeader:(NSString *)name;
+@property (nonatomic, readonly, strong) ODataResourcePath *path;
+@property (nonatomic, readonly, strong) ODataQueryOptions *options;
+// The entity the request is about: its entity set's, or the type an
+// inserted entity's @odata.type names.
+@property (nonatomic, readonly, strong, nullable) NSEntityDescription *entity;
+// The request's own private-queue context. Handler methods run inside its
+// -performBlockAndWait:.
+@property (nonatomic, readonly, strong) NSManagedObjectContext *context;
+// The OData-Version the response is in: 4.0 or 4.01.
+@property (nonatomic, readonly, copy) NSString *version;
+// Prefer, by preference name in lower case: return, odata.maxpagesize, ...
+@property (nonatomic, readonly, copy) NSDictionary<NSString *, NSString *> *preferences;
+// The application's own, for the length of the request.
+@property (nonatomic, readonly, strong) NSMutableDictionary *userInfo;
+@end
+
+// What an entity set does. The default does everything over the request's
+// context; a subclass overrides what it needs to and is registered with
+// -[ODataService setHandler:forEntitySet:]. Values are keyed by Core Data
+// property name: attributes hold Core Data values, relationships managed
+// objects (a set of them for a to-many relationship). The service saves
+// after insert, update and delete, and reports a failed save.
+@interface ODataEntitySetHandler : NSObject
+
+- (instancetype)initWithEntity:(NSEntityDescription *)entity NS_DESIGNATED_INITIALIZER;
+- (instancetype)init NS_UNAVAILABLE;
+@property (nonatomic, readonly) NSEntityDescription *entity;
+@property (nonatomic, readonly, weak, nullable) ODataService *service;
+
+// What the set allows. A method it does not is answered with 405.
+@property (nonatomic) BOOL allowsInsert;
+@property (nonatomic) BOOL allowsUpdate;
+@property (nonatomic) BOOL allowsDelete;
+
+// The rows the caller may see at all, however they are reached: fetched,
+// by key, through navigation or $expand. nil: every row.
+- (nullable NSPredicate *)predicateForVisibleObjectsInRequest:(ODataRequest *)request;
+
+// The rows of a request, already filtered, sorted and paged, with
+// -predicateForVisibleObjectsInRequest: in its predicate.
+- (nullable NSArray<NSManagedObject *> *)objectsForFetchRequest:(NSFetchRequest *)fetchRequest
+                                                        request:(ODataRequest *)request
+                                                          reply:(ODataReply *)reply;
+// How many rows the same request has, without paging; an NSNumber.
+- (nullable NSNumber *)countForFetchRequest:(NSFetchRequest *)fetchRequest
+                                    request:(ODataRequest *)request
+                                      reply:(ODataReply *)reply;
+// The row with this key (by Core Data attribute name), among the visible
+// ones; nil when there is none (404).
+- (nullable NSManagedObject *)objectWithKey:(NSDictionary<NSString *, id> *)key
+                                    request:(ODataRequest *)request
+                                      reply:(ODataReply *)reply;
+- (nullable NSManagedObject *)insertObjectWithValues:(NSDictionary<NSString *, id> *)values
+                                             request:(ODataRequest *)request
+                                               reply:(ODataReply *)reply;
+- (nullable NSManagedObject *)updateObject:(NSManagedObject *)object
+                                    values:(NSDictionary<NSString *, id> *)values
+                                   request:(ODataRequest *)request
+                                     reply:(ODataReply *)reply;
+// Finishes with no result.
+- (void)deleteObject:(NSManagedObject *)object request:(ODataRequest *)request reply:(ODataReply *)reply;
+
+@end
+
+@interface ODataService : NSObject <ODataTransport>
+
+// A service over a coordinator's stores, answering requests under this
+// root: its path is where the service is (http://example.com/odata/), and
+// the whole URL is what the service's own links begin with, so behind a
+// reverse proxy it is the public one.
+- (instancetype)initWithPersistentStoreCoordinator:(NSPersistentStoreCoordinator *)coordinator
+                                       serviceRoot:(NSURL *)serviceRoot NS_DESIGNATED_INITIALIZER;
+- (instancetype)init NS_UNAVAILABLE;
+
+@property (nonatomic, readonly) NSPersistentStoreCoordinator *coordinator;
+@property (nonatomic, readonly) NSManagedObjectModel *model;
+@property (nonatomic, readonly, copy) NSURL *serviceRoot;
+// Names, keys and types. Set this, and the next two, before the first
+// request: the service's $metadata is written from them then.
+@property (nonatomic, strong) ODataPropertyMapper *mapper;
+@property (nonatomic, copy) NSString *namespaceName;  // Default: Default
+@property (nonatomic, copy) NSString *containerName;  // Default: Container
+// The newest version the service speaks: 4.01 (the default) or 4.0.
+@property (nonatomic, copy) NSString *maxVersion;
+// Server-driven paging: at most this many rows a response, with a next
+// link for the rest. 0, the default: as many as the client asks for
+// (Prefer: odata.maxpagesize), else all of them.
+@property (nonatomic) NSUInteger maxPageSize;
+
+- (void)setHandler:(ODataEntitySetHandler *)handler forEntitySet:(NSString *)entitySet;
+- (nullable ODataEntitySetHandler *)handlerForEntitySet:(NSString *)entitySet;
+@property (nonatomic, readonly) NSArray<NSString *> *entitySets;
+
+// $metadata, in the CSDL of 4.0 or 4.01.
+- (NSString *)metadataXMLForVersion:(NSString *)version;
+// What $metadata had to leave out of the model, one sentence each.
+@property (nonatomic, readonly) NSArray<NSString *> *metadataProblems;
+
+// ODataTransport: answers the exchange's request. A request whose handlers
+// answer at once is finished before this returns.
+- (void)startExchange:(ODataExchange *)exchange;
+
+@end
+
+NS_ASSUME_NONNULL_END

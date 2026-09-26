@@ -1,0 +1,25 @@
+# systemd unit for ois-serve behind a reverse proxy on the same machine.
+#   cp ois-serve.service /etc/systemd/system/ && systemctl enable --now ois-serve
+[Unit]
+Description=OData service (ois-serve)
+After=network.target
+# After=postgresql.service   for a CDPostgreSQLStore
+
+[Service]
+User=ois-serve
+Group=ois-serve
+ExecStart=/usr/local/bin/ois-serve -Config /etc/ois-serve/catalog.plist
+# GNUstep and FreeCoreData, where the prefix is not in the linker's path:
+# Environment=LD_LIBRARY_PATH=/opt/gnustep/lib:/opt/gnustep/System/Library/Libraries:/opt/gnustep/Local/Library/Libraries
+StateDirectory=ois-serve
+# It stops cleanly on SIGTERM; logs go to the journal from standard error.
+KillSignal=SIGTERM
+Restart=on-failure
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+ReadWritePaths=/var/lib/ois-serve
+
+[Install]
+WantedBy=multi-user.target

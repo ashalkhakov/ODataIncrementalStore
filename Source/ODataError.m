@@ -5,6 +5,8 @@
 
 NSErrorDomain const ODataIncrementalStoreErrorDomain = @"org.gnu.ois.ODataIncrementalStore";
 
+NSErrorDomain const ODataServiceErrorDomain = @"org.gnu.ois.ODataService";
+
 NSString * const ODataErrorHTTPStatusKey = @"ODataErrorHTTPStatus";
 NSString * const ODataErrorCodeKey = @"ODataErrorCode";
 NSString * const ODataErrorTargetKey = @"ODataErrorTarget";
@@ -73,4 +75,17 @@ NSError *OISError(ODataIncrementalStoreErrorCode code, NSString *message)
   return [NSError errorWithDomain:ODataIncrementalStoreErrorDomain
                              code:code
                          userInfo:@{ NSLocalizedDescriptionKey: message ?: @"" }];
+}
+
+NSError *ODataServiceErrorWithTarget(NSInteger status, NSString *message, NSString *target)
+{
+  NSMutableDictionary *info = [NSMutableDictionary dictionary];
+  info[NSLocalizedDescriptionKey] = message ?: [NSHTTPURLResponse localizedStringForStatusCode:status];
+  if (target) info[ODataErrorTargetKey] = target;
+  return [NSError errorWithDomain:ODataServiceErrorDomain code:status userInfo:info];
+}
+
+NSError *ODataServiceError(NSInteger status, NSString *message)
+{
+  return ODataServiceErrorWithTarget(status, message, nil);
 }

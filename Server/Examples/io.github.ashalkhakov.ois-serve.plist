@@ -1,0 +1,28 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!-- launchd job for ois-serve on macOS.
+     sudo cp io.github.ashalkhakov.ois-serve.plist /Library/LaunchDaemons/
+     sudo launchctl bootstrap system /Library/LaunchDaemons/io.github.ashalkhakov.ois-serve.plist -->
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>io.github.ashalkhakov.ois-serve</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>/usr/local/bin/ois-serve</string>
+    <string>-Config</string>
+    <string>/usr/local/etc/ois-serve/catalog.plist</string>
+  </array>
+  <key>UserName</key>
+  <string>_ois-serve</string>
+  <key>RunAtLoad</key>
+  <true/>
+  <key>KeepAlive</key>
+  <dict>
+    <key>SuccessfulExit</key>
+    <false/>
+  </dict>
+  <key>StandardErrorPath</key>
+  <string>/usr/local/var/log/ois-serve.log</string>
+</dict>
+</plist>

@@ -170,6 +170,9 @@ this toolchain that captures block parameters in other blocks leaks too.
 
 ## Behaviour that differs from upstream
 
+- The header dictionary implements fast enumeration itself: gnustep-base
+  leaves `-countByEnumeratingWithState:objects:count:` to `NSDictionary`'s
+  subclasses, so `for (name in request.headers)` raised on GNUstep.
 - Header dictionaries keep wire spelling instead of CFHTTPMessage's
   canonical names (lookups are case-insensitive, so upstream code is unaffected).
 - `-[NSURL absoluteString]` of the request URL can differ between macOS and

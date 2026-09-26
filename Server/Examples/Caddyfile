@@ -1,0 +1,6 @@
+# Caddy in front of ois-serve: TLS from Let's Encrypt, the path passed on
+# unchanged. Caddy streams request bodies chunked, which the adapter reads.
+api.example.com {
+	encode gzip
+	reverse_proxy /odata/* 127.0.0.1:8080
+}

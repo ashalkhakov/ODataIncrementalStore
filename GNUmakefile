@@ -46,7 +46,10 @@ ODataIncrementalStore_OBJC_FILES = \
 	Source/ODataResourceIdentifier.m \
 	Source/ODataPredicateTranslator.m \
 	Source/ODataQueryBuilder.m \
-	Source/ODataIncrementalStore.m
+	Source/ODataIncrementalStore.m \
+	Source/ODataPredicateBuilder.m \
+	Source/ODataMetadataWriter.m \
+	Source/ODataService.m
 
 ODataIncrementalStore_HEADER_FILES = \
 	ODataIncrementalStore.h \
@@ -67,7 +70,10 @@ ODataIncrementalStore_HEADER_FILES = \
 	ODataModelBuilder.h \
 	ODataResourceIdentifier.h \
 	ODataPredicateTranslator.h \
-	ODataQueryBuilder.h
+	ODataQueryBuilder.h \
+	ODataPredicateBuilder.h \
+	ODataMetadataWriter.h \
+	ODataService.h
 
 ODataIncrementalStore_HEADER_FILES_DIR = Source/include
 ODataIncrementalStore_HEADER_FILES_INSTALL_DIR = ODataIncrementalStore

@@ -1,8 +1,12 @@
 # OData server: design
 
-**Status: future work.** Nothing here is implemented. This is the plan for
-the server half of the project, written down so that the client can be
-changed with it in mind.
+**Status: milestones 1 to 4 are implemented** (see Milestones): the core
+(`ODataService`, `ODataEntitySetHandler`, `ODataReply`), `$metadata` from
+the model (`ODataMetadataWriter`), `$filter` to `NSPredicate`
+(`ODataPredicateBuilder`), and the HTTP adapter with `ois-serve`
+(`Server/`). Operations, `$batch` and the Workbench's move to the server
+are next. Where the code went differently from the plan, the sections below
+say so.
 
 ODataIncrementalStore is a client: Core Data on one side, a remote OData v4
 service on the other. The server is the same mapping run the other way: an
@@ -56,8 +60,8 @@ FreeCoreData) and on Cocoa, with no platform-specific code in its core.
 │ ODataService          request → response         │  no sockets
 │   router  ·  query options  ·  serializer        │
 ├──────────────────────────────────────────────────┤
-│ ODataDataSource       protocol                   │
-│   ODataCoreDataSource  (NSPersistentContainer)   │  the default
+│ ODataEntitySetHandler  one per set               │  the default: Core Data;
+│   fetch · by key · count · insert · update · del │  subclass to change it
 ├──────────────────────────────────────────────────┤
 │ shared with the client                           │
 │   ODataPropertyMapper · ODataResourceIdentifier  │
@@ -75,33 +79,34 @@ finishes before returning. So a service can be handed to
 `ODataIncrementalStore` as its transport:
 
 ```objc
-ODataService *service = [[ODataService alloc] initWithDataSource:source
-                                                     serviceRoot:root];
+ODataService *service = [[ODataService alloc] initWithPersistentStoreCoordinator:coordinator
+                                                                     serviceRoot:root];
 // A Core Data store talking to a Core Data store through OData, in-process.
 options = @{ ODataIncrementalStoreTransportOption: service };
 ```
 
-This gives a full round-trip test with no network on both platforms. It is
-also what the Workbench example does today with `WorkbenchEngine`, which is
+This gives a full round-trip test with no network on both platforms
+(`-[ODataServiceTests testIncrementalStoreOverTheService]`). It is also
+what the Workbench example does today with `WorkbenchEngine`, which is
 a hard-coded, dictionary-backed prototype of this core (routing, `$filter`,
 `$orderby`, `$select` and `$expand` evaluated over the library's parser,
 ETags, a hand-written `$metadata`). The server replaces it: Workbench
 becomes an `ODataService` over an in-memory Core Data store, seeded with
 the same rows.
 
-### The data source
+### Handlers, not a data source
 
-`ODataDataSource` is a small protocol: describe the schema, fetch a
-collection, fetch by key, count, insert, update, delete. `ODataCoreDataSource`
-implements it over an `NSPersistentContainer` (or a coordinator), so the
-store behind it can be SQLite, XML or in-memory on either platform.
-Keeping it a protocol leaves room for sources that are not Core Data. The
-first implementation is Core Data only.
+The plan had an `ODataDataSource` protocol under the service, with a Core
+Data implementation, and handlers on top. In the code the handler is the
+only seam: `ODataEntitySetHandler`'s default methods are the Core Data
+implementation, and a set that is not Core Data would be a handler that
+overrides all of them. One layer fewer, and nothing lost.
 
-Each request gets its own private-queue context, and all work runs inside
-`-performBlockAndWait:`. On GNUstep that depends on libdispatch having been
-built before gnustep-base, which `build-gnustep.sh` in gnustep-patches
-already guarantees and verifies.
+Each request gets its own private-queue context on the service's
+coordinator, and all work runs inside `-performBlockAndWait:`, or
+`-performBlock:` once a reply is deferred. On GNUstep that depends on
+libdispatch having been built before gnustep-base, which
+`build-gnustep.sh` in gnustep-patches already guarantees and verifies.
 
 ### What an application writes
 
@@ -114,21 +119,32 @@ default one does everything over the data source:
 
 | Method | Default |
 |---|---|
-| get by key | a fetch on the key attributes, limit 1 |
+| get by key | a fetch on the key attributes and the visible rows, limit 1 |
 | fetch | the request's predicate, sort, limit, offset and prefetching |
 | count | `countForFetchRequest:` |
-| insert | a new object from the body, validated, saved |
-| update | the object's changed properties, `If-Match` checked, saved |
-| delete | `If-Match` checked, deleted, saved |
+| insert | a new object from the body's values; a missing integer key is one more than the largest, a string or UUID key a new UUID |
+| update | the body's values set on the object (`If-Match` is checked first) |
+| delete | `-deleteObject:` (`If-Match` is checked first) |
+
+The service converts the body before a handler sees it: values arrive
+keyed by Core Data property name, as Core Data values, with
+`@odata.bind` resolved to managed objects. It saves after the handler
+answers, and turns a failed validation into a `400` with a detail for each
+property.
 
 - A subclass overrides any of these for one set and is registered by
   set name (`-setHandler:forEntitySet:`). Typical uses:
   - fetch: add a predicate that scopes rows to the caller;
   - insert: fill in server-side values;
   - delete: refuse, or mark as deleted instead.
-- A method that does not apply answers `405`. The set's
-  `Capabilities.*Restrictions` in `$metadata` are derived from what the
-  handler allows.
+- `allowsInsert`, `allowsUpdate` and `allowsDelete` switch a method off;
+  it then answers `405`. (Planned: the set's `Capabilities.*Restrictions`
+  in `$metadata`, derived from these.)
+- `-predicateForVisibleObjectsInRequest:` scopes the rows the caller may
+  see however they are reached: fetched, by key, through navigation,
+  through `$expand`, or named in `@odata.bind`. That is where per-caller
+  rows belong, rather than in an overridden fetch, which `$expand` would
+  go around.
 - Each method runs inside the request's context's
   `-performBlockAndWait:`. It gets the parsed request, never the raw
   URL, so it cannot get the grammar wrong, and answers through its
@@ -234,23 +250,31 @@ So only the code that actually waits is asynchronous, and there are no
 blocks in the API. A deferred method runs its synchronous part inside
 the request context's `-performBlockAndWait:` like any other. Whatever
 it does with the context afterwards goes through `-performBlock:`. The
-reply keeps the context alive until it is finished. A reply that is
-never finished is answered `504` after the request's timeout.
+reply keeps the context alive until it is finished. (Planned: a reply
+that is never finished is answered `504` after the request's timeout.
+Today the request waits.)
+
+The service's own steps continue through the same replies, target-action,
+with no blocks: each step names the method its reply goes on in.
 
 ### Running it
 
-`ois-serve` is a tool configured by a property list:
+`ois-serve` (`Server/ois-serve.m`) reads its settings from the property
+list `-Config` names, and any of them from the command line, which wins
+(`-Port 9000`): `Model`, `StoreType` (`SQLite`, `InMemory`, `XML`, or a
+type a backend registers, such as `CDPostgreSQLStore`), `StoreURL`,
+`StoreOptions`, `ServiceRoot` (the public URL, which `@odata.context` and
+next links begin with), `Port`, `Localhost`, `MaxPageSize`, `MaxVersion`,
+`Namespace`, `Container`, and `Bundles`. A bundle's principal class that
+conforms to `ODataServiceConfiguring` is sent `+configureService:` before
+the first request: that is where an application registers its handlers.
+`-PrintMetadata YES` prints `$metadata` and exits.
 
-- the model (`.momd`), and the store type and URL (`SQLite`,
-  `CDPostgreSQLStore` with `postgresql://…`, …);
-- the listen address and port;
-- the public service root, which is used in `@odata.context` and next
-  links, so they point at the proxy and not at loopback;
-- the bundle holding the application's handlers and operations.
-
+It serves until `SIGINT` or `SIGTERM`, logs to standard error, and exits 0.
 An application that would rather link the library runs the same
-`ODataHTTPServer` from its own `main`. Example unit files for systemd
-and launchd, and nginx and Caddy configs, ship with it.
+`ODataHTTPServer` from its own `main`. `Server/Examples/` has a
+configuration for the Catalog model, a systemd unit, a launchd job, and
+nginx and Caddy configurations.
 
 ### The HTTP adapter
 
@@ -299,8 +323,20 @@ possible:
   upstreams by default. Add it later if Caddy's pooled connections show
   it is worth it.
 
-It lives in `ThirdParty/GCDWebServer/` with its license, and is built
-into the optional HTTP target only.
+It lives in `ThirdParty/GCDWebServer/` with its license; `PORTING.md`
+there lists every change, and `upstream.diff` reapplies them to the
+pristine release. It is built into `libODataHTTPServer` (`Server/`) only,
+with `ODataHTTPServer`, which turns each request into an `ODataExchange`
+for the service and the finished exchange back into a response. The
+listener's own smoke test and `Server/Tests/ois-serve-check.m` run in CI on
+both platforms.
+
+Two things surfaced on the way. GCDWebServer's handler blocks capture a
+block in another block, which libobjc2 leaked until
+`libobjc2/stack-block-retain` in gnustep-patches; the port copies its
+blocks itself, so it does not depend on the fix. And gnustep-base leaves
+fast enumeration to `NSDictionary`'s subclasses, so the port's header
+dictionary implements it.
 
 ## Mapping Core Data to OData
 
@@ -315,7 +351,8 @@ The server uses the same annotations the client reads, and the same
 | `userInfo[@"OData.property"]` | override a wire name |
 | `userInfo[@"OData.key"]` | `Key` |
 | `NSRelationshipDescription` | `NavigationProperty` |
-| a version attribute, or a hash of the row | `@odata.etag` |
+| `userInfo[@"OData.etag"]` on an integer attribute: incremented by each update | `@odata.etag`, and `Core.OptimisticConcurrency` in `$metadata` |
+| without one, a hash of the row's values | `@odata.etag` |
 
 `$metadata` (CSDL XML) is generated from the model, not written by hand.
 
@@ -326,8 +363,14 @@ Requests map onto fetch requests, the reverse of `ODataQueryBuilder`:
 | `$filter` | `NSPredicate` |
 | `$orderby` | `sortDescriptors` |
 | `$top`, `$skip` | `fetchLimit`, `fetchOffset` |
-| `$select` | `propertiesToFetch` (or fault and pick) |
-| `$expand` | `relationshipKeyPathsForPrefetching`, then inline |
+| `$select` | the properties written; the rows are fetched whole |
+| `$expand` | `relationshipKeyPathsForPrefetching`, then inline, with its own options applied in memory |
+| `$skiptoken` | the service's own: the offset of the next page |
+| `Categories(1)/Products` | the destination's rows whose inverse leads to the parent's key: `category.id == 1`, `ANY suppliers.id == 1` |
+
+Navigation compares keys, not objects. Every store compares attributes,
+but not every store compares managed objects in a fetch: FreeCoreData's
+in-memory store matches none, and raises when counting them.
 | `/$count`, `$count=true` | `countForFetchRequest:` |
 | `If-Match` | compare the ETag, `412 Precondition Failed` on mismatch |
 
@@ -341,19 +384,30 @@ depth), with a split lexer and a recursive descent parser, and describes
 the tree back as canonical OData text. The client's tests already check
 that every `$filter` the translator writes parses.
 
-From that tree, build the predicate from
-`NSComparisonPredicate`, `NSCompoundPredicate` and `NSExpression` objects.
-**Never build a predicate by formatting a string for
-`+predicateWithFormat:`**:
+`ODataPredicateBuilder` builds the predicate from that tree, out of
+`NSComparisonPredicate`, `NSCompoundPredicate` and `NSExpression` objects:
+comparisons, `in`, `and`/`or`/`not`, arithmetic, `contains`,
+`startswith`, `endswith`, `tolower`/`toupper`, `length`, `now`, `any` and
+`all` (as `SUBQUERY`), `$count` of a to-many relationship, and parameter
+aliases. `has`, casts, the date and math functions, and a service's own
+functions answer `501`. Literals are typed by the attribute they meet.
+`tolower(Name) eq 'abc'` becomes `name ==[c] 'abc'`, which a SQL store can
+use without lowering every row. gnustep-base names its arithmetic
+functions differently from Apple (`_add`, not `add:to:`) and has no
+modulo, so `mod` is Apple only.
+**It never builds a predicate by formatting a string for
+`+predicateWithFormat:`**. The one exception is a key path off a lambda's
+variable (`$v0.unitPrice`), which is made from a generated name and the
+model's own property names, never from request text:
 
 - A string built from request input is an injection vector.
 - gnustep-base's predicate parser has quirks the client has already hit.
   It rewrites `BETWEEN` into `>=` / `<=` and wraps each bound in a second
   constant expression, so parsing is not a neutral step.
 
-The client's `ODataPredicateTranslator` and this parser should be tested
+(Planned: the client's `ODataPredicateTranslator` and this builder tested
 against each other: predicate → `$filter` → predicate, and `$filter` →
-predicate → `$filter`, over the same table of cases.
+predicate → `$filter`, over the same table of cases.)
 
 ### Values are serialised by the model's types
 
@@ -374,24 +428,30 @@ UUIDs (`Edm.Guid`).
 Every failure is an OData error body with a status code: `400` for a query
 that does not parse, `404` for an unknown set or key, `405` for a method a
 resource does not allow, `412` for an ETag mismatch, `501` for a feature
-outside the supported set. Never return a bare `500` for bad input. The
-client's `ODataError` domain is the other end of this, so the two should
-agree on codes.
+outside the supported set, `406` and `415` for formats it does not speak.
+Never a bare `500` for bad input. A handler reports with
+`ODataServiceError(status, message)` (`ODataError.h`), whose code is the
+status; the body's `code`, `message`, `target` and `details` are what the
+client's `ODataError` keys read back.
 
 ## Testing
 
-- **Snapshots, both ways.** Each file in `Tests/Snapshots/` records a
-  request and its response. The client tests replay them. The server tests
-  send each recorded request to an `ODataService` over the Catalog model,
-  seeded with the snapshot rows, and compare the response: status and
-  headers exactly, and JSON bodies as JSON, not as bytes.
+- **The core, without sockets.** `Tests/ODataServiceTests.m`, over the
+  Catalog model in memory: `$metadata` (read back by the client's
+  `ODataSchema`, and matching the model with no problems), query options,
+  navigation, properties and `$value`, `$expand` with nested options,
+  server-driven paging, create, update and delete with ETags, errors,
+  metadata levels, a handler that hides rows and answers later.
 - **Round trip.** `ODataIncrementalStore` over an in-process `ODataService`
-  over an in-memory Core Data store: fetch, fault, expand, insert, update
-  with ETags, conflict, delete, then check the backing store directly.
-- **Parser pairs.** The `$filter` ↔ `NSPredicate` tables above.
-- **HTTP adapter.** A few requests over a real loopback socket, in CI on
-  both platforms. That is enough to catch a broken listener; the protocol
-  itself is tested without sockets.
+  over an in-memory Core Data store: fetch, fault, insert, update and
+  delete in one save, the backing store checked directly, and a change
+  behind the client's back reported as a conflict.
+- **HTTP adapter.** `Server/Tests/ois-serve-check.m`: requests over a real
+  loopback socket, chunked bodies, errors, `HEAD`, concurrent requests.
+- **Planned: snapshots, both ways.** Each file in `Tests/Snapshots/` sent
+  to the service over the Catalog model seeded with the snapshot rows, and
+  the response compared: status and headers exactly, JSON bodies as JSON.
+- **Planned: parser pairs**, as above.
 
 Everything runs in the existing CI: XCTest on macOS against Apple's Core
 Data, and `tools-xctest` on Linux against FreeCoreData on the
@@ -399,43 +459,45 @@ gnustep-patches stack.
 
 ## Layout
 
-When the server lands, the tree splits into three libraries, each with a
-GNUmakefile target and an Xcode target:
+For now the core is part of the one library, next to the client
+(`Source/ODataService.m`, `ODataPredicateBuilder.m`,
+`ODataMetadataWriter.m`); it needs nothing the client does not. The HTTP
+adapter is a library of its own in `Server/`, with `ois-serve` and the
+loopback check, so neither the client nor the core links the listener.
 
-- **shared:** mapper, resource identifiers, literals, the `$filter`
-  grammar, CSDL. Moved out of `Source/`, not rewritten.
-- **client:** `ODataIncrementalStore`, `ODataClient`, `ODataQueryBuilder`,
-  `ODataPredicateTranslator`.
-- **server:** `ODataService`, `ODataDataSource`, `ODataCoreDataSource`, and
-  the HTTP adapter as a separate, optional target so the core never links
-  it.
-
-The repository and framework are named for the client. Renaming them, or
-adding an umbrella name, is worth deciding before the split rather than
-after.
+The split into shared, client and server libraries is still open, and so
+is its companion question: the repository and framework are named for the
+client, and renaming them, or adding an umbrella name, is worth deciding
+before the split rather than after.
 
 ## Milestones
 
-1. **Read-only core.** Service document, `$metadata`, collections, entity
-   by key, `$filter`, `$orderby`, `$top`, `$skip`, `$select`, `$count`.
-   The read-only snapshots pass against the server.
-2. **Navigation.** `$expand` and navigation paths (`Products(1)/Category`).
-3. **Writes.** POST, PATCH, DELETE, ETags and `If-Match`, `@odata.bind`.
-   All snapshots pass, and so does the client round trip.
-4. **HTTP adapter.** GCDWebServer vendored and ported, `ois-serve`, a
-   loopback test in CI on both platforms, and example service units and
-   nginx/Caddy configs.
-5. **Workbench on the server.** Replace `WorkbenchEngine` with an
+1. ~~**Read-only core.**~~ Done: service document, `$metadata`, collections,
+   entity by key (and key as segment), properties and `$value`, `$filter`,
+   `$orderby`, `$top`, `$skip`, `$select`, `$count`, paging.
+2. ~~**Navigation.**~~ Done: navigation paths and `$expand` with nested
+   options, `$ref` and `/$count` within it. Not yet: `$levels`, casts.
+3. ~~**Writes.**~~ Done: POST (to a set or through a navigation property),
+   PATCH, PUT, DELETE, ETags with `If-Match` and `If-None-Match`,
+   `@odata.bind`, `Prefer: return`. The client round trip passes. Not yet:
+   deep inserts and updates, writing a single property.
+4. ~~**HTTP adapter.**~~ Done: GCDWebServer vendored and ported,
+   `ODataHTTPServer`, `ois-serve`, the loopback check in CI on both
+   platforms, example units and proxy configurations.
+5. **Operations**, declared in protocols, as above.
+6. **`$batch`**, multipart and JSON. The client falls back to one request
+   at a time without it, so a multi-object save is not atomic until then.
+7. **Workbench on the server.** Replace `WorkbenchEngine` with an
    `ODataService` over an in-memory store.
 
 ## Open questions
 
-- ETags: a version attribute named by `userInfo`, or a hash of the row's
-  values? The client only needs them to be opaque and to change on update.
-  Either way, `$metadata` names the properties with
-  `Core.OptimisticConcurrency`.
-- Paging: server-driven paging (`@odata.nextLink`) with a default page
-  size, which the client would then have to follow.
+- ~~ETags~~: both. A version attribute where `userInfo` names one (and
+  `$metadata` says so with `Core.OptimisticConcurrency`), else a hash of
+  the row's values.
+- ~~Paging~~: `maxPageSize` on the service, and the client's
+  `Prefer: odata.maxpagesize`, whichever is smaller; the client follows
+  `@odata.nextLink` already.
 - Authentication: left to the reverse proxy at first. If per-user data
   arrives, the data source needs to see the caller, which means the
   request, not only the query.

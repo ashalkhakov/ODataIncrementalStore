@@ -34,6 +34,14 @@ FOUNDATION_EXPORT NSString * const ODataErrorTargetKey;        // the property o
 FOUNDATION_EXPORT NSString * const ODataErrorDetailsKey;       // NSArray of { code, message, target }
 FOUNDATION_EXPORT NSString * const ODataErrorResponseBodyKey;  // the body, as text
 
+// A service's error: the code is the HTTP status to answer with, and the
+// userInfo carries the message and, optionally, ODataErrorCodeKey,
+// ODataErrorTargetKey and ODataErrorDetailsKey, as the client reads them
+// back. ODataService answers any other error a handler gives it with 500.
+FOUNDATION_EXPORT NSErrorDomain const ODataServiceErrorDomain;
+FOUNDATION_EXPORT NSError *ODataServiceError(NSInteger status, NSString *message);
+FOUNDATION_EXPORT NSError *ODataServiceErrorWithTarget(NSInteger status, NSString *message, NSString * _Nullable target);
+
 FOUNDATION_EXPORT NSError *OISHTTPError(ODataIncrementalStoreErrorCode code, NSInteger status, NSURL * _Nullable url, NSData * _Nullable body);
 
 NS_ASSUME_NONNULL_END

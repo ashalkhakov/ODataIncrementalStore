@@ -55,6 +55,15 @@ jobs:
             -derivedDataPath "$RUNNER_TEMP/DerivedData" \
             -resultBundlePath "$RUNNER_TEMP/ODataIncrementalStoreTests.xcresult" test
 
+      # The server's HTTP adapter over a real loopback socket: the vendored
+      # GCDWebServer's own smoke test, then ODataHTTPServer and the service
+      # behind it (Server/Tests/ois-serve-check.m). Plain clang, no Xcode
+      # project.
+      - name: HTTP adapter over loopback
+        run: |
+          make -C ThirdParty/GCDWebServer check
+          make -C Server check
+
       - name: Build the example apps
         run: |
           for scheme in Catalog Workbench; do
@@ -292,6 +301,12 @@ jobs:
         run: |
           . $PREFIX/System/Library/Makefiles/GNUstep.sh
           make test
+
+      - name: HTTP adapter over loopback
+        run: |
+          . $PREFIX/System/Library/Makefiles/GNUstep.sh
+          make -C ThirdParty/GCDWebServer check
+          make -C Server check
 
       # As on macOS: real services, reported but not fatal.
       - name: Live service checks (Northwind, TripPin, generated models and classes)

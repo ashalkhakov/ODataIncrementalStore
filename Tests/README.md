@@ -24,6 +24,7 @@ scheme **ODataIncrementalStoreTests** (⌘U).
 | `ODataQueryBuilderTests` | `$filter` `$orderby` `$top` `$skip` `$select` `$expand` `/$count` |
 | `ODataResourceIdentifierTests` | `EntitySet(key)` / compound keys |
 | `ODataSnapshotStoreTests` | `NSIncrementalStore` over the snapshot tape: fetch, fault, expand, POST, PATCH+ETag, 412, DELETE |
+| `ODataServiceTests` | the server's core over the Catalog model in memory: `$metadata`, queries, navigation, `$expand`, paging, writes with ETags, errors, handlers; and the store talking to it in-process |
 
 To add a case: drop a JSON file in `Snapshots/` with `request` and `response`,
 cite the spec section in `spec`, then assert the store method that should

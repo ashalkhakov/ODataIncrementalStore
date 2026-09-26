@@ -69,6 +69,11 @@
   return [_names objectEnumerator];
 }
 
+// gnustep-base leaves fast enumeration to NSDictionary's subclasses
+- (NSUInteger)countByEnumeratingWithState:(NSFastEnumerationState*)state objects:(id __unsafe_unretained _Nullable[])buffer count:(NSUInteger)len {
+  return [_names countByEnumeratingWithState:state objects:buffer count:len];
+}
+
 - (id)copyWithZone:(NSZone*)zone {
   return self;
 }

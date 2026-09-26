@@ -30,3 +30,5 @@ ODataWorkbench-*.zip
 # ThirdParty/GCDWebServer smoke-test builds
 ThirdParty/GCDWebServer/build/
 ThirdParty/GCDWebServer/obj/
+Server/build/
+Server/obj/

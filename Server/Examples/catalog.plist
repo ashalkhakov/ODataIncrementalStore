@@ -1,0 +1,32 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!-- ois-serve -Config catalog.plist: the Catalog example model in SQLite,
+     served at the public URL the proxy answers on. Any key can be given
+     on the command line instead (-Port 9000). -->
+<plist version="1.0">
+<dict>
+  <key>Model</key>
+  <string>/usr/local/share/ois-serve/Catalog.momd</string>
+  <key>StoreType</key>
+  <string>SQLite</string>
+  <key>StoreURL</key>
+  <string>/var/lib/ois-serve/catalog.sqlite</string>
+  <key>ServiceRoot</key>
+  <string>https://api.example.com/odata/</string>
+  <key>Port</key>
+  <integer>8080</integer>
+  <key>Localhost</key>
+  <true/>
+  <key>MaxPageSize</key>
+  <integer>200</integer>
+  <key>Namespace</key>
+  <string>Catalog</string>
+  <!-- A bundle whose principal class conforms to ODataServiceConfiguring
+       registers its entity set handlers here.
+  <key>Bundles</key>
+  <array>
+    <string>/usr/local/lib/ois-serve/CatalogHandlers.bundle</string>
+  </array>
+  -->
+</dict>
+</plist>

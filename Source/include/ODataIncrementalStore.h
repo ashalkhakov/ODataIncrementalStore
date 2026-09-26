@@ -25,6 +25,9 @@
 #import "ODataFunctionExpression.h"
 #import "ODataHistory.h"
 #import "ODataExpression.h"
+#import "ODataPredicateBuilder.h"
+#import "ODataMetadataWriter.h"
+#import "ODataService.h"
 
 NS_ASSUME_NONNULL_BEGIN
 

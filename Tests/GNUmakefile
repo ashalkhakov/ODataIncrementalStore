@@ -34,7 +34,8 @@ ODataIncrementalStoreTests_OBJC_FILES = \
 	ODataHistoryTests.m \
 	ODataModelBuilderTests.m \
 	ODataResourceIdentifierTests.m \
-	ODataSnapshotStoreTests.m
+	ODataSnapshotStoreTests.m \
+	ODataServiceTests.m
 
 ODataIncrementalStoreTests_RESOURCE_FILES = Snapshots
 ODataIncrementalStoreTests_INCLUDE_DIRS = -I../Source/include -I.
