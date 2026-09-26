@@ -68,6 +68,8 @@ NS_ASSUME_NONNULL_BEGIN
 @property (nonatomic, readonly) NSDictionary<NSString *, ODataSchemaComplexType *> *complexTypes;  // by qualified name
 @property (nonatomic, readonly) NSDictionary<NSString *, ODataSchemaEnumType *> *enumTypes;      // by qualified name
 @property (nonatomic, readonly) NSDictionary<NSString *, NSString *> *entitySets;                // name -> qualified type
+// The OData version the service speaks: <edmx:Edmx Version="4.01">.
+@property (nonatomic, readonly, copy) NSString *version;
 // The entity container is annotated Org.OData.Capabilities.V1.KeyAsSegmentSupported.
 @property (nonatomic, readonly) BOOL keyAsSegmentSupported;
 

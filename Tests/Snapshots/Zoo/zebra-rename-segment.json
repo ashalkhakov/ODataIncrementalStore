@@ -1,9 +1,12 @@
 {
-  "comment": "With key-as-segment, an entity is addressed by its key's value as a segment of its own.",
+  "comment": "With key-as-segment, an entity is addressed by its key's value as a segment of its own. The Zoo's $metadata says 4.0, so requests say so too.",
   "spec": "OASIS OData 4.01 Part 2 \u00a74.3.6 Key-as-Segment Convention",
   "request": {
     "method": "PATCH",
     "path": "Animals/1",
+    "headers": {
+      "OData-Version": "4.0"
+    },
     "body": {
       "Name": "Zed"
     }

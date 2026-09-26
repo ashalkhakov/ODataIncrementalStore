@@ -7,11 +7,16 @@ OASIS specifications:
 [Part 2: URL Conventions](https://docs.oasis-open.org/odata/odata/v4.01/odata-v4.01-part2-url-conventions.html),
 [JSON Format](https://docs.oasis-open.org/odata/odata-json-format/v4.01/odata-json-format-v4.01.html).
 
-The client writes its requests as **OData 4.0**, which 4.01 services read
-too, and takes responses up to **4.01**: it sends `OData-MaxVersion: 4.01`
-(`ODataIncrementalStoreMaxVersionOption` lowers it), and reads a 4.01
-payload's shorter control information (2.4). The 4.01-only client
-requirements of Part 1 §13.3 (items 16–20) are not yet reviewed one by one.
+The client speaks **OData 4.01** where it can and **4.0** where it must:
+its `$metadata` tells the store which version a service speaks
+(`<edmx:Edmx Version="4.0">`), and requests carry and are written in the
+newer version both allow (`OData-Version`; `OData-MaxVersion` is `4.01`,
+which `ODataIncrementalStoreMaxVersionOption` lowers). This matters: a 4.0
+service refuses 4.01 syntax outright (Northwind answers `in` with `400`,
+TripPin with `500`, **live**). Responses are read by their own
+`OData-Version`, 4.01's shorter control information included (2.4). The
+4.01-only client requirements of Part 1 §13.3 (items 16–20) are not yet
+reviewed one by one.
 
 | Mark | Meaning |
 |---|---|
@@ -29,7 +34,7 @@ calling the client conformant.
 | # | Requirement | Status | Notes |
 |---|---|---|---|
 | 1 | MUST send `OData-MaxVersion` | ✅ | `4.01` on every request, unless the option says otherwise. |
-| 2 | MUST send `OData-Version` and `Content-Type` with a payload | ✅ | `OData-Version` on every request; `Content-Type` only with a body. |
+| 2 | MUST send `OData-Version` and `Content-Type` with a payload | ✅ | `OData-Version` on every request, the version the service speaks (4.0 until `$metadata` is read); `Content-Type` only with a body. |
 | 3 | MUST be a conforming consumer of the JSON format | ⚠️ | See section 2. |
 | 4 | MUST follow redirects (§9.1.5) | ✅ **live** | `NSURLSession` follows them, on Apple and on GNUstep, where the client uses it whenever gnustep-base was built with libcurl. TripPin's entry URL redirects with a relative `Location`. gnustep-base's `NSURLConnection`, the fallback, does not follow a relative `Location` (`NSURLProtocol` builds the new URL without the request URL, and the request times out); a fix belongs in gnustep-patches. |
 | 5 | MUST handle next links (§11.2.6.7) | ✅ **live** | Followed, relative or absolute, for collections and to-many relationships, until the collection ends or `fetchLimit` is reached. Northwind pages at 20; all 77 products arrive. |
@@ -133,7 +138,7 @@ calling the client conformant.
 |---|---|---|---|
 | `==`, `!=`, `<`, `<=`, `>`, `>=` | `eq`, `ne`, `lt`, `le`, `gt`, `ge` | ✅ | |
 | `AND`, `OR`, `NOT` | `and`, `or`, `not` | ✅ | |
-| `IN` | `in` | ✅ | |
+| `IN` | `in` (4.01); `eq … or eq …` (4.0) | ✅ **live** | `in` is 4.01 only, and Northwind and TripPin refuse it, so a 4.0 service gets the `or` chain; an empty collection is `false`. |
 | `BETWEEN` | `ge` … `and` … `le` | ✅ | gnustep-base rewrites it before translation. |
 | `BEGINSWITH`, `ENDSWITH`, `CONTAINS` | `startswith`, `endswith`, `contains` | ✅ | |
 | `[c]` | `tolower(…)` on both sides | ✅ | |
@@ -148,7 +153,7 @@ calling the client conformant.
 | `ANY` / `ALL` on to-many | `Nav/any(x0:…)`, `Nav/all(x0:…)` | ✅ **live** | Split at the first to-many step; a further to-many step nests another lambda. `ANY` over a to-one path is the plain comparison. |
 | `SUBQUERY(…).@count` | `Nav/any(…)`, `Nav/$count` | ❌ | |
 | `rel.@count` | `Nav/$count` | ❌ | |
-| `LIKE`, `MATCHES` | `matchesPattern` (4.01 only) | — | Not expressible in 4.0. Should be an error, and is. |
+| `LIKE`, `MATCHES` | `matchesPattern` | ✅ | 4.01 only: an error against a 4.0 service. Anchored, since both match the whole string; `LIKE`'s `*` and `?` become `.*` and `.`, and `LIKE[c]` lowercases both sides. `MATCHES[c]` is an error, since a regular expression cannot be lowercased safely. |
 | Arithmetic (`+ - * /`, `modulus:by:`) | `add`, `sub`, `mul`, `div`, `mod` | ❌ | |
 | Date literals | `2024-01-01T12:00:00.5Z`, `2024-01-01` | ✅ **live** | Typed by the attribute compared with: a DateTimeOffset to the microsecond, an `Edm.Date` as the day. |
 | UUID literals | unquoted Guid | ✅ | |
@@ -250,41 +255,50 @@ What OData offers that a fetch or a save cannot say. None of it is
 required of a client (Part 1 §13.3 items 11–15 are MAYs), but operations
 and deltas are what real services are built around.
 
-**Actions and functions** (Part 1 §11.5). A *function* has no side
-effects and is called with GET, parameters in the URL
-(`GetNearestAirport(lat=33,lon=-118)`); an *action* may change things and
-is called with POST, parameters in a JSON body. Either may be *bound* to
-an entity (`People('russellwhyte')/NS.ShareTrip`) or to a collection
-(`Products/NS.Discount`), or be *unbound*, reached through an import in
-the container. They return nothing, a primitive, complex or enumeration
-value, an entity, or a collection of any of these. The plan:
+**Actions and functions** (Part 1 §11.5) are methods over the network. A
+*function* has no side effects and is called with GET, parameters in the
+URL (`GetNearestAirport(lat=33,lon=-118)`); an *action* may change things
+and is called with POST, parameters in a JSON body (an invoicing
+service's `CreateInvoice`). Bound to an entity
+(`People('russellwhyte')/NS.ShareTrip`) one is an instance method; bound
+to a collection (`Products/NS.Discount`), a class method; unbound,
+reached through an import in the container, a function of the service.
+They return nothing, a primitive, complex or enumeration value, an
+entity, or a collection of any of these. The plan:
 
 - Read `Function`, `Action`, `FunctionImport` and `ActionImport` from
   `$metadata`: parameters, their types, the binding parameter, the return
   type.
-- A store method to invoke one, synchronous like the rest of the store,
-  with a target-action form beside it:
-  `-invokeOperation:(NSString *)name boundTo:(id)objectOrEntity parameters:(NSDictionary *)parameters inContext:(NSManagedObjectContext *)context error:`.
-  Parameters are written by the value coder from their declared types, as
-  literals for a function and as JSON for an action; an object parameter
-  is sent as its reference.
+- Invoke them as methods: an instance method on the managed object, a
+  class method on the entity, a service call on the store, with a
+  target-action form beside each synchronous one. Parameters are written
+  by the value coder from their declared types, as literals for a
+  function and as JSON for an action; an object parameter is sent as its
+  reference.
 - Results come back as the store's fetches do: entities as managed objects
-  in the given context, their rows cached; other values as the coder reads
-  them (an `NSDictionary` for a complex value, an `NSArray` for a
-  collection).
-- The Workbench, as a dynamic client, lists a service's operations from
-  `$metadata` and invokes them.
+  in the caller's context, their rows cached; other values as the coder
+  reads them (an `NSDictionary` for a complex value, an `NSArray` for a
+  collection). An action that creates an entity (`CreateInvoice`) hands
+  back the new object, already saved.
+- A model generated by `ois-model` could carry the operations too, so the
+  generated entity classes get real methods; the Workbench, as a dynamic
+  client, lists them from `$metadata` and invokes them.
 
 **Delta** (Part 1 §11.3). A GET with `Prefer: odata.track-changes` ends its
 last page with `@odata.deltaLink`; a later GET of that link returns only
 what changed since: new and changed entities, and removed ones
-(`@odata.removed` in 4.01, `$deletedEntity` in 4.0). The plan: a store
-method that starts tracking a fetch request's results, and one that reads
-the changes since, refreshes the cached rows, bumps the changed objects'
-versions and posts a notification with the inserted, updated and deleted
-object IDs, for the app to merge into its contexts. It needs a service
-that tracks changes; neither public reference service does, so it would
-be tested with snapshots only.
+(`@odata.removed` in 4.01, `$deletedEntity` in 4.0). These map onto Core
+Data's persistent history, which FreeCoreData supports: each delta read
+becomes a history transaction of inserts, updates and deletes, and the
+app catches up as it would with any store, by fetching the history after
+its last token (`NSPersistentHistoryChangeRequest`) and merging it into its
+contexts. The store refreshes its cached rows and bumps the versions of
+what changed as it records them. In FreeCoreData a store answers history
+requests itself (the SQLite store does), so the incremental store can do
+the same; on Apple, whether `NSIncrementalStore` can answer them (its
+history classes have no public initializers) needs checking first. It
+needs a service that tracks changes; neither public reference service
+does, so it would be tested with snapshots.
 
 **Asynchronous requests** (Part 1 §8.2.8.8, §11.6). A request sent with
 `Prefer: respond-async` may be answered `202 Accepted` with a status
@@ -294,15 +308,15 @@ cancel. This is for long-running work, a large `$batch` or a slow action.
 It belongs in the client, inside one exchange, so neither the store nor
 its callers notice. Low priority.
 
-**Streams** (Part 1 §11.1.2, §11.4.7–8). Binary content that is not part
-of a row: a *media entity* (`HasStream="true"`, TripPin's `Photo`) has its
-content at `Entity(key)/$value`, and a *stream property* (`Edm.Stream`) at
+**Streams** (Part 1 §11.1.2, §11.4.7–8) are blobs: a *media entity*
+(`HasStream="true"`, TripPin's `Photo`) has its content at
+`Entity(key)/$value`, a *stream property* (`Edm.Stream`) at
 `Entity(key)/Property`, each with its own read and edit links, content
-type and ETag. Reading every stream with its row would cost a request per
-object. The plan: a stream is not an attribute; a store method reads and
-writes one object's stream by name (`GET`, and `PUT` with `If-Match` on
-the media ETag), and the row keeps the stream's links and content type
-for it.
+type and ETag. They stay outside Core Data, as files: the store downloads
+a stream into a file cache on request, keyed by the object and the
+stream's name and kept while its media ETag is current, and uploads one
+from a file (`PUT` with `If-Match`). Rows keep only the stream's links,
+content type and ETag.
 
 ## Order of work
 
@@ -327,8 +341,10 @@ for it.
    Core Data versions a model.
 6. ~~**Types, the rest:** complex types and collections, 4.01 payloads,
    key-as-segment.~~ Done; spatial types left out for now.
-7. **Actions and functions**, then **delta**; see section 8.
-8. **XML, for XForms:** JSON-to-XML mapping on the client first, since it
+7. ~~**Versions:** speak 4.01 or 4.0 as the service does.~~ Done: `IN`
+   had been sent as `in`, which both 4.0 reference services refuse.
+8. **Actions and functions**, then **delta**; see section 8.
+9. **XML, for XForms:** JSON-to-XML mapping on the client first, since it
    works with every service; then Atom as a second wire format where a
    service offers it (section 7). Parsing CSDL XML in step 5 builds the
    XML reading this needs.

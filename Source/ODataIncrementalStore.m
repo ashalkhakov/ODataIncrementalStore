@@ -154,6 +154,10 @@ typedef NS_ENUM(NSInteger, OISWriteMode) {
   _mapper.schema = _schema;
   id keyAsSegment = self.options[ODataIncrementalStoreKeyAsSegmentOption];
   _builder.keyAsSegment = keyAsSegment ? [keyAsSegment boolValue] : _schema.keyAsSegmentSupported;
+  // A 4.0 service rejects 4.01 syntax (Northwind and TripPin answer `in`
+  // with 400 and 500), so requests are written in the version it speaks.
+  configuration.version = [configuration versionForService:_schema.version];
+  _builder.version = configuration.version;
   NSManagedObjectModel *model = self.persistentStoreCoordinator.managedObjectModel;
   _metadataProblems = _schema ? [_mapper problemsWithModel:model] : @[ schemaError.localizedDescription ?: @"$metadata could not be read" ];
   if (_metadataProblems.count && [self.options[ODataIncrementalStoreRequireMatchingModelOption] boolValue]) {

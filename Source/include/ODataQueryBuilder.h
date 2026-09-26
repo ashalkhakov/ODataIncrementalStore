@@ -18,6 +18,8 @@ NS_ASSUME_NONNULL_BEGIN
 // Address entities as Products/1 rather than Products(1); see
 // -[ODataResourceIdentifier pathWithKeyAsSegment:].
 @property (nonatomic) BOOL keyAsSegment;
+// The OData version $filter is written in; see ODataPredicateTranslator.
+@property (nonatomic, copy) NSString *version;
 
 - (instancetype)initWithMapper:(ODataPropertyMapper *)mapper serviceRoot:(NSURL *)serviceRoot NS_DESIGNATED_INITIALIZER;
 - (instancetype)init NS_UNAVAILABLE;

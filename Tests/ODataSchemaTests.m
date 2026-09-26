@@ -163,6 +163,7 @@ static NSManagedObjectModel *OISZooModel(NSArray *extraAnimalAttributes)
 - (void)testKeyAsSegmentSupportIsReadFromTheContainer
 {
   XCTAssertFalse(_store.schema.keyAsSegmentSupported);
+  XCTAssertEqualObjects(_store.schema.version, @"4.0");
   NSString *xml = @"<edmx:Edmx Version=\"4.0\" xmlns:edmx=\"http://docs.oasis-open.org/odata/ns/edmx\">"
                   @"<edmx:Reference Uri=\"https://oasis-tcs.github.io/odata-vocabularies/vocabularies/Org.OData.Capabilities.V1.xml\">"
                   @"<edmx:Include Namespace=\"Org.OData.Capabilities.V1\" Alias=\"Capabilities\"/></edmx:Reference>"

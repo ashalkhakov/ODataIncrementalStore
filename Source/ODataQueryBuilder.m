@@ -100,6 +100,7 @@ static NSString *OISPercentEncode(NSString *value)
   if (fetch.predicate) {
     ODataPredicateTranslator *t = [[ODataPredicateTranslator alloc] initWithMapper:self.mapper entity:entity];
     t.keysForObjectID = self.keysForObjectID;
+    if (self.version) t.version = self.version;
     NSString *filter = [t translatePredicate:fetch.predicate error:error];
     if (!filter) return nil;
     [items addObject:@[ @"$filter", filter ]];

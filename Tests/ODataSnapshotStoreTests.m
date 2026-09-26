@@ -750,6 +750,10 @@
   req = [NSMutableURLRequest requestWithURL:OISTestServiceRoot()];
   [configuration applyToRequest:req];
   XCTAssertEqualObjects([req valueForHTTPHeaderField:@"OData-MaxVersion"], @"4.0");
+  XCTAssertEqualObjects([configuration versionForService:@"4.01"], @"4.0", @"no newer than the client allows");
+  configuration = [[ODataConfiguration alloc] initWithURL:OISTestServiceRoot() options:nil];
+  XCTAssertEqualObjects([configuration versionForService:@"4.0"], @"4.0", @"no newer than the service speaks");
+  XCTAssertEqualObjects([configuration versionForService:@"4.01"], @"4.01");
   XCTAssertTrue([[req valueForHTTPHeaderField:@"Accept"] containsString:@"odata.metadata=minimal"]);
 }
 

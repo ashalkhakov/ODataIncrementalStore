@@ -38,6 +38,7 @@
 @property (nonatomic, strong) NSMutableDictionary *entitySets;
 @property (nonatomic, strong) NSMutableDictionary *aliases;  // alias -> namespace
 @property (nonatomic) BOOL keyAsSegmentSupported;
+@property (nonatomic, copy) NSString *version;
 @end
 
 @implementation OISSchemaReader {
@@ -85,7 +86,9 @@ static NSString *OISLocalName(NSString *name)
          attributes:(NSDictionary *)attributes
 {
   NSString *element = OISLocalName(elementName);
-  if ([element isEqualToString:@"Schema"]) {
+  if ([element isEqualToString:@"Edmx"]) {
+    self.version = attributes[@"Version"];
+  } else if ([element isEqualToString:@"Schema"]) {
     _namespace = attributes[@"Namespace"];
     if (attributes[@"Alias"] && _namespace) _aliases[attributes[@"Alias"]] = _namespace;
   } else if ([element isEqualToString:@"EntityType"]) {
@@ -242,6 +245,7 @@ static NSString *OISLocalName(NSString *name)
   schema->_enumTypes = [reader.enumTypes copy];
   schema->_entitySets = [sets copy];
   schema->_keyAsSegmentSupported = reader.keyAsSegmentSupported;
+  schema->_version = [reader.version copy] ?: @"4.0";
   return schema;
 }
 

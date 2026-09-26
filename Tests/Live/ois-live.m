@@ -135,6 +135,12 @@ static void northwind(NSString *models)
             @"sort through a relationship", [NSString stringWithFormat:@"%@, %@ … %@", describe(byName, e), firstName, lastName]);
 
       e = nil;
+      NSFetchRequest *named = [NSFetchRequest fetchRequestWithEntityName:@"Product"];
+      named.predicate = [NSPredicate predicateWithFormat:@"name IN %@", @[ @"Chai", @"Chang", @"Tofu" ]];
+      NSArray *three = [moc executeFetchRequest:named error:&e];
+      check(three.count == 3, @"IN over values, in 4.0 (eq … or …: a 4.0 service refuses `in`)", describe(three, e));
+
+      e = nil;
       NSFetchRequest *pricey = [NSFetchRequest fetchRequestWithEntityName:@"Category"];
       pricey.predicate = [NSPredicate predicateWithFormat:@"ANY products.unitPrice > 100"];
       NSArray *categories = [moc executeFetchRequest:pricey error:&e];

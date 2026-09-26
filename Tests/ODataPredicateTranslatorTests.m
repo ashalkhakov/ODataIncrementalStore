@@ -82,8 +82,15 @@
 
 - (void)testInAndBetween
 {
+  // 4.0 has no `in`: Northwind answers it with 400, TripPin with 500.
+  [self assertPredicate:@"name IN {\"Chai\", \"Chang\"}"
+                 filter:@"(ProductName eq 'Chai' or ProductName eq 'Chang')"];
+  [self assertPredicate:@"name IN %@" filter:@"ProductName eq 'Chai'" arguments:@[ @[ @"Chai" ] ]];
+  [self assertPredicate:@"name IN %@" filter:@"false" arguments:@[ @[] ]];
+  _translator.version = @"4.01";
   [self assertPredicate:@"name IN {\"Chai\", \"Chang\"}"
                  filter:@"ProductName in ('Chai', 'Chang')"];
+  _translator.version = @"4.0";
   // gnustep-base's parser rewrites BETWEEN as >= AND <= before the
   // translator sees it. Both filters select the same rows.
   NSError *error = nil;
@@ -93,6 +100,25 @@
   NSArray *accepted = @[ @"(UnitPrice ge 10 and UnitPrice le 20)",
                          @"(UnitPrice ge 10) and (UnitPrice le 20)" ];
   XCTAssertTrue([accepted containsObject:got], @"BETWEEN → %@", got);
+}
+
+- (void)assertPredicate:(NSString *)format filter:(NSString *)expected arguments:(NSArray *)arguments
+{
+  NSError *error = nil;
+  NSString *got = [_translator translatePredicate:[NSPredicate predicateWithFormat:format argumentArray:arguments] error:&error];
+  XCTAssertNil(error, @"%@ → %@", format, error);
+  XCTAssertEqualObjects(got, expected, @"predicate %@", format);
+}
+
+- (void)testPatternsAreMatchesPatternIn401
+{
+  _translator.version = @"4.01";
+  [self assertPredicate:@"name LIKE %@" filter:@"matchesPattern(ProductName, '^Ch.*a.$')" arguments:@[ @"Ch*a?" ]];
+  [self assertPredicate:@"name LIKE[c] %@" filter:@"matchesPattern(tolower(ProductName), '^o''b\\..*$')" arguments:@[ @"O'B.*" ]];
+  [self assertPredicate:@"name MATCHES %@" filter:@"matchesPattern(ProductName, '^(?:C[a-z]+)$')" arguments:@[ @"C[a-z]+" ]];
+  NSError *error = nil;
+  XCTAssertNil([_translator translatePredicate:[NSPredicate predicateWithFormat:@"name MATCHES[c] 'c.*'"] error:&error]);
+  XCTAssertEqual(error.code, ODataIncrementalStoreErrorUnsupportedPredicate);
 }
 
 - (void)assertPredicate:(NSString *)format on:(NSString *)entityName filter:(NSString *)expected

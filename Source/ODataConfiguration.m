@@ -41,8 +41,16 @@ NSString * const ODataIncrementalStoreType = @"ODataIncrementalStore";
   _batchSaves = batch ? [batch boolValue] : YES;
   id maxVersion = options[ODataIncrementalStoreMaxVersionOption];
   _maxVersion = [maxVersion isKindOfClass:[NSString class]] ? [maxVersion copy] : @"4.01";
+  _version = @"4.0";
   _userAgent = @"ODataIncrementalStore/1.0 (LGPL-2.1; libobjc2)";
   return self;
+}
+
+- (NSString *)versionForService:(NSString *)serviceVersion
+{
+  BOOL service401 = [serviceVersion compare:@"4.01" options:NSNumericSearch] != NSOrderedAscending;
+  BOOL client401 = [self.maxVersion compare:@"4.01" options:NSNumericSearch] != NSOrderedAscending;
+  return service401 && client401 ? @"4.01" : @"4.0";
 }
 
 - (void)applyToRequest:(NSMutableURLRequest *)request
@@ -59,7 +67,7 @@ NSString * const ODataIncrementalStoreType = @"ODataIncrementalStore";
   if (request.HTTPBody.length && ![request valueForHTTPHeaderField:@"Content-Type"]) {
     [request setValue:json forHTTPHeaderField:@"Content-Type"];
   }
-  [request setValue:@"4.0" forHTTPHeaderField:@"OData-Version"];
+  [request setValue:self.version forHTTPHeaderField:@"OData-Version"];
   [request setValue:self.maxVersion forHTTPHeaderField:@"OData-MaxVersion"];
   [request setValue:self.userAgent forHTTPHeaderField:@"User-Agent"];
   request.timeoutInterval = self.timeout;

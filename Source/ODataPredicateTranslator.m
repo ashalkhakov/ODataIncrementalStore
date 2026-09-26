@@ -3,6 +3,7 @@
 
 #import "ODataPredicateTranslator.h"
 #import "ODataError.h"
+#include <string.h>
 
 @interface ODataPredicateTranslator ()
 // Inside a lambda (any/all), paths start from this variable, not the
@@ -30,6 +31,7 @@
   if (!self) return nil;
   _mapper = mapper;
   _entity = entity;
+  _version = @"4.0";
   return self;
 }
 
@@ -80,6 +82,9 @@
   if ([self comparesObjects:cmp.rightExpression]) {
     return [self translateObjectComparison:cmp error:error];
   }
+  if (cmp.predicateOperatorType == NSLikePredicateOperatorType || cmp.predicateOperatorType == NSMatchesPredicateOperatorType) {
+    return [self translatePattern:cmp error:error];
+  }
   self.comparedAttribute = [self attributeAtExpression:cmp.leftExpression] ?: [self attributeAtExpression:cmp.rightExpression];
   self.comparedType = [self typeAtExpression:cmp.leftExpression] ?: [self typeAtExpression:cmp.rightExpression];
   NSString *lhs = [self translateExpression:cmp.leftExpression error:error];
@@ -110,8 +115,8 @@
     case NSContainsPredicateOperatorType:
       return [self function:@"contains" left:lhs right:rhs caseInsensitive:ci];
     case NSInPredicateOperatorType: {
-      NSCharacterSet *trim = [NSCharacterSet characterSetWithCharactersInString:@"()"];
-      return [NSString stringWithFormat:@"%@ in (%@)", lhs, [rhs stringByTrimmingCharactersInSet:trim]];
+      NSArray *literals = [self literalsInExpression:cmp.rightExpression error:error];
+      return literals ? [self membership:lhs literals:literals] : nil;
     }
     case NSBetweenPredicateOperatorType:
       if (cmp.rightExpression.expressionType == NSAggregateExpressionType) {
@@ -129,6 +134,86 @@
       if (error) *error = OISError(ODataIncrementalStoreErrorUnsupportedPredicate, cmp.description);
       return nil;
   }
+}
+
+- (BOOL)speaks401
+{
+  return [self.version compare:@"4.01" options:NSNumericSearch] != NSOrderedAscending;
+}
+
+// x in (a, b) in 4.01 (Part 2 section 5.1.1.1.12); (x eq a or x eq b) in
+// 4.0, which has no `in`. Nothing to be in is false.
+- (NSString *)membership:(NSString *)lhs literals:(NSArray *)literals
+{
+  if (!literals.count) return @"false";
+  if (literals.count == 1) return [NSString stringWithFormat:@"%@ eq %@", lhs, literals[0]];
+  if (self.speaks401) return [NSString stringWithFormat:@"%@ in (%@)", lhs, [literals componentsJoinedByString:@", "]];
+  NSMutableArray *parts = [NSMutableArray array];
+  for (NSString *literal in literals) [parts addObject:[NSString stringWithFormat:@"%@ eq %@", lhs, literal]];
+  return [NSString stringWithFormat:@"(%@)", [parts componentsJoinedByString:@" or "]];
+}
+
+// The members of IN's right side, each as a literal.
+- (NSArray *)literalsInExpression:(NSExpression *)expression error:(NSError **)error
+{
+  NSMutableArray *literals = [NSMutableArray array];
+  if (expression.expressionType == NSAggregateExpressionType && [expression.collection isKindOfClass:[NSArray class]]) {
+    for (NSExpression *e in expression.collection) {
+      NSString *t = [self translateExpression:e error:error];
+      if (!t) return nil;
+      [literals addObject:t];
+    }
+    return literals;
+  }
+  id value = expression.expressionType == NSConstantValueExpressionType ? expression.constantValue : nil;
+  if ([value isKindOfClass:[NSSet class]] || [value isKindOfClass:[NSOrderedSet class]]) value = [value allObjects];
+  if (![value isKindOfClass:[NSArray class]]) {
+    if (error) *error = OISError(ODataIncrementalStoreErrorUnsupportedExpression, [NSString stringWithFormat:@"IN needs a collection: %@", expression]);
+    return nil;
+  }
+  for (id v in value) [literals addObject:[self literal:v]];
+  return literals;
+}
+
+// LIKE and MATCHES: matchesPattern with an ECMAScript regular expression,
+// anchored, since both match the whole string (Part 2 section
+// 5.1.1.5.4, 4.01 only).
+- (NSString *)translatePattern:(NSComparisonPredicate *)cmp error:(NSError **)error
+{
+  BOOL like = cmp.predicateOperatorType == NSLikePredicateOperatorType;
+  BOOL ci = (cmp.options & NSCaseInsensitivePredicateOption) != 0;
+  id pattern = cmp.rightExpression.expressionType == NSConstantValueExpressionType ? cmp.rightExpression.constantValue : nil;
+  NSString *why = nil;
+  if (!self.speaks401) why = @"needs OData 4.01 (matchesPattern), and the service speaks 4.0";
+  else if (![pattern isKindOfClass:[NSString class]]) why = @"needs a constant pattern";
+  else if (ci && !like) why = @"cannot be case-insensitive: a regular expression cannot be lowercased safely";
+  if (why) {
+    if (error) *error = OISError(ODataIncrementalStoreErrorUnsupportedPredicate,
+                                 [NSString stringWithFormat:@"%@ %@: %@", like ? @"LIKE" : @"MATCHES", why, cmp]);
+    return nil;
+  }
+  NSString *lhs = [self translateExpression:cmp.leftExpression error:error];
+  if (!lhs) return nil;
+  NSString *regex;
+  if (like) {
+    // * is any run, ? any one character, \ escapes; the rest is itself.
+    NSMutableString *out = [NSMutableString stringWithString:@"^"];
+    NSString *source = ci ? [pattern lowercaseString] : pattern;
+    for (NSUInteger i = 0; i < source.length; i++) {
+      unichar c = [source characterAtIndex:i];
+      if (c == '\\' && i + 1 < source.length) c = [source characterAtIndex:++i];
+      else if (c == '*') { [out appendString:@".*"]; continue; }
+      else if (c == '?') { [out appendString:@"."]; continue; }
+      if (c < 128 && strchr("\\^$.|?*+()[]{}/", (int)c)) [out appendString:@"\\"];
+      [out appendFormat:@"%C", c];
+    }
+    [out appendString:@"$"];
+    regex = out;
+  } else {
+    regex = [NSString stringWithFormat:@"^(?:%@)$", pattern];
+  }
+  NSString *literal = [NSString stringWithFormat:@"'%@'", [regex stringByReplacingOccurrencesOfString:@"'" withString:@"''"]];
+  return [NSString stringWithFormat:@"matchesPattern(%@, %@)", ci ? [NSString stringWithFormat:@"tolower(%@)", lhs] : lhs, literal];
 }
 
 - (NSString *)translateExpression:(NSExpression *)expression error:(NSError **)error
@@ -262,6 +347,7 @@
   inner.lambdaVariable = variable;
   inner.lambdaDepth = self.lambdaDepth + 1;
   inner.keysForObjectID = self.keysForObjectID;
+  inner.version = self.version;
   NSExpression *innerLeft = rest.count
       ? [NSExpression expressionForKeyPath:[rest componentsJoinedByString:@"."]]
       : [NSExpression expressionForEvaluatedObject];
@@ -412,7 +498,7 @@ static NSArray *OISObjectsInExpression(NSExpression *expression)
       if (singleKey) {
         NSMutableArray *literals = [NSMutableArray array];
         for (NSArray *pair in singles) [literals addObject:pair[1]];
-        return [NSString stringWithFormat:@"%@ in (%@)", singles.firstObject[0], [literals componentsJoinedByString:@", "]];
+        return [self membership:singles.firstObject[0] literals:literals];
       }
       return [NSString stringWithFormat:@"(%@)", [clauses componentsJoinedByString:@" or "]];
     }

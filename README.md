@@ -218,8 +218,11 @@ open).
 
 `ODataIncrementalStoreKeyAsSegmentOption` addresses entities as
 `Products/1` rather than `Products(1)`; the store does so by itself when
-`$metadata` says the service supports it. Responses are read up to OData
-4.01 (`ODataIncrementalStoreMaxVersionOption`).
+`$metadata` says the service supports it. The store speaks OData 4.01 to a
+4.01 service and 4.0 to a 4.0 one, as its `$metadata` says
+(`ODataIncrementalStoreMaxVersionOption` caps it): a 4.0 service refuses
+4.01 syntax, so `IN` becomes `eq … or eq …` there, and `LIKE` and
+`MATCHES` (`matchesPattern`) work only against 4.01.
 
 ## Threading
 
