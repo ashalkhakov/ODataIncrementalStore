@@ -16,7 +16,16 @@ NS_ASSUME_NONNULL_BEGIN
 // Header names are case-insensitive (RFC 9110), whatever case the
 // transport kept them in.
 - (nullable NSString *)valueForHeader:(NSString *)name;
+// The JSON body, with control information spelled one way whatever the
+// payload's OData-Version: a 4.01 payload may leave out the odata. prefix
+// (JSON Format 4.01 section 4.5), so @etag, @nextLink and Orders@count
+// become @odata.etag, @odata.nextLink and Orders@odata.count. A payload
+// that says it is 4.0 is taken as it is; one that says nothing, as 4.01.
+- (nullable id)JSONWithError:(NSError **)error;
 @end
+
+// The same, for JSON already parsed, from a payload of this OData-Version.
+FOUNDATION_EXPORT id ODataNormalizedControlInformation(id json, NSString * _Nullable version);
 
 // One request on its way, and once it is done, how it went. Whoever
 // starts an exchange gives it a target and an action; -finish sends the

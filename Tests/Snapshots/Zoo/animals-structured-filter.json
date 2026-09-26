@@ -1,0 +1,52 @@
+{
+  "comment": "A complex value's member is a path into it; a collection of values is gone through with any(), primitive elements by the lambda variable itself, complex ones by their members; an Edm.Date member's literal is a date.",
+  "spec": "OASIS OData 4.01 Part 2 \u00a75.1.1.10 (lambda operators), \u00a75.1.1.15 (path expressions)",
+  "request": {
+    "method": "GET",
+    "path": "Animals",
+    "query": {
+      "$filter": "(Home/Zone eq 'Pride Rock') and (Nicknames/any(x0:x0 eq 'King')) and (PastHomes/any(x0:x0/Opened lt 2018-06-01))",
+      "$expand": "Keeper($select=Code)"
+    }
+  },
+  "response": {
+    "status": 200,
+    "headers": {
+      "Content-Type": "application/json;odata.metadata=minimal;charset=utf-8",
+      "OData-Version": "4.0"
+    },
+    "body": {
+      "@odata.context": "https://zoo.test/Zoo.svc/$metadata#Animals",
+      "value": [
+        {
+          "@odata.type": "#Zoo.Lion",
+          "Id": 2,
+          "Name": "Leo",
+          "Diet": "Carnivore",
+          "Features": "Mane",
+          "Born": "2018-02-11",
+          "Home": {
+            "Zone": "Pride Rock",
+            "Opened": "2017-01-01",
+            "Area": 3000
+          },
+          "Nicknames": [
+            "King",
+            "Simba"
+          ],
+          "PastHomes": [
+            {
+              "Zone": "Quarantine",
+              "Opened": "2018-03-01",
+              "Area": "10"
+            }
+          ],
+          "MaxRoar": 114,
+          "Keeper": {
+            "Code": "K1"
+          }
+        }
+      ]
+    }
+  }
+}

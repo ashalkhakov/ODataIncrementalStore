@@ -32,6 +32,19 @@
   XCTAssertEqualObjects(id1.path, @"Order_Details(OrderID=10248,ProductID=11)");
 }
 
+- (void)testKeyAsSegment
+{
+  // Part 2 section 4.3.6: the key's value, bare, as a segment of its own.
+  ODataResourceIdentifier *product = [[ODataResourceIdentifier alloc] initWithEntitySet:@"Products" keys:@{ @"ProductID": @1 }];
+  XCTAssertEqualObjects([product pathWithKeyAsSegment:YES], @"Products/1");
+  XCTAssertEqualObjects([product pathWithKeyAsSegment:NO], @"Products(1)");
+  ODataResourceIdentifier *person = [[ODataResourceIdentifier alloc] initWithEntitySet:@"People" keys:@{ @"UserName": @"o'neil/x y" }];
+  XCTAssertEqualObjects([person pathWithKeyAsSegment:YES], @"People/o'neil%2Fx%20y", @"unquoted, and a '/' in it escaped");
+  ODataResourceIdentifier *line = [[ODataResourceIdentifier alloc] initWithEntitySet:@"Order_Details"
+                                                                                keys:@{ @"OrderID": @10248, @"ProductID": @11 }];
+  XCTAssertEqualObjects([line pathWithKeyAsSegment:YES], @"Order_Details(OrderID=10248,ProductID=11)", @"a compound key keeps parentheses");
+}
+
 - (void)testRoundTripThroughJSONData
 {
   ODataResourceIdentifier *id1 =

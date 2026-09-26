@@ -244,6 +244,13 @@ NSString *ODataBase64URLString(NSData *data)
   return s;
 }
 
+NSString *ODataTypeNameFromControlInformation(NSString *value)
+{
+  // "#NS.Type", "NS.Type" (4.01), or a URL ending in it: .../$metadata#NS.Type.
+  NSRange hash = [value rangeOfString:@"#" options:NSBackwardsSearch];
+  return hash.location == NSNotFound ? value : [value substringFromIndex:hash.location + 1];
+}
+
 #pragma mark - The coder
 
 static ODataEdmType OISEdmTypeNamed(NSString *declared)
@@ -297,34 +304,53 @@ static ODataEdmType OISEdmTypeOfCoreDataType(NSAttributeDescription *attribute)
 + (ODataEdmType)edmTypeForAttribute:(NSAttributeDescription *)attribute
 {
   if (!attribute) return ODataEdmUnknown;
-  ODataEdmType declared = OISEdmTypeNamed(attribute.userInfo[ODataUserInfoType]);
-  return declared != ODataEdmUnknown ? declared : OISEdmTypeOfCoreDataType(attribute);
+  NSString *declared = attribute.userInfo[ODataUserInfoType];
+  ODataEdmType type = OISEdmTypeNamed(declared);
+  if (type == ODataEdmUnknown && [declared isKindOfClass:[NSString class]] && [declared hasPrefix:@"Collection("]) {
+    type = ODataEdmCollection;
+  }
+  return type != ODataEdmUnknown ? type : OISEdmTypeOfCoreDataType(attribute);
+}
+
+- (ODataEdmType)edmTypeNamed:(NSString *)typeName
+{
+  if (![typeName isKindOfClass:[NSString class]] || !typeName.length) return ODataEdmUnknown;
+  if ([typeName hasPrefix:@"Collection("] && [typeName hasSuffix:@")"]) return ODataEdmCollection;
+  if ([self.schema enumTypeNamed:typeName]) return ODataEdmEnum;
+  if ([self.schema complexTypeNamed:typeName]) return ODataEdmComplex;
+  return OISEdmTypeNamed(typeName);
+}
+
+- (NSString *)typeNameOfAttribute:(NSAttributeDescription *)attribute
+{
+  if (!attribute) return nil;
+  NSString *explicit = attribute.userInfo[ODataUserInfoType];
+  if ([explicit isKindOfClass:[NSString class]] && explicit.length) {
+    return self.schema ? [self.schema qualifiedName:explicit] : explicit;
+  }
+  return self.declaredTypeForAttribute ? self.declaredTypeForAttribute(attribute) : nil;
 }
 
 - (ODataEdmType)edmTypeOfAttribute:(NSAttributeDescription *)attribute
 {
   if (!attribute) return ODataEdmUnknown;
   NSString *explicit = attribute.userInfo[ODataUserInfoType];
-  if ([explicit isKindOfClass:[NSString class]]) {
-    if ([self.schema enumTypeNamed:explicit]) return ODataEdmEnum;
-    ODataEdmType type = OISEdmTypeNamed(explicit);
-    if (type != ODataEdmUnknown) return type;
-  }
+  ODataEdmType type = [self edmTypeNamed:explicit];
+  if (type != ODataEdmUnknown) return type;
   NSString *declared = self.declaredTypeForAttribute ? self.declaredTypeForAttribute(attribute) : nil;
-  if (declared) {
-    if ([self.schema enumTypeNamed:declared]) return ODataEdmEnum;
-    ODataEdmType type = OISEdmTypeNamed(declared);
-    if (type != ODataEdmUnknown) return type;
-  }
+  type = [self edmTypeNamed:declared];
+  if (type != ODataEdmUnknown) return type;
   return OISEdmTypeOfCoreDataType(attribute);
 }
 
-- (ODataSchemaEnumType *)enumTypeOfAttribute:(NSAttributeDescription *)attribute
+// The type name an attribute's value is coded by: its own, or with neither
+// userInfo nor schema to say, none.
+- (NSString *)codingTypeNameOfAttribute:(NSAttributeDescription *)attribute
 {
   NSString *explicit = attribute.userInfo[ODataUserInfoType];
-  NSString *name = [explicit isKindOfClass:[NSString class]] ? explicit
-                 : (self.declaredTypeForAttribute ? self.declaredTypeForAttribute(attribute) : nil);
-  return name ? [self.schema enumTypeNamed:name] : nil;
+  if ([self edmTypeNamed:explicit] != ODataEdmUnknown) return [self typeNameOfAttribute:attribute];
+  NSString *declared = self.declaredTypeForAttribute ? self.declaredTypeForAttribute(attribute) : nil;
+  return [self edmTypeNamed:declared] != ODataEdmUnknown ? declared : nil;
 }
 
 static BOOL OISIsIntegerAttribute(NSAttributeDescription *attribute)
@@ -386,6 +412,10 @@ static ODataEdmType OISEdmTypeOfValue(id value)
   if ([value isKindOfClass:[NSDate class]]) return ODataEdmDateTimeOffset;
   if ([value isKindOfClass:[NSUUID class]]) return ODataEdmGuid;
   if ([value isKindOfClass:[NSData class]]) return ODataEdmBinary;
+  if ([value isKindOfClass:[NSDictionary class]]) return ODataEdmComplex;
+  if ([value isKindOfClass:[NSArray class]] || [value isKindOfClass:[NSSet class]] || [value isKindOfClass:[NSOrderedSet class]]) {
+    return ODataEdmCollection;
+  }
   return ODataEdmString;
 }
 
@@ -407,10 +437,36 @@ static NSDecimalNumber *OISDecimal(id json)
   return [d isEqual:[NSDecimalNumber notANumber]] ? nil : d;
 }
 
-- (id)coreDataValueForJSON:(id)json attribute:(NSAttributeDescription *)attribute
+static NSString *OISElementType(NSString *typeName)
+{
+  if ([typeName hasPrefix:@"Collection("] && [typeName hasSuffix:@")"]) {
+    return [typeName substringWithRange:NSMakeRange(11, typeName.length - 12)];
+  }
+  return nil;
+}
+
+// A complex value's type: the one it names in @odata.type (4.01: @type),
+// when that is the declared type or derives from it, else the declared one.
+- (ODataSchemaComplexType *)complexTypeOf:(NSDictionary *)value declared:(NSString *)typeName
+{
+  ODataSchemaComplexType *declared = [self.schema complexTypeNamed:typeName];
+  id named = value[@"@odata.type"];
+  if (![named isKindOfClass:[NSString class]]) return declared;
+  NSString *name = ODataTypeNameFromControlInformation(named);
+  ODataSchemaComplexType *actual = [self.schema complexTypeNamed:name];
+  for (ODataSchemaComplexType *t = actual; t; t = t.baseType ? [self.schema complexTypeNamed:t.baseType] : nil) {
+    if (!declared || [t.qualifiedName isEqualToString:declared.qualifiedName]) return actual;
+  }
+  return declared;
+}
+
+#pragma mark Reading
+
+- (id)decode:(id)json edm:(ODataEdmType)edm typeName:(NSString *)typeName
+     enumAsInteger:(BOOL)enumAsInteger asUUID:(BOOL)asUUID
 {
   if (!json || json == [NSNull null]) return [NSNull null];
-  switch ([self edmTypeOfAttribute:attribute]) {
+  switch (edm) {
     case ODataEdmBoolean:
       return [json isKindOfClass:[NSNumber class]] ? [NSNumber numberWithBool:[json boolValue]] : nil;
     case ODataEdmInteger:
@@ -434,17 +490,49 @@ static NSDecimalNumber *OISDecimal(id json)
       return [json isKindOfClass:[NSString class]] ? ODataDurationFromString(json) : nil;
     case ODataEdmGuid:
       if (![json isKindOfClass:[NSString class]]) return nil;
-      return attribute.attributeType == NSUUIDAttributeType ? [[NSUUID alloc] initWithUUIDString:json] : json;
+      return asUUID ? [[NSUUID alloc] initWithUUIDString:json] : json;
     case ODataEdmBinary:
       return [json isKindOfClass:[NSString class]] ? ODataDataFromBase64(json) : nil;
     case ODataEdmEnum: {
-      ODataSchemaEnumType *type = [self enumTypeOfAttribute:attribute];
-      if (OISIsIntegerAttribute(attribute)) {
+      ODataSchemaEnumType *type = [self.schema enumTypeNamed:typeName];
+      if (enumAsInteger) {
         return [json isKindOfClass:[NSNumber class]] ? json
              : ([json isKindOfClass:[NSString class]] && type ? OISEnumNumber(type, json) : nil);
       }
       if ([json isKindOfClass:[NSNumber class]] && type) return OISEnumText(type, json);
       return [json isKindOfClass:[NSString class]] ? json : [json description];
+    }
+    case ODataEdmComplex: {
+      if (![json isKindOfClass:[NSDictionary class]]) return nil;
+      ODataSchemaComplexType *type = [self complexTypeOf:json declared:typeName];
+      NSMutableDictionary *value = [NSMutableDictionary dictionary];
+      for (NSString *key in json) {
+        id member = json[key];
+        if ([key isEqualToString:@"@odata.type"]) {
+          // Only a type other than the declared one is worth keeping.
+          if (type && ![type.qualifiedName isEqualToString:[self.schema qualifiedName:typeName]]) {
+            value[@"@odata.type"] = [@"#" stringByAppendingString:type.qualifiedName];
+          }
+          continue;
+        }
+        if ([key rangeOfString:@"@"].location != NSNotFound) continue;  // annotations
+        ODataSchemaProperty *property = type ? [self.schema property:key ofComplexType:type] : nil;
+        // A member the schema does not declare (an open type's) is kept as
+        // it came.
+        id decoded = property ? [self valueForJSON:member typeName:property.type] : member;
+        if (decoded) value[key] = decoded;
+      }
+      return value;
+    }
+    case ODataEdmCollection: {
+      if (![json isKindOfClass:[NSArray class]]) return nil;
+      NSString *element = OISElementType(typeName);
+      NSMutableArray *values = [NSMutableArray array];
+      for (id item in json) {
+        id decoded = element ? [self valueForJSON:item typeName:element] : item;
+        [values addObject:decoded ?: [NSNull null]];
+      }
+      return values;
     }
     case ODataEdmUnknown:
       return json;
@@ -452,12 +540,24 @@ static NSDecimalNumber *OISDecimal(id json)
   return json;
 }
 
-- (id)JSONForCoreDataValue:(id)value attribute:(NSAttributeDescription *)attribute
+- (id)coreDataValueForJSON:(id)json attribute:(NSAttributeDescription *)attribute
+{
+  return [self decode:json edm:[self edmTypeOfAttribute:attribute] typeName:[self codingTypeNameOfAttribute:attribute]
+        enumAsInteger:OISIsIntegerAttribute(attribute) asUUID:attribute.attributeType == NSUUIDAttributeType];
+}
+
+- (id)valueForJSON:(id)json typeName:(NSString *)typeName
+{
+  return [self decode:json edm:[self edmTypeNamed:typeName] typeName:typeName enumAsInteger:NO asUUID:NO];
+}
+
+#pragma mark Writing
+
+- (id)encode:(id)value edm:(ODataEdmType)edm typeName:(NSString *)typeName
 {
   if (!value || value == [NSNull null]) return [NSNull null];
-  ODataEdmType type = [self edmTypeOfAttribute:attribute];
-  if (type == ODataEdmUnknown) type = OISEdmTypeOfValue(value);
-  switch (type) {
+  if (edm == ODataEdmUnknown) edm = OISEdmTypeOfValue(value);
+  switch (edm) {
     case ODataEdmBoolean:
       // A real JSON boolean: @0 set on a Boolean attribute would be written 0.
       return [NSNumber numberWithBool:[value boolValue]];
@@ -492,9 +592,33 @@ static NSDecimalNumber *OISDecimal(id json)
     case ODataEdmBinary:
       return [value isKindOfClass:[NSData class]] ? ODataBase64URLString(value) : value;
     case ODataEdmEnum: {
-      ODataSchemaEnumType *type = [self enumTypeOfAttribute:attribute];
+      ODataSchemaEnumType *type = [self.schema enumTypeNamed:typeName];
       if ([value isKindOfClass:[NSNumber class]]) return type ? OISEnumText(type, value) : [value stringValue];
       return [value description];
+    }
+    case ODataEdmComplex: {
+      if (![value isKindOfClass:[NSDictionary class]]) return value;
+      ODataSchemaComplexType *type = [self complexTypeOf:value declared:typeName];
+      NSMutableDictionary *json = [NSMutableDictionary dictionary];
+      for (NSString *key in value) {
+        if ([key hasPrefix:@"@"]) {
+          if ([key isEqualToString:@"@odata.type"]) json[key] = value[key];
+          continue;
+        }
+        ODataSchemaProperty *property = type ? [self.schema property:key ofComplexType:type] : nil;
+        json[key] = [self JSONForValue:value[key] typeName:property.type];
+      }
+      return json;
+    }
+    case ODataEdmCollection: {
+      NSString *element = OISElementType(typeName);
+      id items = value;
+      if ([items isKindOfClass:[NSOrderedSet class]]) items = [items array];
+      else if ([items isKindOfClass:[NSSet class]]) items = [items allObjects];
+      if (![items isKindOfClass:[NSArray class]]) return value;
+      NSMutableArray *json = [NSMutableArray array];
+      for (id item in items) [json addObject:[self JSONForValue:item typeName:element]];
+      return json;
     }
     case ODataEdmUnknown:
       return value;
@@ -502,11 +626,23 @@ static NSDecimalNumber *OISDecimal(id json)
   return value;
 }
 
-- (NSString *)literalForValue:(id)value attribute:(NSAttributeDescription *)attribute
+- (id)JSONForCoreDataValue:(id)value attribute:(NSAttributeDescription *)attribute
+{
+  return [self encode:value edm:[self edmTypeOfAttribute:attribute] typeName:[self codingTypeNameOfAttribute:attribute]];
+}
+
+- (id)JSONForValue:(id)value typeName:(NSString *)typeName
+{
+  return [self encode:value edm:[self edmTypeNamed:typeName] typeName:typeName];
+}
+
+#pragma mark Literals
+
+- (NSString *)literal:(id)value edm:(ODataEdmType)edm typeName:(NSString *)typeName
 {
   if (!value || value == [NSNull null]) return @"null";
-  ODataEdmType type = [self edmTypeOfAttribute:attribute];
-  if (type == ODataEdmUnknown) type = OISEdmTypeOfValue(value);
+  ODataEdmType type = edm;
+  if (type == ODataEdmUnknown || type == ODataEdmComplex || type == ODataEdmCollection) type = OISEdmTypeOfValue(value);
   // A string compared with a non-string property is still a string.
   if ([value isKindOfClass:[NSString class]] && type != ODataEdmTimeOfDay && type != ODataEdmGuid &&
       type != ODataEdmDateTimeOffset && type != ODataEdmDate && type != ODataEdmEnum) {
@@ -541,10 +677,18 @@ static NSDecimalNumber *OISDecimal(id json)
           ? [NSString stringWithFormat:@"binary'%@'", ODataBase64URLString(value)] : [value description];
     case ODataEdmEnum: {
       // OData 4.0 wants the qualified form: NS.Color'Red,Blue'.
-      ODataSchemaEnumType *type = [self enumTypeOfAttribute:attribute];
-      NSString *members = [value isKindOfClass:[NSNumber class]] && type ? OISEnumText(type, value) : [value description];
+      ODataSchemaEnumType *enumType = [self.schema enumTypeNamed:typeName];
+      NSString *members = [value isKindOfClass:[NSNumber class]] && enumType ? OISEnumText(enumType, value) : [value description];
       NSString *escaped = [members stringByReplacingOccurrencesOfString:@"'" withString:@"''"];
-      return type ? [NSString stringWithFormat:@"%@'%@'", type.qualifiedName, escaped] : [NSString stringWithFormat:@"'%@'", escaped];
+      return enumType ? [NSString stringWithFormat:@"%@'%@'", enumType.qualifiedName, escaped] : [NSString stringWithFormat:@"'%@'", escaped];
+    }
+    case ODataEdmComplex:
+    case ODataEdmCollection: {
+      // A JSON literal (Part 2 section 5.1.1.14.5 in 4.01; [..] and {..}).
+      id json = [self encode:value edm:edm typeName:typeName];
+      NSData *data = [NSJSONSerialization isValidJSONObject:json] ? [NSJSONSerialization dataWithJSONObject:json options:0 error:NULL] : nil;
+      if (data) return [[NSString alloc] initWithData:data encoding:NSUTF8StringEncoding];
+      break;
     }
     case ODataEdmString:
     case ODataEdmUnknown:
@@ -552,6 +696,16 @@ static NSDecimalNumber *OISDecimal(id json)
   }
   NSString *s = [value isKindOfClass:[NSString class]] ? value : [value description];
   return [NSString stringWithFormat:@"'%@'", [s stringByReplacingOccurrencesOfString:@"'" withString:@"''"]];
+}
+
+- (NSString *)literalForValue:(id)value attribute:(NSAttributeDescription *)attribute
+{
+  return [self literal:value edm:[self edmTypeOfAttribute:attribute] typeName:[self codingTypeNameOfAttribute:attribute]];
+}
+
+- (NSString *)literalForValue:(id)value typeName:(NSString *)typeName
+{
+  return [self literal:value edm:[self edmTypeNamed:typeName] typeName:typeName];
 }
 
 @end

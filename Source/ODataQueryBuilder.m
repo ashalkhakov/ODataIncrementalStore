@@ -167,7 +167,7 @@ static NSString *OISPercentEncode(NSString *value)
 
 - (NSURL *)URLForIdentifier:(ODataResourceIdentifier *)identifier error:(NSError **)error
 {
-  return [self composePath:identifier.path query:@[] error:error];
+  return [self composePath:[identifier pathWithKeyAsSegment:self.keyAsSegment] query:@[] error:error];
 }
 
 - (NSURL *)URLForReferenceFromEntityURL:(NSURL *)entity
@@ -183,7 +183,7 @@ static NSString *OISPercentEncode(NSString *value)
                relationship:(NSRelationshipDescription *)relationship
                       error:(NSError **)error
 {
-  NSString *path = [NSString stringWithFormat:@"%@/%@", identifier.path, [self.mapper propertyForRelationship:relationship]];
+  NSString *path = [NSString stringWithFormat:@"%@/%@", [identifier pathWithKeyAsSegment:self.keyAsSegment], [self.mapper propertyForRelationship:relationship]];
   NSArray *query = relationship.destinationEntity ? [self readingQueryForEntity:relationship.destinationEntity] : @[];
   return [self composePath:path query:query error:error];
 }
@@ -192,7 +192,7 @@ static NSString *OISPercentEncode(NSString *value)
                             entity:(NSEntityDescription *)entity
                              error:(NSError **)error
 {
-  return [self composePath:identifier.path query:[self readingQueryForEntity:entity] error:error];
+  return [self composePath:[identifier pathWithKeyAsSegment:self.keyAsSegment] query:[self readingQueryForEntity:entity] error:error];
 }
 
 @end

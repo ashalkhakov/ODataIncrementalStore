@@ -722,6 +722,22 @@
   XCTAssertTrue([error.localizedDescription rangeOfString:@"No snapshot"].location != NSNotFound);
 }
 
+- (void)testControlInformationIsReadPerODataVersion
+{
+  NSDictionary *payload = @{ @"@context": @"c", @"@nextLink": @"n", @"value": @[ @{ @"@etag": @"e", @"Orders@count": @2, @"@Core.Note": @"x" } ] };
+  NSDictionary *v401 = ODataNormalizedControlInformation(payload, @"4.01");
+  XCTAssertEqualObjects(v401[@"@odata.context"], @"c");
+  XCTAssertEqualObjects(v401[@"@odata.nextLink"], @"n");
+  NSDictionary *row = [v401[@"value"] firstObject];
+  XCTAssertEqualObjects(row[@"@odata.etag"], @"e");
+  XCTAssertEqualObjects(row[@"Orders@odata.count"], @2);
+  XCTAssertEqualObjects(row[@"@Core.Note"], @"x", @"an annotation is not control information");
+  XCTAssertEqualObjects(ODataNormalizedControlInformation(payload, @"4.0"), payload, @"4.0 has only the prefixed names");
+  XCTAssertEqualObjects(ODataTypeNameFromControlInformation(@"https://x.test/$metadata#NS.T"), @"NS.T");
+  XCTAssertEqualObjects(ODataTypeNameFromControlInformation(@"#NS.T"), @"NS.T");
+  XCTAssertEqualObjects(ODataTypeNameFromControlInformation(@"NS.T"), @"NS.T");
+}
+
 - (void)testClientSendsODataVersion4
 {
   ODataConfiguration *configuration =
@@ -729,6 +745,10 @@
   NSMutableURLRequest *req = [NSMutableURLRequest requestWithURL:OISTestServiceRoot()];
   [configuration applyToRequest:req];
   XCTAssertEqualObjects([req valueForHTTPHeaderField:@"OData-Version"], @"4.0");
+  XCTAssertEqualObjects([req valueForHTTPHeaderField:@"OData-MaxVersion"], @"4.01", @"4.01 responses are understood");
+  configuration = [[ODataConfiguration alloc] initWithURL:OISTestServiceRoot() options:@{ ODataIncrementalStoreMaxVersionOption: @"4.0" }];
+  req = [NSMutableURLRequest requestWithURL:OISTestServiceRoot()];
+  [configuration applyToRequest:req];
   XCTAssertEqualObjects([req valueForHTTPHeaderField:@"OData-MaxVersion"], @"4.0");
   XCTAssertTrue([[req valueForHTTPHeaderField:@"Accept"] containsString:@"odata.metadata=minimal"]);
 }

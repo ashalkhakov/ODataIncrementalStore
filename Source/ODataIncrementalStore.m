@@ -152,6 +152,8 @@ typedef NS_ENUM(NSInteger, OISWriteMode) {
   NSError *schemaError = nil;
   _schema = [ODataSchema schemaWithData:metadata error:&schemaError];
   _mapper.schema = _schema;
+  id keyAsSegment = self.options[ODataIncrementalStoreKeyAsSegmentOption];
+  _builder.keyAsSegment = keyAsSegment ? [keyAsSegment boolValue] : _schema.keyAsSegmentSupported;
   NSManagedObjectModel *model = self.persistentStoreCoordinator.managedObjectModel;
   _metadataProblems = _schema ? [_mapper problemsWithModel:model] : @[ schemaError.localizedDescription ?: @"$metadata could not be read" ];
   if (_metadataProblems.count && [self.options[ODataIncrementalStoreRequireMatchingModelOption] boolValue]) {
@@ -596,7 +598,7 @@ typedef NS_ENUM(NSInteger, OISWriteMode) {
 // 11.4.2), which is read back.
 - (NSDictionary *)createdEntityFrom:(ODataHTTPResponse *)response URL:(NSURL *)url error:(NSError **)error
 {
-  id json = response.data.length ? [NSJSONSerialization JSONObjectWithData:response.data options:0 error:nil] : nil;
+  id json = response.data.length ? [response JSONWithError:NULL] : nil;
   if (![json isKindOfClass:[NSDictionary class]]) {
     NSString *location = [response valueForHeader:@"Location"] ?: [response valueForHeader:@"OData-EntityId"];
     NSURL *created = location.length ? [NSURL URLWithString:location relativeToURL:url].absoluteURL : nil;
@@ -628,7 +630,7 @@ typedef NS_ENUM(NSInteger, OISWriteMode) {
 {
   NSManagedObjectID *objectID = object.objectID;
   NSEntityDescription *entity = object.entity;
-  id json = response.data.length ? [NSJSONSerialization JSONObjectWithData:response.data options:0 error:nil] : nil;
+  id json = response.data.length ? [response JSONWithError:NULL] : nil;
   if ([json isKindOfClass:[NSDictionary class]]) {
     if (!json[@"@odata.etag"] && response.etag) {
       NSMutableDictionary *tagged = [json mutableCopy];
@@ -856,7 +858,7 @@ static BOOL OISKeyIsSet(id value)
 {
   // A row of a derived type says so (JSON Format section 4.5.3): its object
   // is of the sub-entity standing for that type.
-  entity = [_mapper entity:entity forTypeName:payload[@"@odata.type"] ?: payload[@"@type"]];
+  entity = [_mapper entity:entity forTypeName:payload[@"@odata.type"]];
   NSArray *keyAttrs = [_mapper keyAttributesForEntity:entity];
   if (!keyAttrs.count) {
     if (error) *error = OISError(ODataIncrementalStoreErrorMissingKey, entity.name ?: @"?");
@@ -880,7 +882,7 @@ static BOOL OISKeyIsSet(id value)
   [self rememberETag:payload[@"@odata.etag"] forObjectID:oid];
   // An edit link is sent when writes go somewhere other than the entity's
   // conventional URL (JSON Format section 4.5.8); 4.01 drops the "odata."
-  id editLink = payload[@"@odata.editLink"] ?: payload[@"@editLink"];
+  id editLink = payload[@"@odata.editLink"];
   if ([editLink isKindOfClass:[NSString class]]) {
     NSURL *resolved = [NSURL URLWithString:editLink relativeToURL:_client.configuration.serviceRoot].absoluteURL;
     if (resolved) {

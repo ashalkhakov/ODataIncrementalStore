@@ -37,7 +37,52 @@
   }
   return nil;
 }
+
+- (id)JSONWithError:(NSError **)error
+{
+  id json = [NSJSONSerialization JSONObjectWithData:self.data ?: [NSData data] options:0 error:error];
+  return json ? ODataNormalizedControlInformation(json, [self valueForHeader:@"OData-Version"]) : nil;
+}
 @end
+
+#pragma mark - Control information
+
+// The control information names of JSON Format 4.01 section 4.5.
+static NSString *OISControlName(NSString *annotation)
+{
+  static NSSet *names;
+  if (!names) {
+    names = [NSSet setWithArray:@[ @"context", @"metadataEtag", @"type", @"count", @"nextLink", @"deltaLink", @"id",
+                                   @"editLink", @"readLink", @"etag", @"navigationLink", @"associationLink",
+                                   @"mediaEditLink", @"mediaReadLink", @"mediaContentType", @"mediaEtag",
+                                   @"removed", @"delta", @"bind" ]];
+  }
+  return [names containsObject:annotation] ? [@"odata." stringByAppendingString:annotation] : nil;
+}
+
+id ODataNormalizedControlInformation(id json, NSString *version)
+{
+  if ([version hasPrefix:@"4.0"] && ![version hasPrefix:@"4.01"]) return json;
+  if ([json isKindOfClass:[NSArray class]]) {
+    NSMutableArray *out = [NSMutableArray arrayWithCapacity:[json count]];
+    for (id item in json) [out addObject:ODataNormalizedControlInformation(item, version)];
+    return out;
+  }
+  if (![json isKindOfClass:[NSDictionary class]]) return json;
+  NSMutableDictionary *out = [NSMutableDictionary dictionaryWithCapacity:[json count]];
+  for (NSString *key in json) {
+    id value = ODataNormalizedControlInformation(json[key], version);
+    NSRange at = [key rangeOfString:@"@" options:NSBackwardsSearch];
+    NSString *prefixed = at.location == NSNotFound ? nil : OISControlName([key substringFromIndex:at.location + 1]);
+    if (prefixed) {
+      NSString *spelled = [NSString stringWithFormat:@"%@@%@", [key substringToIndex:at.location], prefixed];
+      if (!json[spelled]) out[spelled] = value;
+      continue;
+    }
+    out[key] = value;
+  }
+  return out;
+}
 
 #pragma mark - Exchanges
 
@@ -297,7 +342,7 @@ static id<ODataTransport> OISDefaultTransport(void)
   ODataHTTPResponse *response = [self sendRequest:req error:error];
   if (!response) return nil;
   if (response.status == 204) return [NSNull null];
-  return [NSJSONSerialization JSONObjectWithData:response.data options:0 error:error];
+  return [response JSONWithError:error];
 }
 
 - (NSString *)textAtURL:(NSURL *)url error:(NSError **)error

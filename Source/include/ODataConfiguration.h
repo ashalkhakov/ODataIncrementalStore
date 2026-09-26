@@ -23,6 +23,14 @@ FOUNDATION_EXPORT NSString * const ODataIncrementalStoreBatchSavesOption;
 // NSNumber BOOL, default NO: fail to open when the model does not match
 // the service's $metadata, rather than report it in metadataProblems.
 FOUNDATION_EXPORT NSString * const ODataIncrementalStoreRequireMatchingModelOption;
+// NSString, default @"4.01": the OData-MaxVersion requests carry, the
+// newest protocol version the store will take a response in. Requests
+// themselves are written as 4.0, which a 4.01 service also reads.
+FOUNDATION_EXPORT NSString * const ODataIncrementalStoreMaxVersionOption;
+// NSNumber BOOL: address entities as Products/1 rather than Products(1)
+// (Part 2 section 4.3.6). Unset, the store does so when $metadata says
+// the service supports it (Capabilities.KeyAsSegmentSupported).
+FOUNDATION_EXPORT NSString * const ODataIncrementalStoreKeyAsSegmentOption;
 FOUNDATION_EXPORT NSString * const ODataIncrementalStoreType;
 
 typedef NS_ENUM(NSInteger, ODataPropertyNaming) {
@@ -40,6 +48,7 @@ typedef NS_ENUM(NSInteger, ODataPropertyNaming) {
 @property (nonatomic) BOOL postOnObtainPermanentIDs;
 @property (nonatomic) BOOL IEEE754Compatible;
 @property (nonatomic) BOOL batchSaves;
+@property (nonatomic, copy) NSString *maxVersion;
 @property (nonatomic, copy) NSString *userAgent;
 
 - (instancetype)initWithURL:(NSURL *)url options:(nullable NSDictionary *)options NS_DESIGNATED_INITIALIZER;

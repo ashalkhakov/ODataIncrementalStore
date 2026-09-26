@@ -1,0 +1,25 @@
+{
+  "comment": "A changed complex value or collection is written whole: members by their types (an Edm.Date as a date, the Decimal behind a type definition as a string under IEEE754Compatible).",
+  "spec": "OASIS OData 4.01 Part 1 \u00a711.4.3 (update an entity); JSON Format \u00a77.2 (complex values), \u00a77.3 (collections)",
+  "request": {
+    "method": "PATCH",
+    "path": "Animals(1)",
+    "body": {
+      "Home": {
+        "Zone": "Savanna North",
+        "Opened": "2015-03-01",
+        "Area": "1250"
+      },
+      "Nicknames": [
+        "Stripes",
+        "Zed"
+      ]
+    }
+  },
+  "response": {
+    "status": 204,
+    "headers": {
+      "OData-Version": "4.0"
+    }
+  }
+}

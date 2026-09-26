@@ -9,6 +9,14 @@
 // stands for several Edm types: a Date attribute holding an Edm.Date, a
 // Double holding an Edm.Duration in seconds, a String holding an
 // Edm.TimeOfDay or an Edm.Guid.
+//
+// Complex values and collections live in Transformable attributes: a
+// complex value as an NSDictionary keyed by the service's property names
+// (nested for a nested complex value, with "@odata.type" when the value is
+// of a derived type), a collection as an NSArray of such values or of
+// primitive ones. Members hold what an attribute of their type would: an
+// NSDate for an Edm.Date, an NSDecimalNumber for an Edm.Decimal, an
+// enumeration's member names; null stays NSNull.
 
 #pragma once
 #import "OISCoreData.h"
@@ -32,8 +40,10 @@ typedef NS_ENUM(NSInteger, ODataEdmType) {
   ODataEdmDuration,        // on a Double attribute: seconds
   ODataEdmGuid,
   ODataEdmBinary,
-  ODataEdmEnum             // a schema enumeration: member names on a String
+  ODataEdmEnum,            // a schema enumeration: member names on a String
                            // attribute, member values on an integer one
+  ODataEdmComplex,         // a schema complex type: an NSDictionary
+  ODataEdmCollection       // Collection(...): an NSArray
 };
 
 @interface ODataValueCoder : NSObject
@@ -52,6 +62,12 @@ typedef NS_ENUM(NSInteger, ODataEdmType) {
 @property (nonatomic, strong, nullable) ODataSchema *schema;
 @property (nonatomic, copy, nullable) NSString * _Nullable (^declaredTypeForAttribute)(NSAttributeDescription *attribute);
 - (ODataEdmType)edmTypeOfAttribute:(nullable NSAttributeDescription *)attribute;
+// The type's name, qualified where the schema knows it: userInfo's, else
+// the schema's; nil when neither says.
+- (nullable NSString *)typeNameOfAttribute:(nullable NSAttributeDescription *)attribute;
+// The Edm type a type name stands for; complex types and enumerations by
+// the schema.
+- (ODataEdmType)edmTypeNamed:(nullable NSString *)typeName;
 
 // The Core Data value for a JSON value, NSNull for null, or nil when the
 // JSON cannot be one (a date that does not parse, say).
@@ -64,6 +80,12 @@ typedef NS_ENUM(NSInteger, ODataEdmType) {
 // value's class.
 - (NSString *)literalForValue:(nullable id)value attribute:(nullable NSAttributeDescription *)attribute;
 
+// The same, for a value of a named type rather than an attribute's: a
+// member of a complex value, an element of a collection.
+- (nullable id)valueForJSON:(id)json typeName:(nullable NSString *)typeName;
+- (id)JSONForValue:(nullable id)value typeName:(nullable NSString *)typeName;
+- (NSString *)literalForValue:(nullable id)value typeName:(nullable NSString *)typeName;
+
 @end
 
 // The textual forms, for anyone who needs them without an attribute.
@@ -74,5 +96,8 @@ FOUNDATION_EXPORT NSNumber * _Nullable ODataDurationFromString(NSString *string)
 FOUNDATION_EXPORT NSString *ODataDurationString(double seconds);
 FOUNDATION_EXPORT NSData * _Nullable ODataDataFromBase64(NSString *string);  // base64url or base64
 FOUNDATION_EXPORT NSString *ODataBase64URLString(NSData *data);
+// A type name from @odata.type: "#NS.Type", "NS.Type", or a context URL
+// ending in "#NS.Type", as NS.Type.
+FOUNDATION_EXPORT NSString *ODataTypeNameFromControlInformation(NSString *value);
 
 NS_ASSUME_NONNULL_END

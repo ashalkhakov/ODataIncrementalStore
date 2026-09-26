@@ -24,9 +24,11 @@
 // userInfo (OData.type, OData.entitySet, OData.property, OData.key), so a
 // generated model works without the schema. Edm types map as the store
 // reads them: Date, TimeOfDay, Duration, Guid and enumerations are marked
-// with their Edm type, Guid and enumerations held as strings. Complex,
-// collection, stream and spatial properties have no attribute; they are
-// listed in the entity's userInfo under OData.unmapped.
+// with their Edm type, Guid and enumerations held as strings. Complex
+// values and collections are Transformable attributes marked with their
+// type (NS.Address, Collection(Edm.String)): an NSDictionary and an
+// NSArray, see ODataValue.h. Stream and spatial properties have no
+// attribute; they are listed in the entity's userInfo under OData.unmapped.
 
 #pragma once
 #import "OISCoreData.h"

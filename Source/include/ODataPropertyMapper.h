@@ -26,7 +26,20 @@ FOUNDATION_EXPORT NSString * const ODataUserInfoKey;
 - (NSString *)wireName:(NSString *)coreDataName;
 // A Core Data key path as an OData property path: each step by its wire
 // name, through relationships, joined with '/' (Part 2 section 5.1.1.15).
+// A key path that goes on past an attribute holding a complex value
+// (address.city) goes on into its members: Address/City.
 - (NSString *)propertyPathForKeyPath:(NSString *)keyPath entity:(nullable NSEntityDescription *)entity;
+// The same, with the type the path ends at, when it ends in a complex
+// value's member (qualified; nil otherwise).
+- (NSString *)propertyPathForKeyPath:(NSString *)keyPath
+                              entity:(nullable NSEntityDescription *)entity
+                          memberType:(NSString * _Nullable * _Nullable)memberType;
+// Members of a value of this type (a complex type, or a collection of
+// one): each by the schema's name for it, which may differ in case from
+// the one given, joined with '/'; the last one's type through memberType.
+- (NSString *)memberPath:(NSArray<NSString *> *)members
+                  ofType:(nullable NSString *)typeName
+              memberType:(NSString * _Nullable * _Nullable)memberType;
 
 // The service's $metadata, when it could be read. With it the mapper finds
 // what the model leaves unsaid: an entity's type and entity set (Person

@@ -76,6 +76,15 @@
   XCTAssertEqual([animal.attributesByName[@"born"] attributeType], NSDateAttributeType);
   XCTAssertEqualObjects([animal.attributesByName[@"born"] userInfo][ODataUserInfoType], @"Edm.Date");
   XCTAssertEqualObjects([animal.attributesByName[@"diet"] userInfo][ODataUserInfoType], @"Zoo.Diet");
+  NSAttributeDescription *home = animal.attributesByName[@"home"];
+  XCTAssertEqual(home.attributeType, NSTransformableAttributeType);
+  XCTAssertEqualObjects(home.userInfo[ODataUserInfoType], @"Zoo.Enclosure");
+  XCTAssertEqualObjects(home.attributeValueClassName, @"NSDictionary");
+  NSAttributeDescription *pastHomes = animal.attributesByName[@"pastHomes"];
+  XCTAssertEqualObjects(pastHomes.userInfo[ODataUserInfoType], @"Collection(Zoo.Enclosure)");
+  XCTAssertEqualObjects(pastHomes.attributeValueClassName, @"NSArray");
+  XCTAssertFalse([animal.attributesByName[@"nicknames"] isOptional], @"Nullable=false");
+  XCTAssertNil(animal.userInfo[ODataUserInfoUnmapped]);
   XCTAssertNotNil(lion.attributesByName[@"maxRoar"]);
   XCTAssertNotNil(lion.attributesByName[@"name"], @"inherited");
 
@@ -116,6 +125,7 @@
     if (![[animal valueForKey:@"name"] isEqual:@"Leo"]) continue;
     XCTAssertEqualObjects(animal.entity.name, @"Lion");
     XCTAssertEqualObjects([animal valueForKey:@"features"], @"Mane", @"a generated model holds enumerations as names");
+    XCTAssertEqualObjects([animal valueForKey:@"home"][@"Zone"], @"Pride Rock");
   }
   XCTAssertEqualObjects(transport.refusals, @[]);
 }
@@ -145,6 +155,7 @@
   XCTAssertTrue([now rangeOfString:@"name=\"phone\""].location != NSNotFound);
   XCTAssertTrue([now rangeOfString:[ODataModelBuilder versionIdentifierOfModel:v2]].location != NSNotFound);
   XCTAssertTrue([now rangeOfString:@"parentEntity=\"Animal\""].location != NSNotFound);
+  XCTAssertTrue([now rangeOfString:@"attributeType=\"Transformable\" valueTransformerName=\"NSSecureUnarchiveFromData\" customClassName=\"NSDictionary\""].location != NSNotFound, @"%@", now);
   [[NSFileManager defaultManager] removeItemAtPath:package.stringByDeletingLastPathComponent error:NULL];
 }
 

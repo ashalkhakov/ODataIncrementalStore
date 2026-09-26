@@ -177,8 +177,9 @@ Entity types become entities (base types are super-entities), properties
 and navigation properties become attributes and relationships in lower
 camel case (`UserName` is `userName`), partners become inverses, and the
 OData names, keys, entity sets and Edm types go into `userInfo`, so the
-model needs nothing else at runtime. Complex, collection, stream and
-spatial properties are not mapped; `ois-model` lists them.
+model needs nothing else at runtime. Complex values and collections become
+Transformable attributes (see Mapping); stream and spatial properties are
+not mapped, and `ois-model` lists them.
 
 **A changed service is a new model version**, as in Core Data. Run
 `ois-model` again: if the schema has changed, it adds a version to the
@@ -212,7 +213,13 @@ open).
 | `userInfo[@"OData.key"]` | key attribute(s) |
 | `userInfo[@"OData.type"]` | the Edm type, where one Core Data type stands for several: `Edm.Date` on a Date, `Edm.Duration` on a Double, `Edm.TimeOfDay` or `Edm.Guid` on a String |
 | `userInfo[@"OData.type"]` on an entity | its entity type, qualified (`NS.Employee`); a sub-entity is a derived type |
+| Transformable attribute | a complex value as an `NSDictionary` keyed by the service's property names (`home[@"City"]`), a collection as an `NSArray`; members typed as attributes would be (`NSDate`, `NSDecimalNumber`, …). Predicates reach into them: `address.city == 'Boise'` is `Address/City eq 'Boise'`, `ANY emails == %@` is `Emails/any(x0:x0 eq …)`. A change writes the whole value. |
 | `NSIncrementalStoreNode.version` | `@odata.etag` |
+
+`ODataIncrementalStoreKeyAsSegmentOption` addresses entities as
+`Products/1` rather than `Products(1)`; the store does so by itself when
+`$metadata` says the service supports it. Responses are read up to OData
+4.01 (`ODataIncrementalStoreMaxVersionOption`).
 
 ## Threading
 

@@ -1,6 +1,6 @@
 {
-  "comment": "Fetching a sub-entity: a type-cast segment.",
-  "spec": "OASIS OData 4.01 Part 2 \u00a74.11 Addressing Derived Types",
+  "comment": "Fetching a sub-entity: a type-cast segment. The service answers in OData 4.01, whose control information may leave out the odata. prefix: @context, @nextLink, @type, @etag.",
+  "spec": "OASIS OData 4.01 Part 2 \u00a74.11 Addressing Derived Types; JSON Format 4.01 \u00a74.5",
   "request": {
     "method": "GET",
     "path": "Animals/Zoo.Lion",
@@ -12,12 +12,14 @@
     "status": 200,
     "headers": {
       "Content-Type": "application/json;odata.metadata=minimal;charset=utf-8",
-      "OData-Version": "4.0"
+      "OData-Version": "4.01"
     },
     "body": {
-      "@odata.context": "https://zoo.test/Zoo.svc/$metadata#Animals/Zoo.Lion",
+      "@context": "https://zoo.test/Zoo.svc/$metadata#Animals/Zoo.Lion",
       "value": [
         {
+          "@type": "#Zoo.Lion",
+          "@etag": "W/\"leo-1\"",
           "Id": 2,
           "Name": "Leo",
           "Diet": "Carnivore",
@@ -28,7 +30,8 @@
             "Code": "K1"
           }
         }
-      ]
+      ],
+      "@nextLink": "https://zoo.test/Zoo.svc/Animals/Zoo.Lion?$expand=Keeper($select=Code)&$skiptoken=2"
     }
   }
 }

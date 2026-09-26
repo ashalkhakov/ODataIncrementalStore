@@ -15,7 +15,12 @@ NS_ASSUME_NONNULL_BEGIN
 
 - (instancetype)initWithEntitySet:(NSString *)entitySet keys:(NSDictionary<NSString *, id> *)keys NS_DESIGNATED_INITIALIZER;
 - (instancetype)init NS_UNAVAILABLE;
+// The canonical path: Products(1), OrderItems(OrderID=1,ItemNo=2).
 - (NSString *)path;
+// With keyAsSegment, a single-part key as a segment of its own, its value
+// written bare (Part 2 section 4.3.6): Products/1, People/russellwhyte.
+// A compound key keeps the canonical form.
+- (NSString *)pathWithKeyAsSegment:(BOOL)keyAsSegment;
 - (NSDictionary *)dictionary;
 /* Opaque reference stored inside NSManagedObjectID. FreeCoreData uniques
    on this value and types it NSData; Apple accepts any NSCopying id. */

@@ -50,7 +50,9 @@ static NSManagedObjectModel *OISZooModel(NSArray *extraAnimalAttributes)
 
   NSMutableArray *animalProperties = [@[ OISAttribute(@"id", NSInteger32AttributeType), OISAttribute(@"name", NSStringAttributeType),
                                          OISAttribute(@"diet", NSStringAttributeType), OISAttribute(@"features", NSInteger32AttributeType),
-                                         OISAttribute(@"born", NSDateAttributeType), keeperOf ] mutableCopy];
+                                         OISAttribute(@"born", NSDateAttributeType), OISAttribute(@"home", NSTransformableAttributeType),
+                                         OISAttribute(@"nicknames", NSTransformableAttributeType),
+                                         OISAttribute(@"pastHomes", NSTransformableAttributeType), keeperOf ] mutableCopy];
   [animalProperties addObjectsFromArray:extraAnimalAttributes ?: @[]];
   animal.properties = animalProperties;
   lion.properties = @[ OISAttribute(@"maxRoar", NSInteger32AttributeType) ];
@@ -143,6 +145,48 @@ static NSManagedObjectModel *OISZooModel(NSArray *extraAnimalAttributes)
   XCTAssertNil([schema entityTypeNamed:@"Zoo.Enclosure"], @"a complex type is not an entity type");
 }
 
+- (void)testReadsComplexTypesCollectionsAndTypeDefinitions
+{
+  ODataSchema *schema = _store.schema;
+  ODataSchemaComplexType *aviary = [schema complexTypeNamed:@"Self.Aviary"];
+  XCTAssertEqualObjects(aviary.baseType, @"Zoo.Enclosure");
+  XCTAssertEqualObjects([schema property:@"Zone" ofComplexType:aviary].type, @"Edm.String", @"inherited");
+  XCTAssertEqualObjects([schema property:@"Area" ofComplexType:aviary].type, @"Edm.Decimal", @"a type definition is its underlying type");
+  XCTAssertEqual([schema propertiesOfComplexType:aviary].count, (NSUInteger)4);
+  ODataSchemaEntityType *animal = [schema entityTypeNamed:@"Zoo.Animal"];
+  ODataSchemaProperty *pastHomes = [schema property:@"PastHomes" ofEntityType:animal];
+  XCTAssertTrue(pastHomes.isCollection);
+  XCTAssertEqualObjects(pastHomes.type, @"Collection(Zoo.Enclosure)", @"the alias resolves inside Collection()");
+  XCTAssertEqualObjects(pastHomes.elementType, @"Zoo.Enclosure");
+}
+
+- (void)testKeyAsSegmentSupportIsReadFromTheContainer
+{
+  XCTAssertFalse(_store.schema.keyAsSegmentSupported);
+  NSString *xml = @"<edmx:Edmx Version=\"4.0\" xmlns:edmx=\"http://docs.oasis-open.org/odata/ns/edmx\">"
+                  @"<edmx:Reference Uri=\"https://oasis-tcs.github.io/odata-vocabularies/vocabularies/Org.OData.Capabilities.V1.xml\">"
+                  @"<edmx:Include Namespace=\"Org.OData.Capabilities.V1\" Alias=\"Capabilities\"/></edmx:Reference>"
+                  @"<edmx:DataServices><Schema Namespace=\"S\" xmlns=\"http://docs.oasis-open.org/odata/ns/edm\">"
+                  @"<EntityType Name=\"T\"><Key><PropertyRef Name=\"Id\"/></Key><Property Name=\"Id\" Type=\"Edm.Int32\"/></EntityType>"
+                  @"<EntityContainer Name=\"C\"><EntitySet Name=\"Ts\" EntityType=\"S.T\"/>"
+                  @"<Annotation Term=\"Capabilities.KeyAsSegmentSupported\"/></EntityContainer></Schema></edmx:DataServices></edmx:Edmx>";
+  ODataSchema *schema = [ODataSchema schemaWithData:[xml dataUsingEncoding:NSUTF8StringEncoding] error:NULL];
+  XCTAssertTrue(schema.keyAsSegmentSupported);
+  NSString *off = [xml stringByReplacingOccurrencesOfString:@"KeyAsSegmentSupported\"/>" withString:@"KeyAsSegmentSupported\" Bool=\"false\"/>"];
+  XCTAssertFalse([ODataSchema schemaWithData:[off dataUsingEncoding:NSUTF8StringEncoding] error:NULL].keyAsSegmentSupported);
+}
+
+- (void)testKeyAsSegmentAddressesEntitiesByKeySegments
+{
+  NSError *error = nil;
+  ODataIncrementalStore *store = [self openZoo:OISZooModel(nil) options:@{ ODataIncrementalStoreKeyAsSegmentOption: @YES } error:&error];
+  XCTAssertNotNil(store, @"%@", error);
+  NSManagedObject *zebra = [self animalNamed:@"Zebra" in:[self fetch:@"Animal" where:nil]];
+  [zebra setValue:@"Zed" forKey:@"name"];
+  XCTAssertTrue([_context save:&error], @"%@", error);
+  XCTAssertTrue([_transport.hits containsObject:@"zebra-rename-segment.json"]);
+}
+
 - (void)testUnreadableMetadataIsNoSchema
 {
   NSError *error = nil;
@@ -191,8 +235,10 @@ static NSManagedObjectModel *OISZooModel(NSArray *extraAnimalAttributes)
 - (void)testFetchingASubentityCastsTheType
 {
   NSArray *lions = [self fetch:@"Lion" where:nil];
-  XCTAssertEqual(lions.count, (NSUInteger)1);
+  XCTAssertEqual(lions.count, (NSUInteger)2, @"two pages, the second from a 4.01 @nextLink");
   XCTAssertTrue([_transport.hits containsObject:@"lions.json"]);
+  XCTAssertTrue([_transport.hits containsObject:@"lions-2.json"]);
+  for (NSManagedObject *lion in lions) XCTAssertEqualObjects(lion.entity.name, @"Lion");
 }
 
 - (void)testEnumerationLiteralsAreQualified
@@ -217,6 +263,64 @@ static NSManagedObjectModel *OISZooModel(NSArray *extraAnimalAttributes)
   XCTAssertTrue([_context save:&error], @"%@", error);
   XCTAssertTrue([_transport.hits containsObject:@"lion-create.json"]);
   XCTAssertEqualObjects(nala.entity.name, @"Lion");
+}
+
+#pragma mark - Complex values and collections
+
+- (NSManagedObject *)animalNamed:(NSString *)name in:(NSArray *)animals
+{
+  for (NSManagedObject *animal in animals) {
+    if ([[animal valueForKey:@"name"] isEqual:name]) return animal;
+  }
+  return nil;
+}
+
+- (void)testComplexValuesAndCollectionsAreDictionariesAndArrays
+{
+  NSArray *animals = [self fetch:@"Animal" where:nil];
+  NSDictionary *home = [[self animalNamed:@"Zebra" in:animals] valueForKey:@"home"];
+  XCTAssertTrue([home isKindOfClass:[NSDictionary class]]);
+  XCTAssertEqualObjects(home[@"Zone"], @"Savanna");
+  XCTAssertEqualObjects(ODataDateString(home[@"Opened"]), @"2015-03-01", @"members are read by their types");
+  XCTAssertEqualObjects(home[@"Area"], [NSDecimalNumber decimalNumberWithString:@"1200.5"]);
+  XCTAssertTrue([home[@"Area"] isKindOfClass:[NSDecimalNumber class]]);
+  XCTAssertEqualObjects([[self animalNamed:@"Zebra" in:animals] valueForKey:@"nicknames"], @[ @"Stripes" ]);
+
+  NSManagedObject *leo = [self animalNamed:@"Leo" in:animals];
+  XCTAssertEqualObjects([leo valueForKey:@"nicknames"], (@[ @"King", @"Simba" ]));
+  NSArray *pastHomes = [leo valueForKey:@"pastHomes"];
+  XCTAssertEqual(pastHomes.count, (NSUInteger)1);
+  XCTAssertEqualObjects(ODataDateString(pastHomes.firstObject[@"Opened"]), @"2018-03-01");
+
+  NSManagedObject *okapi = [self animalNamed:@"Okapi" in:animals];
+  NSDictionary *aviary = [okapi valueForKey:@"home"];
+  XCTAssertEqualObjects(aviary[@"@odata.type"], @"#Zoo.Aviary", @"a derived complex value keeps its type");
+  XCTAssertEqualObjects(aviary[@"Height"], @12.5, @"and its own members");
+  XCTAssertEqualObjects(aviary[@"Opened"], [NSNull null], @"null members stay");
+  XCTAssertEqualObjects([okapi valueForKey:@"nicknames"], @[]);
+  XCTAssertNil([okapi valueForKey:@"pastHomes"]);
+}
+
+- (void)testPredicatesReachIntoComplexValuesAndCollections
+{
+  NSPredicate *predicate = [NSPredicate predicateWithFormat:@"home.zone == %@ AND ANY nicknames == %@ AND ANY pastHomes.opened < %@",
+                                                            @"Pride Rock", @"King", ODataDateFromString(@"2018-06-01")];
+  NSArray *animals = [self fetch:@"Animal" where:predicate];
+  XCTAssertEqual(animals.count, (NSUInteger)1);
+  XCTAssertTrue([_transport.hits containsObject:@"animals-structured-filter.json"]);
+}
+
+- (void)testAChangedComplexValueIsWrittenWhole
+{
+  NSManagedObject *zebra = [self animalNamed:@"Zebra" in:[self fetch:@"Animal" where:nil]];
+  NSMutableDictionary *home = [[zebra valueForKey:@"home"] mutableCopy];
+  home[@"Zone"] = @"Savanna North";
+  home[@"Area"] = [NSDecimalNumber decimalNumberWithString:@"1250"];
+  [zebra setValue:home forKey:@"home"];
+  [zebra setValue:@[ @"Stripes", @"Zed" ] forKey:@"nicknames"];
+  NSError *error = nil;
+  XCTAssertTrue([_context save:&error], @"%@", error);
+  XCTAssertTrue([_transport.hits containsObject:@"zebra-rehome.json"]);
 }
 
 #pragma mark - A model that does not match

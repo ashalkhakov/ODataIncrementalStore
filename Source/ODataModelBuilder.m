@@ -61,6 +61,22 @@ static NSString *OISPropertyName(NSString *wire, NSMutableSet *taken)
 static BOOL OISAttributeType(NSString *edm, ODataSchema *schema, NSAttributeType *type, NSString **marked)
 {
   *marked = nil;
+  // A collection of what an attribute could hold, or a complex value:
+  // Transformable, an NSArray or an NSDictionary (see ODataValue.h).
+  if ([edm hasPrefix:@"Collection("] && [edm hasSuffix:@")"]) {
+    NSString *element = [edm substringWithRange:NSMakeRange(11, edm.length - 12)];
+    NSAttributeType elementType;
+    NSString *elementMarked;
+    if ([element hasPrefix:@"Collection("] || !OISAttributeType(element, schema, &elementType, &elementMarked)) return NO;
+    *type = NSTransformableAttributeType;
+    *marked = [NSString stringWithFormat:@"Collection(%@)", [schema qualifiedName:element]];
+    return YES;
+  }
+  if ([schema complexTypeNamed:edm]) {
+    *type = NSTransformableAttributeType;
+    *marked = [schema qualifiedName:edm];
+    return YES;
+  }
   if ([schema enumTypeNamed:edm]) {
     *type = NSStringAttributeType;
     *marked = [schema qualifiedName:edm];
@@ -131,6 +147,14 @@ static NSString *OISAttributeTypeName(NSAttributeType type)
     for (NSString *n in [type.declaredNavigationProperties.allKeys sortedArrayUsingSelector:@selector(compare:)]) {
       ODataSchemaNavigationProperty *navigation = type.declaredNavigationProperties[n];
       [canonical appendFormat:@"N %@ %@ %d %@\n", n, navigation.type, navigation.isCollection, navigation.partner ?: @""];
+    }
+  }
+  for (NSString *name in [schema.complexTypes.allKeys sortedArrayUsingSelector:@selector(compare:)]) {
+    ODataSchemaComplexType *type = schema.complexTypes[name];
+    [canonical appendFormat:@"C %@ %@ %d %d\n", name, type.baseType ?: @"", type.isAbstract, type.isOpen];
+    for (NSString *p in [type.declaredProperties.allKeys sortedArrayUsingSelector:@selector(compare:)]) {
+      ODataSchemaProperty *property = type.declaredProperties[p];
+      [canonical appendFormat:@"P %@ %@ %d\n", p, property.type, property.nullable];
     }
   }
   for (NSString *name in [schema.enumTypes.allKeys sortedArrayUsingSelector:@selector(compare:)]) {
@@ -222,7 +246,7 @@ static NSString *OISAttributeTypeName(NSAttributeType type)
       ODataSchemaProperty *property = type.declaredProperties[wire];
       NSAttributeType attributeType;
       NSString *marked = nil;
-      if (property.isCollection || !OISAttributeType(property.type, schema, &attributeType, &marked)) {
+      if (!OISAttributeType(property.type, schema, &attributeType, &marked)) {
         [unmapped addObject:wire];
         continue;
       }
@@ -234,6 +258,10 @@ static NSString *OISAttributeTypeName(NSAttributeType type)
       if ([key containsObject:wire]) info[ODataUserInfoKey] = @"YES";
       if (marked) info[ODataUserInfoType] = marked;
       attr.userInfo = info;
+      if (attributeType == NSTransformableAttributeType) {
+        attr.valueTransformerName = @"NSSecureUnarchiveFromData";
+        attr.attributeValueClassName = property.isCollection ? @"NSArray" : @"NSDictionary";
+      }
       [own addObject:attr];
     }
     for (NSString *wire in [type.declaredNavigationProperties.allKeys sortedArrayUsingSelector:@selector(compare:)]) {
@@ -346,6 +374,8 @@ static void OISAppendUserInfo(NSMutableString *xml, NSDictionary *info, NSString
         NSAttributeDescription *attr = (NSAttributeDescription *)property;
         [xml appendFormat:@"        <attribute name=\"%@\" optional=\"%@\" attributeType=\"%@\"", OISEscape(name),
                           attr.isOptional ? @"YES" : @"NO", OISAttributeTypeName(attr.attributeType)];
+        if (attr.valueTransformerName.length) [xml appendFormat:@" valueTransformerName=\"%@\"", OISEscape(attr.valueTransformerName)];
+        if (attr.attributeValueClassName.length) [xml appendFormat:@" customClassName=\"%@\"", OISEscape(attr.attributeValueClassName)];
         if (attr.attributeType == NSInteger16AttributeType || attr.attributeType == NSInteger32AttributeType ||
             attr.attributeType == NSInteger64AttributeType || attr.attributeType == NSDoubleAttributeType ||
             attr.attributeType == NSFloatAttributeType || attr.attributeType == NSBooleanAttributeType ||

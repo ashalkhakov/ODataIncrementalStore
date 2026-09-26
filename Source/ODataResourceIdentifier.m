@@ -13,6 +13,8 @@ NSString *OISKeyLiteral(id value)
   return [NSString stringWithFormat:@"'%@'", s];
 }
 
+static NSString *OISPathEncode(NSString *literal);
+
 @implementation ODataResourceIdentifier
 
 - (instancetype)initWithEntitySet:(NSString *)entitySet keys:(NSDictionary *)keys
@@ -23,6 +25,14 @@ NSString *OISKeyLiteral(id value)
   _keys = [keys copy] ?: @{};
   _unquotedKeys = [NSSet set];
   return self;
+}
+
+- (NSString *)pathWithKeyAsSegment:(BOOL)keyAsSegment
+{
+  if (!keyAsSegment || self.keys.count != 1) return self.path;
+  id value = self.keys.allValues.firstObject;
+  NSString *bare = [value isKindOfClass:[NSString class]] ? value : OISKeyLiteral(value);
+  return [NSString stringWithFormat:@"%@/%@", self.entitySet, OISPathEncode(bare)];
 }
 
 - (NSString *)path

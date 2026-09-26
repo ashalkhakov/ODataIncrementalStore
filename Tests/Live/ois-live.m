@@ -394,18 +394,35 @@ static void modelsFromMetadata(NSString *models)
                                                                                    configuration:nil URL:tripPin options:nil error:&error] : nil;
   __block NSString *gender = nil;
   __block NSUInteger friends = 0;
+  __block NSArray *emails = nil;
+  __block NSString *city = nil;
+  __block NSArray *found = nil;
+  __block NSError *fetchError = nil;
   if (store) {
     NSManagedObjectContext *moc = newContext(psc);
     [moc performBlockAndWait:^{
       NSManagedObject *russell = personNamed(moc, @"russellwhyte", NULL);
       gender = [russell valueForKey:@"gender"];
       friends = [[russell valueForKey:@"friends"] count];
+      emails = [russell valueForKey:@"emails"];
+      NSArray *addresses = [russell valueForKey:@"addressInfo"];
+      id first = [addresses isKindOfClass:[NSArray class]] ? addresses.firstObject : nil;
+      city = [first isKindOfClass:[NSDictionary class]] ? first[@"City"][@"Name"] : nil;
+      NSFetchRequest *fetch = [NSFetchRequest fetchRequestWithEntityName:@"Person"];
+      fetch.predicate = [NSPredicate predicateWithFormat:@"ANY emails == %@ AND ANY addressInfo.city.name == %@",
+                                                         @"Russell@example.com", @"Boise"];
+      found = [[moc executeFetchRequest:fetch error:&fetchError] valueForKey:@"userName"];
     }];
   }
   check(store && [gender isEqualToString:@"Male"] && friends > 0 && !store.metadataProblems.count,
         @"a dynamic client: TripPin's model built from its $metadata",
         store ? [NSString stringWithFormat:@"%lu entities; Russell is %@ with %lu friends", (unsigned long)dynamic.entities.count, gender, (unsigned long)friends]
               : reason(error));
+  check([emails isKindOfClass:[NSArray class]] && [emails containsObject:@"Russell@example.com"] && [city isEqualToString:@"Boise"],
+        @"complex values and collections: Russell's e-mail addresses and the city of his address",
+        [NSString stringWithFormat:@"%@; %@", [emails isKindOfClass:[NSArray class]] ? [emails componentsJoinedByString:@", "] : emails, city]);
+  check([found isEqual:@[ @"russellwhyte" ]], @"a filter through a collection and into complex values (any, City/Name)",
+        found ? [found componentsJoinedByString:@","] : reason(fetchError));
 
   // Generated ahead of time: ois-model wrote it, momc compiled it.
   NSString *generatedPath = [models stringByAppendingPathComponent:@"NorthwindGenerated.momd"];

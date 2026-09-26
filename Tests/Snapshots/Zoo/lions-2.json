@@ -1,0 +1,34 @@
+{
+  "comment": "The second page of lions, from the 4.01 @nextLink; the type named without '#' and inside a context URL both work.",
+  "spec": "OASIS OData 4.01 JSON Format \u00a74.5.3, \u00a74.5.5",
+  "request": {
+    "method": "GET",
+    "path": "Animals/Zoo.Lion",
+    "query": {
+      "$expand": "Keeper($select=Code)",
+      "$skiptoken": "2"
+    }
+  },
+  "response": {
+    "status": 200,
+    "headers": {
+      "Content-Type": "application/json;odata.metadata=minimal;charset=utf-8",
+      "OData-Version": "4.01"
+    },
+    "body": {
+      "@context": "https://zoo.test/Zoo.svc/$metadata#Animals/Zoo.Lion",
+      "value": [
+        {
+          "@type": "https://zoo.test/Zoo.svc/$metadata#Zoo.Lion",
+          "Id": 5,
+          "Name": "Kiara",
+          "Diet": "Carnivore",
+          "Features": "Spots",
+          "Born": "2022-05-05",
+          "MaxRoar": 90,
+          "Keeper": null
+        }
+      ]
+    }
+  }
+}

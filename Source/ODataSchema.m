@@ -7,8 +7,15 @@
 @implementation ODataSchemaProperty
 - (BOOL)isCollection
 {
-  return [self.type hasPrefix:@"Collection("];
+  return [self.type hasPrefix:@"Collection("] && [self.type hasSuffix:@")"];
 }
+- (NSString *)elementType
+{
+  return self.isCollection ? [self.type substringWithRange:NSMakeRange(11, self.type.length - 12)] : self.type;
+}
+@end
+
+@implementation ODataSchemaComplexType
 @end
 
 @implementation ODataSchemaNavigationProperty
@@ -25,14 +32,18 @@
 // with or without namespace prefixes.
 @interface OISSchemaReader : NSObject <NSXMLParserDelegate>
 @property (nonatomic, strong) NSMutableDictionary *entityTypes;
+@property (nonatomic, strong) NSMutableDictionary *complexTypes;
 @property (nonatomic, strong) NSMutableDictionary *enumTypes;
+@property (nonatomic, strong) NSMutableDictionary *typeDefinitions;  // qualified name -> underlying type
 @property (nonatomic, strong) NSMutableDictionary *entitySets;
 @property (nonatomic, strong) NSMutableDictionary *aliases;  // alias -> namespace
+@property (nonatomic) BOOL keyAsSegmentSupported;
 @end
 
 @implementation OISSchemaReader {
   NSString *_namespace;
   ODataSchemaEntityType *_entityType;
+  ODataSchemaComplexType *_complexType;
   NSMutableArray *_key;
   NSMutableDictionary *_properties;
   NSMutableDictionary *_navigation;
@@ -41,7 +52,6 @@
   NSMutableDictionary *_memberValues;
   BOOL _inKey;
   BOOL _inContainer;
-  NSInteger _complexDepth;
 }
 
 - (instancetype)init
@@ -49,7 +59,9 @@
   self = [super init];
   if (!self) return nil;
   _entityTypes = [NSMutableDictionary dictionary];
+  _complexTypes = [NSMutableDictionary dictionary];
   _enumTypes = [NSMutableDictionary dictionary];
+  _typeDefinitions = [NSMutableDictionary dictionary];
   _entitySets = [NSMutableDictionary dictionary];
   _aliases = [NSMutableDictionary dictionary];
   return self;
@@ -73,10 +85,6 @@ static NSString *OISLocalName(NSString *name)
          attributes:(NSDictionary *)attributes
 {
   NSString *element = OISLocalName(elementName);
-  if (_complexDepth) {
-    _complexDepth++;
-    return;
-  }
   if ([element isEqualToString:@"Schema"]) {
     _namespace = attributes[@"Namespace"];
     if (attributes[@"Alias"] && _namespace) _aliases[attributes[@"Alias"]] = _namespace;
@@ -90,13 +98,24 @@ static NSString *OISLocalName(NSString *name)
     _properties = [NSMutableDictionary dictionary];
     _navigation = [NSMutableDictionary dictionary];
   } else if ([element isEqualToString:@"ComplexType"]) {
-    _complexDepth = 1;  // not mapped: read past it
+    _complexType = [[ODataSchemaComplexType alloc] init];
+    _complexType.name = attributes[@"Name"] ?: @"";
+    _complexType.qualifiedName = [self qualify:_complexType.name];
+    _complexType.baseType = attributes[@"BaseType"];
+    _complexType.isAbstract = [attributes[@"Abstract"] isEqualToString:@"true"];
+    _complexType.isOpen = [attributes[@"OpenType"] isEqualToString:@"true"];
+    _properties = [NSMutableDictionary dictionary];
+  } else if ([element isEqualToString:@"TypeDefinition"]) {
+    if (attributes[@"Name"] && attributes[@"UnderlyingType"]) {
+      _typeDefinitions[[self qualify:attributes[@"Name"]]] = attributes[@"UnderlyingType"];
+    }
   } else if (_entityType && [element isEqualToString:@"Key"]) {
     _inKey = YES;
   } else if (_entityType && _inKey && [element isEqualToString:@"PropertyRef"]) {
-    // Alias is for a key in a complex property, which is not mapped.
+    // A key in a complex property (Name="Address/Zip" Alias="Zip") is not
+    // an attribute of its own; such a key is kept by its path.
     if (attributes[@"Name"]) [_key addObject:attributes[@"Name"]];
-  } else if (_entityType && [element isEqualToString:@"Property"]) {
+  } else if ((_entityType || _complexType) && [element isEqualToString:@"Property"]) {
     ODataSchemaProperty *property = [[ODataSchemaProperty alloc] init];
     property.name = attributes[@"Name"] ?: @"";
     property.type = attributes[@"Type"] ?: @"Edm.String";
@@ -129,6 +148,14 @@ static NSString *OISLocalName(NSString *name)
       [_memberNames addObject:name];
       _memberValues[name] = value;
     }
+  } else if ([element isEqualToString:@"Annotation"]) {
+    // On the container, or in <Annotations Target="NS.Container">; the
+    // term under any alias of Org.OData.Capabilities.V1. A tag: true
+    // unless it says Bool="false".
+    NSString *term = attributes[@"Term"] ?: @"";
+    if ([term hasSuffix:@".KeyAsSegmentSupported"] && ![attributes[@"Bool"] isEqualToString:@"false"]) {
+      self.keyAsSegmentSupported = YES;
+    }
   } else if ([element isEqualToString:@"EntityContainer"]) {
     _inContainer = YES;
   } else if (_inContainer && [element isEqualToString:@"EntitySet"]) {
@@ -142,11 +169,11 @@ static NSString *OISLocalName(NSString *name)
     qualifiedName:(NSString *)qName
 {
   NSString *element = OISLocalName(elementName);
-  if (_complexDepth) {
-    _complexDepth--;
-    return;
-  }
-  if ([element isEqualToString:@"EntityType"] && _entityType) {
+  if ([element isEqualToString:@"ComplexType"] && _complexType) {
+    _complexType.declaredProperties = _properties;
+    _complexTypes[_complexType.qualifiedName] = _complexType;
+    _complexType = nil;
+  } else if ([element isEqualToString:@"EntityType"] && _entityType) {
     _entityType.declaredKey = _key;
     _entityType.declaredProperties = _properties;
     _entityType.declaredNavigationProperties = _navigation;
@@ -189,19 +216,32 @@ static NSString *OISLocalName(NSString *name)
   // Base types, set types and the like may be written with an alias.
   NSMutableDictionary *sets = [NSMutableDictionary dictionary];
   for (NSString *set in reader.entitySets) sets[set] = [schema qualifiedName:reader.entitySets[set]];
+  NSMutableDictionary *definitions = [NSMutableDictionary dictionary];
+  for (NSString *name in reader.typeDefinitions) {
+    definitions[[schema qualifiedName:name]] = [schema qualifiedName:reader.typeDefinitions[name]];
+  }
+  // Qualified, and a type definition as its underlying type.
+  void (^qualify)(ODataSchemaProperty *) = ^(ODataSchemaProperty *property) {
+    NSString *element = [schema qualifiedName:property.elementType];
+    element = definitions[element] ?: element;
+    property.type = property.isCollection ? [NSString stringWithFormat:@"Collection(%@)", element] : element;
+  };
   for (ODataSchemaEntityType *type in reader.entityTypes.allValues) {
     if (type.baseType) type.baseType = [schema qualifiedName:type.baseType];
     for (ODataSchemaNavigationProperty *navigation in type.declaredNavigationProperties.allValues) {
       navigation.type = [schema qualifiedName:navigation.type];
     }
-    for (ODataSchemaProperty *property in type.declaredProperties.allValues) {
-      if ([property.type hasPrefix:@"Collection("]) continue;
-      property.type = [schema qualifiedName:property.type];
-    }
+    for (ODataSchemaProperty *property in type.declaredProperties.allValues) qualify(property);
+  }
+  for (ODataSchemaComplexType *type in reader.complexTypes.allValues) {
+    if (type.baseType) type.baseType = [schema qualifiedName:type.baseType];
+    for (ODataSchemaProperty *property in type.declaredProperties.allValues) qualify(property);
   }
   schema->_entityTypes = [reader.entityTypes copy];
+  schema->_complexTypes = [reader.complexTypes copy];
   schema->_enumTypes = [reader.enumTypes copy];
   schema->_entitySets = [sets copy];
+  schema->_keyAsSegmentSupported = reader.keyAsSegmentSupported;
   return schema;
 }
 
@@ -218,6 +258,12 @@ static NSString *OISLocalName(NSString *name)
 {
   if (!name) return nil;
   return self.entityTypes[[self qualifiedName:name]];
+}
+
+- (ODataSchemaComplexType *)complexTypeNamed:(NSString *)name
+{
+  if (!name) return nil;
+  return self.complexTypes[[self qualifiedName:name]];
 }
 
 - (ODataSchemaEnumType *)enumTypeNamed:(NSString *)name
@@ -274,6 +320,27 @@ static NSString *OISLocalName(NSString *name)
     if ([t.qualifiedName isEqualToString:ancestor.qualifiedName]) return YES;
   }
   return NO;
+}
+
+- (ODataSchemaProperty *)property:(NSString *)name ofComplexType:(ODataSchemaComplexType *)type
+{
+  NSUInteger depth = 0;  // a base type cycle ends somewhere
+  for (ODataSchemaComplexType *t = type; t && depth < 64; t = t.baseType ? self.complexTypes[t.baseType] : nil, depth++) {
+    ODataSchemaProperty *property = t.declaredProperties[name];
+    if (property) return property;
+  }
+  return nil;
+}
+
+- (NSDictionary *)propertiesOfComplexType:(ODataSchemaComplexType *)type
+{
+  NSMutableArray *chain = [NSMutableArray array];
+  for (ODataSchemaComplexType *t = type; t && chain.count < 64; t = t.baseType ? self.complexTypes[t.baseType] : nil) {
+    [chain insertObject:t atIndex:0];
+  }
+  NSMutableDictionary *all = [NSMutableDictionary dictionary];
+  for (ODataSchemaComplexType *t in chain) [all addEntriesFromDictionary:t.declaredProperties];
+  return all;
 }
 
 - (BOOL)entityTypeIsContained:(ODataSchemaEntityType *)type

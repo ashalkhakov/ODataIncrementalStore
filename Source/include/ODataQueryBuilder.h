@@ -15,6 +15,9 @@ NS_ASSUME_NONNULL_BEGIN
 // Handed to the predicate translator; see ODataPredicateTranslator.
 @property (nonatomic, copy, nullable) ODataObjectKeysResolver keysForObjectID;
 @property (nonatomic, copy) NSURL *serviceRoot;
+// Address entities as Products/1 rather than Products(1); see
+// -[ODataResourceIdentifier pathWithKeyAsSegment:].
+@property (nonatomic) BOOL keyAsSegment;
 
 - (instancetype)initWithMapper:(ODataPropertyMapper *)mapper serviceRoot:(NSURL *)serviceRoot NS_DESIGNATED_INITIALIZER;
 - (instancetype)init NS_UNAVAILABLE;

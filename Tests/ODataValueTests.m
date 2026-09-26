@@ -116,6 +116,14 @@
                         @"1200000000000000000000");
 }
 
+- (void)testDecimalsMayComeWithAnExponent
+{
+  // JSON Format 4.01 section 7.1: a service may write 1.5E3 for 1500.
+  NSAttributeDescription *attr = [self attribute:NSDecimalAttributeType edm:nil];
+  XCTAssertEqualObjects([_coder coreDataValueForJSON:@"1.5E3" attribute:attr], [NSDecimalNumber decimalNumberWithString:@"1500"]);
+  XCTAssertEqualObjects([_coder coreDataValueForJSON:@"2e-2" attribute:attr], [NSDecimalNumber decimalNumberWithString:@"0.02"]);
+}
+
 - (void)testDoubleSpecialValuesAreStrings
 {
   NSAttributeDescription *attr = [self attribute:NSDoubleAttributeType edm:nil];

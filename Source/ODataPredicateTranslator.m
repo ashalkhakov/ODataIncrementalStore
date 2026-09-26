@@ -13,6 +13,12 @@
 // the constant is written (a Date as an Edm.Date, a Decimal without an
 // exponent, a Boolean from @0).
 @property (nonatomic, strong, nullable) NSAttributeDescription *comparedAttribute;
+// Or the type it is compared with, where that is no attribute's: a member
+// of a complex value, an element of a collection.
+@property (nonatomic, copy, nullable) NSString *comparedType;
+// Inside a lambda over a collection of values (not of entities): their
+// type, which paths inside the lambda start from.
+@property (nonatomic, copy, nullable) NSString *elementType;
 - (nullable NSString *)translateExpression:(NSExpression *)expression error:(NSError **)error;
 @end
 
@@ -75,10 +81,12 @@
     return [self translateObjectComparison:cmp error:error];
   }
   self.comparedAttribute = [self attributeAtExpression:cmp.leftExpression] ?: [self attributeAtExpression:cmp.rightExpression];
+  self.comparedType = [self typeAtExpression:cmp.leftExpression] ?: [self typeAtExpression:cmp.rightExpression];
   NSString *lhs = [self translateExpression:cmp.leftExpression error:error];
   NSString *rhs = lhs ? [self translateExpression:cmp.rightExpression error:error] : nil;
   if (!rhs) {
     self.comparedAttribute = nil;
+    self.comparedType = nil;
     return nil;
   }
   BOOL ci = (cmp.options & NSCaseInsensitivePredicateOption) != 0;
@@ -176,7 +184,9 @@
 
 - (NSString *)mapKeyPath:(NSString *)path
 {
-  NSString *mapped = [self.mapper propertyPathForKeyPath:path entity:self.entity];
+  NSString *mapped = self.elementType
+      ? [self.mapper memberPath:[path componentsSeparatedByString:@"."] ofType:self.elementType memberType:NULL]
+      : [self.mapper propertyPathForKeyPath:path entity:self.entity];
   return self.lambdaVariable ? [NSString stringWithFormat:@"%@/%@", self.lambdaVariable, mapped] : mapped;
 }
 
@@ -200,18 +210,39 @@
     return nil;
   }
 
+  // Walk the path to its first collection: a to-many relationship, or an
+  // attribute or complex member holding a collection of values.
   NSArray *parts = [left.keyPath componentsSeparatedByString:@"."];
-  NSEntityDescription *current = self.entity;
-  NSRelationshipDescription *toMany = nil;
+  NSEntityDescription *current = self.elementType ? nil : self.entity;
+  NSString *currentType = self.elementType;
+  NSEntityDescription *elementEntity = nil;
+  NSString *elementType = nil;
   NSUInteger i = 0;
   for (; i < parts.count; i++) {
-    NSRelationshipDescription *rel = current.relationshipsByName[parts[i]];
-    if (!rel) break;
-    if (rel.isToMany) {
-      toMany = rel;
+    NSString *type = nil;
+    if (current) {
+      NSRelationshipDescription *rel = current.relationshipsByName[parts[i]];
+      if (rel) {
+        if (rel.isToMany) {
+          elementEntity = rel.destinationEntity;
+          break;
+        }
+        current = rel.destinationEntity;
+        continue;
+      }
+      NSAttributeDescription *attr = current.attributesByName[parts[i]];
+      if (!attr) break;
+      type = [self.mapper.values typeNameOfAttribute:attr];
+      current = nil;
+    } else {
+      [self.mapper memberPath:@[ parts[i] ] ofType:currentType memberType:&type];
+    }
+    if ([type hasPrefix:@"Collection("] && [type hasSuffix:@")"]) {
+      elementType = [type substringWithRange:NSMakeRange(11, type.length - 12)];
       break;
     }
-    current = rel.destinationEntity;
+    if (!type) break;
+    currentType = type;
   }
   NSComparisonPredicate *direct =
       [NSComparisonPredicate predicateWithLeftExpression:left
@@ -220,13 +251,14 @@
                                                     type:cmp.predicateOperatorType
                                                  options:cmp.options];
   // No collection on the path: ANY and ALL of one value is the value.
-  if (!toMany) return [self translateComparison:direct error:error];
+  if (!elementEntity && !elementType) return [self translateComparison:direct error:error];
 
   NSString *collection = [self mapKeyPath:[[parts subarrayWithRange:NSMakeRange(0, i + 1)] componentsJoinedByString:@"."]];
   NSArray *rest = [parts subarrayWithRange:NSMakeRange(i + 1, parts.count - i - 1)];
   NSString *variable = [NSString stringWithFormat:@"x%lu", (unsigned long)self.lambdaDepth];
 
-  ODataPredicateTranslator *inner = [[ODataPredicateTranslator alloc] initWithMapper:self.mapper entity:toMany.destinationEntity];
+  ODataPredicateTranslator *inner = [[ODataPredicateTranslator alloc] initWithMapper:self.mapper entity:elementEntity ?: self.entity];
+  inner.elementType = elementType;
   inner.lambdaVariable = variable;
   inner.lambdaDepth = self.lambdaDepth + 1;
   inner.keysForObjectID = self.keysForObjectID;
@@ -234,7 +266,7 @@
       ? [NSExpression expressionForKeyPath:[rest componentsJoinedByString:@"."]]
       : [NSExpression expressionForEvaluatedObject];
   // The same modifier again: it takes effect only if the rest of the path
-  // crosses another to-many relationship.
+  // crosses another collection.
   NSComparisonPredicate *innerPredicate =
       [NSComparisonPredicate predicateWithLeftExpression:innerLeft
                                          rightExpression:cmp.rightExpression
@@ -400,13 +432,29 @@ static NSArray *OISObjectsInExpression(NSExpression *expression)
     for (id v in value) [parts addObject:[self literal:v]];
     return [parts componentsJoinedByString:@", "];
   }
+  if (self.comparedType) return [self.mapper.values literalForValue:value typeName:self.comparedType];
   return [self.mapper.values literalForValue:value attribute:self.comparedAttribute];
+}
+
+// The type a key path ends at when that is no attribute: a complex value's
+// member, or inside a lambda over values, the element or its member.
+- (NSString *)typeAtExpression:(NSExpression *)expression
+{
+  NSString *type = nil;
+  if (expression.expressionType == NSEvaluatedObjectExpressionType) return self.elementType;
+  if (expression.expressionType != NSKeyPathExpressionType) return nil;
+  if (self.elementType) {
+    [self.mapper memberPath:[expression.keyPath componentsSeparatedByString:@"."] ofType:self.elementType memberType:&type];
+  } else {
+    [self.mapper propertyPathForKeyPath:expression.keyPath entity:self.entity memberType:&type];
+  }
+  return type;
 }
 
 // The attribute at the end of a key path, through to-one relationships.
 - (NSAttributeDescription *)attributeAtExpression:(NSExpression *)expression
 {
-  if (expression.expressionType != NSKeyPathExpressionType) return nil;
+  if (expression.expressionType != NSKeyPathExpressionType || self.elementType) return nil;
   NSEntityDescription *current = self.entity;
   NSAttributeDescription *found = nil;
   for (NSString *part in [expression.keyPath componentsSeparatedByString:@"."]) {

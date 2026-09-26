@@ -7,9 +7,11 @@ OASIS specifications:
 [Part 2: URL Conventions](https://docs.oasis-open.org/odata/odata/v4.01/odata-v4.01-part2-url-conventions.html),
 [JSON Format](https://docs.oasis-open.org/odata/odata-json-format/v4.01/odata-json-format-v4.01.html).
 
-The client targets **OData 4.0**: it sends `OData-MaxVersion: 4.0`, so
-services answer in 4.0 and the 4.01-only client requirements (Part 1
-§13.3, items 16–20) do not apply yet.
+The client writes its requests as **OData 4.0**, which 4.01 services read
+too, and takes responses up to **4.01**: it sends `OData-MaxVersion: 4.01`
+(`ODataIncrementalStoreMaxVersionOption` lowers it), and reads a 4.01
+payload's shorter control information (2.4). The 4.01-only client
+requirements of Part 1 §13.3 (items 16–20) are not yet reviewed one by one.
 
 | Mark | Meaning |
 |---|---|
@@ -26,7 +28,7 @@ calling the client conformant.
 
 | # | Requirement | Status | Notes |
 |---|---|---|---|
-| 1 | MUST send `OData-MaxVersion` | ✅ | `4.0` on every request. |
+| 1 | MUST send `OData-MaxVersion` | ✅ | `4.01` on every request, unless the option says otherwise. |
 | 2 | MUST send `OData-Version` and `Content-Type` with a payload | ✅ | `OData-Version` on every request; `Content-Type` only with a body. |
 | 3 | MUST be a conforming consumer of the JSON format | ⚠️ | See section 2. |
 | 4 | MUST follow redirects (§9.1.5) | ✅ **live** | `NSURLSession` follows them, on Apple and on GNUstep, where the client uses it whenever gnustep-base was built with libcurl. TripPin's entry URL redirects with a relative `Location`. gnustep-base's `NSURLConnection`, the fallback, does not follow a relative `Location` (`NSURLProtocol` builds the new URL without the request URL, and the request times out); a fix belongs in gnustep-patches. |
@@ -42,14 +44,14 @@ calling the client conformant.
 
 | # | Requirement | Status | Notes |
 |---|---|---|---|
-| 1 | Understand `metadata=minimal`, or request `none` / `full` | ✅ | Requests `minimal`. Reads `@odata.etag`, `@odata.nextLink` and `@odata.editLink` (writes go to the edit link where one is given). `@odata.id` is not needed: the key is in the row. |
+| 1 | Understand `metadata=minimal`, or request `none` / `full` | ✅ | Requests `minimal`. Reads `@odata.etag`, `@odata.nextLink`, `@odata.type` and `@odata.editLink` (writes go to the edit link where one is given). `@odata.id` is not needed: the key is in the row. |
 | 2 | Consume `metadata=full` responses | ✅ | Extra control information is ignored. |
-| 3 | Receive every data type (§7.1) | ⚠️ **live** | Every primitive type the store can map; see section 5. Enumerations, complex types, collections and spatial types are not mapped. |
-| 4 | Interpret control information per the payload's `OData-Version` | ⚠️ | Only `@odata.etag`, `@odata.nextLink` (not yet followed) and `value` matter today. |
+| 3 | Receive every data type (§7.1) | ⚠️ **live** | Every primitive type, enumerations, complex values and collections (of primitive, enumeration or complex values); see sections 4.3 and 5. Spatial types are left out for now, and streams are not in a row; see section 8. |
+| 4 | Interpret control information per the payload's `OData-Version` | ✅ | A 4.01 payload may leave out the `odata.` prefix (`@etag`, `@nextLink`, `@type`, `Orders@count`); the client gives such names their prefix when it parses a response, so the store reads one spelling. A payload that says it is 4.0 is taken as it is; one without `OData-Version` (a part of a `$batch` response, say) is read as 4.01. Decimals written with an exponent (`1.5E3`) are read. |
 | 5 | Accept unknown annotations and control information | ✅ | Ignored. |
 | 6 | Not require `streaming=true` | ✅ | |
 | 7a | Accept the `odata.` prefix on control information | ✅ | 4.0 payloads always carry it. |
-| 7b | Accept `#` in `@odata.type` | — | `@odata.type` is not read yet; see 4.3. |
+| 7b | Accept `#` in `@odata.type` | ✅ | With or without it, and as the fragment of a context URL (`…/$metadata#NS.Type`). |
 | 7c | Bind related entities with `@odata.bind` in POST / PATCH | ✅ | Inserts bind (`Nav@odata.bind`). Updates use the `$ref` operations instead; see 4.2. |
 | 7e | Accept `-INF`, `INF`, `NaN` strings for Single and Double | ✅ | Read into Float and Double attributes, and written that way, since JSON has no NaN or infinity. |
 | 7f | Property annotations before or after the property | ✅ | Ignored. |
@@ -73,10 +75,10 @@ calling the client conformant.
 | Relationship changes (`@odata.bind`, `$ref`) | §11.4.2.2, §11.4.6 | ✅ **live** | See 4.2. |
 | Atomic saves (`$batch` change sets) | §11.7 | ✅ **live** | A save of two or more requests is one multipart change set, with absolute URLs (TripPin rejects relative ones in a batch). A service that refuses `$batch` (400, 404, 405, 415 or 501 to the batch request) gets the requests one at a time from then on; any other failure fails the save, since TripPin shows a service can apply part of a batch and then answer 500. Inserts whose keys the service assigns are posted before the rest, because Core Data needs their object IDs first; assign keys on the client (`postOnObtainPermanentIDs` off) for a save that is atomic whole. `ODataIncrementalStoreBatchSavesOption` turns batching off. |
 | Redirects | §9.1.5 | ⚠️ | See 1.4. |
-| Key-as-segment URLs (`Products/1`) | §4.3.6 | ❌ | Parentheses only. Needed only where a service requires it. |
+| Key-as-segment URLs (`Products/1`) | Part 2 §4.3.6 | ✅ | `ODataIncrementalStoreKeyAsSegmentOption`, or on its own when `$metadata` annotates the container `Capabilities.KeyAsSegmentSupported`. Single-part keys, their values bare and percent-encoded (`People/russellwhyte`); compound keys keep parentheses. References in bodies (`@odata.id`, `@odata.bind`) stay canonical, which every service accepts. |
 | Percent-encoding of key values in paths | Part 2 §4.3.1 | ✅ | Everything but what a path segment allows and OData's key syntax uses: `Customers('Smith%20%26%20Co%2F2')`. |
-| Deep insert | §11.4.2.2 | — | Optional. `$batch` covers the same need. |
-| Delta, async, streams, actions, functions | | — | No Core Data equivalent in a fetch or save. |
+| Deep insert | §11.4.2.2 | — | Not needed: a save that inserts related objects is one `$batch` change set, with binds, which is as atomic. |
+| Delta, async, streams, actions, functions | | — | No Core Data equivalent in a fetch or save; planned in section 8. |
 
 ## 4. Core Data mapping
 
@@ -120,8 +122,9 @@ calling the client conformant.
 | Single and compound keys | ✅ | |
 | Key discovery from `$metadata` | ✅ **live** | `userInfo`, else the schema's key (TripPin's `Person` by `UserName`), else an `id` / `<Entity>ID` attribute. Entity sets too: `Person` is in `People`. |
 | Derived types (`@odata.type`, type casts) ↔ sub-entities | ✅ | A row's `@odata.type` makes its object one of the sub-entity; fetching a sub-entity casts (`Animals/Zoo.Lion`); a derived insert carries `@odata.type`. A fetch without sub-entities leaves derived rows out client-side, so its `$count` includes them. |
-| Complex types | ❌ | No Core Data equivalent short of flattening or a transformable. |
-| Collections of primitives | ❌ | Same. |
+| Complex types | ✅ **live** | A Transformable attribute holding an `NSDictionary` keyed by the service's property names, nested for a nested complex value; members hold what an attribute of their type would (an `NSDate` for an `Edm.Date`, an `NSDecimalNumber`, an enumeration's names), null stays `NSNull`, and a value of a derived complex type keeps `@odata.type`. A change writes the whole value, so set a new dictionary rather than mutating the old one. (Apple's composite attributes, macOS 14 and later, have no FreeCoreData counterpart.) |
+| Collections | ✅ **live** | A Transformable attribute holding an `NSArray` of primitive, enumeration or complex values, written whole. TripPin's `Emails` and `AddressInfo` read live. |
+| Type definitions | ✅ | Read as their underlying type. |
 | Enumeration types | ✅ **live** | Member names on a String attribute, values on an integer one (flags or'ed); the qualified literal in `$filter` (`Gender eq NS.PersonGender'Female'`). |
 
 ### 4.4 Predicates → `$filter` (Part 2 §5.1.1)
@@ -138,6 +141,8 @@ calling the client conformant.
 | `lowercase:`, `uppercase:` | `tolower`, `toupper` | ✅ | |
 | `nil` | `null` | ✅ | |
 | Key paths through to-one relationships | `Nav/Prop` | ✅ | |
+| Key paths into complex values | `Address/City` | ✅ **live** | `address.city` or `address.City`: members are matched to the schema regardless of case, and literals are typed by the member (an `Edm.Date` member compares with a date). |
+| `ANY` / `ALL` on a collection of values | `Emails/any(x0:x0 eq …)`, `AddressInfo/any(x0:x0/City/Name eq …)` | ✅ **live** | Primitive elements are the lambda variable itself; complex ones are reached through their members. |
 | `rel == %@`, `!=`, `IN` with managed objects or object IDs | `Nav/Key eq …`, `not (…)`, `Nav/Key in (…)` | ✅ **live** | Compares keys through the to-one path; a compound key compares each part. An unsaved object is an error. |
 | `self == %@`, `self IN %@` | `Key eq …`, `Key in (…)` | ✅ | Inside a lambda, against the lambda variable. |
 | `ANY` / `ALL` on to-many | `Nav/any(x0:…)`, `Nav/all(x0:…)` | ✅ **live** | Split at the first to-many step; a further to-many step nests another lambda. `ANY` over a to-one path is the plain comparison. |
@@ -164,8 +169,8 @@ calling the client conformant.
 | `TimeOfDay`, `Duration` | String / Double with `OData.type` | ✅ | `TimeOfDay` stays a string (`13:20:00`) with an unquoted literal; `Duration` is seconds in a Double (`P1DT2H3M4.5S` is 93784.5), written `PT93784.5S`, with the literal `duration'…'`. |
 | `Guid` | UUID, or String with `OData.type` `Edm.Guid` | ✅ | Unquoted in literals and in key paths. |
 | `Binary` | Binary Data | ✅ **live** | Written as base64url, the spec's form; both base64url and plain base64 read, since Northwind sends plain base64. Literal `binary'…'`. |
-| `Stream`, media entities | | — | |
-| Geography, geometry | | — | |
+| `Stream`, media entities | | — | Not in a row; see section 8. |
+| Geography, geometry | | — | Left out for now: listed under `OData.unmapped` in a generated model. |
 | Enumerations | String or Integer | ✅ **live** | See 4.3. |
 
 ## 6. Transport and platforms
@@ -223,7 +228,7 @@ gnustep-base (through libxml2).
 | Entity (`atom:entry`, `atom:id`, `atom:category` for the type, `atom:link rel="edit"`) | §6 | ❌ | |
 | ETag (`metadata:etag` on the entry) | §6.1.1 | ❌ | Same rules as JSON: keep it verbatim. |
 | Properties (`metadata:properties`, `data:Name`, `metadata:type`, `metadata:null`) | §7.1–7.4 | ❌ | Values use the same ABNF literals as the JSON format's strings, so the type work in section 5 carries over. |
-| Complex properties and collections (`metadata:element`) | §7.5–7.7 | ❌ | Same model gap as JSON; see 4.3. |
+| Complex properties and collections (`metadata:element`) | §7.5–7.7 | ❌ | Mapped as for JSON (4.3); only the reading is missing. |
 | Navigation links, association links | §8.1–8.2 | ❌ | |
 | Expanded navigation (`metadata:inline`) | §8.3 | ❌ | |
 | Bind operations in POST / PATCH | §8.5 | ❌ | Same need as `@odata.bind`. |
@@ -238,6 +243,66 @@ gnustep-base (through libxml2).
 For the server described in [server-design.md](server-design.md), Atom is
 an output format like any other, and serving it would give XForms clients
 route 2 against our own services, whatever third-party services do.
+
+## 8. Beyond fetch and save: plans
+
+What OData offers that a fetch or a save cannot say. None of it is
+required of a client (Part 1 §13.3 items 11–15 are MAYs), but operations
+and deltas are what real services are built around.
+
+**Actions and functions** (Part 1 §11.5). A *function* has no side
+effects and is called with GET, parameters in the URL
+(`GetNearestAirport(lat=33,lon=-118)`); an *action* may change things and
+is called with POST, parameters in a JSON body. Either may be *bound* to
+an entity (`People('russellwhyte')/NS.ShareTrip`) or to a collection
+(`Products/NS.Discount`), or be *unbound*, reached through an import in
+the container. They return nothing, a primitive, complex or enumeration
+value, an entity, or a collection of any of these. The plan:
+
+- Read `Function`, `Action`, `FunctionImport` and `ActionImport` from
+  `$metadata`: parameters, their types, the binding parameter, the return
+  type.
+- A store method to invoke one, synchronous like the rest of the store,
+  with a target-action form beside it:
+  `-invokeOperation:(NSString *)name boundTo:(id)objectOrEntity parameters:(NSDictionary *)parameters inContext:(NSManagedObjectContext *)context error:`.
+  Parameters are written by the value coder from their declared types, as
+  literals for a function and as JSON for an action; an object parameter
+  is sent as its reference.
+- Results come back as the store's fetches do: entities as managed objects
+  in the given context, their rows cached; other values as the coder reads
+  them (an `NSDictionary` for a complex value, an `NSArray` for a
+  collection).
+- The Workbench, as a dynamic client, lists a service's operations from
+  `$metadata` and invokes them.
+
+**Delta** (Part 1 §11.3). A GET with `Prefer: odata.track-changes` ends its
+last page with `@odata.deltaLink`; a later GET of that link returns only
+what changed since: new and changed entities, and removed ones
+(`@odata.removed` in 4.01, `$deletedEntity` in 4.0). The plan: a store
+method that starts tracking a fetch request's results, and one that reads
+the changes since, refreshes the cached rows, bumps the changed objects'
+versions and posts a notification with the inserted, updated and deleted
+object IDs, for the app to merge into its contexts. It needs a service
+that tracks changes; neither public reference service does, so it would
+be tested with snapshots only.
+
+**Asynchronous requests** (Part 1 §8.2.8.8, §11.6). A request sent with
+`Prefer: respond-async` may be answered `202 Accepted` with a status
+monitor URL in `Location`; the client polls that URL (honouring
+`Retry-After`) until it answers with the result, and may `DELETE` it to
+cancel. This is for long-running work, a large `$batch` or a slow action.
+It belongs in the client, inside one exchange, so neither the store nor
+its callers notice. Low priority.
+
+**Streams** (Part 1 §11.1.2, §11.4.7–8). Binary content that is not part
+of a row: a *media entity* (`HasStream="true"`, TripPin's `Photo`) has its
+content at `Entity(key)/$value`, and a *stream property* (`Edm.Stream`) at
+`Entity(key)/Property`, each with its own read and edit links, content
+type and ETag. Reading every stream with its row would cost a request per
+object. The plan: a stream is not an attribute; a store method reads and
+writes one object's stream by name (`GET`, and `PUT` with `If-Match` on
+the media ETag), and the row keeps the stream's links and content type
+for it.
 
 ## Order of work
 
@@ -260,7 +325,10 @@ route 2 against our own services, whatever third-party services do.
    discover keys, then derived types and enums.~~ Done, with models built
    from `$metadata` at runtime and generated ahead of time, versioned as
    Core Data versions a model.
-6. **XML, for XForms:** JSON-to-XML mapping on the client first, since it
+6. ~~**Types, the rest:** complex types and collections, 4.01 payloads,
+   key-as-segment.~~ Done; spatial types left out for now.
+7. **Actions and functions**, then **delta**; see section 8.
+8. **XML, for XForms:** JSON-to-XML mapping on the client first, since it
    works with every service; then Atom as a second wire format where a
    service offers it (section 7). Parsing CSDL XML in step 5 builds the
    XML reading this needs.

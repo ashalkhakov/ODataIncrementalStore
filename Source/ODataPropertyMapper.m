@@ -83,7 +83,7 @@ NSString * const ODataUserInfoKey = @"OData.key";
 - (NSEntityDescription *)entity:(NSEntityDescription *)entity forTypeName:(NSString *)typeName
 {
   if (![typeName isKindOfClass:[NSString class]] || !typeName.length) return entity;
-  NSString *name = [typeName hasPrefix:@"#"] ? [typeName substringFromIndex:1] : typeName;
+  NSString *name = ODataTypeNameFromControlInformation(typeName);
   if (self.schema) name = [self.schema qualifiedName:name];
   NSMutableArray *queue = [NSMutableArray arrayWithObject:entity];
   while (queue.count) {
@@ -176,13 +176,26 @@ NSString * const ODataUserInfoKey = @"OData.key";
 
 - (NSString *)propertyPathForKeyPath:(NSString *)keyPath entity:(NSEntityDescription *)entity
 {
+  return [self propertyPathForKeyPath:keyPath entity:entity memberType:NULL];
+}
+
+- (NSString *)propertyPathForKeyPath:(NSString *)keyPath entity:(NSEntityDescription *)entity memberType:(NSString **)memberType
+{
+  if (memberType) *memberType = nil;
   NSEntityDescription *current = entity;
   NSMutableArray *mapped = [NSMutableArray array];
-  for (NSString *part in [keyPath componentsSeparatedByString:@"."]) {
+  NSArray *parts = [keyPath componentsSeparatedByString:@"."];
+  for (NSUInteger i = 0; i < parts.count; i++) {
+    NSString *part = parts[i];
     NSAttributeDescription *attr = current.attributesByName[part];
     NSRelationshipDescription *rel = attr ? nil : current.relationshipsByName[part];
     if (attr) {
       [mapped addObject:[self propertyForAttribute:attr]];
+      if (i + 1 < parts.count) {
+        NSArray *members = [parts subarrayWithRange:NSMakeRange(i + 1, parts.count - i - 1)];
+        [mapped addObject:[self memberPath:members ofType:[self.values typeNameOfAttribute:attr] memberType:memberType]];
+        break;
+      }
       current = nil;
     } else if (rel) {
       [mapped addObject:[self propertyForRelationship:rel]];
@@ -192,6 +205,27 @@ NSString * const ODataUserInfoKey = @"OData.key";
       current = nil;
     }
   }
+  return [mapped componentsJoinedByString:@"/"];
+}
+
+- (NSString *)memberPath:(NSArray *)members ofType:(NSString *)typeName memberType:(NSString **)memberType
+{
+  NSMutableArray *mapped = [NSMutableArray array];
+  NSString *type = typeName;
+  for (NSString *member in members) {
+    if ([type hasPrefix:@"Collection("] && [type hasSuffix:@")"]) type = [type substringWithRange:NSMakeRange(11, type.length - 12)];
+    ODataSchemaComplexType *complex = [self.schema complexTypeNamed:type];
+    ODataSchemaProperty *property = complex ? [self.schema property:member ofComplexType:complex] : nil;
+    if (complex && !property) {
+      NSDictionary *all = [self.schema propertiesOfComplexType:complex];
+      for (NSString *name in all) {
+        if ([name caseInsensitiveCompare:member] == NSOrderedSame) property = all[name];
+      }
+    }
+    [mapped addObject:property ? property.name : [self wireName:member]];
+    type = property.type;
+  }
+  if (memberType) *memberType = type;
   return [mapped componentsJoinedByString:@"/"];
 }
 
@@ -208,6 +242,8 @@ NSString * const ODataUserInfoKey = @"OData.key";
 // Edm type.
 static BOOL OISCanHold(NSAttributeType core, NSString *edm, ODataSchema *schema)
 {
+  // Complex values and collections: an NSDictionary or an NSArray.
+  if ([edm hasPrefix:@"Collection("] || [schema complexTypeNamed:edm]) return core == NSTransformableAttributeType;
   if ([schema enumTypeNamed:edm]) {
     return core == NSStringAttributeType || core == NSInteger16AttributeType ||
            core == NSInteger32AttributeType || core == NSInteger64AttributeType;

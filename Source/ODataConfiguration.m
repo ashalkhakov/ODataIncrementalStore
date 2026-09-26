@@ -9,6 +9,8 @@ NSString * const ODataIncrementalStorePasswordOption = @"ODataIncrementalStorePa
 NSString * const ODataIncrementalStoreTimeoutOption = @"ODataIncrementalStoreTimeout";
 NSString * const ODataIncrementalStorePostOnObtainPermanentIDsOption = @"ODataIncrementalStorePostOnObtainPermanentIDs";
 NSString * const ODataIncrementalStoreTransportOption = @"ODataIncrementalStoreTransport";
+NSString * const ODataIncrementalStoreKeyAsSegmentOption = @"ODataIncrementalStoreKeyAsSegment";
+NSString * const ODataIncrementalStoreMaxVersionOption = @"ODataIncrementalStoreMaxVersion";
 NSString * const ODataIncrementalStoreIEEE754CompatibleOption = @"ODataIncrementalStoreIEEE754Compatible";
 NSString * const ODataIncrementalStoreBatchSavesOption = @"ODataIncrementalStoreBatchSaves";
 NSString * const ODataIncrementalStoreRequireMatchingModelOption = @"ODataIncrementalStoreRequireMatchingModel";
@@ -37,6 +39,8 @@ NSString * const ODataIncrementalStoreType = @"ODataIncrementalStore";
   _IEEE754Compatible = ieee ? [ieee boolValue] : YES;
   id batch = options[ODataIncrementalStoreBatchSavesOption];
   _batchSaves = batch ? [batch boolValue] : YES;
+  id maxVersion = options[ODataIncrementalStoreMaxVersionOption];
+  _maxVersion = [maxVersion isKindOfClass:[NSString class]] ? [maxVersion copy] : @"4.01";
   _userAgent = @"ODataIncrementalStore/1.0 (LGPL-2.1; libobjc2)";
   return self;
 }
@@ -56,7 +60,7 @@ NSString * const ODataIncrementalStoreType = @"ODataIncrementalStore";
     [request setValue:json forHTTPHeaderField:@"Content-Type"];
   }
   [request setValue:@"4.0" forHTTPHeaderField:@"OData-Version"];
-  [request setValue:@"4.0" forHTTPHeaderField:@"OData-MaxVersion"];
+  [request setValue:self.maxVersion forHTTPHeaderField:@"OData-MaxVersion"];
   [request setValue:self.userAgent forHTTPHeaderField:@"User-Agent"];
   request.timeoutInterval = self.timeout;
   if (self.accessToken.length) {
