@@ -106,7 +106,7 @@ jobs:
       # Both pinned to commits, not branches. The patches ref decides the
       # recipe hash the stack is cached under, so a moving branch would keep
       # serving a prefix built from patches that have since changed.
-      GNUSTEP_PATCHES_REF: 2b804eab00ea94df67cc14aa1064d66679e802be
+      GNUSTEP_PATCHES_REF: 44b9f3d8b750c0c2c128a14718a265b83a9a797c
       FREECOREDATA_REF: 389544d5398e2b9259f189dacc46cbe88584112a
     defaults:
       run:
