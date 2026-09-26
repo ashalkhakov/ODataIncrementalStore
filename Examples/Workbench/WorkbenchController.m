@@ -1717,7 +1717,8 @@ static void WBCheck(BOOL ok, NSString *what, NSString *detail)
 - (void)runSelfTest
 {
   NSArray *names = @[ @"Built-in", @"Northwind", @"TripPin" ];
-  for (NSInteger service = WBServiceBuiltIn; service <= WBServiceTripPin; service++) {
+  NSInteger last = self.selfTestOffline ? WBServiceBuiltIn : WBServiceTripPin;
+  for (NSInteger service = WBServiceBuiltIn; service <= last; service++) {
     fprintf(stderr, "== %s\n", [names[(NSUInteger)service] UTF8String]);
     [self.servicePopup selectItemAtIndex:service];
     [self serviceChanged:self.servicePopup];

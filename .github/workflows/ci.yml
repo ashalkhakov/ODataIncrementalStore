@@ -19,6 +19,10 @@ on:
 # request for the same branch share one group: pushing to a branch with an
 # open PR would otherwise start two nearly identical runs, and on a private
 # repository the macOS half of each bills at 10x.
+# Attaching packages to a release on a v* tag writes to the repository.
+permissions:
+  contents: write
+
 concurrency:
   group: ${{ github.workflow }}-${{ github.head_ref || github.ref_name }}
   cancel-in-progress: true
@@ -93,6 +97,40 @@ jobs:
         continue-on-error: true
         run: |
           "$RUNNER_TEMP/DerivedData/Build/Products/Debug/Workbench.app/Contents/MacOS/Workbench" --self-test
+
+      # The Workbench as an app to hand someone: Release, universal (arm64
+      # and x86_64), the framework embedded, signed ad hoc -- there is no
+      # Developer ID here, so a downloaded copy is opened with right-click,
+      # Open (or xattr -dr com.apple.quarantine Workbench.app). It has to
+      # start and pass the offline self-test before it is uploaded. A v* tag
+      # attaches it to that release.
+      - name: Package the Workbench app
+        run: |
+          version="${GITHUB_REF_NAME#v}"
+          [ "$GITHUB_REF_TYPE" = tag ] || version="0.0.0-$GITHUB_RUN_NUMBER"
+          xcodebuild -workspace ODataIncrementalStore.xcworkspace -scheme Workbench \
+            -destination 'generic/platform=macOS' -configuration Release \
+            -derivedDataPath "$RUNNER_TEMP/Release" \
+            MARKETING_VERSION="${version%%-*}" CURRENT_PROJECT_VERSION="$GITHUB_RUN_NUMBER" build
+          app="$RUNNER_TEMP/Release/Build/Products/Release/Workbench.app"
+          test -d "$app/Contents/Frameworks/ODataIncrementalStore.framework" \
+            || { echo "::error::Workbench.app does not embed ODataIncrementalStore.framework"; exit 1; }
+          lipo "$app/Contents/MacOS/Workbench" -verify_arch arm64 x86_64
+          codesign --verify --deep --strict "$app"
+          "$app/Contents/MacOS/Workbench" --self-test builtin
+          ditto -c -k --keepParent "$app" "ODataWorkbench-macOS-$version.zip"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ODataWorkbench-macOS-${{ github.sha }}
+          path: ODataWorkbench-macOS-*.zip
+          retention-days: 14
+
+      - name: Attach the app to the release
+        if: github.ref_type == 'tag' && startsWith(github.ref_name, 'v')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: ODataWorkbench-macOS-*.zip
 
       - name: Upload test results
         uses: actions/upload-artifact@v4
@@ -269,3 +307,44 @@ jobs:
           cd Examples/Workbench
           LD_LIBRARY_PATH="$PWD/../../obj${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}" \
             xvfb-run -a ./Workbench.app/Workbench --self-test
+
+      # The Workbench as an AppImage: the app, the library, FreeCoreData and
+      # the GNUstep runtime in one file (Scripts/prepare-appdir.sh,
+      # Scripts/package-appimage.sh). A v* tag attaches it to that release.
+      - name: Package the Workbench as an AppImage
+        run: |
+          sudo apt-get -q -y install desktop-file-utils fonts-dejavu fonts-liberation
+          ./Scripts/install-linuxdeploy.sh
+          version="${GITHUB_REF_NAME#v}"
+          [ "$GITHUB_REF_TYPE" = tag ] || version="0.0.0-$GITHUB_RUN_NUMBER"
+          . $PREFIX/System/Library/Makefiles/GNUstep.sh
+          GNUSTEP_PREFIX="$PREFIX" ./Scripts/prepare-appdir.sh
+          APP_VERSION="$version" GNUSTEP_PREFIX="$PREFIX" ./Scripts/package-appimage.sh
+
+      # Where it will run: a plain Ubuntu with no GNUstep, and only the
+      # libraries every desktop has (AppImage leaves those to the host). The
+      # offline self-test drives the window against the built-in service.
+      - name: Smoke-test the AppImage on a clean system
+        run: |
+          image=$(ls ODataWorkbench-Linux-*.AppImage)
+          chmod +x "$image"
+          docker run --rm -v "$PWD:/w" -w /w ubuntu:24.04 bash -c '
+            export DEBIAN_FRONTEND=noninteractive
+            for i in 1 2 3; do
+              apt-get update -qq && apt-get install -y -qq --fix-missing xvfb xauth ca-certificates \
+                libfontconfig1 libfreetype6 libx11-6 libx11-xcb1 libxcb1 libgl1 libharfbuzz0b > /dev/null && break
+              sleep 10
+            done
+            APPIMAGE_EXTRACT_AND_RUN=1 timeout 300 xvfb-run -a ./'"$image"' --self-test builtin'
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ODataWorkbench-Linux-${{ github.sha }}
+          path: ${{ github.workspace }}/source/ODataWorkbench-Linux-*.AppImage
+          retention-days: 14
+
+      - name: Attach the AppImage to the release
+        if: github.ref_type == 'tag' && startsWith(github.ref_name, 'v')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: ${{ github.workspace }}/source/ODataWorkbench-Linux-*.AppImage

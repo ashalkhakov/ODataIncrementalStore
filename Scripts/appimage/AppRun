@@ -1,0 +1,69 @@
+#!/bin/sh
+# The Workbench's AppImage entry point. From GSXFormsKit's
+# Scripts/appimage/AppRun (after RDLKit's and UDQuakeTools'), for one app.
+#
+# GNUstep finds its libraries, backend and the app through paths that are
+# not known until the image is mounted, so its configuration is written
+# here, each time.
+set -eu
+
+HERE="$(dirname "$(readlink -f "$0")")"
+
+export GNUSTEP_CONFIG_FILE="/tmp/GNUstep-ODataWorkbench-$$.conf"
+cat << IN_EOF > "$GNUSTEP_CONFIG_FILE"
+GNUSTEP_USER_CONFIG_FILE=.GNUstep.conf
+GNUSTEP_USER_DEFAULTS_DIR=GNUstep/Defaults
+GNUSTEP_SYSTEM_USERS_DIR=/home
+GNUSTEP_NETWORK_USERS_DIR=/home
+GNUSTEP_LOCAL_USERS_DIR=/home
+GNUSTEP_SYSTEM_ROOT=$HERE/usr/System
+GNUSTEP_SYSTEM_LIBRARIES=$HERE/usr/System/Library
+GNUSTEP_SYSTEM_LIBRARY=$HERE/usr/System/Library
+GNUSTEP_SYSTEM_TOOLS=$HERE/usr/System/Tools
+GNUSTEP_SYSTEM_APPS=$HERE/usr/System/Applications
+GNUSTEP_LOCAL_ROOT=$HERE/usr/Local
+GNUSTEP_LOCAL_LIBRARY=$HERE/usr/Local/Library
+GNUSTEP_LOCAL_TOOLS=$HERE/usr/Local/Tools
+GNUSTEP_LOCAL_APPS=$HERE/usr/Local/Applications
+IN_EOF
+chmod 600 "$GNUSTEP_CONFIG_FILE"
+
+export GNUSTEP_SYSTEM_ROOT="$HERE/usr/System"
+export GNUSTEP_SYSTEM_LIBRARY="$HERE/usr/System/Library"
+export GNUSTEP_SYSTEM_TOOLS="$HERE/usr/System/Tools"
+export GNUSTEP_SYSTEM_APPS="$HERE/usr/System/Applications"
+export GNUSTEP_LOCAL_ROOT="$HERE/usr/Local"
+export GNUSTEP_LOCAL_LIBRARY="$HERE/usr/Local/Library"
+export GNUSTEP_LOCAL_TOOLS="$HERE/usr/Local/Tools"
+export GNUSTEP_LOCAL_APPS="$HERE/usr/Local/Applications"
+
+export LD_LIBRARY_PATH="$HERE/usr/lib:$HERE/usr/Local/Library/Libraries:$HERE/usr/System/Library/Libraries:${LD_LIBRARY_PATH:-}"
+export PATH="$HERE/usr/bin:$HERE/usr/System/Tools:$PATH"
+
+export FONTCONFIG_FILE="$HERE/usr/etc/fonts/fonts.conf"
+export XDG_CACHE_HOME="/tmp/fc-cache-odataworkbench-$$"
+mkdir -p "$XDG_CACHE_HOME"
+trap 'rm -rf "$XDG_CACHE_HOME" "$GNUSTEP_CONFIG_FILE"' EXIT
+
+# Fonts the image carries, and Ctrl as Command, as on any other Linux
+# window: GNUstep's default is NeXT's, Alt as Command (see gnustep-gui's
+# KeyboardSetup). The left Control fires menu key equivalents; the right one
+# stays a Control for the text bindings.
+DEFAULTS_TOOL=$(find "$HERE" -name defaults -type f -perm -111 | head -n 1)
+if [ -n "$DEFAULTS_TOOL" ]; then
+  for domain in Workbench io.github.ashalkhakov.ODataIncrementalStore.Workbench; do
+    "$DEFAULTS_TOOL" write "$domain" NSFont DejaVuSans
+    "$DEFAULTS_TOOL" write "$domain" NSBoldFont DejaVuSans-Bold
+    "$DEFAULTS_TOOL" write "$domain" NSUserFont DejaVuSans
+    "$DEFAULTS_TOOL" write "$domain" NSUserFixedPitchFont DejaVuSansMono
+    "$DEFAULTS_TOOL" write "$domain" GSFirstCommandKey Control_L
+    "$DEFAULTS_TOOL" write "$domain" GSFirstControlKey NoSymbol
+    "$DEFAULTS_TOOL" write "$domain" GSSecondControlKey Control_R
+    "$DEFAULTS_TOOL" write "$domain" GSFirstAlternateKey Alt_L
+    "$DEFAULTS_TOOL" write "$domain" GSSecondAlternateKey Alt_R
+  done
+fi
+
+BIN=$(find "$HERE" -type f -name Workbench -perm -111 -exec file {} \; 2>/dev/null | awk -F: '/ELF/{print $1; exit}')
+[ -n "$BIN" ] || BIN="$HERE/usr/System/Applications/Workbench.app/Workbench"
+exec "$BIN" "$@"

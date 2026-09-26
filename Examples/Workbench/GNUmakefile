@@ -17,7 +17,8 @@ Workbench_INCLUDE_DIRS = -I../../Source/include
 Workbench_LIB_DIRS = -L../../obj -L../..
 Workbench_OBJC_LIBS += -lODataIncrementalStore -lCoreData
 Workbench_TOOL_LIBS += -lODataIncrementalStore -lCoreData
-Workbench_RESOURCE_FILES = WorkbenchWindow.xib
+Workbench_RESOURCE_FILES = WorkbenchWindow.xib Workbench.png
+Workbench_APPLICATION_ICON = Workbench.png
 
 ADDITIONAL_OBJCFLAGS += -fobjc-arc -fblocks -fobjc-runtime=gnustep-2.0 \
 	-fconstant-string-class=NSConstantString -fobjc-exceptions \

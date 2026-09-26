@@ -48,9 +48,31 @@ What you can do:
   wire: the request line, headers and body, then the status line, headers
   and body, nothing shortened (a body that is not text as a hex dump).
 
+## Getting it
+
+CI packages the Workbench on every push, as artifacts of the run (kept 14
+days), and attaches both packages to the release when a `v*` tag is pushed:
+
+- **macOS**: `ODataWorkbench-macOS-<version>.zip`, a universal (Apple silicon
+  and Intel) `Workbench.app` with the framework inside. It is signed ad hoc,
+  not with a Developer ID, so open it the first time with right-click, Open
+  (or `xattr -dr com.apple.quarantine Workbench.app`).
+- **Linux**: `ODataWorkbench-Linux-<version>-x86_64.AppImage`, the app with
+  the library, FreeCoreData and the GNUstep runtime inside
+  (`Scripts/prepare-appdir.sh`, `Scripts/package-appimage.sh`). It needs
+  what any Linux desktop has: X11, fontconfig, freetype, OpenGL. Make it
+  executable and run it; where FUSE is missing, `APPIMAGE_EXTRACT_AND_RUN=1`
+  runs it without.
+
+Before either is uploaded, CI starts it and runs its offline self-test: the
+AppImage in a plain Ubuntu container with no GNUstep in it.
+
+## Testing
+
 `Workbench --self-test` drives the window against each service in turn and
 prints a line per check (CI runs it); with `WORKBENCH_SHOTS=<dir>` it also
-saves the window as a PDF per service.
+saves the window as a PDF per service. `Workbench --self-test builtin` tests
+the built-in service alone, with no network.
 
 The window is `WorkbenchWindow.xib` (File's Owner `WorkbenchController`),
 Xcode 5 format, springs and struts, no Auto Layout; GNUstep loads it with

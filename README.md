@@ -293,6 +293,13 @@ makes, are history transactions, fetched with
 `NSPersistentHistoryChangeRequest` as from any store; the service's changes
 are by `ODataRemoteChangesAuthor`. The history is kept in memory.
 
+## The Workbench
+
+`Examples/Workbench` is an app for trying out an OData service through the
+store: the built-in in-memory one, Northwind, TripPin, or any other. CI
+packages it for macOS (a universal `.app`) and Linux (an AppImage) on every
+push, and attaches both to the release for a `v*` tag; see its README.
+
 ## Reading OData's URL syntax
 
 `ODataExpression.h` is the other direction, for a service (and for tests):

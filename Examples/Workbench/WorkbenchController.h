@@ -50,7 +50,9 @@
 - (IBAction)invokeOperation:(id)sender;
 - (IBAction)fetchRemoteChanges:(id)sender;
 - (void)refreshTranslation;
-// Workbench --self-test: see WorkbenchController.m.
+// Workbench --self-test [builtin]: see WorkbenchController.m. builtin
+// tests the built-in service alone, with no network: a package's smoke test.
+@property (nonatomic) BOOL selfTestOffline;
 - (void)runSelfTest;
 
 @end

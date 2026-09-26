@@ -1,0 +1,9 @@
+[Desktop Entry]
+Type=Application
+Name=OData Workbench
+GenericName=OData Client
+Comment=Try out an OData v4 service with ODataIncrementalStore and Core Data
+Exec=AppRun
+Icon=workbench
+Terminal=false
+Categories=Development;
