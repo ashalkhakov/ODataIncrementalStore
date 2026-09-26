@@ -112,7 +112,10 @@ jobs:
       # recipe hash the stack is cached under, so a moving branch would keep
       # serving a prefix built from patches that have since changed.
       GNUSTEP_PATCHES_REF: 44b9f3d8b750c0c2c128a14718a265b83a9a797c
-      FREECOREDATA_REF: 389544d5398e2b9259f189dacc46cbe88584112a
+      # FreeCoreData's momc-model-version-identifier branch, until its pull
+      # request is merged: momc keeps a model version's Identifier, which
+      # models generated from $metadata carry.
+      FREECOREDATA_REF: 854138a47033abe302b9a52fd6d696456df20e68
     defaults:
       run:
         working-directory: ${{ github.workspace }}/source
