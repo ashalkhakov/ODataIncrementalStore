@@ -58,6 +58,33 @@
       "id": "product-delete",
       "file": "product-delete.json",
       "spec": "\u00a711.4.4 Delete an Entity"
+    },
+    {
+      "id": "products-page-1",
+      "file": "products-page-1.json",
+      "spec": "OASIS OData 4.01 Part 1 \u00a711.2.6.7 Server-Driven Paging; \u00a713.3 item 5",
+      "predicate": "unitPrice < 10"
+    },
+    {
+      "id": "products-page-2",
+      "file": "products-page-2.json",
+      "spec": "OASIS OData 4.01 Part 1 \u00a711.2.6.7"
+    },
+    {
+      "id": "category-products-page-1",
+      "file": "category-products-page-1.json",
+      "spec": "OASIS OData 4.01 Part 1 \u00a711.2.6 Requesting Related Entities; \u00a711.2.6.7"
+    },
+    {
+      "id": "category-products-page-2",
+      "file": "category-products-page-2.json",
+      "spec": "OASIS OData 4.01 Part 1 \u00a711.2.6.7"
+    },
+    {
+      "id": "products-by-category",
+      "file": "products-by-category.json",
+      "spec": "OASIS OData 4.01 Part 2 \u00a75.1.1.15 Path Expressions; \u00a75.1.1.1.1 eq",
+      "predicate": "category == <Categories(2)>"
     }
   ]
 }

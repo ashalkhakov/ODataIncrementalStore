@@ -1,0 +1,38 @@
+{
+  "comment": "category == <object> compares the related entity's key through the navigation property.",
+  "spec": "OASIS OData 4.01 Part 2 \u00a75.1.1.15 Path Expressions; \u00a75.1.1.1.1 eq",
+  "predicate": "category == <Categories(2)>",
+  "request": {
+    "method": "GET",
+    "path": "Products",
+    "query": {
+      "$filter": "Category/CategoryID eq 2"
+    }
+  },
+  "response": {
+    "status": 200,
+    "headers": {
+      "Content-Type": "application/json;odata.metadata=minimal;charset=utf-8",
+      "OData-Version": "4.0"
+    },
+    "body": {
+      "@odata.context": "https://odata.test/V4/Northwind.svc/$metadata#Products",
+      "value": [
+        {
+          "@odata.etag": "W/\"3\"",
+          "ProductID": 3,
+          "ProductName": "Aniseed Syrup",
+          "UnitPrice": 10,
+          "Discontinued": false
+        },
+        {
+          "@odata.etag": "W/\"4\"",
+          "ProductID": 4,
+          "ProductName": "Chef Anton's Cajun Seasoning",
+          "UnitPrice": 22,
+          "Discontinued": false
+        }
+      ]
+    }
+  }
+}

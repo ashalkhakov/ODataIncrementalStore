@@ -63,6 +63,27 @@ NSString * const ODataUserInfoKey = @"OData.key";
   return @[];
 }
 
+- (NSString *)propertyPathForKeyPath:(NSString *)keyPath entity:(NSEntityDescription *)entity
+{
+  NSEntityDescription *current = entity;
+  NSMutableArray *mapped = [NSMutableArray array];
+  for (NSString *part in [keyPath componentsSeparatedByString:@"."]) {
+    NSAttributeDescription *attr = current.attributesByName[part];
+    NSRelationshipDescription *rel = attr ? nil : current.relationshipsByName[part];
+    if (attr) {
+      [mapped addObject:[self propertyForAttribute:attr]];
+      current = nil;
+    } else if (rel) {
+      [mapped addObject:[self propertyForRelationship:rel]];
+      current = rel.destinationEntity;
+    } else {
+      [mapped addObject:[self wireName:part]];
+      current = nil;
+    }
+  }
+  return [mapped componentsJoinedByString:@"/"];
+}
+
 - (NSString *)wireName:(NSString *)coreDataName
 {
   if (self.naming == ODataPropertyNamingAsIs || coreDataName.length == 0) return coreDataName;

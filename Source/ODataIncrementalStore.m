@@ -51,6 +51,14 @@
   _mapper = [[ODataPropertyMapper alloc] init];
   _mapper.naming = configuration.naming;
   _builder = [[ODataQueryBuilder alloc] initWithMapper:_mapper serviceRoot:configuration.serviceRoot];
+  // `category == %@` compares keys, which only this store can read out of
+  // one of its object IDs.
+  __weak ODataIncrementalStore *weakSelf = self;
+  _builder.keysForObjectID = ^NSDictionary *(NSManagedObjectID *objectID) {
+    ODataIncrementalStore *store = weakSelf;
+    if (!store || objectID.persistentStore != store) return nil;
+    return [ODataResourceIdentifier identifierFromReference:[store referenceObjectForObjectID:objectID]].keys;
+  };
   if (![ _client metadataWithError:error]) return NO;
   NSString *uuid = [NSIncrementalStore identifierForNewStoreAtURL:url];
   if (![uuid isKindOfClass:[NSString class]]) uuid = [[NSUUID UUID] UUIDString];
@@ -112,25 +120,26 @@
   if (!identifier) return nil;
   NSURL *url = [_builder URLForIdentifier:identifier relationship:relationship error:error];
   if (!url) return nil;
-  id json = [_client JSONAtURL:url error:error];
   NSEntityDescription *destination = relationship.destinationEntity;
   if (!destination) {
     if (error) *error = OISError(ODataIncrementalStoreErrorMissingEntitySet, relationship.name);
     return nil;
   }
   if (relationship.isToMany) {
-    NSArray *values = [json isKindOfClass:[NSDictionary class]] ? json[@"value"] : nil;
-    if (![values isKindOfClass:[NSArray class]]) values = @[];
+    NSArray *rows = [self rowsAtURL:url limit:0 error:error];
+    if (!rows) return nil;
     NSMutableArray *ids = [NSMutableArray array];
-    for (NSDictionary *row in values) {
-      if (![row isKindOfClass:[NSDictionary class]]) continue;
+    for (NSDictionary *row in rows) {
       NSManagedObjectID *oid = [self objectIDFromPayload:row entity:destination error:error];
       if (!oid) return nil;
       [ids addObject:oid];
     }
     return ids;
   }
-  if (json == [NSNull null] || ![json isKindOfClass:[NSDictionary class]]) return [NSNull null];
+  id json = [_client JSONAtURL:url error:error];
+  if (!json) return nil;
+  // 204 No Content: nothing is related (Part 1 section 11.2.7).
+  if (![json isKindOfClass:[NSDictionary class]]) return [NSNull null];
   return [self objectIDFromPayload:json entity:destination error:error];
 }
 
@@ -183,15 +192,8 @@
     return @[ @(count) ];
   }
 
-  id json = [_client JSONAtURL:url error:error];
-  NSArray *rows = nil;
-  if ([json isKindOfClass:[NSDictionary class]] && [json[@"value"] isKindOfClass:[NSArray class]]) {
-    rows = json[@"value"];
-  } else if ([json isKindOfClass:[NSDictionary class]]) {
-    rows = @[ json ];
-  } else {
-    rows = @[];
-  }
+  NSArray *rows = [self rowsAtURL:url limit:fetch.fetchLimit error:error];
+  if (!rows) return nil;
 
   if (fetch.resultType == NSDictionaryResultType) {
     NSMutableArray *dicts = [NSMutableArray array];
@@ -204,7 +206,6 @@
   NSMutableArray *objectIDs = [NSMutableArray array];
   BOOL materialize = (fetch.returnsObjectsAsFaults == NO) || (fetch.relationshipKeyPathsForPrefetching.count > 0);
   for (NSDictionary *row in rows) {
-    if (![row isKindOfClass:[NSDictionary class]]) continue;
     NSManagedObjectID *oid = [self objectIDFromPayload:row entity:entity error:error];
     if (!oid) return nil;
     if (materialize) [self cacheNodeForObjectID:oid entity:entity payload:row error:nil];
@@ -218,6 +219,42 @@
     [objects addObject:[context objectWithID:oid]];
   }
   return objects;
+}
+
+// The rows of a collection, across every page the service splits it into:
+// @odata.nextLink is followed until it stops, or until `limit` rows (0 for
+// no limit) are in hand (Part 1 section 11.2.6.7). A failed request fails
+// the whole read; it is never an empty result.
+- (NSArray *)rowsAtURL:(NSURL *)url limit:(NSUInteger)limit error:(NSError **)error
+{
+  NSMutableArray *rows = [NSMutableArray array];
+  NSMutableSet *seen = [NSMutableSet set];
+  while (url) {
+    NSString *absolute = url.absoluteString ?: @"";
+    if ([seen containsObject:absolute]) {
+      if (error) *error = OISError(ODataIncrementalStoreErrorDecoding, [NSString stringWithFormat:@"Next link loops back to %@", absolute]);
+      return nil;
+    }
+    [seen addObject:absolute];
+    id json = [_client JSONAtURL:url error:error];
+    if (!json) return nil;
+    if (json == [NSNull null]) break;
+    if (![json isKindOfClass:[NSDictionary class]]) {
+      if (error) *error = OISError(ODataIncrementalStoreErrorDecoding, [NSString stringWithFormat:@"Expected a JSON object from %@", absolute]);
+      return nil;
+    }
+    id value = json[@"value"];
+    NSArray *page = [value isKindOfClass:[NSArray class]] ? value : @[ json ];
+    for (id row in page) {
+      if ([row isKindOfClass:[NSDictionary class]]) [rows addObject:row];
+    }
+    if (limit && rows.count >= limit) {
+      return [rows subarrayWithRange:NSMakeRange(0, limit)];
+    }
+    NSString *next = json[@"@odata.nextLink"];
+    url = [next isKindOfClass:[NSString class]] ? [NSURL URLWithString:next relativeToURL:url].absoluteURL : nil;
+  }
+  return rows;
 }
 
 - (id)executeSave:(NSSaveChangesRequest *)save error:(NSError **)error

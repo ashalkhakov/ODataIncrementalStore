@@ -64,6 +64,7 @@ static BOOL OISJSONEqual(id a, id b)
 @implementation ODataSnapshotTransport {
   NSArray *_snapshots;
   NSMutableArray *_hits;
+  NSMutableArray *_refusals;
 }
 
 - (instancetype)initWithDirectory:(NSString *)directory serviceRoot:(NSURL *)serviceRoot error:(NSError **)error
@@ -72,6 +73,7 @@ static BOOL OISJSONEqual(id a, id b)
   if (!self) return nil;
   _serviceRoot = [serviceRoot copy];
   _hits = [NSMutableArray array];
+  _refusals = [NSMutableArray array];
   NSFileManager *fm = [NSFileManager defaultManager];
   NSArray *names = [fm contentsOfDirectoryAtPath:directory error:error];
   if (!names) return nil;
@@ -96,6 +98,11 @@ static BOOL OISJSONEqual(id a, id b)
   _snapshots = [loaded copy];
   _snapshotNames = [labels copy];
   return self;
+}
+
+- (NSArray *)refusals
+{
+  return [_refusals copy];
 }
 
 - (NSDictionary *)snapshotNamed:(NSString *)name
@@ -145,6 +152,65 @@ static BOOL OISJSONEqual(id a, id b)
   return YES;
 }
 
+// A snapshot's media type: its Content-Type header, or what its body is.
+static NSString *OISSnapshotMediaType(NSDictionary *resp)
+{
+  NSString *type = resp[@"headers"][@"Content-Type"];
+  if (!type) {
+    if (resp[@"bodyXML"]) type = @"application/xml";
+    else if ([resp[@"body"] isKindOfClass:[NSString class]]) type = @"text/plain";
+    else if (resp[@"body"]) type = @"application/json";
+  }
+  return [[[type componentsSeparatedByString:@";"] firstObject]
+      stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceCharacterSet]].lowercaseString;
+}
+
+// Whether an Accept header admits a media type: type/subtype, type/* or */*.
+// Parameters and q-values are ignored, as they are by the services the
+// client talks to.
+static BOOL OISAccepts(NSString *accept, NSString *type)
+{
+  if (!accept.length) return YES;
+  NSString *major = [[type componentsSeparatedByString:@"/"] firstObject];
+  for (NSString *range in [accept componentsSeparatedByString:@","]) {
+    NSString *r = [[[range componentsSeparatedByString:@";"] firstObject]
+        stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceCharacterSet]].lowercaseString;
+    if ([r isEqualToString:@"*/*"] || [r isEqualToString:type]) return YES;
+    if ([r isEqualToString:[major stringByAppendingString:@"/*"]]) return YES;
+  }
+  return NO;
+}
+
+// What a real service checks before it looks at the resource: the
+// version headers, a Content-Type for a body, and an Accept it can meet.
+// A mismatch is an OData error response, as a service would send, rather
+// than a missing snapshot.
+- (nullable NSString *)refusalOfRequest:(NSURLRequest *)request snapshot:(NSDictionary *)snapshot status:(NSInteger *)status
+{
+  if (![request valueForHTTPHeaderField:@"OData-MaxVersion"]) {
+    *status = 400;
+    return @"OData-MaxVersion is required (Part 1 section 13.3)";
+  }
+  if (request.HTTPBody.length) {
+    NSString *ct = [request valueForHTTPHeaderField:@"Content-Type"];
+    if (![ct.lowercaseString hasPrefix:@"application/json"]) {
+      *status = 415;
+      return [NSString stringWithFormat:@"Request body Content-Type %@ is not JSON", ct ?: @"(none)"];
+    }
+    if (![request valueForHTTPHeaderField:@"OData-Version"]) {
+      *status = 400;
+      return @"OData-Version is required with a payload (Part 1 section 13.3)";
+    }
+  }
+  NSString *type = OISSnapshotMediaType(snapshot[@"response"] ?: @{});
+  NSString *accept = [request valueForHTTPHeaderField:@"Accept"];
+  if (type.length && !OISAccepts(accept, type)) {
+    *status = 406;
+    return [NSString stringWithFormat:@"Accept %@ does not admit %@", accept, type];
+  }
+  return nil;
+}
+
 - (NSData *)sendRequest:(NSURLRequest *)request returningResponse:(NSURLResponse **)response error:(NSError **)error
 {
   NSDictionary *hit = nil;
@@ -167,6 +233,19 @@ static BOOL OISJSONEqual(id a, id b)
     NSString *msg = [NSString stringWithFormat:@"No snapshot for %@", [bits componentsJoinedByString:@" "]];
     if (error) *error = OISError(ODataIncrementalStoreErrorTransport, msg);
     return nil;
+  }
+  NSInteger refusedStatus = 0;
+  NSString *refusal = [self refusalOfRequest:request snapshot:hit status:&refusedStatus];
+  if (refusal) {
+    [_refusals addObject:refusal];
+    if (response) {
+      *response = [[NSHTTPURLResponse alloc] initWithURL:request.URL
+                                              statusCode:refusedStatus
+                                             HTTPVersion:@"HTTP/1.1"
+                                            headerFields:@{ @"Content-Type": @"application/json" }];
+    }
+    NSDictionary *body = @{ @"error": @{ @"code": @"", @"message": refusal } };
+    return [NSJSONSerialization dataWithJSONObject:body options:0 error:nil];
   }
   [_hits addObject:hit[@"_file"]];
   NSDictionary *resp = hit[@"response"] ?: @{};

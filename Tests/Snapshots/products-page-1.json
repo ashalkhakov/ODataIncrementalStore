@@ -1,0 +1,39 @@
+{
+  "comment": "First page of a collection the service splits with server-driven paging.",
+  "spec": "OASIS OData 4.01 Part 1 \u00a711.2.6.7 Server-Driven Paging; \u00a713.3 item 5",
+  "predicate": "unitPrice < 10",
+  "request": {
+    "method": "GET",
+    "path": "Products",
+    "query": {
+      "$filter": "UnitPrice lt 10"
+    }
+  },
+  "response": {
+    "status": 200,
+    "headers": {
+      "Content-Type": "application/json;odata.metadata=minimal;charset=utf-8",
+      "OData-Version": "4.0"
+    },
+    "body": {
+      "@odata.context": "https://odata.test/V4/Northwind.svc/$metadata#Products",
+      "value": [
+        {
+          "@odata.etag": "W/\"13\"",
+          "ProductID": 13,
+          "ProductName": "Konbu",
+          "UnitPrice": 6,
+          "Discontinued": false
+        },
+        {
+          "@odata.etag": "W/\"24\"",
+          "ProductID": 24,
+          "ProductName": "Guaran\u00e1 Fant\u00e1stica",
+          "UnitPrice": 4.5,
+          "Discontinued": false
+        }
+      ],
+      "@odata.nextLink": "Products?$filter=UnitPrice%20lt%2010&$skiptoken=24"
+    }
+  }
+}

@@ -41,6 +41,15 @@
   _context.persistentStoreCoordinator = psc;
 }
 
+// Every request the store made has to be one a real service would take:
+// version headers, a JSON Content-Type on a body, an Accept that admits
+// the response. The snapshot transport refuses the rest.
+- (void)tearDown
+{
+  if (_transport) XCTAssertEqualObjects(_transport.refusals, @[], @"requests a service would refuse");
+  [super tearDown];
+}
+
 - (NSEntityDescription *)productEntity
 {
   return _store.persistentStoreCoordinator.managedObjectModel.entitiesByName[@"Product"]
@@ -220,6 +229,82 @@
   XCTAssertNil(error, @"%@", error);
   XCTAssertEqualObjects(result, @[]);
   XCTAssertTrue([_transport.hits containsObject:@"product-delete.json"]);
+}
+
+- (void)testFetchFollowsNextLinks
+{
+  NSFetchRequest *fetch = [self productFetch];
+  fetch.predicate = [NSPredicate predicateWithFormat:@"unitPrice < 10"];
+  fetch.resultType = NSManagedObjectIDResultType;
+  NSError *error = nil;
+  NSArray *ids = [_store executeRequest:fetch withContext:_context error:&error];
+  XCTAssertNil(error, @"%@", error);
+  XCTAssertEqual(ids.count, (NSUInteger)3);
+  XCTAssertTrue([_transport.hits containsObject:@"products-page-1.json"]);
+  XCTAssertTrue([_transport.hits containsObject:@"products-page-2.json"]);
+}
+
+- (NSManagedObjectID *)categoryOfFirstFilteredProduct
+{
+  NSFetchRequest *fetch = [self productFetch];
+  fetch.predicate = [NSPredicate predicateWithFormat:@"unitPrice > 20 AND discontinued == NO"];
+  fetch.sortDescriptors = @[ [NSSortDescriptor sortDescriptorWithKey:@"name" ascending:YES] ];
+  fetch.fetchLimit = 25;
+  fetch.resultType = NSManagedObjectIDResultType;
+  NSError *error = nil;
+  NSArray *ids = [_store executeRequest:fetch withContext:_context error:&error];
+  NSRelationshipDescription *rel = [self productEntity].relationshipsByName[@"category"];
+  return [_store newValueForRelationship:rel forObjectWithID:ids.firstObject withContext:_context error:&error];
+}
+
+- (void)testToManyRelationshipFollowsNextLinks
+{
+  NSManagedObjectID *category = [self categoryOfFirstFilteredProduct];
+  XCTAssertTrue([category isKindOfClass:[NSManagedObjectID class]]);
+  NSRelationshipDescription *products = category.entity.relationshipsByName[@"products"];
+  NSError *error = nil;
+  NSArray *ids = [_store newValueForRelationship:products forObjectWithID:category withContext:_context error:&error];
+  XCTAssertNil(error, @"%@", error);
+  XCTAssertEqual(ids.count, (NSUInteger)2);
+  XCTAssertTrue([_transport.hits containsObject:@"category-products-page-2.json"]);
+}
+
+- (void)testPredicateComparesObjectsByKey
+{
+  NSManagedObjectID *category = [self categoryOfFirstFilteredProduct];
+  NSFetchRequest *fetch = [self productFetch];
+  fetch.predicate = [NSPredicate predicateWithFormat:@"category == %@", category];
+  fetch.resultType = NSManagedObjectIDResultType;
+  NSError *error = nil;
+  NSArray *ids = [_store executeRequest:fetch withContext:_context error:&error];
+  XCTAssertNil(error, @"%@", error);
+  XCTAssertEqual(ids.count, (NSUInteger)2);
+  XCTAssertTrue([_transport.hits containsObject:@"products-by-category.json"]);
+}
+
+- (void)testFailedFetchIsAnErrorNotAnEmptyResult
+{
+  NSFetchRequest *fetch = [self productFetch];
+  fetch.predicate = [NSPredicate predicateWithFormat:@"unitPrice > 999"];
+  NSError *error = nil;
+  NSArray *rows = [_store executeRequest:fetch withContext:_context error:&error];
+  XCTAssertNil(rows);
+  XCTAssertNotNil(error);
+}
+
+- (void)testTransportRefusesWhatAServiceWould
+{
+  ODataConfiguration *configuration =
+      [[ODataConfiguration alloc] initWithURL:OISTestServiceRoot() options:nil];
+  ODataClient *client = [[ODataClient alloc] initWithConfiguration:configuration];
+  client.transport = _transport;
+  // $metadata is XML; asking for JSON only is what used to break Northwind.
+  NSURL *url = [OISTestServiceRoot() URLByAppendingPathComponent:@"$metadata"];
+  NSError *error = nil;
+  XCTAssertNil([client JSONAtURL:url error:&error]);
+  XCTAssertEqual(error.code, ODataIncrementalStoreErrorHTTP + 406);
+  XCTAssertEqual(_transport.refusals.count, (NSUInteger)1);
+  _transport = nil;  // this refusal was the point; tearDown checks the rest
 }
 
 - (void)testUnmatchedRequestDoesNotHitTheNetwork

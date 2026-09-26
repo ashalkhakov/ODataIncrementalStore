@@ -36,8 +36,14 @@ NSString * const ODataIncrementalStoreType = @"ODataIncrementalStore";
 
 - (void)applyToRequest:(NSMutableURLRequest *)request
 {
-  [request setValue:@"application/json;odata.metadata=minimal" forHTTPHeaderField:@"Accept"];
-  [request setValue:@"application/json;odata.metadata=minimal" forHTTPHeaderField:@"Content-Type"];
+  // JSON is the default, not a rule: $metadata asks for XML and $count for
+  // text, and a service answers 406 or 415 when Accept rules those out.
+  if (![request valueForHTTPHeaderField:@"Accept"]) {
+    [request setValue:@"application/json;odata.metadata=minimal" forHTTPHeaderField:@"Accept"];
+  }
+  if (request.HTTPBody.length) {
+    [request setValue:@"application/json;odata.metadata=minimal" forHTTPHeaderField:@"Content-Type"];
+  }
   [request setValue:@"4.0" forHTTPHeaderField:@"OData-Version"];
   [request setValue:@"4.0" forHTTPHeaderField:@"OData-MaxVersion"];
   [request setValue:self.userAgent forHTTPHeaderField:@"User-Agent"];

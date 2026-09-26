@@ -1,0 +1,31 @@
+{
+  "comment": "Second and last page: the next link, relative to the request URL, followed as given.",
+  "spec": "OASIS OData 4.01 Part 1 \u00a711.2.6.7",
+  "request": {
+    "method": "GET",
+    "path": "Products",
+    "query": {
+      "$filter": "UnitPrice lt 10",
+      "$skiptoken": "24"
+    }
+  },
+  "response": {
+    "status": 200,
+    "headers": {
+      "Content-Type": "application/json;odata.metadata=minimal;charset=utf-8",
+      "OData-Version": "4.0"
+    },
+    "body": {
+      "@odata.context": "https://odata.test/V4/Northwind.svc/$metadata#Products",
+      "value": [
+        {
+          "@odata.etag": "W/\"33\"",
+          "ProductID": 33,
+          "ProductName": "Geitost",
+          "UnitPrice": 2.5,
+          "Discontinued": false
+        }
+      ]
+    }
+  }
+}

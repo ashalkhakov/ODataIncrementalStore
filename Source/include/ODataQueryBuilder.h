@@ -6,11 +6,14 @@
 #import "OISCoreData.h"
 #import "ODataPropertyMapper.h"
 #import "ODataResourceIdentifier.h"
+#import "ODataPredicateTranslator.h"
 
 NS_ASSUME_NONNULL_BEGIN
 
 @interface ODataQueryBuilder : NSObject
 @property (nonatomic, strong) ODataPropertyMapper *mapper;
+// Handed to the predicate translator; see ODataPredicateTranslator.
+@property (nonatomic, copy, nullable) ODataObjectKeysResolver keysForObjectID;
 @property (nonatomic, copy) NSURL *serviceRoot;
 
 - (instancetype)initWithMapper:(ODataPropertyMapper *)mapper serviceRoot:(NSURL *)serviceRoot NS_DESIGNATED_INITIALIZER;

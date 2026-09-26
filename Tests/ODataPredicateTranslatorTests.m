@@ -95,6 +95,39 @@
   XCTAssertTrue([accepted containsObject:got], @"BETWEEN → %@", got);
 }
 
+- (void)assertPredicate:(NSString *)format on:(NSString *)entityName filter:(NSString *)expected
+{
+  ODataPredicateTranslator *t =
+      [[ODataPredicateTranslator alloc] initWithMapper:[[ODataPropertyMapper alloc] init]
+                                                entity:OISCatalogEntity(entityName)];
+  NSError *error = nil;
+  NSString *got = [t translatePredicate:[NSPredicate predicateWithFormat:format] error:&error];
+  XCTAssertNil(error, @"%@ → %@", format, error);
+  XCTAssertEqualObjects(got, expected, @"predicate %@", format);
+}
+
+- (void)testAnyAndAllBecomeLambdas
+{
+  [self assertPredicate:@"ANY products.unitPrice > 100" on:@"Category"
+                 filter:@"Products/any(x0:x0/UnitPrice gt 100)"];
+  [self assertPredicate:@"ALL products.discontinued == NO" on:@"Category"
+                 filter:@"Products/all(x0:x0/Discontinued eq false)"];
+  [self assertPredicate:@"ANY category.products.name == 'Chai'" on:@"Product"
+                 filter:@"Category/Products/any(x0:x0/ProductName eq 'Chai')"];
+}
+
+- (void)testNestedToManyNestsLambdas
+{
+  [self assertPredicate:@"ANY products.suppliers.city == 'London'" on:@"Category"
+                 filter:@"Products/any(x0:x0/Suppliers/any(x1:x1/City eq 'London'))"];
+}
+
+- (void)testAnyOverToOneIsTheValue
+{
+  [self assertPredicate:@"ANY category.name == 'Beverages'" on:@"Product"
+                 filter:@"Category/CategoryName eq 'Beverages'"];
+}
+
 - (void)testTrueFalsePredicate
 {
   [self assertPredicate:@"TRUEPREDICATE" filter:@"true"];

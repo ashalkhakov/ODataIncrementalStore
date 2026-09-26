@@ -62,8 +62,29 @@
   XCTAssertEqualObjects(url.path, @"/V4/Northwind.svc/Products");
   NSDictionary *q = [self queryFromURL:url];
   XCTAssertEqualObjects(q[@"$filter"], @"(UnitPrice gt 20) and (Discontinued eq false)");
-  XCTAssertEqualObjects(q[@"$orderby"], @"ProductName");
+  XCTAssertEqualObjects(q[@"$orderby"], @"ProductName,ProductID");
   XCTAssertEqualObjects(q[@"$top"], @"25");
+}
+
+- (void)testOrderbyThroughRelationshipUsesSlash
+{
+  NSFetchRequest *fetch = [NSFetchRequest fetchRequestWithEntityName:@"Product"];
+  fetch.entity = [self productEntity];
+  fetch.sortDescriptors = @[ [NSSortDescriptor sortDescriptorWithKey:@"category.name" ascending:NO] ];
+  NSError *error = nil;
+  NSURL *url = [_builder URLForFetch:fetch entity:[self productEntity] error:&error];
+  XCTAssertNil(error);
+  XCTAssertEqualObjects([self queryFromURL:url][@"$orderby"], @"Category/CategoryName desc,ProductID");
+}
+
+- (void)testOrderbyDoesNotRepeatTheKey
+{
+  NSFetchRequest *fetch = [NSFetchRequest fetchRequestWithEntityName:@"Product"];
+  fetch.entity = [self productEntity];
+  fetch.sortDescriptors = @[ [NSSortDescriptor sortDescriptorWithKey:@"id" ascending:NO] ];
+  NSError *error = nil;
+  NSURL *url = [_builder URLForFetch:fetch entity:[self productEntity] error:&error];
+  XCTAssertEqualObjects([self queryFromURL:url][@"$orderby"], @"ProductID desc");
 }
 
 - (void)testSkipAndExpand

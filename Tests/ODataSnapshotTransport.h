@@ -15,6 +15,9 @@ NS_ASSUME_NONNULL_BEGIN
 @property (nonatomic, copy) NSURL *serviceRoot;
 @property (nonatomic, readonly) NSArray<NSString *> *snapshotNames;
 @property (nonatomic, readonly) NSArray<NSString *> *hits;
+// Requests answered with an error a real service would send: missing
+// version headers, a body that is not JSON, an Accept it cannot meet.
+@property (nonatomic, readonly) NSArray<NSString *> *refusals;
 
 - (nullable instancetype)initWithDirectory:(NSString *)directory
                                serviceRoot:(NSURL *)serviceRoot

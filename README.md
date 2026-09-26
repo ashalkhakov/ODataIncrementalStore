@@ -144,11 +144,15 @@ NSArray *products = [context executeFetchRequest:request error:&error];
 That fetch is this request:
 
 ```
-GET Products?$filter=UnitPrice gt 20 and Discontinued eq false
-           &$orderby=ProductName
+GET Products?$filter=(UnitPrice gt 20) and (Discontinued eq false)
+           &$orderby=ProductName,ProductID
            &$top=25
            &$expand=Category
 ```
+
+The key is added to `$orderby` as a tiebreaker, so pages split the same
+way however many rows share a name, and every `@odata.nextLink` is
+followed until the collection ends or `fetchLimit` is reached.
 
 ## Mapping
 

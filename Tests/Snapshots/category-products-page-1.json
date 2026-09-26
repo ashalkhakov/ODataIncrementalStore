@@ -1,0 +1,28 @@
+{
+  "comment": "A to-many navigation property is a collection and pages like one.",
+  "spec": "OASIS OData 4.01 Part 1 \u00a711.2.6 Requesting Related Entities; \u00a711.2.6.7",
+  "request": {
+    "method": "GET",
+    "path": "Categories(2)/Products"
+  },
+  "response": {
+    "status": 200,
+    "headers": {
+      "Content-Type": "application/json;odata.metadata=minimal;charset=utf-8",
+      "OData-Version": "4.0"
+    },
+    "body": {
+      "@odata.context": "https://odata.test/V4/Northwind.svc/$metadata#Products",
+      "value": [
+        {
+          "@odata.etag": "W/\"3\"",
+          "ProductID": 3,
+          "ProductName": "Aniseed Syrup",
+          "UnitPrice": 10,
+          "Discontinued": false
+        }
+      ],
+      "@odata.nextLink": "https://odata.test/V4/Northwind.svc/Categories(2)/Products?$skiptoken=3"
+    }
+  }
+}

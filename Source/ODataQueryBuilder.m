@@ -68,6 +68,7 @@ static NSString *OISPercentEncode(NSString *value)
 
   if (fetch.predicate) {
     ODataPredicateTranslator *t = [[ODataPredicateTranslator alloc] initWithMapper:self.mapper entity:entity];
+    t.keysForObjectID = self.keysForObjectID;
     NSString *filter = [t translatePredicate:fetch.predicate error:error];
     if (!filter) return nil;
     [items addObject:@[ @"$filter", filter ]];
@@ -76,10 +77,18 @@ static NSString *OISPercentEncode(NSString *value)
   if (fetch.sortDescriptors.count) {
     NSMutableArray *bits = [NSMutableArray array];
     for (NSSortDescriptor *desc in fetch.sortDescriptors) {
-      NSString *key = desc.key ?: @"";
-      NSAttributeDescription *attr = entity.attributesByName[key];
-      NSString *name = attr ? [self.mapper propertyForAttribute:attr] : [self.mapper wireName:key];
+      // category.name is Category/CategoryName: a dot would be a type cast.
+      NSString *name = [self.mapper propertyPathForKeyPath:desc.key ?: @"" entity:entity];
       [bits addObject:desc.ascending ? name : [name stringByAppendingString:@" desc"]];
+    }
+    // The key breaks ties. Paging resumes after the last row of a page by
+    // its sort values, so with ties a service can skip rows: Northwind
+    // returns 60 of 77 products sorted by category name alone.
+    for (NSAttributeDescription *key in [self.mapper keyAttributesForEntity:entity]) {
+      NSString *name = [self.mapper propertyForAttribute:key];
+      if (![bits containsObject:name] && ![bits containsObject:[name stringByAppendingString:@" desc"]]) {
+        [bits addObject:name];
+      }
     }
     [items addObject:@[ @"$orderby", [bits componentsJoinedByString:@","] ]];
   }

@@ -7,7 +7,7 @@
     "path": "Products",
     "query": {
       "$filter": "(UnitPrice gt 20) and (Discontinued eq false)",
-      "$orderby": "ProductName",
+      "$orderby": "ProductName,ProductID",
       "$top": "25"
     }
   },

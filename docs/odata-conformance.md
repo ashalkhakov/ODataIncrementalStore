@@ -27,10 +27,10 @@ calling the client conformant.
 | # | Requirement | Status | Notes |
 |---|---|---|---|
 | 1 | MUST send `OData-MaxVersion` | ✅ | `4.0` on every request. |
-| 2 | MUST send `OData-Version` and `Content-Type` with a payload | ✅ | Sent on every request. `Content-Type` on a GET is harmless but should be dropped. |
+| 2 | MUST send `OData-Version` and `Content-Type` with a payload | ✅ | `OData-Version` on every request; `Content-Type` only with a body. |
 | 3 | MUST be a conforming consumer of the JSON format | ⚠️ | See section 2. |
 | 4 | MUST follow redirects (§9.1.5) | ⚠️ | Left to `NSURLSession` / `NSURLConnection`. GET redirects work; 307/308 on PATCH, POST and DELETE are untested on GNUstep. |
-| 5 | MUST handle next links (§11.2.6.7) | ❌ **live** | `@odata.nextLink` is ignored. Northwind pages at 20, so a fetch of its 77 products returns 20, with no error. |
+| 5 | MUST handle next links (§11.2.6.7) | ✅ **live** | Followed, relative or absolute, for collections and to-many relationships, until the collection ends or `fetchLimit` is reached. Northwind pages at 20; all 77 products arrive. |
 | 6 | MUST accept properties not in metadata (§11.2) | ✅ | Unknown properties are ignored. |
 | 7 | MUST use PATCH for updates (§11.4.3) | ✅ | |
 | 8 | MUST use the `$` prefix on system query options | ✅ | |
@@ -58,12 +58,12 @@ calling the client conformant.
 
 | Area | Section | Status | Notes |
 |---|---|---|---|
-| Service root and `$metadata` fetch | §11.1 | ❌ **live** | The client asks for XML, but the shared header code overwrites `Accept` with JSON. Northwind answers `415`, so **the store cannot be opened**. |
+| Service root and `$metadata` fetch | §11.1 | ✅ **live** | Requested as XML. (It used to be sent with a JSON `Accept`, and Northwind refused to open.) |
 | `$metadata` use | §11.1.2 | ❌ | Fetched and discarded. The model is never checked against it, and entity sets, keys and types are not discovered from it. |
 | Status codes and error bodies | §9, JSON §21 | ⚠️ | Non-2xx becomes an `NSError`, but the OData error JSON is not parsed into code and message. |
-| **Errors surfaced from fetches** | | ❌ **live** | A failed collection fetch returns an empty array. On Apple's Core Data a rejected query looks like "no rows". |
-| Content negotiation for `$count` | §11.2.10 | ❌ **live** | Same header bug: `Accept: text/plain` is overwritten, and Northwind answers `415`. |
-| Server-driven paging | §11.2.6.7 | ❌ **live** | See 1.5. Also applies to to-many navigation. |
+| Errors surfaced from fetches | | ✅ **live** | A failed request fails the fetch with its `NSError`, for collections and relationships alike; it is never an empty result. |
+| Content negotiation for `$count` | §11.2.10 | ✅ **live** | Requested as `text/plain`. |
+| Server-driven paging | §11.2.6.7 | ✅ **live** | See 1.5. `$orderby` always ends with the key, because a service resumes a page after its last row's sort values: sorted by category name alone, Northwind skips 17 of 77 products. |
 | `Prefer: odata.maxpagesize` | §8.2.8.3 | ❌ | Would let `fetchBatchSize` shape pages. |
 | `Prefer: return=representation` | §8.2.8.7 | ❌ | POST parses the body for the new key. A service that answers `204` with a `Location` header breaks inserts. |
 | Create | §11.4.2 | ⚠️ | POST works when the service returns the entity. Keys the client must supply (string keys like TripPin's `UserName`) are omitted from the body. |
@@ -84,17 +84,17 @@ calling the client conformant.
 
 | Core Data | OData | Status | Notes |
 |---|---|---|---|
-| Fetch an entity | `GET EntitySet` | ⚠️ **live** | First page only. |
+| Fetch an entity | `GET EntitySet` | ✅ **live** | Every page. |
 | Fault an object | `GET EntitySet(key)` | ✅ **live** | |
 | `predicate` | `$filter` | ⚠️ | See 4.4. |
-| `sortDescriptors` | `$orderby` | ⚠️ **live** | Attributes work. A path through a relationship (`category.name`) becomes `Category.name`, which is a type cast; should be `Category/CategoryName`. Northwind answers `400`. |
+| `sortDescriptors` | `$orderby` | ✅ **live** | Paths through relationships use `/` (`Category/CategoryName`); the key is appended as a tiebreaker. |
 | `fetchLimit`, `fetchOffset` | `$top`, `$skip` | ✅ **live** | |
-| `countForFetchRequest:` | `/$count` | ❌ **live** | Header bug; correct after the fix. |
+| `countForFetchRequest:` | `/$count` | ✅ **live** | |
 | `propertiesToFetch` (dictionary results) | `$select` | ⚠️ | Only for `NSDictionaryResultType`. Could also trim managed-object fetches. |
 | `relationshipKeyPathsForPrefetching` | `$expand` | ⚠️ | Requested, then the inline entities are thrown away. Every relationship access is another request. |
 | `fetchBatchSize` | `Prefer: odata.maxpagesize` | ❌ | |
 | To-one fault | `GET Entity(key)/Nav` | ✅ **live** | |
-| To-many fault | `GET Entity(key)/Nav` | ⚠️ | First page only. Rows are not cached, so each object faults again. |
+| To-many fault | `GET Entity(key)/Nav` | ⚠️ **live** | Every page. Rows are not cached, so each object faults again. |
 | Refreshing | | ❌ | Cached rows are never refreshed for the life of the store. |
 
 ### 4.2 Saving
@@ -137,9 +137,9 @@ calling the client conformant.
 | `lowercase:`, `uppercase:` | `tolower`, `toupper` | ✅ | |
 | `nil` | `null` | ✅ | |
 | Key paths through to-one relationships | `Nav/Prop` | ✅ | |
-| `rel == %@` with a managed object | `Nav/Key eq …` | ❌ **live** | The object's `description` is written into the URL. Northwind answers `500`. |
-| `self == %@`, `self IN %@` | key comparison | ❌ | Same root cause. |
-| `ANY` / `ALL` on to-many | `any()` / `all()` | ❌ **live** | The modifier is dropped. |
+| `rel == %@`, `!=`, `IN` with managed objects or object IDs | `Nav/Key eq …`, `not (…)`, `Nav/Key in (…)` | ✅ **live** | Compares keys through the to-one path; a compound key compares each part. An unsaved object is an error. |
+| `self == %@`, `self IN %@` | `Key eq …`, `Key in (…)` | ✅ | Inside a lambda, against the lambda variable. |
+| `ANY` / `ALL` on to-many | `Nav/any(x0:…)`, `Nav/all(x0:…)` | ✅ **live** | Split at the first to-many step; a further to-many step nests another lambda. `ANY` over a to-one path is the plain comparison. |
 | `SUBQUERY(…).@count` | `Nav/any(…)`, `Nav/$count` | ❌ | |
 | `rel.@count` | `Nav/$count` | ❌ | |
 | `LIKE`, `MATCHES` | `matchesPattern` (4.01 only) | — | Not expressible in 4.0. Should be an error, and is. |
@@ -175,8 +175,8 @@ calling the client conformant.
 | Basic and Bearer authentication | ✅ | Static credentials; no token refresh hook. |
 | Timeouts | ✅ | |
 | SAP Gateway CSRF token | ❌ | Vendor-specific: fetch `X-CSRF-Token` before writes. Needed only for SAP services. |
-| Tests that exercise headers | ❌ | The snapshot transport ignores request headers, which is how the `415` went unnoticed. |
-| Live smoke test in CI | ❌ | Northwind (read) and TripPin (write) are public. Should run without gating merges, since they are not ours. |
+| Tests that exercise headers | ✅ | The snapshot transport refuses what a service would: no `OData-MaxVersion`, a body without a JSON `Content-Type` or `OData-Version`, an `Accept` that rules out the response (`406`). |
+| Live smoke test in CI | ⚠️ | `Tests/Live/ois-live` reads Northwind on both platforms in CI, reported without failing the build. Writes against TripPin come with step 2. |
 
 ## 7. XML format (Atom)
 
@@ -239,10 +239,11 @@ route 2 against our own services, whatever third-party services do.
 
 ## Order of work
 
-1. **Can connect and read correctly:** request headers, errors from
+1. ~~**Can connect and read correctly:** request headers, errors from
    fetches, next links (collections and to-many), `$orderby` through
    relationships, managed objects in predicates, `ANY` / `ALL`. Make the
-   snapshot transport check headers, and add the live smoke test.
+   snapshot transport check headers, and add the live smoke test.~~
+   Done.
 2. **Can write correctly:** keep the real ETag and send it back unchanged
    (and send none when there is none); send relationships with
    `@odata.bind`; `Prefer: return=representation`; client-supplied keys
