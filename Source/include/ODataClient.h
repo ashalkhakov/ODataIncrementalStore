@@ -42,6 +42,20 @@ NS_ASSUME_NONNULL_BEGIN
                                           etag:(nullable NSString *)etag
                                          error:(NSError **)error;
 - (nullable NSData *)metadataWithError:(NSError **)error;
+
+// The request -sendJSONMethod:... would send, not sent: JSON body, If-Match,
+// Prefer, and the configuration's headers.
+- (nullable NSMutableURLRequest *)requestWithMethod:(NSString *)method
+                                               URL:(NSURL *)url
+                                              body:(nullable id)body
+                                              etag:(nullable NSString *)etag
+                                             error:(NSError **)error;
+
+// These requests as one change set of a $batch request (Part 1 section
+// 11.7): all of them take effect or none does. The responses in order; or
+// nil, with the error of the request that failed, or of the batch itself
+// (its HTTP status in ODataErrorHTTPStatusKey).
+- (nullable NSArray<ODataHTTPResponse *> *)sendChangeSet:(NSArray<NSURLRequest *> *)requests error:(NSError **)error;
 @end
 
 NS_ASSUME_NONNULL_END

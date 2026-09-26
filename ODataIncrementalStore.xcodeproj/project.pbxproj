@@ -15,6 +15,7 @@
 		AA0000000000000000000016 /* ODataClient.h in Headers */ = {isa = PBXBuildFile; fileRef = AA0000000000000000000017 /* ODataClient.h */; settings = {ATTRIBUTES = (Public, ); }; };
 		AA0000000000000000000018 /* ODataPropertyMapper.h in Headers */ = {isa = PBXBuildFile; fileRef = AA0000000000000000000019 /* ODataPropertyMapper.h */; settings = {ATTRIBUTES = (Public, ); }; };
 		AA00000000000000000000C5 /* ODataValue.h in Headers */ = {isa = PBXBuildFile; fileRef = AA00000000000000000000C6 /* ODataValue.h */; settings = {ATTRIBUTES = (Public, ); }; };
+		AA00000000000000000000CB /* ODataBatch.h in Headers */ = {isa = PBXBuildFile; fileRef = AA00000000000000000000CC /* ODataBatch.h */; settings = {ATTRIBUTES = (Public, ); }; };
 		AA000000000000000000001A /* ODataResourceIdentifier.h in Headers */ = {isa = PBXBuildFile; fileRef = AA000000000000000000001B /* ODataResourceIdentifier.h */; settings = {ATTRIBUTES = (Public, ); }; };
 		AA000000000000000000001C /* ODataPredicateTranslator.h in Headers */ = {isa = PBXBuildFile; fileRef = AA000000000000000000001D /* ODataPredicateTranslator.h */; settings = {ATTRIBUTES = (Public, ); }; };
 		AA000000000000000000001E /* ODataQueryBuilder.h in Headers */ = {isa = PBXBuildFile; fileRef = AA000000000000000000001F /* ODataQueryBuilder.h */; settings = {ATTRIBUTES = (Public, ); }; };
@@ -23,6 +24,7 @@
 		AA0000000000000000000024 /* ODataClient.m in Sources */ = {isa = PBXBuildFile; fileRef = AA0000000000000000000025 /* ODataClient.m */; };
 		AA0000000000000000000026 /* ODataPropertyMapper.m in Sources */ = {isa = PBXBuildFile; fileRef = AA0000000000000000000027 /* ODataPropertyMapper.m */; };
 		AA00000000000000000000C7 /* ODataValue.m in Sources */ = {isa = PBXBuildFile; fileRef = AA00000000000000000000C8 /* ODataValue.m */; };
+		AA00000000000000000000CD /* ODataBatch.m in Sources */ = {isa = PBXBuildFile; fileRef = AA00000000000000000000CE /* ODataBatch.m */; };
 		AA0000000000000000000028 /* ODataResourceIdentifier.m in Sources */ = {isa = PBXBuildFile; fileRef = AA0000000000000000000029 /* ODataResourceIdentifier.m */; };
 		AA000000000000000000002A /* ODataPredicateTranslator.m in Sources */ = {isa = PBXBuildFile; fileRef = AA000000000000000000002B /* ODataPredicateTranslator.m */; };
 		AA000000000000000000002C /* ODataQueryBuilder.m in Sources */ = {isa = PBXBuildFile; fileRef = AA000000000000000000002D /* ODataQueryBuilder.m */; };
@@ -63,6 +65,7 @@
 		AA0000000000000000000017 /* ODataClient.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = ODataClient.h; sourceTree = "<group>"; };
 		AA0000000000000000000019 /* ODataPropertyMapper.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = ODataPropertyMapper.h; sourceTree = "<group>"; };
 		AA00000000000000000000C6 /* ODataValue.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = ODataValue.h; sourceTree = "<group>"; };
+		AA00000000000000000000CC /* ODataBatch.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = ODataBatch.h; sourceTree = "<group>"; };
 		AA000000000000000000001B /* ODataResourceIdentifier.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = ODataResourceIdentifier.h; sourceTree = "<group>"; };
 		AA000000000000000000001D /* ODataPredicateTranslator.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = ODataPredicateTranslator.h; sourceTree = "<group>"; };
 		AA000000000000000000001F /* ODataQueryBuilder.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = ODataQueryBuilder.h; sourceTree = "<group>"; };
@@ -71,6 +74,7 @@
 		AA0000000000000000000025 /* ODataClient.m */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.objc; path = ODataClient.m; sourceTree = "<group>"; };
 		AA0000000000000000000027 /* ODataPropertyMapper.m */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.objc; path = ODataPropertyMapper.m; sourceTree = "<group>"; };
 		AA00000000000000000000C8 /* ODataValue.m */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.objc; path = ODataValue.m; sourceTree = "<group>"; };
+		AA00000000000000000000CE /* ODataBatch.m */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.objc; path = ODataBatch.m; sourceTree = "<group>"; };
 		AA0000000000000000000029 /* ODataResourceIdentifier.m */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.objc; path = ODataResourceIdentifier.m; sourceTree = "<group>"; };
 		AA000000000000000000002B /* ODataPredicateTranslator.m */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.objc; path = ODataPredicateTranslator.m; sourceTree = "<group>"; };
 		AA000000000000000000002D /* ODataQueryBuilder.m */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.objc; path = ODataQueryBuilder.m; sourceTree = "<group>"; };
@@ -137,6 +141,7 @@
 				AA0000000000000000000025 /* ODataClient.m */,
 				AA0000000000000000000027 /* ODataPropertyMapper.m */,
 				AA00000000000000000000C8 /* ODataValue.m */,
+				AA00000000000000000000CE /* ODataBatch.m */,
 				AA0000000000000000000029 /* ODataResourceIdentifier.m */,
 				AA000000000000000000002B /* ODataPredicateTranslator.m */,
 				AA000000000000000000002D /* ODataQueryBuilder.m */,
@@ -205,6 +210,7 @@
 				AA0000000000000000000017 /* ODataClient.h */,
 				AA0000000000000000000019 /* ODataPropertyMapper.h */,
 				AA00000000000000000000C6 /* ODataValue.h */,
+				AA00000000000000000000CC /* ODataBatch.h */,
 				AA000000000000000000001B /* ODataResourceIdentifier.h */,
 				AA000000000000000000001D /* ODataPredicateTranslator.h */,
 				AA000000000000000000001F /* ODataQueryBuilder.h */,
@@ -227,6 +233,7 @@
 				AA0000000000000000000016 /* ODataClient.h in Headers */,
 				AA0000000000000000000018 /* ODataPropertyMapper.h in Headers */,
 				AA00000000000000000000C5 /* ODataValue.h in Headers */,
+				AA00000000000000000000CB /* ODataBatch.h in Headers */,
 				AA000000000000000000001A /* ODataResourceIdentifier.h in Headers */,
 				AA000000000000000000001C /* ODataPredicateTranslator.h in Headers */,
 				AA000000000000000000001E /* ODataQueryBuilder.h in Headers */,
@@ -338,6 +345,7 @@
 				AA0000000000000000000024 /* ODataClient.m in Sources */,
 				AA0000000000000000000026 /* ODataPropertyMapper.m in Sources */,
 				AA00000000000000000000C7 /* ODataValue.m in Sources */,
+				AA00000000000000000000CD /* ODataBatch.m in Sources */,
 				AA0000000000000000000028 /* ODataResourceIdentifier.m in Sources */,
 				AA000000000000000000002A /* ODataPredicateTranslator.m in Sources */,
 				AA000000000000000000002C /* ODataQueryBuilder.m in Sources */,

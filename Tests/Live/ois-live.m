@@ -31,9 +31,21 @@ static void check(BOOL ok, NSString *what, NSString *detail)
           detail.length ? " — " : "", detail.UTF8String ?: "");
 }
 
+// The store's own error, where Core Data wrapped it in one of its own.
+static NSString *reason(NSError *error)
+{
+  if (!error) return nil;
+  NSError *underlying = error.userInfo[NSUnderlyingErrorKey];
+  NSArray *detailed = error.userInfo[NSDetailedErrorsKey];
+  if (!underlying && [detailed isKindOfClass:[NSArray class]]) underlying = detailed.firstObject;
+  NSError *e = underlying ?: error;
+  NSString *why = e.userInfo[NSLocalizedFailureReasonErrorKey];
+  return why ? [NSString stringWithFormat:@"%@ (%@)", e.localizedDescription, why] : e.localizedDescription;
+}
+
 static NSString *describe(NSArray *rows, NSError *error)
 {
-  if (error) return error.localizedDescription;
+  if (error) return reason(error);
   return rows ? [NSString stringWithFormat:@"%lu rows", (unsigned long)rows.count] : @"nil";
 }
 
@@ -157,7 +169,7 @@ static void northwindTypes(NSString *models)
     NSManagedObject *order = [[moc executeFetchRequest:first error:&e] firstObject];
     NSDecimalNumber *freight = [order valueForKey:@"freight"];
     check([freight isKindOfClass:[NSDecimalNumber class]] && [freight isEqual:[NSDecimalNumber decimalNumberWithString:@"32.38"]],
-          @"decimals keep every digit (IEEE754Compatible)", e.localizedDescription ?: freight.stringValue);
+          @"decimals keep every digit (IEEE754Compatible)", reason(e) ?: freight.stringValue);
 
     e = nil;
     NSFetchRequest *filtered = [NSFetchRequest fetchRequestWithEntityName:@"Order"];
@@ -173,15 +185,14 @@ static void northwindTypes(NSString *models)
     categories.fetchLimit = 1;
     NSData *picture = [[[moc executeFetchRequest:categories error:&e] firstObject] valueForKey:@"picture"];
     check([picture isKindOfClass:[NSData class]] && picture.length > 1000, @"read binary data (Binary)",
-          e.localizedDescription ?: [NSString stringWithFormat:@"%lu bytes", (unsigned long)picture.length]);
+          reason(e) ?: [NSString stringWithFormat:@"%lu bytes", (unsigned long)picture.length]);
   }];
 }
 
 // TripPin keeps each client's writes in a session named in the URL,
 // /(S(<24 characters>))/TripPinServiceRW/, and creates one on first use.
-// Its entry URL hands out a session by a relative redirect, which
-// gnustep-base's NSURLConnection does not follow (it resolves Location
-// without the request URL and times out), so the session is named here.
+// The session is named here, so every run starts from TripPin's own data
+// and nothing it writes is seen by anyone else.
 static NSURL *tripPinSession(void)
 {
   static const char alphabet[] = "abcdefghijklmnopqrstuvwxyz0123456789";
@@ -240,7 +251,7 @@ static void tripPin(NSString *models)
     [person setValue:@"Ois" forKey:@"firstName"];
     [person setValue:@"Live" forKey:@"lastName"];
     BOOL saved = [moc save:&e];
-    check(saved && !person.objectID.isTemporaryID, @"insert with a client-chosen key (POST)", e.localizedDescription ?: userName);
+    check(saved && !person.objectID.isTemporaryID, @"insert with a client-chosen key (POST)", reason(e) ?: userName);
     if (!saved) return;
 
     // Concurrency is an Int64 past 2^53: the store's value has to be the
@@ -270,7 +281,7 @@ static void tripPin(NSString *models)
     __block NSString *firstName = nil;
     [check1 performBlockAndWait:^{ firstName = [personNamed(check1, userName, NULL) valueForKey:@"firstName"]; }];
     check(second && [firstName isEqualToString:@"Ois3"], @"update twice, each with the current ETag (PATCH, If-Match)",
-          e.localizedDescription ?: firstName);
+          reason(e) ?: firstName);
 
     e = nil;
     NSFetchRequest *photos = [NSFetchRequest fetchRequestWithEntityName:@"Photo"];
@@ -282,7 +293,7 @@ static void tripPin(NSString *models)
     __block id photoID = nil;
     [check2 performBlockAndWait:^{ photoID = [[personNamed(check2, userName, NULL) valueForKey:@"photo"] valueForKey:@"id"]; }];
     check(bound && [photoID isEqual:[photo valueForKey:@"id"]], @"change a to-one relationship (PUT $ref)",
-          e.localizedDescription ?: [NSString stringWithFormat:@"photo %@", photoID]);
+          reason(e) ?: [NSString stringWithFormat:@"photo %@", photoID]);
 
     e = nil;
     NSManagedObject *russell = personNamed(moc, @"russellwhyte", &e);
@@ -292,7 +303,7 @@ static void tripPin(NSString *models)
     __block NSUInteger friends = NSNotFound;
     [check3 performBlockAndWait:^{ friends = [[personNamed(check3, userName, NULL) valueForKey:@"friends"] count]; }];
     check(added && friends == 1, @"add to a to-many relationship (POST $ref)",
-          e.localizedDescription ?: [NSString stringWithFormat:@"%lu friends", (unsigned long)friends]);
+          reason(e) ?: [NSString stringWithFormat:@"%lu friends", (unsigned long)friends]);
 
     e = nil;
     [[person mutableSetValueForKey:@"friends"] removeObject:russell];
@@ -300,15 +311,32 @@ static void tripPin(NSString *models)
     NSManagedObjectContext *check4 = newContext(psc);
     [check4 performBlockAndWait:^{ friends = [[personNamed(check4, userName, NULL) valueForKey:@"friends"] count]; }];
     check(removed && friends == 0, @"remove from a to-many relationship (DELETE $ref)",
-          e.localizedDescription ?: [NSString stringWithFormat:@"%lu friends", (unsigned long)friends]);
+          reason(e) ?: [NSString stringWithFormat:@"%lu friends", (unsigned long)friends]);
+
+    // One save, two requests (a PATCH and a POST $ref): one $batch change
+    // set, and both take effect.
+    e = nil;
+    [person setValue:@"Batched" forKey:@"lastName"];
+    [[person mutableSetValueForKey:@"friends"] addObject:russell];
+    BOOL batched = [moc save:&e];
+    NSManagedObjectContext *check5 = newContext(psc);
+    __block NSString *lastName = nil;
+    [check5 performBlockAndWait:^{
+      NSManagedObject *again = personNamed(check5, userName, NULL);
+      lastName = [again valueForKey:@"lastName"];
+      friends = [[again valueForKey:@"friends"] count];
+    }];
+    check(batched && [lastName isEqualToString:@"Batched"] && friends == 1, @"a save of several requests is one change set ($batch)",
+          reason(e) ?: [NSString stringWithFormat:@"%@, %lu friends", lastName, (unsigned long)friends]);
 
     // Someone else changes the person; saving over it has to fail.
     e = nil;
     BOOL elsewhere = changeBehindTheStoresBack(root, userName);
     [person setValue:@"Stale" forKey:@"firstName"];
     BOOL overwrote = [moc save:&e];
-    check(elsewhere && !overwrote, @"a stale ETag is refused (412)",
-          overwrote ? @"the save went through" : e.localizedDescription);
+    NSError *cause = e.userInfo[NSUnderlyingErrorKey] ?: [e.userInfo[NSDetailedErrorsKey] firstObject] ?: e;
+    check(elsewhere && !overwrote && cause.code == ODataIncrementalStoreErrorOptimisticLocking, @"a stale ETag is refused (412)",
+          overwrote ? @"the save went through" : reason(e));
     [moc rollback];
 
     e = nil;
@@ -316,10 +344,10 @@ static void tripPin(NSString *models)
     NSManagedObject *fresh = personNamed(moc, userName, &e);
     if (fresh) [moc deleteObject:fresh];
     BOOL deleted = fresh && [moc save:&e];
-    NSManagedObjectContext *check5 = newContext(psc);
+    NSManagedObjectContext *check6 = newContext(psc);
     __block NSManagedObject *gone = nil;
-    [check5 performBlockAndWait:^{ gone = personNamed(check5, userName, NULL); }];
-    check(deleted && !gone, @"delete with the current ETag (DELETE)", e.localizedDescription);
+    [check6 performBlockAndWait:^{ gone = personNamed(check6, userName, NULL); }];
+    check(deleted && !gone, @"delete with the current ETag (DELETE)", reason(e));
   }];
 }
 

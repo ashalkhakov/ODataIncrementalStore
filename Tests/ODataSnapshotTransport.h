@@ -18,6 +18,12 @@ NS_ASSUME_NONNULL_BEGIN
 // Requests answered with an error a real service would send: missing
 // version headers, a body that is not JSON, an Accept it cannot meet.
 @property (nonatomic, readonly) NSArray<NSString *> *refusals;
+// $batch, as a service implements it: each request of the change set is
+// answered from the snapshots, and the change set fails whole if any of
+// them does. One entry per batch: the number of requests in it.
+@property (nonatomic, readonly) NSArray<NSNumber *> *batches;
+// Answer $batch with 404, as a service without it does.
+@property (nonatomic) BOOL refusesBatches;
 
 - (nullable instancetype)initWithDirectory:(NSString *)directory
                                serviceRoot:(NSURL *)serviceRoot

@@ -29,7 +29,7 @@ calling the client conformant.
 | 1 | MUST send `OData-MaxVersion` | ✅ | `4.0` on every request. |
 | 2 | MUST send `OData-Version` and `Content-Type` with a payload | ✅ | `OData-Version` on every request; `Content-Type` only with a body. |
 | 3 | MUST be a conforming consumer of the JSON format | ⚠️ | See section 2. |
-| 4 | MUST follow redirects (§9.1.5) | ⚠️ **live** | Left to `NSURLSession` / `NSURLConnection`. On GNUstep, `NSURLConnection` does not follow a relative `Location` (such as TripPin's `/V4/(S(…))/TripPinServiceRW/`): gnustep-base's `NSURLProtocol` builds the new URL with `+URLWithString:` alone, not relative to the request, and the request times out. Absolute redirects work. A fix belongs in gnustep-patches. |
+| 4 | MUST follow redirects (§9.1.5) | ✅ **live** | `NSURLSession` follows them, on Apple and on GNUstep, where the client uses it whenever gnustep-base was built with libcurl. TripPin's entry URL redirects with a relative `Location`. gnustep-base's `NSURLConnection`, the fallback, does not follow a relative `Location` (`NSURLProtocol` builds the new URL without the request URL, and the request times out); a fix belongs in gnustep-patches. |
 | 5 | MUST handle next links (§11.2.6.7) | ✅ **live** | Followed, relative or absolute, for collections and to-many relationships, until the collection ends or `fetchLimit` is reached. Northwind pages at 20; all 77 products arrive. |
 | 6 | MUST accept properties not in metadata (§11.2) | ✅ | Unknown properties are ignored. |
 | 7 | MUST use PATCH for updates (§11.4.3) | ✅ | |
@@ -42,7 +42,7 @@ calling the client conformant.
 
 | # | Requirement | Status | Notes |
 |---|---|---|---|
-| 1 | Understand `metadata=minimal`, or request `none` / `full` | ⚠️ | Requests `minimal`. Reads `@odata.etag`. Ignores `@odata.id` and `@odata.editLink`, so a service whose edit links do not follow the key convention is addressed wrongly. |
+| 1 | Understand `metadata=minimal`, or request `none` / `full` | ✅ | Requests `minimal`. Reads `@odata.etag`, `@odata.nextLink` and `@odata.editLink` (writes go to the edit link where one is given). `@odata.id` is not needed: the key is in the row. |
 | 2 | Consume `metadata=full` responses | ✅ | Extra control information is ignored. |
 | 3 | Receive every data type (§7.1) | ⚠️ **live** | Every primitive type the store can map; see section 5. Enumerations, complex types, collections and spatial types are not mapped. |
 | 4 | Interpret control information per the payload's `OData-Version` | ⚠️ | Only `@odata.etag`, `@odata.nextLink` (not yet followed) and `value` matter today. |
@@ -60,21 +60,21 @@ calling the client conformant.
 |---|---|---|---|
 | Service root and `$metadata` fetch | §11.1 | ✅ **live** | Requested as XML. (It used to be sent with a JSON `Accept`, and Northwind refused to open.) |
 | `$metadata` use | §11.1.2 | ❌ | Fetched and discarded. The model is never checked against it, and entity sets, keys and types are not discovered from it. |
-| Status codes and error bodies | §9, JSON §21 | ⚠️ | Non-2xx becomes an `NSError`, but the OData error JSON is not parsed into code and message. |
+| Status codes and error bodies | §9, JSON §21 | ✅ **live** | The service's message is the `NSError`'s description; its code, target, details, the HTTP status and the body are in `userInfo` (`ODataErrorCodeKey` and friends). XML error bodies too, for `$metadata`. A `412` is `ODataIncrementalStoreErrorOptimisticLocking`, alone or inside a change set. |
 | Errors surfaced from fetches | | ✅ **live** | A failed request fails the fetch with its `NSError`, for collections and relationships alike; it is never an empty result. |
 | Content negotiation for `$count` | §11.2.10 | ✅ **live** | Requested as `text/plain`. |
 | Server-driven paging | §11.2.6.7 | ✅ **live** | See 1.5. `$orderby` always ends with the key, because a service resumes a page after its last row's sort values: sorted by category name alone, Northwind skips 17 of 77 products. |
-| `Prefer: odata.maxpagesize` | §8.2.8.3 | ❌ | Would let `fetchBatchSize` shape pages. |
+| `Prefer: odata.maxpagesize` | §8.2.8.3 | ✅ | From `fetchBatchSize`. |
 | `Prefer: return=representation` | §8.2.8.7 | ✅ | Sent with entity POSTs and PATCHes. A `204` anyway: the new entity is read from `Location` (or `OData-EntityId`), a new ETag from the `ETag` header. |
 | Create | §11.4.2 | ✅ **live** | Keys go in the body when the client set them (non-zero, non-empty), so TripPin's `UserName` works and server-assigned integer keys stay unset. |
 | Update | §11.4.3 | ✅ **live** | PATCH with the changed attributes; relationships per 4.2. |
 | Delete | §11.4.5 | ✅ | |
 | ETags / optimistic concurrency | §11.4.1.1 | ✅ **live** | Kept exactly as sent (`@odata.etag` or the `ETag` header) and sent back in `If-Match`; none is sent when the service gave none. A write's response updates it, and after `$ref` requests the entity is read back, since they can change the ETag without returning it. A changed ETag bumps the node version, so Core Data sees a conflict before the service does. |
 | Relationship changes (`@odata.bind`, `$ref`) | §11.4.2.2, §11.4.6 | ✅ **live** | See 4.2. |
-| Atomic saves (`$batch` change sets) | §11.7 | ❌ | One request per object. A failure part-way leaves the service partly updated. |
+| Atomic saves (`$batch` change sets) | §11.7 | ✅ **live** | A save of two or more requests is one multipart change set, with absolute URLs (TripPin rejects relative ones in a batch). A service that refuses `$batch` (400, 404, 405, 415 or 501 to the batch request) gets the requests one at a time from then on; any other failure fails the save, since TripPin shows a service can apply part of a batch and then answer 500. Inserts whose keys the service assigns are posted before the rest, because Core Data needs their object IDs first; assign keys on the client (`postOnObtainPermanentIDs` off) for a save that is atomic whole. `ODataIncrementalStoreBatchSavesOption` turns batching off. |
 | Redirects | §9.1.5 | ⚠️ | See 1.4. |
 | Key-as-segment URLs (`Products/1`) | §4.3.6 | ❌ | Parentheses only. Needed only where a service requires it. |
-| Percent-encoding of key values in paths | Part 2 §4.3.1 | ❌ | A string key with a space, `/`, `#` or non-ASCII text makes an invalid URL. |
+| Percent-encoding of key values in paths | Part 2 §4.3.1 | ✅ | Everything but what a path segment allows and OData's key syntax uses: `Customers('Smith%20%26%20Co%2F2')`. |
 | Deep insert | §11.4.2.2 | — | Optional. `$batch` covers the same need. |
 | Delta, async, streams, actions, functions | | — | No Core Data equivalent in a fetch or save. |
 
@@ -96,7 +96,7 @@ calling the client conformant.
 | To-one fault | `GET Entity(key)/Nav` | ✅ **live** | |
 | To-many fault | `GET Entity(key)/Nav` | ✅ **live** | Every page; the rows are cached. |
 | Firing faults | | ✅ | Every fetched row is cached, and each to-one relationship is expanded to its key (`Nav($select=Key)`), because Core Data asks for every to-one as soon as a fault fires. Firing N faults used to cost N or 2N requests; it costs none. Northwind ignores the nested `$select` and sends the whole related entity, which is cached as well. |
-| Refreshing | | ⚠️ | Every fetch and relationship read refreshes the rows it returns. A row faulted in earlier is not re-read until one does. |
+| Refreshing | | ✅ | Every fetch and relationship read refreshes the rows it returns. `-discardCachedRowsForObjectIDs:` drops kept rows, so the next fault reads the service; `refreshObject:mergeChanges:` alone refills from what the store kept. Core Data asks the store for a row during every save, so rows cannot simply expire after one use. |
 
 ### 4.2 Saving
 
@@ -108,7 +108,7 @@ calling the client conformant.
 | Update a to-many relationship | `POST` / `DELETE Entity(key)/Nav/$ref?$id=…` | ✅ **live** | Written from one side only: never from a to-many whose inverse is to-one (that side's reference says it), and for many-to-many from the side whose entity name sorts first. |
 | Insert with relationships | `POST` with `@odata.bind` | ✅ | The only way to create an entity whose relationship is required. TripPin answers `500` to a POST with binds, in breach of JSON Format §24 item 7c. |
 | Delete | `DELETE Entity(key)` | ✅ | |
-| Save atomicity | `$batch` change set | ❌ | |
+| Save atomicity | `$batch` change set | ✅ **live** | See section 3. |
 | Merge conflicts | `412` → `NSMergeConflict` | ⚠️ | `412` becomes an error, but not one Core Data's merge policies understand. |
 
 ### 4.3 Model
@@ -172,7 +172,7 @@ calling the client conformant.
 
 | Area | Status | Notes |
 |---|---|---|
-| HTTPS | ✅ **live** | `NSURLSession` on Apple, `NSURLConnection` on GNUstep (gnutls). |
+| HTTPS | ✅ **live** | `NSURLSession`, on Apple and on GNUstep (libcurl, gnutls). gnustep-base's `NSURLConnection` is only the fallback for a gnustep-base built without libcurl: besides relative redirects, it returns an empty body for a multipart response, which every `$batch` answer is. |
 | Basic and Bearer authentication | ✅ | Static credentials; no token refresh hook. |
 | Timeouts | ✅ | |
 | SAP Gateway CSRF token | ❌ | Vendor-specific: fetch `X-CSRF-Token` before writes. Needed only for SAP services. |
@@ -252,9 +252,9 @@ route 2 against our own services, whatever third-party services do.
 3. ~~**Types:** `DateTimeOffset` in full, `Date`, `IEEE754Compatible` for
    Int64 and Decimal, `INF` / `NaN`, Binary.~~ Done, with `TimeOfDay` and
    `Duration` as well.
-4. **Robustness:** `$batch` change sets for atomic saves, OData error
+4. ~~**Robustness:** `$batch` change sets for atomic saves, OData error
    bodies, percent-encoded keys, `@odata.editLink`, cache refresh,
-   `Prefer: odata.maxpagesize` from `fetchBatchSize`.
+   `Prefer: odata.maxpagesize` from `fetchBatchSize`.~~ Done.
 5. **Model:** read `$metadata`: validate the Core Data model against it,
    discover keys, then derived types and enums.
 6. **XML, for XForms:** JSON-to-XML mapping on the client first, since it

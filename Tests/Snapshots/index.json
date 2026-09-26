@@ -215,6 +215,11 @@
       "id": "products-page-size",
       "file": "products-page-size.json",
       "spec": "OASIS OData 4.01 Part 1 \u00a78.2.8.3 Preference odata.maxpagesize"
+    },
+    {
+      "id": "product-6-patch",
+      "file": "product-6-patch.json",
+      "spec": "OASIS OData 4.01 Part 1 \u00a711.7 Batch Requests; \u00a711.4.3"
     }
   ]
 }

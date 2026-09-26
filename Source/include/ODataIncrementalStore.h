@@ -14,6 +14,7 @@
 #import "ODataClient.h"
 #import "ODataPropertyMapper.h"
 #import "ODataValue.h"
+#import "ODataBatch.h"
 #import "ODataResourceIdentifier.h"
 #import "ODataPredicateTranslator.h"
 #import "ODataQueryBuilder.h"
@@ -24,6 +25,14 @@ NS_ASSUME_NONNULL_BEGIN
 
 + (NSString *)storeType;
 + (void)registerStore;
+
+// Every row a fetch or a relationship read brings back is kept, and serves
+// the faults that fire afterwards; a later read of the same entities
+// replaces it. Discard the kept rows of these objects (nil: all of them)
+// to have their next fault read the service. -[NSManagedObjectContext
+// refreshObject:mergeChanges:] alone turns an object back into a fault,
+// which this store then fills from what it kept.
+- (void)discardCachedRowsForObjectIDs:(nullable NSArray<NSManagedObjectID *> *)objectIDs;
 
 @end
 

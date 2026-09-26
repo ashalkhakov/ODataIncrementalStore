@@ -26,6 +26,16 @@
 }
 @end
 
+// One request of a save and what to do with its response. A save is a
+// list of these, sent as one $batch change set or one at a time.
+@interface OISOperation : NSObject
+@property (nonatomic, strong) NSURLRequest *request;
+@property (nonatomic, copy) BOOL (^completion)(ODataHTTPResponse *response, NSError **error);
+@end
+
+@implementation OISOperation
+@end
+
 typedef NS_ENUM(NSInteger, OISWriteMode) {
   OISWriteInsert,    // every set attribute, keys the client chose, every relationship
   OISWriteUpdate,    // what changed since the last save
@@ -41,6 +51,7 @@ typedef NS_ENUM(NSInteger, OISWriteMode) {
   NSMutableDictionary *_versions;   // object ID -> node version, bumped when the ETag changes
   NSMutableDictionary *_deferred;   // object ID -> relationship names to write after insert
   NSMutableDictionary *_editLinks;  // object ID -> @odata.editLink, where the service gave one
+  BOOL _batchRefused;               // the service answered $batch itself with an error
   NSLock *_lock;
 }
 
@@ -342,13 +353,14 @@ typedef NS_ENUM(NSInteger, OISWriteMode) {
 
 - (id)executeSave:(NSSaveChangesRequest *)save error:(NSError **)error
 {
+  NSMutableArray *operations = [NSMutableArray array];
+  NSMutableArray *referenced = [NSMutableArray array];  // objects whose $ref requests may change their ETag
+
   if (!_client.configuration.postOnObtainPermanentIDs) {
     for (NSManagedObject *object in [self insertOrder:save.insertedObjects.allObjects]) {
       OISWrite *write = [self writeForObject:object mode:OISWriteInsert assigned:nil];
-      NSDictionary *payload = [self postWrite:write entity:object.entity error:error];
-      if (!payload) return nil;
-      [self cacheNodeForObjectID:object.objectID entity:object.entity payload:payload error:nil];
-      if (![self sendReferences:write.references error:error]) return nil;
+      if (![self addPostOf:write object:object to:operations error:error]) return nil;
+      if (![self addReferencesOf:write to:operations error:error]) return nil;
     }
   }
   for (NSManagedObject *object in save.insertedObjects) {
@@ -356,40 +368,167 @@ typedef NS_ENUM(NSInteger, OISWriteMode) {
     BOOL deferred = _deferred[object.objectID] != nil;
     [_lock unlock];
     if (!deferred) continue;
-    if (![self patchWrite:[self writeForObject:object mode:OISWriteDeferred assigned:nil] object:object error:error]) return nil;
+    OISWrite *write = [self writeForObject:object mode:OISWriteDeferred assigned:nil];
+    if (![self addPatchOf:write object:object to:operations error:error]) return nil;
+    if (write.references.count) [referenced addObject:object];
+  }
+  for (NSManagedObject *object in save.updatedObjects) {
+    OISWrite *write = [self writeForObject:object mode:OISWriteUpdate assigned:nil];
+    if (![self addPatchOf:write object:object to:operations error:error]) return nil;
+    if (write.references.count) [referenced addObject:object];
+  }
+  for (NSManagedObject *object in save.deletedObjects) {
+    NSURL *url = [self editURLForObjectID:object.objectID error:error];
+    NSMutableURLRequest *request = url ? [_client requestWithMethod:@"DELETE" URL:url body:nil
+                                                               etag:[self currentETagForObjectID:object.objectID] error:error] : nil;
+    if (!request) return nil;
+    NSManagedObjectID *objectID = object.objectID;
+    [operations addObject:[self operation:request completion:^BOOL(ODataHTTPResponse *response, NSError **e) {
+      [self forgetObjectID:objectID];
+      return YES;
+    }]];
+  }
+
+  if (![self sendOperations:operations error:error]) return nil;
+
+  for (NSManagedObject *object in save.insertedObjects) {
     [_lock lock];
     [_deferred removeObjectForKey:object.objectID];
     [_lock unlock];
   }
-  for (NSManagedObject *object in save.updatedObjects) {
-    if (![self patchWrite:[self writeForObject:object mode:OISWriteUpdate assigned:nil] object:object error:error]) return nil;
-  }
-  for (NSManagedObject *object in save.deletedObjects) {
-    NSURL *url = [self editURLForObjectID:object.objectID error:error];
-    if (!url) return nil;
-    if (![_client sendJSONMethod:@"DELETE" URL:url body:nil etag:[self currentETagForObjectID:object.objectID] error:error]) {
-      return nil;
+  // A $ref request changes the entity, and may change its ETag, without
+  // returning it; read it back so the next write does not send a stale one.
+  for (NSManagedObject *object in referenced) {
+    [_lock lock];
+    BOOL hasETag = _etags[object.objectID] != nil;
+    [_lock unlock];
+    if (!hasETag) continue;
+    ODataResourceIdentifier *identifier = [self identifierFromObjectID:object.objectID error:NULL];
+    NSURL *url = identifier ? [_builder URLForReadingIdentifier:identifier entity:object.entity error:NULL] : nil;
+    id fresh = url ? [_client JSONAtURL:url error:NULL] : nil;
+    if ([fresh isKindOfClass:[NSDictionary class]]) {
+      [self cacheNodeForObjectID:object.objectID entity:object.entity payload:fresh error:nil];
+    } else {
+      [_lock lock];
+      [_etags removeObjectForKey:object.objectID];
+      [_lock unlock];
     }
-    [self forgetObjectID:object.objectID];
   }
   return @[];
 }
 
-// POST to the entity set; the entity as created. Prefer asks for it in the
-// response; a service that answers 204 anyway gives its URL in Location
-// (Part 1 section 11.4.2), which is read back.
+- (OISOperation *)operation:(NSURLRequest *)request completion:(BOOL (^)(ODataHTTPResponse *, NSError **))completion
+{
+  OISOperation *operation = [[OISOperation alloc] init];
+  operation.request = request;
+  operation.completion = completion;
+  return operation;
+}
+
+// A save of two or more requests is one $batch change set, so it takes
+// effect whole or not at all (Part 1 section 11.7.4). $batch is required
+// only of Advanced services: one that answers the batch request itself
+// with 400, 404, 405, 415 or 501 has run none of it, and gets the requests
+// one at a time from then on. Any other failure fails the save: TripPin,
+// for one, can apply part of a batch and then answer 500.
+- (BOOL)sendOperations:(NSArray *)operations error:(NSError **)error
+{
+  if (!operations.count) return YES;
+  BOOL batch = operations.count > 1 && _client.configuration.batchSaves && !_batchRefused;
+  if (batch) {
+    NSMutableArray *requests = [NSMutableArray array];
+    for (OISOperation *operation in operations) [requests addObject:operation.request];
+    NSError *batchError = nil;
+    NSArray *responses = [_client sendChangeSet:requests error:&batchError];
+    if (responses) {
+      for (NSUInteger i = 0; i < operations.count; i++) {
+        OISOperation *operation = operations[i];
+        if (operation.completion && !operation.completion(responses[i], error)) return NO;
+      }
+      return YES;
+    }
+    NSURL *failed = batchError.userInfo[NSURLErrorFailingURLErrorKey];
+    NSInteger status = [batchError.userInfo[ODataErrorHTTPStatusKey] integerValue];
+    BOOL refused = [failed.path hasSuffix:@"$batch"] &&
+                   (status == 400 || status == 404 || status == 405 || status == 415 || status == 501);
+    if (!refused) {
+      if (error) *error = batchError;
+      return NO;
+    }
+    _batchRefused = YES;
+  }
+  for (OISOperation *operation in operations) {
+    ODataHTTPResponse *response = [_client sendRequest:operation.request error:error];
+    if (!response) return NO;
+    if (operation.completion && !operation.completion(response, error)) return NO;
+  }
+  return YES;
+}
+
+- (BOOL)addPostOf:(OISWrite *)write object:(NSManagedObject *)object to:(NSMutableArray *)operations error:(NSError **)error
+{
+  NSEntityDescription *entity = object.entity;
+  NSManagedObjectID *objectID = object.objectID;
+  NSURL *url = [_client.configuration.serviceRoot URLByAppendingPathComponent:[_mapper entitySetForEntity:entity]];
+  NSMutableURLRequest *request = [_client requestWithMethod:@"POST" URL:url body:write.body etag:nil error:error];
+  if (!request) return NO;
+  [operations addObject:[self operation:request completion:^BOOL(ODataHTTPResponse *response, NSError **e) {
+    NSDictionary *payload = [self createdEntityFrom:response URL:url error:e];
+    if (!payload) return NO;
+    [self cacheNodeForObjectID:objectID entity:entity payload:payload error:nil];
+    return YES;
+  }]];
+  return YES;
+}
+
+// PATCH the body, if there is one, with the entity's ETag; then the $ref
+// requests. Nothing at all for an object with nothing to send, such as the
+// to-many side of a relationship whose to-one side was bound.
+- (BOOL)addPatchOf:(OISWrite *)write object:(NSManagedObject *)object to:(NSMutableArray *)operations error:(NSError **)error
+{
+  if (write.body.count) {
+    NSURL *url = [self editURLForObjectID:object.objectID error:error];
+    NSMutableURLRequest *request = url ? [_client requestWithMethod:@"PATCH" URL:url body:write.body
+                                                               etag:[self currentETagForObjectID:object.objectID] error:error] : nil;
+    if (!request) return NO;
+    [operations addObject:[self operation:request completion:^BOOL(ODataHTTPResponse *response, NSError **e) {
+      [self absorbResponse:response object:object URL:url];
+      return YES;
+    }]];
+  }
+  return [self addReferencesOf:write to:operations error:error];
+}
+
+- (BOOL)addReferencesOf:(OISWrite *)write to:(NSMutableArray *)operations error:(NSError **)error
+{
+  for (NSArray *reference in write.references) {
+    id body = reference[2] == [NSNull null] ? nil : reference[2];
+    NSMutableURLRequest *request = [_client requestWithMethod:reference[0] URL:reference[1] body:body etag:nil error:error];
+    if (!request) return NO;
+    [operations addObject:[self operation:request completion:nil]];
+  }
+  return YES;
+}
+
+// POST to the entity set now, outside any save: the entity as created.
 - (NSDictionary *)postWrite:(OISWrite *)write entity:(NSEntityDescription *)entity error:(NSError **)error
 {
-  NSString *set = [_mapper entitySetForEntity:entity];
-  NSURL *url = [_client.configuration.serviceRoot URLByAppendingPathComponent:set];
+  NSURL *url = [_client.configuration.serviceRoot URLByAppendingPathComponent:[_mapper entitySetForEntity:entity]];
   ODataHTTPResponse *response = [_client sendJSONMethod:@"POST" URL:url body:write.body etag:nil error:error];
-  if (!response) return nil;
+  return response ? [self createdEntityFrom:response URL:url error:error] : nil;
+}
+
+// The entity a POST created. Prefer asks for it in the response; a service
+// that answers 204 anyway gives its URL in Location (Part 1 section
+// 11.4.2), which is read back.
+- (NSDictionary *)createdEntityFrom:(ODataHTTPResponse *)response URL:(NSURL *)url error:(NSError **)error
+{
   id json = response.data.length ? [NSJSONSerialization JSONObjectWithData:response.data options:0 error:nil] : nil;
   if (![json isKindOfClass:[NSDictionary class]]) {
     NSString *location = [response valueForHeader:@"Location"] ?: [response valueForHeader:@"OData-EntityId"];
     NSURL *created = location.length ? [NSURL URLWithString:location relativeToURL:url].absoluteURL : nil;
     if (!created) {
-      if (error) *error = OISError(ODataIncrementalStoreErrorDecoding, [NSString stringWithFormat:@"POST %@ returned neither the entity nor its Location", set]);
+      if (error) *error = OISError(ODataIncrementalStoreErrorDecoding, [NSString stringWithFormat:@"POST %@ returned neither the entity nor its Location", url.lastPathComponent]);
       return nil;
     }
     json = [_client JSONAtURL:created error:error];
@@ -405,54 +544,6 @@ typedef NS_ENUM(NSInteger, OISWriteMode) {
     json = tagged;
   }
   return json;
-}
-
-// PATCH the body, if there is one, with the entity's ETag; then the $ref
-// requests. Nothing at all for an object with nothing to send, such as the
-// to-many side of a relationship whose to-one side was bound.
-- (BOOL)patchWrite:(OISWrite *)write object:(NSManagedObject *)object error:(NSError **)error
-{
-  if (write.body.count) {
-    NSURL *url = [self editURLForObjectID:object.objectID error:error];
-    if (!url) return NO;
-    ODataHTTPResponse *response = [_client sendJSONMethod:@"PATCH" URL:url body:write.body
-                                                     etag:[self currentETagForObjectID:object.objectID] error:error];
-    if (!response) return NO;
-    [self absorbResponse:response object:object URL:url];
-  }
-  if (![self sendReferences:write.references error:error]) return NO;
-  // A $ref request changes the entity, and may change its ETag, without
-  // returning it; read it back so the next write does not send a stale one.
-  [_lock lock];
-  BOOL hasETag = _etags[object.objectID] != nil;
-  [_lock unlock];
-  if (write.references.count && hasETag) {
-    ODataResourceIdentifier *identifier = [self identifierFromObjectID:object.objectID error:NULL];
-    NSURL *url = identifier ? [_builder URLForReadingIdentifier:identifier entity:object.entity error:NULL] : nil;
-    id fresh = url ? [_client JSONAtURL:url error:NULL] : nil;
-    if ([fresh isKindOfClass:[NSDictionary class]]) {
-      [self cacheNodeForObjectID:object.objectID entity:object.entity payload:fresh error:nil];
-    } else {
-      [self forgetETagOfObjectID:object.objectID];
-    }
-  }
-  return YES;
-}
-
-- (void)forgetETagOfObjectID:(NSManagedObjectID *)objectID
-{
-  [_lock lock];
-  [_etags removeObjectForKey:objectID];
-  [_lock unlock];
-}
-
-- (BOOL)sendReferences:(NSArray *)references error:(NSError **)error
-{
-  for (NSArray *reference in references) {
-    id body = reference[2] == [NSNull null] ? nil : reference[2];
-    if (![_client sendJSONMethod:reference[0] URL:reference[1] body:body etag:nil error:error]) return NO;
-  }
-  return YES;
 }
 
 // After a PATCH: the entity as the service now has it. From the body when
@@ -818,6 +909,14 @@ static BOOL OISKeyIsSet(id value)
   NSString *etag = _etags[objectID];
   [_lock unlock];
   return etag;
+}
+
+- (void)discardCachedRowsForObjectIDs:(NSArray *)objectIDs
+{
+  [_lock lock];
+  if (objectIDs) [_nodeCache removeObjectsForKeys:objectIDs];
+  else [_nodeCache removeAllObjects];
+  [_lock unlock];
 }
 
 - (void)forgetObjectID:(NSManagedObjectID *)objectID

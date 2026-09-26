@@ -3,6 +3,7 @@
 
 #import "ODataSnapshotTransport.h"
 #import "ODataError.h"
+#import "ODataBatch.h"
 
 static NSString *OISUnescape(NSString *s)
 {
@@ -65,6 +66,7 @@ static BOOL OISJSONEqual(id a, id b)
   NSArray *_snapshots;
   NSMutableArray *_hits;
   NSMutableArray *_refusals;
+  NSMutableArray *_batches;
 }
 
 - (instancetype)initWithDirectory:(NSString *)directory serviceRoot:(NSURL *)serviceRoot error:(NSError **)error
@@ -74,6 +76,7 @@ static BOOL OISJSONEqual(id a, id b)
   _serviceRoot = [serviceRoot copy];
   _hits = [NSMutableArray array];
   _refusals = [NSMutableArray array];
+  _batches = [NSMutableArray array];
   NSFileManager *fm = [NSFileManager defaultManager];
   NSArray *names = [fm contentsOfDirectoryAtPath:directory error:error];
   if (!names) return nil;
@@ -98,6 +101,97 @@ static BOOL OISJSONEqual(id a, id b)
   _snapshots = [loaded copy];
   _snapshotNames = [labels copy];
   return self;
+}
+
+- (NSArray *)batches
+{
+  return [_batches copy];
+}
+
+static NSHTTPURLResponse *OISResponse(NSURL *url, NSInteger status, NSDictionary *headers)
+{
+  return [[NSHTTPURLResponse alloc] initWithURL:url statusCode:status HTTPVersion:@"HTTP/1.1" headerFields:headers];
+}
+
+static void OISAppendText(NSMutableData *data, NSString *text)
+{
+  [data appendData:[text dataUsingEncoding:NSUTF8StringEncoding]];
+}
+
+static void OISAppendMessage(NSMutableData *out, NSInteger status, NSDictionary *headers, NSData *body, NSString *contentID)
+{
+  OISAppendText(out, @"Content-Type: application/http\r\nContent-Transfer-Encoding: binary\r\n");
+  if (contentID) OISAppendText(out, [NSString stringWithFormat:@"Content-ID: %@\r\n", contentID]);
+  OISAppendText(out, [NSString stringWithFormat:@"\r\nHTTP/1.1 %ld %@\r\n", (long)status, [NSHTTPURLResponse localizedStringForStatusCode:status]]);
+  for (NSString *name in headers) OISAppendText(out, [NSString stringWithFormat:@"%@: %@\r\n", name, headers[name]]);
+  OISAppendText(out, @"\r\n");
+  if (body.length) [out appendData:body];
+  OISAppendText(out, @"\r\n");
+}
+
+// POST $batch: every request of the change set answered from the
+// snapshots, in order. A failure answers for the whole change set, alone
+// (Part 1 section 11.7.7.5).
+- (NSData *)sendBatch:(NSURLRequest *)request returningResponse:(NSURLResponse **)response
+{
+  NSDictionary *multipart = @{ @"Content-Type": [@"multipart/mixed; boundary=" stringByAppendingString:@"batchresponse_1"], @"OData-Version": @"4.0" };
+  if (self.refusesBatches) {
+    if (response) *response = OISResponse(request.URL, 404, @{ @"Content-Type": @"application/json" });
+    return [@"{\"error\":{\"code\":\"\",\"message\":\"Resource not found for the segment '$batch'.\"}}" dataUsingEncoding:NSUTF8StringEncoding];
+  }
+  NSString *boundary = ODataMultipartBoundary([request valueForHTTPHeaderField:@"Content-Type"] ?: @"");
+  NSArray *parts = boundary ? ODataBatchParts(request.HTTPBody ?: [NSData data], boundary) : nil;
+  if (!parts || ![[request valueForHTTPHeaderField:@"Accept"] hasPrefix:@"multipart/mixed"]) {
+    [_refusals addObject:@"$batch that is not a multipart request asking for a multipart response"];
+    if (response) *response = OISResponse(request.URL, 400, @{});
+    return [NSData data];
+  }
+  [_batches addObject:@(parts.count)];
+  NSMutableData *changeSet = [NSMutableData data];
+  NSMutableData *failure = nil;
+  for (ODataBatchPart *part in parts) {
+    NSURL *url = [NSURL URLWithString:part.URLString ?: @""];
+    NSMutableURLRequest *inner = url.scheme ? [NSMutableURLRequest requestWithURL:url] : nil;
+    NSInteger status = 0;
+    NSDictionary *headers = @{};
+    NSData *body = nil;
+    if (!inner) {
+      // TripPin: "a base URI was not specified for the batch reader".
+      status = 500;
+      body = [@"{\"error\":{\"code\":\"\",\"message\":\"relative URI in a batch\"}}" dataUsingEncoding:NSUTF8StringEncoding];
+      [_refusals addObject:[NSString stringWithFormat:@"relative URI in a batch: %@", part.URLString]];
+    } else {
+      inner.HTTPMethod = part.method;
+      inner.HTTPBody = part.body.length ? part.body : nil;
+      for (NSString *name in part.headers) [inner setValue:part.headers[name] forHTTPHeaderField:name];
+      NSURLResponse *innerResponse = nil;
+      NSError *error = nil;
+      body = [self sendRequest:inner returningResponse:&innerResponse error:&error];
+      if (!body) {
+        status = 404;
+        body = [NSJSONSerialization dataWithJSONObject:@{ @"error": @{ @"code": @"", @"message": error.localizedDescription ?: @"" } } options:0 error:NULL];
+      } else {
+        status = [(NSHTTPURLResponse *)innerResponse statusCode];
+        headers = [(NSHTTPURLResponse *)innerResponse allHeaderFields];
+      }
+    }
+    if (status >= 400) {
+      failure = [NSMutableData data];
+      OISAppendText(failure, @"--batchresponse_1\r\n");
+      OISAppendMessage(failure, status, headers, body, part.contentID);
+      OISAppendText(failure, @"--batchresponse_1--\r\n");
+      break;
+    }
+    OISAppendText(changeSet, @"--changesetresponse_1\r\n");
+    OISAppendMessage(changeSet, status, headers, body, part.contentID);
+  }
+  if (response) *response = OISResponse(request.URL, 200, multipart);
+  if (failure) return failure;
+  NSMutableData *out = [NSMutableData data];
+  OISAppendText(out, @"--batchresponse_1\r\nContent-Type: multipart/mixed; boundary=changesetresponse_1\r\n\r\n");
+  [out appendData:changeSet];
+  OISAppendText(out, @"--changesetresponse_1--\r\n--batchresponse_1--\r\n");
+  return out;
 }
 
 - (NSArray *)refusals
@@ -218,6 +312,9 @@ static BOOL OISAccepts(NSString *accept, NSString *type)
 
 - (NSData *)sendRequest:(NSURLRequest *)request returningResponse:(NSURLResponse **)response error:(NSError **)error
 {
+  if ([request.HTTPMethod isEqualToString:@"POST"] && [OISRelativePath(request.URL, self.serviceRoot) isEqualToString:@"$batch"]) {
+    return [self sendBatch:request returningResponse:response];
+  }
   NSDictionary *hit = nil;
   for (NSDictionary *snapshot in _snapshots) {
     if ([self matches:snapshot request:request]) {

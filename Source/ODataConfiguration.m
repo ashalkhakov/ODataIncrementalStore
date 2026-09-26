@@ -10,6 +10,7 @@ NSString * const ODataIncrementalStoreTimeoutOption = @"ODataIncrementalStoreTim
 NSString * const ODataIncrementalStorePostOnObtainPermanentIDsOption = @"ODataIncrementalStorePostOnObtainPermanentIDs";
 NSString * const ODataIncrementalStoreTransportOption = @"ODataIncrementalStoreTransport";
 NSString * const ODataIncrementalStoreIEEE754CompatibleOption = @"ODataIncrementalStoreIEEE754Compatible";
+NSString * const ODataIncrementalStoreBatchSavesOption = @"ODataIncrementalStoreBatchSaves";
 NSString * const ODataIncrementalStoreType = @"ODataIncrementalStore";
 
 @implementation ODataConfiguration
@@ -33,6 +34,8 @@ NSString * const ODataIncrementalStoreType = @"ODataIncrementalStore";
   _postOnObtainPermanentIDs = post ? [post boolValue] : YES;
   id ieee = options[ODataIncrementalStoreIEEE754CompatibleOption];
   _IEEE754Compatible = ieee ? [ieee boolValue] : YES;
+  id batch = options[ODataIncrementalStoreBatchSavesOption];
+  _batchSaves = batch ? [batch boolValue] : YES;
   _userAgent = @"ODataIncrementalStore/1.0 (LGPL-2.1; libobjc2)";
   return self;
 }
@@ -48,7 +51,7 @@ NSString * const ODataIncrementalStoreType = @"ODataIncrementalStore";
   if (![request valueForHTTPHeaderField:@"Accept"]) {
     [request setValue:json forHTTPHeaderField:@"Accept"];
   }
-  if (request.HTTPBody.length) {
+  if (request.HTTPBody.length && ![request valueForHTTPHeaderField:@"Content-Type"]) {
     [request setValue:json forHTTPHeaderField:@"Content-Type"];
   }
   [request setValue:@"4.0" forHTTPHeaderField:@"OData-Version"];

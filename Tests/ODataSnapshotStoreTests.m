@@ -472,6 +472,7 @@
   [suppliers removeObject:cajun];
   [self save];
   // Product sorts before Supplier, so only the Product side is written.
+  XCTAssertEqualObjects(_transport.batches, @[ @2 ]);
   XCTAssertTrue([_transport.hits containsObject:@"product-suppliers-ref-add.json"]);
   XCTAssertTrue([_transport.hits containsObject:@"product-suppliers-ref-remove.json"]);
 }
@@ -513,6 +514,67 @@
   XCTAssertNil(error, @"%@", error);
   XCTAssertEqual(ids.count, (NSUInteger)1);
   XCTAssertTrue([_transport.hits containsObject:@"products-page-size.json"]);
+}
+
+- (void)testDiscardedRowsAreReadAgain
+{
+  NSManagedObject *product = [self productFour];
+  NSUInteger before = _transport.hits.count;
+  XCTAssertNotNil([_store newValuesForObjectWithID:product.objectID withContext:_context error:NULL]);
+  XCTAssertEqual(_transport.hits.count, before, @"the fetched row serves the fault");
+  [_store discardCachedRowsForObjectIDs:@[ product.objectID ]];
+  NSError *error = nil;
+  XCTAssertNotNil([_store newValuesForObjectWithID:product.objectID withContext:_context error:&error], @"%@", error);
+  XCTAssertEqualObjects(_transport.hits.lastObject, @"product-by-key.json");
+}
+
+#pragma mark - Atomic saves
+
+- (NSArray *)filteredProducts
+{
+  NSFetchRequest *fetch = [NSFetchRequest fetchRequestWithEntityName:@"Product"];
+  fetch.predicate = [NSPredicate predicateWithFormat:@"unitPrice > 20 AND discontinued == NO"];
+  fetch.sortDescriptors = @[ [NSSortDescriptor sortDescriptorWithKey:@"name" ascending:YES] ];
+  fetch.fetchLimit = 25;
+  NSError *error = nil;
+  NSArray *rows = [_context executeFetchRequest:fetch error:&error];
+  XCTAssertEqual(rows.count, (NSUInteger)2, @"%@", error);
+  return rows;
+}
+
+- (void)testSaveOfSeveralRequestsIsOneChangeSet
+{
+  NSArray *products = [self filteredProducts];
+  [products[0] setValue:[NSDecimalNumber decimalNumberWithString:@"23"] forKey:@"unitPrice"];
+  [products[1] setValue:[NSDecimalNumber decimalNumberWithString:@"26"] forKey:@"unitPrice"];
+  [self save];
+  XCTAssertEqualObjects(_transport.batches, @[ @2 ]);
+  XCTAssertTrue([_transport.hits containsObject:@"product-patch.json"]);
+  XCTAssertTrue([_transport.hits containsObject:@"product-6-patch.json"]);
+}
+
+- (void)testFailedChangeSetFailsTheSave
+{
+  NSArray *products = [self filteredProducts];
+  [products[0] setValue:[NSDecimalNumber decimalNumberWithString:@"23"] forKey:@"unitPrice"];
+  // No service would accept this one: there is no snapshot for it.
+  [products[1] setValue:[NSDecimalNumber decimalNumberWithString:@"99"] forKey:@"unitPrice"];
+  NSError *error = nil;
+  XCTAssertFalse([_context save:&error]);
+  XCTAssertNotNil(error);
+  XCTAssertEqualObjects(_transport.batches, @[ @2 ]);
+}
+
+- (void)testServiceWithoutBatchGetsRequestsOneAtATime
+{
+  _transport.refusesBatches = YES;
+  NSArray *products = [self filteredProducts];
+  [products[0] setValue:[NSDecimalNumber decimalNumberWithString:@"23"] forKey:@"unitPrice"];
+  [products[1] setValue:[NSDecimalNumber decimalNumberWithString:@"26"] forKey:@"unitPrice"];
+  [self save];
+  XCTAssertEqualObjects(_transport.batches, @[]);
+  XCTAssertTrue([_transport.hits containsObject:@"product-patch.json"]);
+  XCTAssertTrue([_transport.hits containsObject:@"product-6-patch.json"]);
 }
 
 - (void)testUnmatchedRequestDoesNotHitTheNetwork

@@ -1,0 +1,21 @@
+{
+  "comment": "The second update of a two-object save; with product-patch, one $batch change set.",
+  "spec": "OASIS OData 4.01 Part 1 \u00a711.7 Batch Requests; \u00a711.4.3",
+  "request": {
+    "method": "PATCH",
+    "path": "Products(6)",
+    "headers": {
+      "If-Match": "W/\"1\""
+    },
+    "body": {
+      "UnitPrice": "26"
+    }
+  },
+  "response": {
+    "status": 204,
+    "headers": {
+      "OData-Version": "4.0",
+      "ETag": "W/\"2\""
+    }
+  }
+}

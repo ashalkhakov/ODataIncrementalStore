@@ -24,7 +24,7 @@ that is not clang + ObjC 2.0 + ARC + blocks.
 | ABI | Non-fragile. Ivars live in `@implementation { }` blocks. |
 | Foundation | gnustep-base or Apple Foundation |
 | Core Data | Apple Core Data, or **[FreeCoreData](https://github.com/ashalkhakov/FreeCoreData)** on GNUstep |
-| Transport | `NSURLConnection` send-synchronous off Apple (no libdispatch); `NSURLSession` + `NSCondition` on Apple |
+| Transport | `NSURLSession` + `NSCondition`, on Apple and on gnustep-base built with libcurl; `NSURLConnection` otherwise, which on GNUstep cannot follow relative redirects or read `$batch` responses |
 | Strings | `-fconstant-string-class=NSConstantString` on GNUstep |
 
 OIS is ARC. FreeCoreData is MRC (`-fno-objc-arc`). They link: methods named `new…` return +1 on both sides.

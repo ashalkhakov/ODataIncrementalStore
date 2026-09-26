@@ -16,6 +16,10 @@ FOUNDATION_EXPORT NSString * const ODataIncrementalStoreTransportOption;
 // Decimal values travel as strings and keep every digit. Turn it off only
 // for a service that rejects the parameter.
 FOUNDATION_EXPORT NSString * const ODataIncrementalStoreIEEE754CompatibleOption;
+// NSNumber BOOL, default YES: send a save of two or more requests as one
+// $batch change set, so it takes effect whole or not at all. A service
+// that refuses $batch gets the requests one at a time regardless.
+FOUNDATION_EXPORT NSString * const ODataIncrementalStoreBatchSavesOption;
 FOUNDATION_EXPORT NSString * const ODataIncrementalStoreType;
 
 typedef NS_ENUM(NSInteger, ODataPropertyNaming) {
@@ -32,6 +36,7 @@ typedef NS_ENUM(NSInteger, ODataPropertyNaming) {
 @property (nonatomic) ODataPropertyNaming naming;
 @property (nonatomic) BOOL postOnObtainPermanentIDs;
 @property (nonatomic) BOOL IEEE754Compatible;
+@property (nonatomic) BOOL batchSaves;
 @property (nonatomic, copy) NSString *userAgent;
 
 - (instancetype)initWithURL:(NSURL *)url options:(nullable NSDictionary *)options NS_DESIGNATED_INITIALIZER;
