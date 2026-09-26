@@ -1,9 +1,0 @@
-xcuserdata/
-DerivedData/
-*.xcuserstate
-*.moved-aside
-*.hmap
-*.app
-*.framework
-*.xctest
-build/

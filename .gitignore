@@ -1,8 +1,20 @@
-node_modules/
-.project_id
-.github_repo
-.env
-.env.*
-**/xcuserdata/
-**/DerivedData/
+xcuserdata/
+DerivedData/
 *.xcuserstate
+*.moved-aside
+*.hmap
+*.app
+*.framework
+*.xctest
+build/
+.DS_Store
+
+# GNUstep / gnustep-make
+obj/
+*.bundle
+*.o
+*.d
+*.so
+*.so.*
+ois-filter
+*.momd

@@ -1,0 +1,214 @@
+name: CI
+
+# Ported from FreeCoreData's and XFormsKit's CI.
+#
+# pull_request fires for a PR against any branch, and uses the workflow file
+# from the PR's own head -- so a branch can run CI through a PR before this
+# file has ever existed on main.
+#
+# workflow_dispatch is the opposite: GitHub only offers the "Run workflow"
+# button for workflows present on the repository's DEFAULT branch.
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+# A run that lands while an earlier one is still going supersedes it.
+#
+# The key is the branch NAME rather than the ref, so that a push and the pull
+# request for the same branch share one group: pushing to a branch with an
+# open PR would otherwise start two nearly identical runs, and on a private
+# repository the macOS half of each bills at 10x.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.head_ref || github.ref_name }}
+  cancel-in-progress: true
+
+jobs:
+  ########################### macOS / Cocoa ###########################
+  # On a Mac the Core Data is Apple's, so the same suite that checks the
+  # store on GNUstep is checked against the implementation FreeCoreData is a
+  # port of. A test that is red here and green on GNUstep is wrong about Core
+  # Data.
+  #
+  # macOS minutes bill at 10x on a private repository. Adding
+  #   if: github.event_name != 'push' || github.ref == 'refs/heads/main'
+  # confines this job to pull requests and the default branch.
+  macos:
+    name: macOS
+    runs-on: macos-15
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Show toolchain
+        run: xcodebuild -version
+
+      - name: Unit tests (against Apple's CoreData)
+        run: |
+          xcodebuild -workspace ODataIncrementalStore.xcworkspace \
+            -scheme ODataIncrementalStoreTests \
+            -destination 'platform=macOS' -configuration Debug \
+            -derivedDataPath "$RUNNER_TEMP/DerivedData" \
+            -resultBundlePath "$RUNNER_TEMP/ODataIncrementalStoreTests.xcresult" test
+
+      - name: Build the example apps
+        run: |
+          for scheme in Catalog Workbench; do
+            xcodebuild -workspace ODataIncrementalStore.xcworkspace -scheme "$scheme" \
+              -destination 'platform=macOS' -configuration Debug \
+              -derivedDataPath "$RUNNER_TEMP/DerivedData" build
+          done
+
+      - name: Upload test results
+        uses: actions/upload-artifact@v4
+        if: failure()
+        with:
+          name: macos-test-results
+          path: ${{ runner.temp }}/*.xcresult
+          retention-days: 7
+
+  ########################### GNUstep / Linux ###########################
+  # The store on GNUstep: a patched stack built by gnustep-patches, with
+  # FreeCoreData as the Core Data underneath.
+  gnustep:
+    name: Ubuntu (GNUstep, FreeCoreData, clang, gnustep-2.0)
+    runs-on: ubuntu-latest
+    # The stack build is the long pole; everything after it is minutes.
+    timeout-minutes: 90
+    env:
+      SRC_PATH: ${{ github.workspace }}/source
+      PREFIX: ${{ github.workspace }}/build
+      SOURCES: ${{ github.workspace }}/dependencies
+      CC: clang
+      CXX: clang++
+      LIBRARY_COMBO: ng-gnu-gnu
+      RUNTIME_VERSION: gnustep-2.0
+      # Foundation for the store, gui and back for the example apps,
+      # tools-xctest for the suite. No theme: nothing here is packaged.
+      COMPONENTS: libobjc2 libdispatch tools-make libs-base libs-gui libs-back tools-xctest
+      # libobjc2 and libdispatch land in the prefix's plain lib/, which the
+      # gnustep layout does not treat as a library root. GNUstep.sh prepends
+      # the roots it does know about to this.
+      LD_LIBRARY_PATH: ${{ github.workspace }}/build/lib
+      # Both pinned to commits, not branches. The patches ref decides the
+      # recipe hash the stack is cached under, so a moving branch would keep
+      # serving a prefix built from patches that have since changed.
+      GNUSTEP_PATCHES_REF: 2b804eab00ea94df67cc14aa1064d66679e802be
+      FREECOREDATA_REF: 389544d5398e2b9259f189dacc46cbe88584112a
+    defaults:
+      run:
+        working-directory: ${{ github.workspace }}/source
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          path: source
+
+      - uses: actions/checkout@v4
+        with:
+          repository: ashalkhakov/gnustep-patches
+          ref: ${{ env.GNUSTEP_PATCHES_REF }}
+          path: gnustep-patches
+
+      - uses: actions/checkout@v4
+        with:
+          repository: ashalkhakov/FreeCoreData
+          ref: ${{ env.FREECOREDATA_REF }}
+          path: FreeCoreData
+
+      - name: Install packages
+        run: |
+          ./.github/scripts/apt-update.sh
+          sudo apt-get -q -y install \
+            pkg-config libgnutls28-dev libffi-dev libicu-dev libxml2-dev libxslt1-dev \
+            libssl-dev libavahi-client-dev zlib1g-dev gnutls-bin libcurl4-gnutls-dev \
+            libgmp-dev libcairo2-dev libjpeg-dev libtiff-dev libpng-dev libicns-dev \
+            libpthread-workqueue-dev libsqlite3-dev \
+            libfreetype-dev libfontconfig1-dev libxrender-dev \
+            libxt-dev libxmu-dev libxft-dev libxrandr-dev libxfixes-dev libxcursor-dev
+          # libsqlite3-dev is FreeCoreData's: NSSQLitePersistentStore links it.
+          # libxml2-dev is what gives gnustep-base the NSXML momc reads models
+          # with. The rest is the GNUstep stack's.
+          #
+          # The gnustep-2.0 runtime needs ld.gold or lld. ld.gold is gone from
+          # binutils on newer Ubuntu, so fall back to lld rather than failing
+          # on a missing alternative.
+          if [ -x /usr/bin/ld.gold ]; then
+            sudo update-alternatives --install /usr/bin/ld ld /usr/bin/ld.gold 10
+          else
+            sudo apt-get -q -y install lld
+            sudo update-alternatives --install /usr/bin/ld ld /usr/bin/ld.lld 10
+          fi
+          ld --version | head -1
+
+      # The recipe hash covers the build script, COMPONENTS, the toolchain and
+      # every patch, so it changes exactly when the prefix would.
+      - name: GNUstep recipe
+        id: recipe
+        run: echo "hash=$(../gnustep-patches/Scripts/build-gnustep.sh --print-recipe-hash)" >> "$GITHUB_OUTPUT"
+
+      # Restored and saved as two separate steps rather than with the combined
+      # action, so the save captures the stack before FreeCoreData or anything
+      # of ours is installed into it.
+      - name: Restore GNUstep
+        id: gnustep-cache
+        uses: actions/cache/restore@v4
+        with:
+          path: ${{ env.PREFIX }}
+          key: gnustep-${{ runner.os }}-${{ steps.recipe.outputs.hash }}
+
+      - name: Build GNUstep
+        if: steps.gnustep-cache.outputs.cache-hit != 'true'
+        run: ../gnustep-patches/Scripts/build-gnustep.sh
+
+      - name: Save GNUstep
+        if: steps.gnustep-cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v4
+        with:
+          path: ${{ env.PREFIX }}
+          key: gnustep-${{ runner.os }}-${{ steps.recipe.outputs.hash }}
+
+      # A restored prefix can be wrong in exactly the ways a fresh one can:
+      # libdispatch's main-queue hooks, ICU, the backend bundle.
+      - name: Verify GNUstep
+        if: steps.gnustep-cache.outputs.cache-hit == 'true'
+        run: ../gnustep-patches/Scripts/build-gnustep.sh --verify-only
+
+      # The framework, and momc with the coredata-model.make fragment: models
+      # are compiled to .momd for FreeCoreData, which does not read the
+      # .xcdatamodeld XML at runtime.
+      - name: Build and install FreeCoreData
+        working-directory: ${{ github.workspace }}/FreeCoreData
+        run: |
+          . $PREFIX/System/Library/Makefiles/GNUstep.sh
+          make -j"$(nproc)"
+          make install
+          make -C Tools/momc
+          make -C Tools/momc install
+
+      # Built first and on its own, so a compile error in the library is
+      # reported as that rather than as a test failure.
+      - name: Build ODataIncrementalStore
+        run: |
+          . $PREFIX/System/Library/Makefiles/GNUstep.sh
+          make -j"$(nproc)"
+
+      # The same sources through the sibling Makefile, which needs only
+      # clang and gnustep-config.
+      - name: Build without gnustep-make
+        run: |
+          . $PREFIX/System/Library/Makefiles/GNUstep.sh
+          make -f Makefile
+          make -f Makefile clean
+
+      # Before the suite, so a red test does not hide a compile break here.
+      - name: Build the example apps
+        run: |
+          . $PREFIX/System/Library/Makefiles/GNUstep.sh
+          make -C Examples/Catalog
+          make -C Examples/Workbench
+
+      - name: Unit tests
+        run: |
+          . $PREFIX/System/Library/Makefiles/GNUstep.sh
+          make test
