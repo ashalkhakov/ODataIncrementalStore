@@ -1,0 +1,24 @@
+{
+  "comment": "Keeper is in Staff, which no plural of Keeper finds; only the schema says so.",
+  "spec": "OASIS OData CSDL XML 4.0 \u00a713.2 Entity Set",
+  "request": {
+    "method": "GET",
+    "path": "Staff"
+  },
+  "response": {
+    "status": 200,
+    "headers": {
+      "Content-Type": "application/json;odata.metadata=minimal;charset=utf-8",
+      "OData-Version": "4.0"
+    },
+    "body": {
+      "@odata.context": "https://zoo.test/Zoo.svc/$metadata#Staff",
+      "value": [
+        {
+          "Code": "K1",
+          "Name": "Ann"
+        }
+      ]
+    }
+  }
+}

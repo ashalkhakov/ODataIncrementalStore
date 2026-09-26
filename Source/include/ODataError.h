@@ -17,6 +17,7 @@ typedef NS_ENUM(NSInteger, ODataIncrementalStoreErrorCode) {
   ODataIncrementalStoreErrorMissingEntitySet = 6,
   ODataIncrementalStoreErrorMissingKey = 7,
   ODataIncrementalStoreErrorTransport = 8,
+  ODataIncrementalStoreErrorModelMismatch = 9,
   ODataIncrementalStoreErrorHTTP = 1000,
   ODataIncrementalStoreErrorOptimisticLocking = 1570
 };

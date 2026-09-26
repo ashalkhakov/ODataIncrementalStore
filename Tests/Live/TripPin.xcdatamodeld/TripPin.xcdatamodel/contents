@@ -3,20 +3,18 @@
      that Tests/Live/ois-live writes to: people, their friends, their photo. -->
 <model type="com.apple.IDECoreDataModeler.DataModel" documentVersion="1.0" lastSavedToolsVersion="24299" systemVersion="24G720" minimumToolsVersion="Automatic" sourceLanguage="Objective-C" userDefinedModelVersionIdentifier="">
     <entity name="Person" syncable="YES">
-        <attribute name="userName" attributeType="String">
-            <userInfo>
-                <entry key="OData.key" value="YES"/>
-            </userInfo>
-        </attribute>
+        <!-- No OData.key and no OData.entitySet on Person: the key (UserName)
+             and the set (People, which no plural of Person makes) come from
+             $metadata. -->
+        <attribute name="userName" attributeType="String"/>
         <attribute name="firstName" optional="YES" attributeType="String"/>
         <attribute name="lastName" optional="YES" attributeType="String"/>
         <!-- Computed by TripPin, and past 2^53: read exactly or not at all. -->
         <attribute name="concurrency" optional="YES" attributeType="Integer 64" usesScalarValueType="NO"/>
+        <!-- An enumeration, Microsoft.OData.SampleService.Models.TripPin.PersonGender. -->
+        <attribute name="gender" optional="YES" attributeType="String"/>
         <relationship name="friends" optional="YES" toMany="YES" deletionRule="Nullify" destinationEntity="Person"/>
         <relationship name="photo" optional="YES" maxCount="1" deletionRule="Nullify" destinationEntity="Photo"/>
-        <userInfo>
-            <entry key="OData.entitySet" value="People"/>
-        </userInfo>
     </entity>
     <entity name="Photo" syncable="YES">
         <attribute name="id" optional="NO" attributeType="Integer 64" defaultValueString="0" usesScalarValueType="NO">

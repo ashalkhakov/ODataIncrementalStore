@@ -15,6 +15,7 @@
 #import "ODataPropertyMapper.h"
 #import "ODataValue.h"
 #import "ODataBatch.h"
+#import "ODataSchema.h"
 #import "ODataResourceIdentifier.h"
 #import "ODataPredicateTranslator.h"
 #import "ODataQueryBuilder.h"
@@ -25,6 +26,14 @@ NS_ASSUME_NONNULL_BEGIN
 
 + (NSString *)storeType;
 + (void)registerStore;
+
+// The service's schema, read from $metadata when the store was added; nil
+// when it could not be read.
+@property (nonatomic, readonly, nullable) ODataSchema *schema;
+// Where the model and the schema disagree, one sentence each (see
+// -[ODataPropertyMapper problemsWithModel:]). Opening fails on them only
+// with ODataIncrementalStoreRequireMatchingModelOption.
+@property (nonatomic, readonly) NSArray<NSString *> *metadataProblems;
 
 // Every row a fetch or a relationship read brings back is kept, and serves
 // the faults that fire afterwards; a later read of the same entities

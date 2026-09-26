@@ -1,0 +1,34 @@
+{
+  "comment": "A new object of a derived type says which type it is.",
+  "spec": "OASIS OData 4.01 JSON Format \u00a74.5.3; Part 1 \u00a711.4.2",
+  "request": {
+    "method": "POST",
+    "path": "Animals",
+    "body": {
+      "@odata.type": "#Zoo.Lion",
+      "Name": "Nala",
+      "Diet": "Carnivore",
+      "Features": "Spots",
+      "Born": "2021-06-01",
+      "MaxRoar": 100
+    }
+  },
+  "response": {
+    "status": 201,
+    "headers": {
+      "Content-Type": "application/json;odata.metadata=minimal;charset=utf-8",
+      "OData-Version": "4.0",
+      "Location": "https://zoo.test/Zoo.svc/Animals(4)"
+    },
+    "body": {
+      "@odata.context": "https://zoo.test/Zoo.svc/$metadata#Animals/$entity",
+      "@odata.type": "#Zoo.Lion",
+      "Id": 4,
+      "Name": "Nala",
+      "Diet": "Carnivore",
+      "Features": "Spots",
+      "Born": "2021-06-01",
+      "MaxRoar": 100
+    }
+  }
+}

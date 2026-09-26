@@ -1,0 +1,15 @@
+{
+  "spec": "OASIS OData CSDL XML 4.0: an alias, a plain and a flags enumeration, a complex type, a derived entity type, a key the naming heuristic cannot guess, an entity set whose name is not a plural",
+  "request": {
+    "method": "GET",
+    "path": "$metadata"
+  },
+  "response": {
+    "status": 200,
+    "headers": {
+      "Content-Type": "application/xml;charset=utf-8",
+      "OData-Version": "4.0"
+    },
+    "bodyXML": "<?xml version=\"1.0\" encoding=\"utf-8\"?>\n<edmx:Edmx Version=\"4.0\" xmlns:edmx=\"http://docs.oasis-open.org/odata/ns/edmx\">\n  <edmx:DataServices>\n    <Schema Namespace=\"Zoo\" Alias=\"Self\" xmlns=\"http://docs.oasis-open.org/odata/ns/edm\">\n      <EnumType Name=\"Diet\">\n        <Member Name=\"Herbivore\" Value=\"0\"/>\n        <Member Name=\"Carnivore\" Value=\"1\"/>\n        <Member Name=\"Omnivore\" Value=\"2\"/>\n      </EnumType>\n      <EnumType Name=\"Features\" IsFlags=\"true\">\n        <Member Name=\"Stripes\" Value=\"1\"/>\n        <Member Name=\"Spots\" Value=\"2\"/>\n        <Member Name=\"Mane\" Value=\"4\"/>\n      </EnumType>\n      <ComplexType Name=\"Enclosure\">\n        <Property Name=\"Zone\" Type=\"Edm.String\"/>\n      </ComplexType>\n      <EntityType Name=\"Animal\">\n        <Key><PropertyRef Name=\"Id\"/></Key>\n        <Property Name=\"Id\" Type=\"Edm.Int32\" Nullable=\"false\"/>\n        <Property Name=\"Name\" Type=\"Edm.String\"/>\n        <Property Name=\"Diet\" Type=\"Self.Diet\"/>\n        <Property Name=\"Features\" Type=\"Self.Features\"/>\n        <Property Name=\"Born\" Type=\"Edm.Date\"/>\n        <NavigationProperty Name=\"Keeper\" Type=\"Self.Keeper\" Partner=\"Animals\"/>\n      </EntityType>\n      <EntityType Name=\"Lion\" BaseType=\"Self.Animal\">\n        <Property Name=\"MaxRoar\" Type=\"Edm.Int32\"/>\n      </EntityType>\n      <EntityType Name=\"Keeper\">\n        <Key><PropertyRef Name=\"Code\"/></Key>\n        <Property Name=\"Code\" Type=\"Edm.String\" Nullable=\"false\"/>\n        <Property Name=\"Name\" Type=\"Edm.String\"/>\n        <NavigationProperty Name=\"Animals\" Type=\"Collection(Self.Animal)\" Partner=\"Keeper\"/>\n      </EntityType>\n      <EntityContainer Name=\"Container\">\n        <EntitySet Name=\"Animals\" EntityType=\"Self.Animal\">\n          <NavigationPropertyBinding Path=\"Keeper\" Target=\"Staff\"/>\n        </EntitySet>\n        <EntitySet Name=\"Staff\" EntityType=\"Self.Keeper\"/>\n      </EntityContainer>\n    </Schema>\n  </edmx:DataServices>\n</edmx:Edmx>\n"
+  }
+}

@@ -12,6 +12,7 @@
 
 #pragma once
 #import "OISCoreData.h"
+#import "ODataSchema.h"
 
 NS_ASSUME_NONNULL_BEGIN
 
@@ -30,7 +31,9 @@ typedef NS_ENUM(NSInteger, ODataEdmType) {
   ODataEdmTimeOfDay,       // on a String attribute: "13:20:00"
   ODataEdmDuration,        // on a Double attribute: seconds
   ODataEdmGuid,
-  ODataEdmBinary
+  ODataEdmBinary,
+  ODataEdmEnum             // a schema enumeration: member names on a String
+                           // attribute, member values on an integer one
 };
 
 @interface ODataValueCoder : NSObject
@@ -40,7 +43,15 @@ typedef NS_ENUM(NSInteger, ODataEdmType) {
 // IEEE754Compatible=true; reading accepts numbers and strings either way.
 @property (nonatomic) BOOL IEEE754Compatible;
 
+// By userInfo[@"OData.type"] and the Core Data type alone.
 + (ODataEdmType)edmTypeForAttribute:(nullable NSAttributeDescription *)attribute;
+
+// The service's schema, and the type it declares for an attribute (set by
+// ODataPropertyMapper). With them, an attribute's Edm type is its
+// userInfo's, else the schema's, else its Core Data type's.
+@property (nonatomic, strong, nullable) ODataSchema *schema;
+@property (nonatomic, copy, nullable) NSString * _Nullable (^declaredTypeForAttribute)(NSAttributeDescription *attribute);
+- (ODataEdmType)edmTypeOfAttribute:(nullable NSAttributeDescription *)attribute;
 
 // The Core Data value for a JSON value, NSNull for null, or nil when the
 // JSON cannot be one (a date that does not parse, say).

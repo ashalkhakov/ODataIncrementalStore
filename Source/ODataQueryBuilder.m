@@ -93,7 +93,8 @@ static NSString *OISPercentEncode(NSString *value)
 
 - (NSURL *)URLForFetch:(NSFetchRequest *)fetch entity:(NSEntityDescription *)entity error:(NSError **)error
 {
-  NSString *set = [self.mapper entitySetForEntity:entity];
+  // The entity set, with a type cast for a derived type (Animals/Zoo.Lion).
+  NSString *set = [self.mapper collectionPathForEntity:entity];
   NSMutableArray *items = [NSMutableArray array];
 
   if (fetch.predicate) {

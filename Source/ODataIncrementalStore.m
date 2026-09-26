@@ -77,6 +77,7 @@ typedef NS_ENUM(NSInteger, OISWriteMode) {
   _versions = [NSMutableDictionary dictionary];
   _deferred = [NSMutableDictionary dictionary];
   _editLinks = [NSMutableDictionary dictionary];
+  _metadataProblems = @[];
   _lock = [[NSLock alloc] init];
   return self;
 }
@@ -106,7 +107,21 @@ typedef NS_ENUM(NSInteger, OISWriteMode) {
     if (!store || objectID.persistentStore != store) return nil;
     return [ODataResourceIdentifier identifierFromReference:[store referenceObjectForObjectID:objectID]].keys;
   };
-  if (![ _client metadataWithError:error]) return NO;
+  NSData *metadata = [_client metadataWithError:error];
+  if (!metadata) return NO;
+  // The schema, where it can be read, fills in what the model leaves
+  // unsaid; what does not match is reported, and fails the open only when
+  // asked to. A schema that cannot be read is a problem, not a failure.
+  NSError *schemaError = nil;
+  _schema = [ODataSchema schemaWithData:metadata error:&schemaError];
+  _mapper.schema = _schema;
+  NSManagedObjectModel *model = self.persistentStoreCoordinator.managedObjectModel;
+  _metadataProblems = _schema ? [_mapper problemsWithModel:model] : @[ schemaError.localizedDescription ?: @"$metadata could not be read" ];
+  if (_metadataProblems.count && [self.options[ODataIncrementalStoreRequireMatchingModelOption] boolValue]) {
+    if (error) *error = OISError(ODataIncrementalStoreErrorModelMismatch,
+                                 [@"The model does not match the service's $metadata: " stringByAppendingString:[_metadataProblems componentsJoinedByString:@"; "]]);
+    return NO;
+  }
   NSString *uuid = [NSIncrementalStore identifierForNewStoreAtURL:url];
   if (![uuid isKindOfClass:[NSString class]]) uuid = [[NSUUID UUID] UUIDString];
   self.metadata = @{ NSStoreUUIDKey: uuid, NSStoreTypeKey: [[self class] storeType] };
@@ -180,7 +195,7 @@ typedef NS_ENUM(NSInteger, OISWriteMode) {
     for (NSDictionary *row in rows) {
       NSManagedObjectID *oid = [self objectIDFromPayload:row entity:destination error:error];
       if (!oid) return nil;
-      [self cacheNodeForObjectID:oid entity:destination payload:row error:nil];
+      [self cacheNodeForObjectID:oid entity:oid.entity payload:row error:nil];
       [ids addObject:oid];
     }
     return ids;
@@ -190,7 +205,7 @@ typedef NS_ENUM(NSInteger, OISWriteMode) {
   // 204 No Content: nothing is related (Part 1 section 11.2.7).
   if (![json isKindOfClass:[NSDictionary class]]) return [NSNull null];
   NSManagedObjectID *oid = [self objectIDFromPayload:json entity:destination error:error];
-  if (oid) [self cacheNodeForObjectID:oid entity:destination payload:json error:nil];
+  if (oid) [self cacheNodeForObjectID:oid entity:oid.entity payload:json error:nil];
   return oid;
 }
 
@@ -299,7 +314,10 @@ typedef NS_ENUM(NSInteger, OISWriteMode) {
   for (NSDictionary *row in rows) {
     NSManagedObjectID *oid = [self objectIDFromPayload:row entity:entity error:error];
     if (!oid) return nil;
-    [self cacheNodeForObjectID:oid entity:entity payload:row error:nil];
+    [self cacheNodeForObjectID:oid entity:oid.entity payload:row error:nil];
+    // A set of a base type holds its derived types too; a fetch that does
+    // not include sub-entities leaves them out.
+    if (!fetch.includesSubentities && oid.entity != entity && ![oid.entity.name isEqualToString:entity.name]) continue;
     [objectIDs addObject:oid];
   }
 
@@ -582,7 +600,7 @@ typedef NS_ENUM(NSInteger, OISWriteMode) {
   NSMutableDictionary *values = [NSMutableDictionary dictionary];
   for (NSString *name in entity.attributesByName) {
     id value = [object valueForKey:name];
-    values[name] = value ?: [NSNull null];
+    if (value) values[name] = value;
   }
   NSIncrementalStoreNode *node = [[NSIncrementalStoreNode alloc] initWithObjectID:objectID
                                                                        withValues:values
@@ -653,6 +671,9 @@ static BOOL OISKeyIsSet(id value)
     [_lock unlock];
   }
 
+  if (mode == OISWriteInsert && [_mapper entityIsDerivedInItsSet:entity]) {
+    write.body[@"@odata.type"] = [@"#" stringByAppendingString:[_mapper qualifiedTypeForEntity:entity]];
+  }
   if (mode != OISWriteDeferred) {
     NSMutableSet *keyNames = [NSMutableSet set];
     for (NSAttributeDescription *attr in [_mapper keyAttributesForEntity:entity]) [keyNames addObject:attr.name];
@@ -778,6 +799,9 @@ static BOOL OISKeyIsSet(id value)
                                     entity:(NSEntityDescription *)entity
                                      error:(NSError **)error
 {
+  // A row of a derived type says so (JSON Format section 4.5.3): its object
+  // is of the sub-entity standing for that type.
+  entity = [_mapper entity:entity forTypeName:payload[@"@odata.type"] ?: payload[@"@type"]];
   NSArray *keyAttrs = [_mapper keyAttributesForEntity:entity];
   if (!keyAttrs.count) {
     if (error) *error = OISError(ODataIncrementalStoreErrorMissingKey, entity.name ?: @"?");
@@ -828,8 +852,10 @@ static BOOL OISKeyIsSet(id value)
     id raw = payload[[self->_mapper propertyForAttribute:attr]];
     id value = raw ? [self->_mapper.values coreDataValueForJSON:raw attribute:attr] : nil;
     // A value that cannot be this attribute's type (a date that does not
-    // parse) is left out rather than stored as the wrong class.
-    if (value) values[name] = value;
+    // parse) is left out rather than stored as the wrong class, and so is
+    // null: an attribute that is nil has no value in a node. NSNull there
+    // is taken for the value, and a Date attribute holding it crashes.
+    if (value && value != [NSNull null]) values[name] = value;
   }];
   // Expanded navigation properties: a to-one's object ID goes in the node,
   // so Core Data need not ask for it; a related entity that came whole is
@@ -845,13 +871,13 @@ static BOOL OISKeyIsSet(id value)
         NSManagedObjectID *related = [self objectIDFromPayload:inline_ entity:destination error:NULL];
         if (!related) continue;
         values[rel.name] = related;
-        if ([self payloadIsWhole:inline_ entity:destination]) [self cacheNodeForObjectID:related entity:destination payload:inline_ error:NULL];
+        if ([self payloadIsWhole:inline_ entity:related.entity]) [self cacheNodeForObjectID:related entity:related.entity payload:inline_ error:NULL];
       }
     } else if ([inline_ isKindOfClass:[NSArray class]]) {
       for (NSDictionary *row in inline_) {
         if (![row isKindOfClass:[NSDictionary class]] || ![self payloadIsWhole:row entity:destination]) continue;
         NSManagedObjectID *related = [self objectIDFromPayload:row entity:destination error:NULL];
-        if (related) [self cacheNodeForObjectID:related entity:destination payload:row error:NULL];
+        if (related) [self cacheNodeForObjectID:related entity:related.entity payload:row error:NULL];
       }
     }
   }
@@ -996,7 +1022,7 @@ static BOOL OISKeyIsSet(id value)
   ODataResourceIdentifier *identifier = [[ODataResourceIdentifier alloc] initWithEntitySet:[_mapper entitySetForEntity:entity] keys:keys];
   NSMutableSet *unquoted = [NSMutableSet set];
   for (NSAttributeDescription *attr in [_mapper keyAttributesForEntity:entity]) {
-    switch ([ODataValueCoder edmTypeForAttribute:attr]) {
+    switch ([_mapper.values edmTypeOfAttribute:attr]) {
       case ODataEdmGuid:
       case ODataEdmDateTimeOffset:
       case ODataEdmDate:

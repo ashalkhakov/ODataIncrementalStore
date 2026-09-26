@@ -11,6 +11,7 @@ NSString * const ODataIncrementalStorePostOnObtainPermanentIDsOption = @"ODataIn
 NSString * const ODataIncrementalStoreTransportOption = @"ODataIncrementalStoreTransport";
 NSString * const ODataIncrementalStoreIEEE754CompatibleOption = @"ODataIncrementalStoreIEEE754Compatible";
 NSString * const ODataIncrementalStoreBatchSavesOption = @"ODataIncrementalStoreBatchSaves";
+NSString * const ODataIncrementalStoreRequireMatchingModelOption = @"ODataIncrementalStoreRequireMatchingModel";
 NSString * const ODataIncrementalStoreType = @"ODataIncrementalStore";
 
 @implementation ODataConfiguration

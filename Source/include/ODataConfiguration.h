@@ -20,6 +20,9 @@ FOUNDATION_EXPORT NSString * const ODataIncrementalStoreIEEE754CompatibleOption;
 // $batch change set, so it takes effect whole or not at all. A service
 // that refuses $batch gets the requests one at a time regardless.
 FOUNDATION_EXPORT NSString * const ODataIncrementalStoreBatchSavesOption;
+// NSNumber BOOL, default NO: fail to open when the model does not match
+// the service's $metadata, rather than report it in metadataProblems.
+FOUNDATION_EXPORT NSString * const ODataIncrementalStoreRequireMatchingModelOption;
 FOUNDATION_EXPORT NSString * const ODataIncrementalStoreType;
 
 typedef NS_ENUM(NSInteger, ODataPropertyNaming) {

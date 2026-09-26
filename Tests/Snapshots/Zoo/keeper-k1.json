@@ -1,0 +1,20 @@
+{
+  "comment": "A keeper by key: the set and the key both come from the schema.",
+  "spec": "OASIS OData 4.01 Part 1 \u00a711.2.2",
+  "request": {
+    "method": "GET",
+    "path": "Staff('K1')"
+  },
+  "response": {
+    "status": 200,
+    "headers": {
+      "Content-Type": "application/json;odata.metadata=minimal;charset=utf-8",
+      "OData-Version": "4.0"
+    },
+    "body": {
+      "@odata.context": "https://zoo.test/Zoo.svc/$metadata#Staff/$entity",
+      "Code": "K1",
+      "Name": "Ann"
+    }
+  }
+}

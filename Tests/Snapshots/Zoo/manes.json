@@ -1,0 +1,36 @@
+{
+  "comment": "A flags enumeration held as a number: 4 is Mane.",
+  "spec": "OASIS OData 4.01 Part 2 \u00a75.1.1.14.1",
+  "request": {
+    "method": "GET",
+    "path": "Animals",
+    "query": {
+      "$filter": "Features eq Zoo.Features'Mane'",
+      "$expand": "Keeper($select=Code)"
+    }
+  },
+  "response": {
+    "status": 200,
+    "headers": {
+      "Content-Type": "application/json;odata.metadata=minimal;charset=utf-8",
+      "OData-Version": "4.0"
+    },
+    "body": {
+      "@odata.context": "https://zoo.test/Zoo.svc/$metadata#Animals",
+      "value": [
+        {
+          "@odata.type": "#Zoo.Lion",
+          "Id": 2,
+          "Name": "Leo",
+          "Diet": "Carnivore",
+          "Features": "Mane",
+          "Born": "2018-02-11",
+          "MaxRoar": 114,
+          "Keeper": {
+            "Code": "K1"
+          }
+        }
+      ]
+    }
+  }
+}

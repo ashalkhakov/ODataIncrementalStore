@@ -1,0 +1,53 @@
+{
+  "comment": "A set of a base type holds a derived one: Leo says he is a Zoo.Lion.",
+  "spec": "OASIS OData 4.01 JSON Format \u00a74.5.3 Control Information: type",
+  "request": {
+    "method": "GET",
+    "path": "Animals",
+    "query": {
+      "$expand": "Keeper($select=Code)"
+    }
+  },
+  "response": {
+    "status": 200,
+    "headers": {
+      "Content-Type": "application/json;odata.metadata=minimal;charset=utf-8",
+      "OData-Version": "4.0"
+    },
+    "body": {
+      "@odata.context": "https://zoo.test/Zoo.svc/$metadata#Animals",
+      "value": [
+        {
+          "Id": 1,
+          "Name": "Zebra",
+          "Diet": "Herbivore",
+          "Features": "Stripes",
+          "Born": "2019-04-01",
+          "Keeper": {
+            "Code": "K1"
+          }
+        },
+        {
+          "@odata.type": "#Zoo.Lion",
+          "Id": 2,
+          "Name": "Leo",
+          "Diet": "Carnivore",
+          "Features": "Mane",
+          "Born": "2018-02-11",
+          "MaxRoar": 114,
+          "Keeper": {
+            "Code": "K1"
+          }
+        },
+        {
+          "Id": 3,
+          "Name": "Okapi",
+          "Diet": "Herbivore",
+          "Features": "Stripes, Spots",
+          "Born": null,
+          "Keeper": null
+        }
+      ]
+    }
+  }
+}

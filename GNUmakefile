@@ -35,6 +35,7 @@ ODataIncrementalStore_OBJC_FILES = \
 	Source/ODataPropertyMapper.m \
 	Source/ODataValue.m \
 	Source/ODataBatch.m \
+	Source/ODataSchema.m \
 	Source/ODataResourceIdentifier.m \
 	Source/ODataPredicateTranslator.m \
 	Source/ODataQueryBuilder.m \
@@ -50,6 +51,7 @@ ODataIncrementalStore_HEADER_FILES = \
 	ODataPropertyMapper.h \
 	ODataValue.h \
 	ODataBatch.h \
+	ODataSchema.h \
 	ODataResourceIdentifier.h \
 	ODataPredicateTranslator.h \
 	ODataQueryBuilder.h

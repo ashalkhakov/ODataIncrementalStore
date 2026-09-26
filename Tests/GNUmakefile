@@ -28,6 +28,7 @@ ODataIncrementalStoreTests_OBJC_FILES = \
 	ODataPredicateTranslatorTests.m \
 	ODataQueryBuilderTests.m \
 	ODataValueTests.m \
+	ODataSchemaTests.m \
 	ODataResourceIdentifierTests.m \
 	ODataSnapshotStoreTests.m
 

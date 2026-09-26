@@ -80,6 +80,9 @@ static void northwind(NSString *models)
   NSURL *root = [NSURL URLWithString:@"https://services.odata.org/V4/Northwind/Northwind.svc/"];
   NSPersistentStoreCoordinator *psc = openStore([models stringByAppendingPathComponent:@"Catalog.momd"], root);
   if (!psc) return;
+  ODataIncrementalStore *catalogStore = psc.persistentStores.firstObject;
+  fprintf(stderr, "      (the Catalog model against Northwind's $metadata: %lu differences, e.g. %s)\n",
+          (unsigned long)catalogStore.metadataProblems.count, [catalogStore.metadataProblems.firstObject UTF8String] ?: "none");
   NSManagedObjectContext *moc = newContext(psc);
   [moc performBlockAndWait:^{
       NSError *e = nil;
@@ -243,6 +246,16 @@ static void tripPin(NSString *models)
   if (!psc) return;
   NSString *userName = [NSString stringWithFormat:@"ois%u", (unsigned)(arc4random() % 1000000)];
 
+  // The model leaves Person's key and entity set to $metadata.
+  ODataIncrementalStore *store = psc.persistentStores.firstObject;
+  NSEntityDescription *personEntity = psc.managedObjectModel.entitiesByName[@"Person"];
+  ODataPropertyMapper *mapper = [[ODataPropertyMapper alloc] init];
+  mapper.schema = store.schema;
+  check(store.schema && !store.metadataProblems.count && [[mapper entitySetForEntity:personEntity] isEqualToString:@"People"] &&
+            [[[mapper keyAttributesForEntity:personEntity] valueForKey:@"name"] isEqual:@[ @"userName" ]],
+        @"take the key, the entity set and the types from $metadata",
+        store.metadataProblems.count ? [store.metadataProblems componentsJoinedByString:@"; "] : [mapper entitySetForEntity:personEntity]);
+
   NSManagedObjectContext *moc = newContext(psc);
   [moc performBlockAndWait:^{
     NSError *e = nil;
@@ -328,6 +341,18 @@ static void tripPin(NSString *models)
     }];
     check(batched && [lastName isEqualToString:@"Batched"] && friends == 1, @"a save of several requests is one change set ($batch)",
           reason(e) ?: [NSString stringWithFormat:@"%@, %lu friends", lastName, (unsigned long)friends]);
+
+    // Gender is an enumeration: read as its member name, and filtered on
+    // with the qualified literal OData 4.0 requires.
+    e = nil;
+    NSString *russellsGender = [russell valueForKey:@"gender"];
+    NSFetchRequest *women = [NSFetchRequest fetchRequestWithEntityName:@"Person"];
+    women.predicate = [NSPredicate predicateWithFormat:@"gender == %@", @"Female"];
+    NSArray *found = [moc executeFetchRequest:women error:&e];
+    BOOL allWomen = found.count > 0;
+    for (NSManagedObject *woman in found) allWomen = allWomen && [[woman valueForKey:@"gender"] isEqual:@"Female"];
+    check([russellsGender isEqualToString:@"Male"] && allWomen, @"read and filter an enumeration (Gender eq NS.PersonGender'Female')",
+          e ? reason(e) : [NSString stringWithFormat:@"Russell is %@; %lu women", russellsGender, (unsigned long)found.count]);
 
     // Someone else changes the person; saving over it has to fail.
     e = nil;
