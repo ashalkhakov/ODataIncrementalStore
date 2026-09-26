@@ -25,6 +25,13 @@
   _translator = [[ODataPredicateTranslator alloc] initWithMapper:mapper entity:product];
 }
 
+// What the translator writes is OData a parser reads.
+- (void)assertParses:(NSString *)filter
+{
+  NSError *error = nil;
+  XCTAssertNotNil([ODataExpression expressionWithString:filter ?: @"" error:&error], @"%@ does not parse: %@", filter, error);
+}
+
 - (void)assertPredicate:(NSString *)format filter:(NSString *)expected
 {
   NSError *error = nil;
@@ -32,6 +39,7 @@
   NSString *got = [_translator translatePredicate:predicate error:&error];
   XCTAssertNil(error, @"%@ → %@", format, error);
   XCTAssertEqualObjects(got, expected, @"predicate %@", format);
+  [self assertParses:got];
 }
 
 - (void)testComparisonOperatorsMatchABNF
@@ -108,6 +116,7 @@
   NSString *got = [_translator translatePredicate:[NSPredicate predicateWithFormat:format argumentArray:arguments] error:&error];
   XCTAssertNil(error, @"%@ → %@", format, error);
   XCTAssertEqualObjects(got, expected, @"predicate %@", format);
+  [self assertParses:got];
 }
 
 - (void)testPatternsAreMatchesPatternIn401
@@ -130,6 +139,7 @@
   NSString *got = [t translatePredicate:[NSPredicate predicateWithFormat:format] error:&error];
   XCTAssertNil(error, @"%@ → %@", format, error);
   XCTAssertEqualObjects(got, expected, @"predicate %@", format);
+  [self assertParses:got];
 }
 
 - (void)testAnyAndAllBecomeLambdas

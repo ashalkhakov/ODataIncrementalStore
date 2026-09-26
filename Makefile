@@ -48,6 +48,8 @@ SRCS = \
 	$(SRC_DIR)/ODataBatch.m \
 	$(SRC_DIR)/ODataSchema.m \
 	$(SRC_DIR)/ODataOperationCall.m \
+	$(SRC_DIR)/ODataLexer.m \
+	$(SRC_DIR)/ODataExpression.m \
 	$(SRC_DIR)/ODataHistory.m \
 	$(SRC_DIR)/ODataClassWriter.m \
 	$(SRC_DIR)/ODataFunctionExpression.m \

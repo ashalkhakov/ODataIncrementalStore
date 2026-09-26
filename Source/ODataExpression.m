@@ -1,0 +1,884 @@
+// Copyright (C) 2026 OIS contributors
+// SPDX-License-Identifier: LGPL-2.1-or-later
+
+#import "ODataExpression.h"
+#import "ODataLexer.h"
+#import "ODataError.h"
+
+// The parser, below the tree.
+@class ODataQueryOptions, ODataResourcePath;
+@interface OISParser : NSObject
+- (instancetype)initWithString:(NSString *)string;
+@property (nonatomic, strong, nullable) NSError *error;
+- (nullable ODataExpression *)parseCommon;
+- (BOOL)atEnd;
+- (BOOL)parseOption:(NSString *)option into:(ODataQueryOptions *)options;
+- (nullable ODataResourcePath *)parseResourcePath;
+@end
+
+#pragma mark - The tree
+
+@interface ODataExpression ()
+@property (nonatomic) ODataExpressionKind kind;
+@property (nonatomic, copy) NSString *name;
+@property (nonatomic, strong, nullable) id value;
+@property (nonatomic, copy, nullable) NSString *literalType;
+@property (nonatomic, copy, nullable) NSString *raw;  // a literal as written, for its description
+@property (nonatomic, strong, nullable) ODataExpression *operand;
+@property (nonatomic, strong, nullable) ODataExpression *left;
+@property (nonatomic, strong, nullable) ODataExpression *right;
+@property (nonatomic, copy, nullable) NSArray<ODataExpression *> *arguments;
+@property (nonatomic, copy, nullable) NSDictionary<NSString *, ODataExpression *> *namedArguments;
+@property (nonatomic, copy, nullable) NSString *variable;
+@property (nonatomic, strong, nullable) ODataExpression *body;
+@end
+
+// Precedence, loosest first (Part 2 section 5.1.1.14).
+static NSInteger OISPrecedence(NSString *op)
+{
+  static NSDictionary *levels;
+  if (!levels) {
+    levels = @{ @"or": @1, @"and": @2, @"eq": @3, @"ne": @3, @"gt": @4, @"ge": @4, @"lt": @4, @"le": @4, @"has": @4, @"in": @4,
+                @"add": @5, @"sub": @5, @"mul": @6, @"div": @6, @"divby": @6, @"mod": @6 };
+  }
+  return [levels[op] integerValue];
+}
+
+static NSString *OISQuoted(NSString *text)
+{
+  return [NSString stringWithFormat:@"'%@'", [text stringByReplacingOccurrencesOfString:@"'" withString:@"''"]];
+}
+
+@implementation ODataExpression
+
++ (instancetype)ofKind:(ODataExpressionKind)kind name:(NSString *)name
+{
+  ODataExpression *e = [[self alloc] init];
+  e.kind = kind;
+  e.name = name ?: @"";
+  return e;
+}
+
+- (NSInteger)precedence
+{
+  switch (self.kind) {
+    case ODataExpressionBinary: return OISPrecedence(self.name);
+    case ODataExpressionUnary: return 7;
+    default: return 8;
+  }
+}
+
+// A child as text, in parentheses when it binds more loosely than its
+// place needs: on the right of a left-associative operator, equally loose
+// is too loose.
+- (NSString *)text:(ODataExpression *)child tighterThan:(NSInteger)level orEqual:(BOOL)equal
+{
+  NSInteger p = [child precedence];
+  BOOL parens = p < level || (equal && p == level);
+  return parens ? [NSString stringWithFormat:@"(%@)", child.description] : child.description;
+}
+
+- (NSString *)description
+{
+  switch (self.kind) {
+    case ODataExpressionLiteral:
+      if (self.raw) return self.raw;
+      if (!self.value || self.value == [NSNull null]) return @"null";
+      if ([self.literalType isEqualToString:@"Edm.String"]) return OISQuoted(self.value);
+      if ([self.literalType isEqualToString:@"Edm.Boolean"]) return [self.value boolValue] ? @"true" : @"false";
+      return [self.value description];
+    case ODataExpressionMember:
+      return self.operand ? [NSString stringWithFormat:@"%@/%@", self.operand, self.name] : self.name;
+    case ODataExpressionVariable:
+      return self.name;
+    case ODataExpressionAlias:
+      return [@"@" stringByAppendingString:self.name];
+    case ODataExpressionUnary:
+      return [self.name isEqualToString:@"not"]
+          ? [NSString stringWithFormat:@"not %@", [self text:self.operand tighterThan:7 orEqual:NO]]
+          : [NSString stringWithFormat:@"-%@", [self text:self.operand tighterThan:7 orEqual:NO]];
+    case ODataExpressionBinary: {
+      NSInteger level = OISPrecedence(self.name);
+      return [NSString stringWithFormat:@"%@ %@ %@", [self text:self.left tighterThan:level orEqual:NO], self.name,
+                                        [self text:self.right tighterThan:level orEqual:![self.name isEqualToString:@"in"]]];
+    }
+    case ODataExpressionCall: {
+      NSMutableArray *parts = [NSMutableArray array];
+      if (self.namedArguments) {
+        for (NSString *name in [self.namedArguments.allKeys sortedArrayUsingSelector:@selector(compare:)]) {
+          [parts addObject:[NSString stringWithFormat:@"%@=%@", name, self.namedArguments[name]]];
+        }
+      } else {
+        for (ODataExpression *argument in self.arguments) [parts addObject:argument.description];
+      }
+      NSString *call = [NSString stringWithFormat:@"%@(%@)", self.name, [parts componentsJoinedByString:self.namedArguments ? @"," : @", "]];
+      return self.operand ? [NSString stringWithFormat:@"%@/%@", self.operand, call] : call;
+    }
+    case ODataExpressionLambda: {
+      NSString *inner = self.body ? [NSString stringWithFormat:@"%@:%@", self.variable, self.body] : @"";
+      return [NSString stringWithFormat:@"%@/%@(%@)", self.operand, self.name, inner];
+    }
+    case ODataExpressionCast:
+      return self.operand ? [NSString stringWithFormat:@"%@/%@", self.operand, self.name] : self.name;
+    case ODataExpressionCount:
+      return [NSString stringWithFormat:@"%@/$count", self.operand];
+    case ODataExpressionList: {
+      NSMutableArray *parts = [NSMutableArray array];
+      for (ODataExpression *item in self.arguments) [parts addObject:item.description];
+      return [NSString stringWithFormat:@"(%@)", [parts componentsJoinedByString:@","]];
+    }
+  }
+  return @"";
+}
+
++ (instancetype)expressionWithString:(NSString *)text error:(NSError **)error
+{
+  OISParser *parser = [[OISParser alloc] initWithString:text];
+  ODataExpression *e = [parser parseCommon];
+  if (e && ![parser atEnd]) e = nil;
+  if (!e && error) *error = parser.error ?: OISError(ODataIncrementalStoreErrorSyntax, [NSString stringWithFormat:@"Cannot read \"%@\"", text]);
+  return e;
+}
+
+- (NSArray *)memberPath
+{
+  if (self.kind != ODataExpressionMember) return nil;
+  if (!self.operand) return @[ self.name ];
+  NSArray *before = self.operand.memberPath;
+  return before ? [before arrayByAddingObject:self.name] : nil;
+}
+
+@end
+
+@implementation ODataOrderItem
+- (instancetype)initWithExpression:(ODataExpression *)expression descending:(BOOL)descending
+{
+  self = [super init];
+  if (!self) return nil;
+  _expression = expression;
+  _descending = descending;
+  return self;
+}
+- (NSString *)description
+{
+  return self.descending ? [NSString stringWithFormat:@"%@ desc", self.expression] : self.expression.description;
+}
+@end
+
+@implementation ODataSelectItem
+- (instancetype)initWithPath:(NSArray *)path star:(BOOL)star
+{
+  self = [super init];
+  if (!self) return nil;
+  _path = [path copy];
+  _isStar = star;
+  return self;
+}
+- (NSString *)description
+{
+  return self.isStar ? @"*" : [self.path componentsJoinedByString:@"/"];
+}
+@end
+
+@interface ODataQueryOptions ()
+@property (nonatomic, strong, nullable) ODataExpression *filter;
+@property (nonatomic, copy) NSArray *orderBy;
+@property (nonatomic, copy) NSArray *select;
+@property (nonatomic, copy) NSArray *expand;
+@property (nonatomic, strong, nullable) NSNumber *top;
+@property (nonatomic, strong, nullable) NSNumber *skip;
+@property (nonatomic, strong, nullable) NSNumber *includeCount;
+@property (nonatomic, strong, nullable) NSNumber *levels;
+@property (nonatomic, copy, nullable) NSString *search;
+@property (nonatomic, copy) NSDictionary *aliases;
+@end
+
+@interface ODataExpandItem ()
+@property (nonatomic, copy) NSArray *path;
+@property (nonatomic) BOOL isStar;
+@property (nonatomic) BOOL isRef;
+@property (nonatomic) BOOL isCount;
+@property (nonatomic, strong) ODataQueryOptions *options;
+@end
+
+@implementation ODataExpandItem
+- (NSString *)description
+{
+  NSMutableString *text = [NSMutableString stringWithString:self.isStar ? @"*" : [self.path componentsJoinedByString:@"/"]];
+  if (self.isRef) [text appendString:@"/$ref"];
+  if (self.isCount) [text appendString:@"/$count"];
+  NSString *options = self.options.description;
+  if (options.length) [text appendFormat:@"(%@)", options];
+  return text;
+}
+@end
+
+@interface ODataPathSegment ()
+@property (nonatomic, copy) NSString *name;
+@property (nonatomic, copy, nullable) NSDictionary *keys;
+@property (nonatomic, copy, nullable) NSDictionary *arguments;
+@property (nonatomic) BOOL isCall;
+@end
+
+@implementation ODataPathSegment
+- (NSString *)description
+{
+  NSDictionary *inside = self.isCall ? self.arguments : self.keys;
+  if (!inside) return self.name;
+  if (inside.count == 1 && inside[@""]) return [NSString stringWithFormat:@"%@(%@)", self.name, inside[@""]];
+  NSMutableArray *parts = [NSMutableArray array];
+  for (NSString *key in [inside.allKeys sortedArrayUsingSelector:@selector(compare:)]) {
+    [parts addObject:[NSString stringWithFormat:@"%@=%@", key, inside[key]]];
+  }
+  return [NSString stringWithFormat:@"%@(%@)", self.name, [parts componentsJoinedByString:@","]];
+}
+@end
+
+@interface ODataResourcePath ()
+@property (nonatomic, copy) NSArray *segments;
+@end
+
+@implementation ODataResourcePath
+
++ (instancetype)pathWithString:(NSString *)text error:(NSError **)error
+{
+  OISParser *parser = [[OISParser alloc] initWithString:text];
+  ODataResourcePath *path = [parser parseResourcePath];
+  if (!path && error) *error = parser.error;
+  return path;
+}
+
+- (NSString *)description
+{
+  NSMutableArray *parts = [NSMutableArray array];
+  for (ODataPathSegment *segment in self.segments) [parts addObject:segment.description];
+  return [parts componentsJoinedByString:@"/"];
+}
+
+@end
+
+#pragma mark - The parser
+
+@implementation OISParser {
+  OISLexer *_lexer;
+  OISToken *_token;
+  OISToken *_ahead;
+  NSMutableArray *_variables;  // lambda variables in scope
+}
+
+- (instancetype)initWithString:(NSString *)string
+{
+  self = [super init];
+  if (!self) return nil;
+  _lexer = [[OISLexer alloc] initWithString:string];
+  _token = [_lexer next];
+  _variables = [NSMutableArray arrayWithObject:@"$it"];
+  return self;
+}
+
+- (OISToken *)peek
+{
+  if (!_ahead) _ahead = [_lexer next];
+  return _ahead;
+}
+
+- (void)advance
+{
+  if (_ahead) {
+    _token = _ahead;
+    _ahead = nil;
+  } else {
+    _token = [_lexer next];
+  }
+}
+
+- (BOOL)accept:(OISTokenKind)kind
+{
+  if (_token.kind != kind) return NO;
+  [self advance];
+  return YES;
+}
+
+- (BOOL)isName:(NSString *)name
+{
+  return _token.kind == OISTokenName && [_token.text isEqualToString:name];
+}
+
+// The first error is the one reported; what follows it is noise.
+- (id)fail:(NSString *)message
+{
+  if (!self.error) {
+    NSString *text = [NSString stringWithFormat:@"%@ at %lu in \"%@\"", message, (unsigned long)_token.range.location, _lexer.string];
+    self.error = OISError(ODataIncrementalStoreErrorSyntax, text);
+  }
+  return nil;
+}
+
+- (id)expect:(OISTokenKind)kind what:(NSString *)what
+{
+  if ([self accept:kind]) return @YES;
+  return [self fail:[NSString stringWithFormat:@"%@ expected, not %@", what, _token]];
+}
+
+- (BOOL)atEnd
+{
+  if (_token.kind == OISTokenEnd) return YES;
+  [self fail:[NSString stringWithFormat:@"unexpected %@", _token]];
+  return NO;
+}
+
+#pragma mark Expressions
+
+- (ODataExpression *)binary:(NSString *)op left:(ODataExpression *)left right:(ODataExpression *)right
+{
+  if (!left || !right) return nil;
+  ODataExpression *e = [ODataExpression ofKind:ODataExpressionBinary name:op];
+  e.left = left;
+  e.right = right;
+  return e;
+}
+
+// One level of left-associative binary operators.
+- (ODataExpression *)parseLevel:(NSArray *)operators next:(SEL)next
+{
+  ODataExpression *(*sub)(id, SEL) = (ODataExpression * (*)(id, SEL))[self methodForSelector:next];
+  ODataExpression *left = sub(self, next);
+  while (left && _token.kind == OISTokenName && [operators containsObject:_token.text]) {
+    NSString *op = _token.text;
+    [self advance];
+    left = [self binary:op left:left right:sub(self, next)];
+  }
+  return left;
+}
+
+- (ODataExpression *)parseCommon
+{
+  return [self parseLevel:@[ @"or" ] next:@selector(parseAnd)];
+}
+
+- (ODataExpression *)parseAnd
+{
+  return [self parseLevel:@[ @"and" ] next:@selector(parseEquality)];
+}
+
+- (ODataExpression *)parseEquality
+{
+  return [self parseLevel:@[ @"eq", @"ne" ] next:@selector(parseRelational)];
+}
+
+- (ODataExpression *)parseRelational
+{
+  return [self parseLevel:@[ @"gt", @"ge", @"lt", @"le", @"has", @"in" ] next:@selector(parseAdditive)];
+}
+
+- (ODataExpression *)parseAdditive
+{
+  return [self parseLevel:@[ @"add", @"sub" ] next:@selector(parseMultiplicative)];
+}
+
+- (ODataExpression *)parseMultiplicative
+{
+  return [self parseLevel:@[ @"mul", @"div", @"divby", @"mod" ] next:@selector(parseUnary)];
+}
+
+- (ODataExpression *)parseUnary
+{
+  if ([self isName:@"not"]) {
+    [self advance];
+    ODataExpression *operand = [self parseUnary];
+    if (!operand) return nil;
+    ODataExpression *e = [ODataExpression ofKind:ODataExpressionUnary name:@"not"];
+    e.operand = operand;
+    return e;
+  }
+  if ([self accept:OISTokenMinus]) {
+    ODataExpression *operand = [self parseUnary];
+    if (!operand) return nil;
+    ODataExpression *e = [ODataExpression ofKind:ODataExpressionUnary name:@"-"];
+    e.operand = operand;
+    return e;
+  }
+  return [self parsePrimary];
+}
+
+- (ODataExpression *)literal:(id)value type:(NSString *)type raw:(NSString *)raw
+{
+  ODataExpression *e = [ODataExpression ofKind:ODataExpressionLiteral name:@""];
+  e.value = value;
+  e.literalType = type;
+  e.raw = raw;
+  return e;
+}
+
+// A comma-separated list up to a closing token.
+- (NSArray *)parseListUntil:(OISTokenKind)closing
+{
+  NSMutableArray *items = [NSMutableArray array];
+  if ([self accept:closing]) return items;
+  while (YES) {
+    ODataExpression *item = [self parseCommon];
+    if (!item) return nil;
+    [items addObject:item];
+    if ([self accept:OISTokenComma]) continue;
+    if (![self expect:closing what:closing == OISTokenRParen ? @"')'" : @"']'"]) return nil;
+    return items;
+  }
+}
+
+- (ODataExpression *)parsePrimary
+{
+  OISToken *t = _token;
+  switch (t.kind) {
+    case OISTokenLParen: {
+      [self advance];
+      NSArray *items = [self parseListUntil:OISTokenRParen];
+      if (!items) return nil;
+      if (items.count == 1) return items[0];  // grouping
+      ODataExpression *list = [ODataExpression ofKind:ODataExpressionList name:@""];
+      list.arguments = items;
+      return list;
+    }
+    case OISTokenLBracket: {
+      [self advance];
+      NSArray *items = [self parseListUntil:OISTokenRBracket];
+      if (!items) return nil;
+      ODataExpression *list = [ODataExpression ofKind:ODataExpressionList name:@""];
+      list.arguments = items;
+      return list;
+    }
+    case OISTokenString:
+      [self advance];
+      return [self literal:t.text type:@"Edm.String" raw:OISQuoted(t.text)];
+    case OISTokenNumber: {
+      [self advance];
+      NSString *text = t.text;
+      if ([text rangeOfCharacterFromSet:[NSCharacterSet characterSetWithCharactersInString:@"eE"]].location != NSNotFound) {
+        return [self literal:@([text doubleValue]) type:@"Edm.Double" raw:text];
+      }
+      if ([text rangeOfString:@"."].location != NSNotFound || text.length > 18) {
+        NSDecimalNumber *d = [NSDecimalNumber decimalNumberWithString:text locale:@{ NSLocaleDecimalSeparator: @"." }];
+        return [self literal:d type:@"Edm.Decimal" raw:text];
+      }
+      return [self literal:@([text longLongValue]) type:@"Edm.Int64" raw:text];
+    }
+    case OISTokenTyped: {
+      [self advance];
+      NSString *prefix = t.type;
+      NSString *raw = [_lexer.string substringWithRange:t.range];
+      if ([prefix hasPrefix:@"Edm."]) return [self literal:t.text type:prefix raw:raw];
+      NSDictionary *prefixed = @{ @"duration": @"Edm.Duration", @"binary": @"Edm.Binary", @"X": @"Edm.Binary",
+                                  @"geography": @"Edm.Geography", @"geometry": @"Edm.Geometry" };
+      return [self literal:t.text type:prefixed[prefix] ?: prefix raw:raw];
+    }
+    case OISTokenAlias:
+      [self advance];
+      return [self parsePathAfter:[ODataExpression ofKind:ODataExpressionAlias name:t.text]];
+    case OISTokenName:
+      return [self parseName];
+    default:
+      return [self fail:[NSString stringWithFormat:@"unexpected %@", t]];
+  }
+}
+
+- (ODataExpression *)parseName
+{
+  NSString *name = _token.text;
+  static NSDictionary *constants;
+  if (!constants) {
+    constants = @{ @"null": @[ [NSNull null], @"" ], @"true": @[ @YES, @"Edm.Boolean" ], @"false": @[ @NO, @"Edm.Boolean" ],
+                   @"INF": @[ @(INFINITY), @"Edm.Double" ], @"NaN": @[ @(NAN), @"Edm.Double" ] };
+  }
+  NSArray *constant = constants[name];
+  if (constant) {
+    [self advance];
+    return [self literal:constant[0] type:[constant[1] length] ? constant[1] : nil raw:name];
+  }
+  [self advance];
+  ODataExpression *e;
+  if (_token.kind == OISTokenLParen) {
+    e = [self parseCallNamed:name];
+  } else if ([_variables containsObject:name] || [name isEqualToString:@"$root"]) {
+    e = [ODataExpression ofKind:ODataExpressionVariable name:name];
+  } else if ([name rangeOfString:@"."].location != NSNotFound) {
+    e = [ODataExpression ofKind:ODataExpressionCast name:name];
+  } else {
+    e = [ODataExpression ofKind:ODataExpressionMember name:name];
+  }
+  return e ? [self parsePathAfter:e] : nil;
+}
+
+// name(...): a canonical function's arguments in order; a service's
+// function (a qualified name) by name, p=value.
+- (ODataExpression *)parseCallNamed:(NSString *)name
+{
+  [self advance];  // (
+  ODataExpression *call = [ODataExpression ofKind:ODataExpressionCall name:name];
+  if ([name rangeOfString:@"."].location != NSNotFound) {
+    NSMutableDictionary *named = [NSMutableDictionary dictionary];
+    if (![self accept:OISTokenRParen]) {
+      while (YES) {
+        if (_token.kind != OISTokenName) return [self fail:[NSString stringWithFormat:@"a parameter name expected, not %@", _token]];
+        NSString *parameter = _token.text;
+        [self advance];
+        if (![self expect:OISTokenEquals what:@"'='"]) return nil;
+        ODataExpression *value = [self parseCommon];
+        if (!value) return nil;
+        named[parameter] = value;
+        if ([self accept:OISTokenComma]) continue;
+        if (![self expect:OISTokenRParen what:@"')'"]) return nil;
+        break;
+      }
+    }
+    call.namedArguments = named;
+    return call;
+  }
+  NSArray *arguments = [self parseListUntil:OISTokenRParen];
+  if (!arguments) return nil;
+  call.arguments = arguments;
+  return call;
+}
+
+// What follows a path's start: /Member, /NS.Cast, /NS.Function(...),
+// /$count, /any(x:...), /all(x:...).
+- (ODataExpression *)parsePathAfter:(ODataExpression *)operand
+{
+  ODataExpression *current = operand;
+  while (current && _token.kind == OISTokenSlash) {
+    [self advance];
+    if (_token.kind != OISTokenName) return [self fail:[NSString stringWithFormat:@"a name expected after '/', not %@", _token]];
+    NSString *name = _token.text;
+    [self advance];
+    ODataExpression *next;
+    if (([name isEqualToString:@"any"] || [name isEqualToString:@"all"]) && _token.kind == OISTokenLParen) {
+      next = [self parseLambda:name over:current];
+    } else if ([name isEqualToString:@"$count"]) {
+      next = [ODataExpression ofKind:ODataExpressionCount name:name];
+      next.operand = current;
+    } else if (_token.kind == OISTokenLParen) {
+      next = [self parseCallNamed:name];
+      next.operand = current;
+    } else {
+      next = [ODataExpression ofKind:[name rangeOfString:@"."].location != NSNotFound ? ODataExpressionCast : ODataExpressionMember name:name];
+      next.operand = current;
+    }
+    current = next;
+  }
+  return current;
+}
+
+- (ODataExpression *)parseLambda:(NSString *)name over:(ODataExpression *)collection
+{
+  [self advance];  // (
+  ODataExpression *lambda = [ODataExpression ofKind:ODataExpressionLambda name:name];
+  lambda.operand = collection;
+  if ([self accept:OISTokenRParen]) {
+    if ([name isEqualToString:@"all"]) return [self fail:@"all() needs a variable and a condition"];
+    return lambda;
+  }
+  if (_token.kind != OISTokenName) return [self fail:[NSString stringWithFormat:@"a lambda variable expected, not %@", _token]];
+  NSString *variable = _token.text;
+  [self advance];
+  if (![self expect:OISTokenColon what:@"':'"]) return nil;
+  [_variables addObject:variable];
+  ODataExpression *body = [self parseCommon];
+  [_variables removeLastObject];
+  if (!body || ![self expect:OISTokenRParen what:@"')'"]) return nil;
+  lambda.variable = variable;
+  lambda.body = body;
+  return lambda;
+}
+
+#pragma mark Query options
+
+// A path of names joined by '/': Category/Name, NS.Type/Prop.
+- (NSArray *)parseNamePath
+{
+  NSMutableArray *path = [NSMutableArray array];
+  while (YES) {
+    if (_token.kind != OISTokenName) return [self fail:[NSString stringWithFormat:@"a name expected, not %@", _token]];
+    [path addObject:_token.text];
+    [self advance];
+    if (_token.kind == OISTokenSlash && [self peek].kind == OISTokenName && ![[self peek].text hasPrefix:@"$"]) {
+      [self advance];
+      continue;
+    }
+    return path;
+  }
+}
+
+- (NSArray *)parseOrderBy
+{
+  NSMutableArray *items = [NSMutableArray array];
+  while (YES) {
+    ODataExpression *expression = [self parseCommon];
+    if (!expression) return nil;
+    BOOL descending = NO;
+    if ([self isName:@"desc"] || [self isName:@"asc"]) {
+      descending = [_token.text isEqualToString:@"desc"];
+      [self advance];
+    }
+    [items addObject:[[ODataOrderItem alloc] initWithExpression:expression descending:descending]];
+    if (![self accept:OISTokenComma]) return items;
+  }
+}
+
+- (NSArray *)parseSelect
+{
+  NSMutableArray *items = [NSMutableArray array];
+  while (YES) {
+    if ([self accept:OISTokenStar]) {
+      [items addObject:[[ODataSelectItem alloc] initWithPath:@[] star:YES]];
+    } else {
+      NSArray *path = [self parseNamePath];
+      if (!path) return nil;
+      if (_token.kind == OISTokenSlash && [self peek].kind == OISTokenStar) {  // NS.Type/*
+        [self advance];
+        [self advance];
+        path = [path arrayByAddingObject:@"*"];
+      }
+      [items addObject:[[ODataSelectItem alloc] initWithPath:path star:NO]];
+    }
+    if (![self accept:OISTokenComma]) return items;
+  }
+}
+
+- (NSArray *)parseExpand
+{
+  NSMutableArray *items = [NSMutableArray array];
+  while (YES) {
+    ODataExpandItem *item = [[ODataExpandItem alloc] init];
+    item.options = [[ODataQueryOptions alloc] init];
+    if ([self accept:OISTokenStar]) {
+      item.isStar = YES;
+      item.path = @[];
+    } else {
+      NSArray *path = [self parseNamePath];
+      if (!path) return nil;
+      item.path = path;
+    }
+    if (_token.kind == OISTokenSlash) {
+      [self advance];
+      if ([self isName:@"$ref"]) item.isRef = YES;
+      else if ([self isName:@"$count"]) item.isCount = YES;
+      else return [self fail:[NSString stringWithFormat:@"$ref or $count expected, not %@", _token]];
+      [self advance];
+    }
+    if ([self accept:OISTokenLParen]) {
+      // Nested options, separated by ';' (Part 2 section 5.1.3).
+      while (YES) {
+        if (_token.kind != OISTokenName || ![_token.text hasPrefix:@"$"]) {
+          return [self fail:[NSString stringWithFormat:@"a query option expected, not %@", _token]];
+        }
+        NSString *option = _token.text;
+        [self advance];
+        if (![self expect:OISTokenEquals what:@"'='"] || ![self parseOption:option into:item.options]) return nil;
+        if ([self accept:OISTokenSemicolon]) continue;
+        if (![self expect:OISTokenRParen what:@"';' or ')'"]) return nil;
+        break;
+      }
+    }
+    [items addObject:item];
+    if (![self accept:OISTokenComma]) return items;
+  }
+}
+
+- (NSNumber *)parseCountValue
+{
+  if ([self isName:@"true"] || [self isName:@"false"]) {
+    NSNumber *value = @([_token.text isEqualToString:@"true"]);
+    [self advance];
+    return value;
+  }
+  return [self fail:[NSString stringWithFormat:@"true or false expected, not %@", _token]];
+}
+
+- (NSNumber *)parseInteger
+{
+  if (_token.kind != OISTokenNumber || [_token.text rangeOfCharacterFromSet:[NSCharacterSet characterSetWithCharactersInString:@".eE-"]].location != NSNotFound) {
+    return [self fail:[NSString stringWithFormat:@"a whole number expected, not %@", _token]];
+  }
+  NSNumber *value = @([_token.text longLongValue]);
+  [self advance];
+  return value;
+}
+
+// One system query option's value, into the options. Its text is what the
+// parser is at.
+- (BOOL)parseOption:(NSString *)option into:(ODataQueryOptions *)options
+{
+  if ([option isEqualToString:@"$filter"]) {
+    options.filter = [self parseCommon];
+    return options.filter != nil;
+  }
+  if ([option isEqualToString:@"$orderby"]) {
+    options.orderBy = [self parseOrderBy];
+    return options.orderBy != nil;
+  }
+  if ([option isEqualToString:@"$select"]) {
+    options.select = [self parseSelect];
+    return options.select != nil;
+  }
+  if ([option isEqualToString:@"$expand"]) {
+    options.expand = [self parseExpand];
+    return options.expand != nil;
+  }
+  if ([option isEqualToString:@"$top"]) {
+    options.top = [self parseInteger];
+    return options.top != nil;
+  }
+  if ([option isEqualToString:@"$skip"]) {
+    options.skip = [self parseInteger];
+    return options.skip != nil;
+  }
+  if ([option isEqualToString:@"$count"]) {
+    options.includeCount = [self parseCountValue];
+    return options.includeCount != nil;
+  }
+  if ([option isEqualToString:@"$levels"]) {
+    if ([self isName:@"max"]) {
+      [self advance];
+      options.levels = @-1;
+      return YES;
+    }
+    options.levels = [self parseInteger];
+    return options.levels != nil;
+  }
+  if ([option isEqualToString:@"$search"]) {
+    // Its own grammar; kept as written, up to the end of the option.
+    NSUInteger start = _token.range.location;
+    NSInteger depth = 0;
+    while (_token.kind != OISTokenEnd && !(depth == 0 && (_token.kind == OISTokenSemicolon || _token.kind == OISTokenRParen))) {
+      if (_token.kind == OISTokenLParen) depth++;
+      if (_token.kind == OISTokenRParen) depth--;
+      [self advance];
+    }
+    NSUInteger end = _token.kind == OISTokenEnd ? _lexer.string.length : _token.range.location;
+    options.search = [[_lexer.string substringWithRange:NSMakeRange(start, end - start)]
+                      stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceCharacterSet]];
+    return YES;
+  }
+  [self fail:[NSString stringWithFormat:@"no query option %@", option]];
+  return NO;
+}
+
+#pragma mark Resource paths
+
+- (ODataResourcePath *)parseResourcePath
+{
+  NSMutableArray *segments = [NSMutableArray array];
+  while (_token.kind != OISTokenEnd) {
+    ODataPathSegment *segment = [[ODataPathSegment alloc] init];
+    OISToken *t = _token;
+    if (t.kind == OISTokenName) {
+      segment.name = t.text;
+    } else if (t.kind == OISTokenNumber || t.kind == OISTokenString || t.kind == OISTokenTyped) {
+      // A key as a segment of its own (Products/1): the service knows.
+      segment.name = t.kind == OISTokenString ? t.text : [_lexer.string substringWithRange:t.range];
+    } else {
+      return [self fail:[NSString stringWithFormat:@"a path segment expected, not %@", t]];
+    }
+    [self advance];
+    if ([self accept:OISTokenLParen]) {
+      BOOL qualified = [segment.name rangeOfString:@"."].location != NSNotFound;
+      NSMutableDictionary *parts = [NSMutableDictionary dictionary];
+      if (![self accept:OISTokenRParen]) {
+        while (YES) {
+          if (_token.kind == OISTokenName && [self peek].kind == OISTokenEquals) {
+            NSString *name = _token.text;
+            [self advance];
+            [self advance];
+            ODataExpression *value = [self parseCommon];
+            if (!value) return nil;
+            parts[name] = value;
+          } else {
+            ODataExpression *value = [self parseCommon];
+            if (!value) return nil;
+            parts[@""] = value;
+          }
+          if ([self accept:OISTokenComma]) continue;
+          if (![self expect:OISTokenRParen what:@"')'"]) return nil;
+          break;
+        }
+      }
+      if (qualified) {
+        segment.isCall = YES;
+        segment.arguments = parts;
+      } else {
+        segment.keys = parts;
+      }
+    }
+    [segments addObject:segment];
+    if (_token.kind == OISTokenEnd) break;
+    if (![self expect:OISTokenSlash what:@"'/'"]) return nil;
+  }
+  ODataResourcePath *path = [[ODataResourcePath alloc] init];
+  path.segments = segments;
+  return path;
+}
+
+@end
+
+#pragma mark - Entry points
+
+@implementation ODataQueryOptions
+
+- (instancetype)init
+{
+  self = [super init];
+  if (!self) return nil;
+  _orderBy = @[];
+  _select = @[];
+  _expand = @[];
+  _aliases = @{};
+  return self;
+}
+
++ (instancetype)optionsWithQuery:(NSDictionary *)query error:(NSError **)error
+{
+  ODataQueryOptions *options = [[ODataQueryOptions alloc] init];
+  NSMutableDictionary *aliases = [NSMutableDictionary dictionary];
+  for (NSString *key in [query.allKeys sortedArrayUsingSelector:@selector(compare:)]) {
+    NSString *value = query[key];
+    if (![value isKindOfClass:[NSString class]]) continue;
+    OISParser *parser = [[OISParser alloc] initWithString:value];
+    BOOL ok;
+    if ([key hasPrefix:@"@"]) {
+      ODataExpression *e = [parser parseCommon];
+      ok = e && [parser atEnd];
+      if (ok) aliases[[key substringFromIndex:1]] = e;
+    } else if ([key hasPrefix:@"$"]) {
+      // 4.01 allows system query options without the $; 4.0 does not.
+      if ([key isEqualToString:@"$format"] || [key isEqualToString:@"$skiptoken"] || [key isEqualToString:@"$deltatoken"] ||
+          [key isEqualToString:@"$schemaversion"] || [key isEqualToString:@"$id"] || [key isEqualToString:@"$index"]) {
+        continue;
+      }
+      ok = [parser parseOption:key into:options] && [parser atEnd];
+    } else {
+      continue;  // a custom option
+    }
+    if (!ok) {
+      if (error) *error = parser.error;
+      return nil;
+    }
+  }
+  options.aliases = aliases;
+  return options;
+}
+
+- (NSString *)description
+{
+  NSMutableArray *parts = [NSMutableArray array];
+  if (self.filter) [parts addObject:[@"$filter=" stringByAppendingString:self.filter.description]];
+  if (self.orderBy.count) [parts addObject:[@"$orderby=" stringByAppendingString:[[self.orderBy valueForKey:@"description"] componentsJoinedByString:@","]]];
+  if (self.select.count) [parts addObject:[@"$select=" stringByAppendingString:[[self.select valueForKey:@"description"] componentsJoinedByString:@","]]];
+  if (self.expand.count) [parts addObject:[@"$expand=" stringByAppendingString:[[self.expand valueForKey:@"description"] componentsJoinedByString:@","]]];
+  if (self.top) [parts addObject:[NSString stringWithFormat:@"$top=%@", self.top]];
+  if (self.skip) [parts addObject:[NSString stringWithFormat:@"$skip=%@", self.skip]];
+  if (self.includeCount) [parts addObject:[NSString stringWithFormat:@"$count=%@", self.includeCount.boolValue ? @"true" : @"false"]];
+  if (self.levels) [parts addObject:self.levels.integerValue < 0 ? @"$levels=max" : [NSString stringWithFormat:@"$levels=%@", self.levels]];
+  if (self.search) [parts addObject:[@"$search=" stringByAppendingString:self.search]];
+  return [parts componentsJoinedByString:@";"];
+}
+
+@end
+

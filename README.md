@@ -293,6 +293,22 @@ makes, are history transactions, fetched with
 `NSPersistentHistoryChangeRequest` as from any store; the service's changes
 are by `ODataRemoteChangesAuthor`. The history is kept in memory.
 
+## Reading OData's URL syntax
+
+`ODataExpression.h` is the other direction, for a service (and for tests):
+it parses a resource path with its key predicates, and the system query
+options, `$filter` and `$orderby` expressions with OData's precedence,
+lambdas, casts, functions and every literal form, `$select`, `$expand` with
+nested options, `$top`, `$skip`, `$count`, `$search`, into a tree that
+describes itself back as canonical OData.
+
+```objc
+ODataQueryOptions *options = [ODataQueryOptions optionsWithQuery:@{ @"$filter": @"Products/any(p:p/UnitPrice gt 20)",
+                                                                   @"$expand": @"Category($select=Name)" } error:&error];
+```
+
+The Workbench's in-memory service evaluates requests over it.
+
 ## Threading
 
 `NSIncrementalStore` callbacks are synchronous. **Do not load this store on the

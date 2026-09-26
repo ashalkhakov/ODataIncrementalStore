@@ -69,10 +69,11 @@ options = @{ ODataIncrementalStoreTransportOption: service };
 
 This gives a full round-trip test with no network on both platforms. It is
 also what the Workbench example does today with `WorkbenchEngine`, which is
-a hard-coded, dictionary-backed prototype of this core (routing, a `$filter`
-parser with lambdas, `$expand`, ETags, a hand-written `$metadata`). The
-server replaces it: Workbench becomes an `ODataService` over an in-memory
-Core Data store, seeded with the same rows.
+a hard-coded, dictionary-backed prototype of this core (routing, `$filter`,
+`$orderby`, `$select` and `$expand` evaluated over the library's parser,
+ETags, a hand-written `$metadata`). The server replaces it: Workbench
+becomes an `ODataService` over an in-memory Core Data store, seeded with
+the same rows.
 
 ### The data source
 
@@ -137,7 +138,15 @@ Requests map onto fetch requests, the reverse of `ODataQueryBuilder`:
 
 ### `$filter` to `NSPredicate`
 
-Parse `$filter` into an AST, then build the predicate from
+The parsing exists: `ODataExpression.h` reads resource paths with their
+key predicates and every system query option (`$filter` and `$orderby`
+expressions with OData's precedence, lambdas, casts, function calls and
+literals of every type; `$select`; `$expand` with options nested to any
+depth), with a split lexer and a recursive descent parser, and describes
+the tree back as canonical OData text. The client's tests already check
+that every `$filter` the translator writes parses.
+
+From that tree, build the predicate from
 `NSComparisonPredicate`, `NSCompoundPredicate` and `NSExpression` objects.
 **Never build a predicate by formatting a string for
 `+predicateWithFormat:`**:

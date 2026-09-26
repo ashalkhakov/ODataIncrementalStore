@@ -212,7 +212,7 @@ id ODataNormalizedControlInformation(id json, NSString *version)
 @end
 #endif
 
-static id<ODataTransport> OISDefaultTransport(void)
+id<ODataTransport> ODataDefaultTransport(void)
 {
   static id<ODataTransport> transport;
   @synchronized([ODataClient class]) {
@@ -252,7 +252,7 @@ static id<ODataTransport> OISDefaultTransport(void)
 
 - (void)transport:(NSURLRequest *)request context:(ODataExchange *)exchange action:(SEL)action
 {
-  id<ODataTransport> transport = self.transport ?: OISDefaultTransport();
+  id<ODataTransport> transport = self.transport ?: ODataDefaultTransport();
   ODataExchange *wire = [[ODataExchange alloc] initWithRequest:request target:self action:action];
   wire.context = exchange;
   if (!transport) {

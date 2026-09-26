@@ -101,17 +101,34 @@
   XCTAssertEqualObjects(q[@"$expand"], @"Category");
 }
 
+- (void)testNestedPrefetchIsNestedExpand
+{
+  NSFetchRequest *fetch = [NSFetchRequest fetchRequestWithEntityName:@"Product"];
+  fetch.entity = [self productEntity];
+  fetch.relationshipKeyPathsForPrefetching = @[ @"suppliers.products", @"category", @"suppliers" ];
+  NSError *error = nil;
+  NSURL *url = [_builder URLForFetch:fetch entity:[self productEntity] error:&error];
+  XCTAssertNil(error);
+  // 4.0 has no paths in $expand: nested options, and one item per start.
+  XCTAssertEqualObjects([self queryFromURL:url][@"$expand"], @"Suppliers($expand=Products),Category");
+  NSError *parse = nil;
+  XCTAssertNotNil([ODataQueryOptions optionsWithQuery:@{ @"$expand": [self queryFromURL:url][@"$expand"] } error:&parse], @"%@", parse);
+}
+
 - (void)testCountPath
 {
   NSFetchRequest *fetch = [NSFetchRequest fetchRequestWithEntityName:@"Product"];
   fetch.entity = [self productEntity];
   fetch.resultType = NSCountResultType;
   fetch.predicate = [NSPredicate predicateWithFormat:@"discontinued == NO"];
+  fetch.sortDescriptors = @[ [NSSortDescriptor sortDescriptorWithKey:@"name" ascending:YES] ];
+  fetch.fetchLimit = 5;
   NSError *error = nil;
   NSURL *url = [_builder URLForFetch:fetch entity:[self productEntity] error:&error];
   XCTAssertNil(error);
   XCTAssertTrue([url.path hasSuffix:@"/Products/$count"]);
-  XCTAssertEqualObjects([self queryFromURL:url][@"$filter"], @"Discontinued eq false");
+  // $filter alone: TripPin answers 400 to $orderby on /$count.
+  XCTAssertEqualObjects([self queryFromURL:url], @{ @"$filter": @"Discontinued eq false" });
 }
 
 - (void)testSelectFromDictionaryResult

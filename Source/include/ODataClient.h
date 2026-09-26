@@ -68,10 +68,15 @@ FOUNDATION_EXPORT id ODataNormalizedControlInformation(id json, NSString * _Null
 - (void)startExchange:(ODataExchange *)exchange;
 @end
 
+// The transport a client uses when it is given none: NSURLSession, where
+// Foundation has it (Apple, and gnustep-base built with libcurl), else
+// NSURLConnection on a thread of its own. For a transport that wraps the
+// network (one that logs, say) to hand exchanges on to.
+FOUNDATION_EXPORT id<ODataTransport> ODataDefaultTransport(void);
+
 @interface ODataClient : NSObject
 @property (nonatomic, readonly) ODataConfiguration *configuration;
-// nil: NSURLSession, where Foundation has it (Apple, and gnustep-base
-// built with libcurl), else NSURLConnection on a thread of its own.
+// nil: ODataDefaultTransport().
 @property (nonatomic, strong, nullable) id<ODataTransport> transport;
 
 // Sends a request with the configuration's headers. When it is done, on

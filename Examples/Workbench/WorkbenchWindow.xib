@@ -11,18 +11,26 @@
                 <outlet property="presetsPopup" destination="PRE" id="c2"/>
                 <outlet property="entityPopup" destination="ENT" id="c3"/>
                 <outlet property="resultTypePopup" destination="RES" id="c4"/>
-                <outlet property="sortPopup" destination="SRT" id="c5"/>
-                <outlet property="directionPopup" destination="DIR" id="c6"/>
-                <outlet property="expandPopup" destination="EXP" id="c7"/>
                 <outlet property="limitField" destination="LIM" id="c8"/>
                 <outlet property="predicateView" destination="PRED" id="c9"/>
                 <outlet property="faultsButton" destination="FLT" id="c10"/>
                 <outlet property="wireURLField" destination="WIRE" id="c11"/>
                 <outlet property="statusField" destination="STAT" id="c12"/>
                 <outlet property="tableView" destination="TBL" id="c13"/>
-                <outlet property="logView" destination="LOG" id="c14"/>
+                <outlet property="logScrollView" destination="LSCR" id="c14"/>
                 <outlet property="inspectorView" destination="INS" id="c15"/>
                 <outlet property="mainMenu" destination="MENU" id="c16"/>
+                <outlet property="servicePopup" destination="SVC" id="c17"/>
+                <outlet property="serviceURLField" destination="URL" id="c18"/>
+                <outlet property="connectButton" destination="CON" id="c19"/>
+                <outlet property="operationPopup" destination="OPS" id="c20"/>
+                <outlet property="operationParametersField" destination="PAR" id="c21"/>
+                <outlet property="insertButton" destination="INSB" id="c23"/>
+                <outlet property="skipField" destination="SKP" id="c25"/>
+                <outlet property="batchSizeField" destination="BAT" id="c26"/>
+                <outlet property="subentitiesButton" destination="SUB" id="c27"/>
+                <outlet property="saveButton" destination="SAVE" id="c22"/>
+                <outlet property="revertButton" destination="REV" id="c24"/>
             </connections>
         </customObject>
         <customObject id="-1" userLabel="First Responder" customClass="FirstResponder"/>
@@ -44,39 +52,61 @@
         </menu>
         <window title="OIS Workbench" releasedWhenClosed="NO" id="WIN">
             <windowStyleMask key="styleMask" titled="YES" closable="YES" miniaturizable="YES" resizable="YES"/>
-            <rect key="contentRect" x="40" y="40" width="1120" height="720"/>
+            <rect key="contentRect" x="40" y="40" width="1120" height="860"/>
             <view key="contentView" id="CV">
-                <rect key="frame" x="0.0" y="0.0" width="1120" height="720"/>
+                <rect key="frame" x="0.0" y="0.0" width="1120" height="860"/>
                 <autoresizingMask key="autoresizingMask" widthSizable="YES" heightSizable="YES"/>
                 <subviews>
-                    <textField id="LPRE">
-                        <rect key="frame" x="16" y="688" width="60" height="18"/>
+                    <textField id="LSVC">
+                        <rect key="frame" x="16" y="828" width="56" height="18"/>
                         <autoresizingMask key="autoresizingMask" flexibleMinY="YES"/>
-                        <textFieldCell key="cell" title="Presets" id="LPREC"/>
+                        <textFieldCell key="cell" title="Service" id="LSVCC"/>
                     </textField>
-                    <popUpButton id="PRE">
-                        <rect key="frame" x="80" y="684" width="280" height="24"/>
+                    <popUpButton id="SVC">
+                        <rect key="frame" x="72" y="824" width="190" height="24"/>
                         <autoresizingMask key="autoresizingMask" flexibleMinY="YES"/>
-                        <popUpButtonCell key="cell" type="push" title="All products" bezelStyle="rounded" alignment="left" lineBreakMode="truncatingTail" state="on" borderStyle="borderAndBezel" inset="2" selectedItem="P0" id="PREC">
-                            <menu key="menu" id="PREM">
+                        <popUpButtonCell key="cell" type="push" title="Built-in (in memory)" bezelStyle="rounded" alignment="left" lineBreakMode="truncatingTail" state="on" borderStyle="borderAndBezel" inset="2" selectedItem="S0" id="SVCC">
+                            <menu key="menu" id="SVCM">
                                 <items>
-                                    <menuItem title="All products" state="on" id="P0"/>
-                                    <menuItem title="Priced over 20" id="P1"/>
-                                    <menuItem title="Beverages + category" id="P2"/>
-                                    <menuItem title="Top 5 dictionary" id="P3"/>
-                                    <menuItem title="Count discontinued" id="P4"/>
-                                    <menuItem title="Name begins with C" id="P5"/>
-                                    <menuItem title="UK suppliers" id="P6"/>
-                                    <menuItem title="Stock on hand" id="P7"/>
+                                    <menuItem title="Built-in (in memory)" state="on" id="S0"/>
+                                    <menuItem title="Northwind (read-only)" id="S1"/>
+                                    <menuItem title="TripPin (read/write)" id="S2"/>
+                                    <menuItem title="Other URL…" id="S3"/>
                                 </items>
                             </menu>
+                        </popUpButtonCell>
+                        <connections>
+                            <action selector="serviceChanged:" target="-2" id="ASVC"/>
+                        </connections>
+                    </popUpButton>
+                    <textField id="URL">
+                        <rect key="frame" x="268" y="826" width="400" height="22"/>
+                        <autoresizingMask key="autoresizingMask" widthSizable="YES" flexibleMinY="YES"/>
+                        <textFieldCell key="cell" selectable="YES" editable="YES" sendsActionOnEndEditing="NO" state="on" borderStyle="bezel" drawsBackground="YES" placeholderString="https://host/path/Service.svc/" id="URLC"/>
+                        <connections>
+                            <action selector="connect:" target="-2" id="AURL"/>
+                        </connections>
+                    </textField>
+                    <button id="CON">
+                        <rect key="frame" x="672" y="824" width="90" height="24"/>
+                        <autoresizingMask key="autoresizingMask" flexibleMinX="YES" flexibleMinY="YES"/>
+                        <buttonCell key="cell" type="push" title="Connect" bezelStyle="rounded" alignment="center" borderStyle="border" inset="2" id="CONC"/>
+                        <connections>
+                            <action selector="connect:" target="-2" id="ACON"/>
+                        </connections>
+                    </button>
+                    <popUpButton id="PRE">
+                        <rect key="frame" x="770" y="824" width="244" height="24"/>
+                        <autoresizingMask key="autoresizingMask" flexibleMinX="YES" flexibleMinY="YES"/>
+                        <popUpButtonCell key="cell" type="push" title="Presets" bezelStyle="rounded" alignment="left" lineBreakMode="truncatingTail" state="on" borderStyle="borderAndBezel" inset="2" id="PREC">
+                            <menu key="menu" id="PREM"/>
                         </popUpButtonCell>
                         <connections>
                             <action selector="applyPreset:" target="-2" id="APRE"/>
                         </connections>
                     </popUpButton>
                     <button id="RST">
-                        <rect key="frame" x="1020" y="684" width="80" height="24"/>
+                        <rect key="frame" x="1020" y="824" width="80" height="24"/>
                         <autoresizingMask key="autoresizingMask" flexibleMinX="YES" flexibleMinY="YES"/>
                         <buttonCell key="cell" type="push" title="Reset" bezelStyle="rounded" alignment="center" borderStyle="border" inset="2" id="RSTC"/>
                         <connections>
@@ -84,12 +114,12 @@
                         </connections>
                     </button>
                     <textField id="LENT">
-                        <rect key="frame" x="16" y="652" width="80" height="16"/>
+                        <rect key="frame" x="16" y="792" width="80" height="16"/>
                         <autoresizingMask key="autoresizingMask" flexibleMinY="YES"/>
                         <textFieldCell key="cell" title="Entity" id="LENTC"/>
                     </textField>
                     <popUpButton id="ENT">
-                        <rect key="frame" x="16" y="628" width="150" height="24"/>
+                        <rect key="frame" x="16" y="768" width="150" height="24"/>
                         <autoresizingMask key="autoresizingMask" flexibleMinY="YES"/>
                         <popUpButtonCell key="cell" type="push" title="Product" bezelStyle="rounded" alignment="left" lineBreakMode="truncatingTail" state="on" borderStyle="borderAndBezel" inset="2" id="ENTC">
                             <menu key="menu" id="ENTM"/>
@@ -99,12 +129,12 @@
                         </connections>
                     </popUpButton>
                     <textField id="LRES">
-                        <rect key="frame" x="176" y="652" width="80" height="16"/>
+                        <rect key="frame" x="176" y="792" width="80" height="16"/>
                         <autoresizingMask key="autoresizingMask" flexibleMinY="YES"/>
                         <textFieldCell key="cell" title="Result" id="LRESC"/>
                     </textField>
                     <popUpButton id="RES">
-                        <rect key="frame" x="176" y="628" width="150" height="24"/>
+                        <rect key="frame" x="176" y="768" width="150" height="24"/>
                         <autoresizingMask key="autoresizingMask" flexibleMinY="YES"/>
                         <popUpButtonCell key="cell" type="push" title="objects" bezelStyle="rounded" alignment="left" lineBreakMode="truncatingTail" state="on" borderStyle="borderAndBezel" inset="2" selectedItem="R0" id="RESC">
                             <menu key="menu" id="RESM">
@@ -120,67 +150,46 @@
                             <action selector="refreshTranslation" target="-2" id="ARES"/>
                         </connections>
                     </popUpButton>
-                    <textField id="LSRT">
-                        <rect key="frame" x="336" y="652" width="80" height="16"/>
-                        <autoresizingMask key="autoresizingMask" flexibleMinY="YES"/>
-                        <textFieldCell key="cell" title="Sort" id="LSRTC"/>
-                    </textField>
-                    <popUpButton id="SRT">
-                        <rect key="frame" x="336" y="628" width="130" height="24"/>
-                        <autoresizingMask key="autoresizingMask" flexibleMinY="YES"/>
-                        <popUpButtonCell key="cell" type="push" title="name" bezelStyle="rounded" alignment="left" lineBreakMode="truncatingTail" borderStyle="borderAndBezel" inset="2" id="SRTC">
-                            <menu key="menu" id="SRTM"/>
-                        </popUpButtonCell>
-                        <connections>
-                            <action selector="refreshTranslation" target="-2" id="ASRT"/>
-                        </connections>
-                    </popUpButton>
-                    <popUpButton id="DIR">
-                        <rect key="frame" x="472" y="628" width="110" height="24"/>
-                        <autoresizingMask key="autoresizingMask" flexibleMinY="YES"/>
-                        <popUpButtonCell key="cell" type="push" title="ascending" bezelStyle="rounded" alignment="left" lineBreakMode="truncatingTail" state="on" borderStyle="borderAndBezel" inset="2" selectedItem="D0" id="DIRC">
-                            <menu key="menu" id="DIRM">
-                                <items>
-                                    <menuItem title="ascending" state="on" id="D0"/>
-                                    <menuItem title="descending" id="D1"/>
-                                </items>
-                            </menu>
-                        </popUpButtonCell>
-                        <connections>
-                            <action selector="refreshTranslation" target="-2" id="ADIR"/>
-                        </connections>
-                    </popUpButton>
                     <textField id="LLIM">
-                        <rect key="frame" x="592" y="652" width="40" height="16"/>
+                        <rect key="frame" x="336" y="792" width="60" height="16"/>
                         <autoresizingMask key="autoresizingMask" flexibleMinY="YES"/>
                         <textFieldCell key="cell" title="$top" id="LLIMC"/>
                     </textField>
                     <textField id="LIM">
-                        <rect key="frame" x="592" y="628" width="60" height="22"/>
+                        <rect key="frame" x="336" y="768" width="60" height="22"/>
                         <autoresizingMask key="autoresizingMask" flexibleMinY="YES"/>
                         <textFieldCell key="cell" selectable="YES" editable="YES" sendsActionOnEndEditing="YES" state="on" borderStyle="bezel" drawsBackground="YES" placeholderString="∞" id="LIMC"/>
                     </textField>
-                    <textField id="LEXP">
-                        <rect key="frame" x="662" y="652" width="70" height="16"/>
+                    <textField id="LSKP">
+                        <rect key="frame" x="404" y="792" width="60" height="16"/>
                         <autoresizingMask key="autoresizingMask" flexibleMinY="YES"/>
-                        <textFieldCell key="cell" title="$expand" id="LEXPC"/>
+                        <textFieldCell key="cell" title="$skip" id="LSKPC"/>
                     </textField>
-                    <popUpButton id="EXP">
-                        <rect key="frame" x="662" y="628" width="140" height="24"/>
+                    <textField id="SKP">
+                        <rect key="frame" x="404" y="768" width="60" height="22"/>
                         <autoresizingMask key="autoresizingMask" flexibleMinY="YES"/>
-                        <popUpButtonCell key="cell" type="push" title="(none)" bezelStyle="rounded" alignment="left" lineBreakMode="truncatingTail" state="on" borderStyle="borderAndBezel" inset="2" selectedItem="E0" id="EXPC">
-                            <menu key="menu" id="EXPM">
-                                <items>
-                                    <menuItem title="(none)" state="on" id="E0"/>
-                                </items>
-                            </menu>
-                        </popUpButtonCell>
+                        <textFieldCell key="cell" selectable="YES" editable="YES" sendsActionOnEndEditing="YES" state="on" borderStyle="bezel" drawsBackground="YES" placeholderString="0" id="SKPC"/>
+                    </textField>
+                    <textField id="LBAT">
+                        <rect key="frame" x="472" y="792" width="80" height="16"/>
+                        <autoresizingMask key="autoresizingMask" flexibleMinY="YES"/>
+                        <textFieldCell key="cell" title="page size" id="LBATC"/>
+                    </textField>
+                    <textField id="BAT">
+                        <rect key="frame" x="472" y="768" width="70" height="22"/>
+                        <autoresizingMask key="autoresizingMask" flexibleMinY="YES"/>
+                        <textFieldCell key="cell" selectable="YES" editable="YES" sendsActionOnEndEditing="YES" state="on" borderStyle="bezel" drawsBackground="YES" placeholderString="service's" id="BATC"/>
+                    </textField>
+                    <button id="SUB">
+                        <rect key="frame" x="554" y="768" width="130" height="24"/>
+                        <autoresizingMask key="autoresizingMask" flexibleMinY="YES"/>
+                        <buttonCell key="cell" type="check" title="sub-entities" bezelStyle="regularSquare" state="on" inset="2" id="SUBC"/>
                         <connections>
-                            <action selector="refreshTranslation" target="-2" id="AEXP"/>
+                            <action selector="refreshTranslation" target="-2" id="ASUB"/>
                         </connections>
-                    </popUpButton>
+                    </button>
                     <button id="FLT">
-                        <rect key="frame" x="812" y="628" width="140" height="24"/>
+                        <rect key="frame" x="690" y="768" width="140" height="24"/>
                         <autoresizingMask key="autoresizingMask" flexibleMinY="YES"/>
                         <buttonCell key="cell" type="check" title="return as faults" bezelStyle="regularSquare" state="on" inset="2" id="FLTC"/>
                         <connections>
@@ -188,7 +197,7 @@
                         </connections>
                     </button>
                     <button id="GO">
-                        <rect key="frame" x="960" y="624" width="140" height="32"/>
+                        <rect key="frame" x="960" y="764" width="140" height="32"/>
                         <autoresizingMask key="autoresizingMask" flexibleMinX="YES" flexibleMinY="YES"/>
                         <buttonCell key="cell" type="push" title="Execute" bezelStyle="rounded" alignment="center" borderStyle="border" inset="2" id="GOC">
                             <string key="keyEquivalent" base64-UTF8="YES">DQ==</string>
@@ -198,12 +207,12 @@
                         </connections>
                     </button>
                     <textField id="LPRED">
-                        <rect key="frame" x="16" y="588" width="120" height="16"/>
+                        <rect key="frame" x="16" y="728" width="120" height="16"/>
                         <autoresizingMask key="autoresizingMask" flexibleMinY="YES"/>
                         <textFieldCell key="cell" title="NSPredicate" id="LPREDC"/>
                     </textField>
                     <scrollView borderType="bezelBorder" autohidesScrollers="YES" hasVerticalScroller="YES" hasHorizontalScroller="NO" id="PSCR">
-                        <rect key="frame" x="16" y="548" width="1084" height="38"/>
+                        <rect key="frame" x="16" y="688" width="1084" height="38"/>
                         <autoresizingMask key="autoresizingMask" widthSizable="YES" flexibleMinY="YES"/>
                         <clipView key="contentView" id="PCLIP">
                             <rect key="frame" x="1" y="1" width="1082" height="36"/>
@@ -258,11 +267,6 @@
                             <rect key="frame" x="1" y="1" width="370" height="334"/>
                             <autoresizingMask key="autoresizingMask" widthSizable="YES" heightSizable="YES"/>
                             <subviews>
-                                <textView editable="NO" importsGraphics="NO" richText="NO" id="LOG">
-                                    <rect key="frame" x="0.0" y="0.0" width="370" height="334"/>
-                                    <autoresizingMask key="autoresizingMask" widthSizable="YES" heightSizable="YES"/>
-                                    <string key="text">Wire log — HTTP the store actually sent. No socket.</string>
-                                </textView>
                             </subviews>
                         </clipView>
                         <scroller key="verticalScroller" verticalHuggingPriority="750" id="LVS"/>
@@ -277,34 +281,42 @@
                                 <textView editable="NO" importsGraphics="NO" richText="NO" id="INS">
                                     <rect key="frame" x="0.0" y="0.0" width="698" height="122"/>
                                     <autoresizingMask key="autoresizingMask" widthSizable="YES" heightSizable="YES"/>
-                                    <string key="text">Select a row to fault to-one / to-many. PATCH / POST / DELETE use the real store.</string>
+                                    <string key="text">Select a row to see it. Insert, edit cells, Delete, then Save: POST, PATCH, DELETE through the real store.</string>
                                 </textView>
                             </subviews>
                         </clipView>
                         <scroller key="verticalScroller" verticalHuggingPriority="750" id="IVS"/>
                     </scrollView>
-                    <button id="BUMP">
-                        <rect key="frame" x="728" y="132" width="120" height="28"/>
-                        <autoresizingMask key="autoresizingMask" flexibleMinX="YES" flexibleMaxY="YES"/>
-                        <buttonCell key="cell" type="push" title="Price +1" bezelStyle="rounded" alignment="center" borderStyle="border" inset="2" id="BUMPC"/>
-                        <connections>
-                            <action selector="bumpPrice:" target="-2" id="ABUMP"/>
-                        </connections>
-                    </button>
                     <button id="INSB">
-                        <rect key="frame" x="856" y="132" width="120" height="28"/>
+                        <rect key="frame" x="728" y="132" width="88" height="28"/>
                         <autoresizingMask key="autoresizingMask" flexibleMinX="YES" flexibleMaxY="YES"/>
-                        <buttonCell key="cell" type="push" title="Insert product" bezelStyle="rounded" alignment="center" borderStyle="border" inset="2" id="INSBC"/>
+                        <buttonCell key="cell" type="push" title="Insert" bezelStyle="rounded" alignment="center" borderStyle="border" inset="2" id="INSBC"/>
                         <connections>
-                            <action selector="insertProduct:" target="-2" id="AINS"/>
+                            <action selector="insertObject:" target="-2" id="AINS"/>
                         </connections>
                     </button>
                     <button id="DEL">
-                        <rect key="frame" x="984" y="132" width="116" height="28"/>
+                        <rect key="frame" x="820" y="132" width="88" height="28"/>
                         <autoresizingMask key="autoresizingMask" flexibleMinX="YES" flexibleMaxY="YES"/>
                         <buttonCell key="cell" type="push" title="Delete" bezelStyle="rounded" alignment="center" borderStyle="border" inset="2" id="DELC"/>
                         <connections>
                             <action selector="deleteSelected:" target="-2" id="ADEL"/>
+                        </connections>
+                    </button>
+                    <button id="SAVE">
+                        <rect key="frame" x="912" y="132" width="94" height="28"/>
+                        <autoresizingMask key="autoresizingMask" flexibleMinX="YES" flexibleMaxY="YES"/>
+                        <buttonCell key="cell" type="push" title="Save" bezelStyle="rounded" alignment="center" borderStyle="border" inset="2" id="SAVEC"/>
+                        <connections>
+                            <action selector="saveChanges:" target="-2" id="ASAVE"/>
+                        </connections>
+                    </button>
+                    <button id="REV">
+                        <rect key="frame" x="1010" y="132" width="90" height="28"/>
+                        <autoresizingMask key="autoresizingMask" flexibleMinX="YES" flexibleMaxY="YES"/>
+                        <buttonCell key="cell" type="push" title="Revert" bezelStyle="rounded" alignment="center" borderStyle="border" inset="2" id="REVC"/>
+                        <connections>
+                            <action selector="revertChanges:" target="-2" id="AREV"/>
                         </connections>
                     </button>
                     <button id="FF">
@@ -323,10 +335,38 @@
                             <action selector="fireRelationships:" target="-2" id="AREL"/>
                         </connections>
                     </button>
+                    <popUpButton id="OPS">
+                        <rect key="frame" x="728" y="64" width="268" height="24"/>
+                        <autoresizingMask key="autoresizingMask" flexibleMinX="YES" flexibleMaxY="YES"/>
+                        <popUpButtonCell key="cell" type="push" title="Operations" bezelStyle="rounded" alignment="left" lineBreakMode="truncatingTail" state="on" borderStyle="borderAndBezel" inset="2" id="OPSC">
+                            <menu key="menu" id="OPSM"/>
+                        </popUpButtonCell>
+                    </popUpButton>
+                    <button id="INV">
+                        <rect key="frame" x="1000" y="62" width="100" height="28"/>
+                        <autoresizingMask key="autoresizingMask" flexibleMinX="YES" flexibleMaxY="YES"/>
+                        <buttonCell key="cell" type="push" title="Invoke" bezelStyle="rounded" alignment="center" borderStyle="border" inset="2" id="INVC"/>
+                        <connections>
+                            <action selector="invokeOperation:" target="-2" id="AINV"/>
+                        </connections>
+                    </button>
+                    <textField id="PAR">
+                        <rect key="frame" x="728" y="38" width="268" height="22"/>
+                        <autoresizingMask key="autoresizingMask" flexibleMinX="YES" flexibleMaxY="YES"/>
+                        <textFieldCell key="cell" selectable="YES" editable="YES" sendsActionOnEndEditing="NO" state="on" borderStyle="bezel" drawsBackground="YES" placeholderString="parameters: name=value, …" id="PARC"/>
+                    </textField>
+                    <button id="CHG">
+                        <rect key="frame" x="1000" y="34" width="100" height="28"/>
+                        <autoresizingMask key="autoresizingMask" flexibleMinX="YES" flexibleMaxY="YES"/>
+                        <buttonCell key="cell" type="push" title="Changes" bezelStyle="rounded" alignment="center" borderStyle="border" inset="2" id="CHGC"/>
+                        <connections>
+                            <action selector="fetchRemoteChanges:" target="-2" id="ACHG"/>
+                        </connections>
+                    </button>
                     <textField id="STAT">
                         <rect key="frame" x="16" y="12" width="1084" height="20"/>
                         <autoresizingMask key="autoresizingMask" widthSizable="YES" flexibleMaxY="YES"/>
-                        <textFieldCell key="cell" title="In-memory OData v4 behind ODataTransport. Catalog.xcdatamodeld. Real NSIncrementalStore." id="STATC"/>
+                        <textFieldCell key="cell" title="Choose a service: the built-in one runs in memory; Northwind and TripPin are Microsoft's public OData v4 services." id="STATC"/>
                     </textField>
                 </subviews>
             </view>

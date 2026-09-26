@@ -18,6 +18,7 @@ typedef NS_ENUM(NSInteger, ODataIncrementalStoreErrorCode) {
   ODataIncrementalStoreErrorMissingKey = 7,
   ODataIncrementalStoreErrorTransport = 8,
   ODataIncrementalStoreErrorModelMismatch = 9,
+  ODataIncrementalStoreErrorSyntax = 10,           // OData URL syntax that does not parse (ODataExpression.h)
   ODataIncrementalStoreErrorHTTP = 1000,
   ODataIncrementalStoreErrorOptimisticLocking = 1570
 };

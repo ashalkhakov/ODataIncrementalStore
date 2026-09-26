@@ -3,6 +3,7 @@
 
 #import "WorkbenchEngine.h"
 #import <string.h>
+#include <math.h>
 
 @implementation WorkbenchLogEntry
 @end
@@ -10,21 +11,45 @@
 static NSString *WBDecode(NSString *s)
 {
   if (!s.length) return @"";
-  NSMutableString *out = [NSMutableString stringWithCapacity:s.length];
-  const char *bytes = s.UTF8String;
-  for (NSUInteger i = 0; bytes && bytes[i]; i++) {
-    if (bytes[i] == '%' && bytes[i + 1] && bytes[i + 2]) {
-      unsigned int v = 0;
-      sscanf(bytes + i + 1, "%2x", &v);
-      [out appendFormat:@"%c", (char)v];
-      i += 2;
-    } else if (bytes[i] == '+') {
-      [out appendString:@" "];
-    } else {
-      [out appendFormat:@"%c", bytes[i]];
-    }
+  NSString *spaced = [s stringByReplacingOccurrencesOfString:@"+" withString:@" "];
+  return [spaced stringByRemovingPercentEncoding] ?: spaced;
+}
+
+// The navigation properties: set -> name -> (the set it leads to, to-many).
+static NSDictionary *WBNavigation(void)
+{
+  static NSDictionary *table;
+  if (!table) {
+    table = @{
+      @"Products": @{ @"Category": @[ @"Categories", @NO ], @"Suppliers": @[ @"Suppliers", @YES ], @"Stocks": @[ @"Stocks", @YES ] },
+      @"Categories": @{ @"Products": @[ @"Products", @YES ] },
+      @"Suppliers": @{ @"Products": @[ @"Products", @YES ] },
+      @"Locations": @{ @"Stocks": @[ @"Stocks", @YES ] },
+      @"Stocks": @{ @"Product": @[ @"Products", @NO ], @"Location": @[ @"Locations", @NO ] },
+    };
   }
-  return out;
+  return table;
+}
+
+// An entity while an expression is evaluated: its set, and its row.
+@interface WBEntity : NSObject
+@property (nonatomic, copy) NSString *set;
+@property (nonatomic, strong) NSDictionary *row;
+@end
+
+@implementation WBEntity
++ (instancetype)entityInSet:(NSString *)set row:(NSDictionary *)row
+{
+  WBEntity *e = [[self alloc] init];
+  e.set = set;
+  e.row = row;
+  return e;
+}
+@end
+
+static void WBRefuse(NSString *why)
+{
+  @throw [NSException exceptionWithName:@"OData" reason:why userInfo:nil];
 }
 
 static NSDictionary *WBQuery(NSURL *url)
@@ -59,6 +84,7 @@ static NSString *WBEtag(id version)
 }
 
 @implementation WorkbenchEngine {
+  NSDictionary *_aliases;  // the request's parameter aliases, while its expressions are evaluated
   NSMutableDictionary *_sets;   // entitySet → NSMutableArray of NSMutableDictionary (OData names)
   NSMutableDictionary *_seq;    // entitySet → NSNumber
   NSMutableArray *_log;
@@ -180,6 +206,7 @@ static NSString *WBEtag(id version)
       returningResponse:(NSURLResponse **)response
                   error:(NSError **)error
 {
+  NSDate *started = [NSDate date];
   NSString *method = request.HTTPMethod.uppercaseString ?: @"GET";
   NSDictionary *query = WBQuery(request.URL);
   NSString *bodyStr = request.HTTPBody.length
@@ -231,8 +258,12 @@ static NSString *WBEtag(id version)
   entry.method = method;
   entry.URL = request.URL.absoluteString ?: @"";
   entry.status = status;
-  entry.requestBody = bodyStr;
-  entry.responseBody = responseText;
+  entry.requestHeaders = request.allHTTPHeaderFields;
+  entry.requestData = request.HTTPBody;
+  entry.responseHeaders = headers;
+  entry.responseData = data ?: [NSData data];
+  entry.date = started;
+  entry.duration = -[started timeIntervalSinceNow];
   entry.storeHint = [self hintForURL:request.URL method:method];
   [_log insertObject:entry atIndex:0];
   if (_log.count > 48) [_log removeLastObject];
@@ -281,56 +312,53 @@ static NSString *WBEtag(id version)
                        headers:(NSDictionary *)headers
                         status:(NSInteger *)status
 {
-  NSString *path = [self relativePath:url];
-  if (!path.length || [path isEqualToString:@"odata"]) {
+  NSString *text = [self relativePath:url];
+  if (!text.length || [text isEqualToString:@"odata"]) {
     *status = 200;
-    return @{ @"@odata.context": @"$metadata",
-              @"value": @[
-                @{ @"name": @"Categories", @"kind": @"EntitySet", @"url": @"Categories" },
-                @{ @"name": @"Products", @"kind": @"EntitySet", @"url": @"Products" },
-                @{ @"name": @"Suppliers", @"kind": @"EntitySet", @"url": @"Suppliers" },
-                @{ @"name": @"Locations", @"kind": @"EntitySet", @"url": @"Locations" },
-                @{ @"name": @"Stocks", @"kind": @"EntitySet", @"url": @"Stocks" }
-              ] };
+    NSMutableArray *sets = [NSMutableArray array];
+    for (NSString *set in @[ @"Categories", @"Products", @"Suppliers", @"Locations", @"Stocks" ]) {
+      [sets addObject:@{ @"name": set, @"kind": @"EntitySet", @"url": set }];
+    }
+    return @{ @"@odata.context": @"$metadata", @"value": sets };
   }
-  if ([path isEqualToString:@"$metadata"]) {
+  if ([text isEqualToString:@"$metadata"]) {
     *status = 200;
     return @{ @"__text": [self metadataXML] };
   }
 
-  BOOL count = NO;
-  if ([path hasSuffix:@"/$count"]) {
-    count = YES;
-    path = [path substringToIndex:path.length - 7];
-  }
+  // The path and the options, read by the library's parser; what does not
+  // parse is a 400 with the parser's reason.
+  NSError *error = nil;
+  ODataResourcePath *path = [ODataResourcePath pathWithString:text error:&error];
+  ODataQueryOptions *options = path ? [ODataQueryOptions optionsWithQuery:query error:&error] : nil;
+  if (!options) WBRefuse(error.localizedDescription ?: @"bad request");
+  _aliases = options.aliases;
 
-  NSString *set = path;
-  NSString *key = nil;
-  NSString *nav = nil;
-  NSRange paren = [path rangeOfString:@"("];
-  if (paren.location != NSNotFound) {
-    set = [path substringToIndex:paren.location];
-    NSRange close = [path rangeOfString:@")" options:0 range:NSMakeRange(paren.location, path.length - paren.location)];
-    if (close.location == NSNotFound) @throw [NSException exceptionWithName:@"OData" reason:@"Unclosed key" userInfo:nil];
-    key = [path substringWithRange:NSMakeRange(paren.location + 1, close.location - paren.location - 1)];
-    if (close.location + 1 < path.length && [path characterAtIndex:close.location + 1] == '/') {
-      nav = [path substringFromIndex:close.location + 2];
-    }
+  NSMutableArray *segments = [path.segments mutableCopy];
+  BOOL count = [[segments.lastObject name] isEqualToString:@"$count"];
+  if (count) [segments removeLastObject];
+  ODataPathSegment *first = segments.firstObject;
+  NSString *set = first.name;
+  if (!_sets[set]) {
+    *status = 404;
+    return @{ @"error": @{ @"code": @"404", @"message": [NSString stringWithFormat:@"No entity set %@", set] } };
   }
+  ODataExpression *key = first.keys.count == 1 ? first.keys.allValues.firstObject : nil;
+  NSString *nav = segments.count > 1 ? [segments[1] name] : nil;
 
   if (key) {
-    NSMutableDictionary *row = [self findSet:set key:key];
+    NSMutableDictionary *row = [self findSet:set key:key.value];
     if (!row) {
       *status = 404;
       return @{ @"error": @{ @"code": @"404", @"message": @"Not found" } };
     }
     if (nav.length) {
       *status = 200;
-      return [self navigation:set row:row name:nav];
+      return [self navigation:set row:row name:nav options:options];
     }
     if ([method isEqualToString:@"GET"]) {
       *status = 200;
-      NSDictionary *payload = [self serialize:set row:row expand:query[@"$expand"] single:YES];
+      NSDictionary *payload = [self serialize:set row:row options:options single:YES];
       return @{ @"__body": payload, @"__etag": WBEtag(row[@"__etag"]) };
     }
     if ([method isEqualToString:@"PATCH"] || [method isEqualToString:@"PUT"]) {
@@ -343,7 +371,7 @@ static NSString *WBEtag(id version)
       [self applyBody:body onto:row set:set];
       row[@"__etag"] = @([row[@"__etag"] integerValue] + 1);
       *status = 200;
-      NSDictionary *payload = [self serialize:set row:row expand:nil single:YES];
+      NSDictionary *payload = [self serialize:set row:row options:nil single:YES];
       return @{ @"__body": payload, @"__etag": WBEtag(row[@"__etag"]) };
     }
     if ([method isEqualToString:@"DELETE"]) {
@@ -356,20 +384,18 @@ static NSString *WBEtag(id version)
   }
 
   if ([method isEqualToString:@"GET"]) {
-    NSArray *rows = [self querySet:set query:query page:!count];
+    NSArray *rows = [self rows:_sets[set] inSet:set options:options page:!count];
     if (count) {
       *status = 200;
       return @{ @"__text": [NSString stringWithFormat:@"%lu", (unsigned long)rows.count] };
     }
     NSMutableArray *value = [NSMutableArray array];
     for (NSMutableDictionary *row in rows) {
-      [value addObject:[self serialize:set row:row expand:query[@"$expand"] single:NO]];
+      [value addObject:[self serialize:set row:row options:options single:NO]];
     }
     *status = 200;
     NSMutableDictionary *bodyOut = [@{ @"@odata.context": [NSString stringWithFormat:@"$metadata#%@", set], @"value": value } mutableCopy];
-    if ([query[@"$count"] isEqualToString:@"true"]) {
-      bodyOut[@"@odata.count"] = @([self querySet:set query:query page:NO].count);
-    }
+    if (options.includeCount.boolValue) bodyOut[@"@odata.count"] = @([self rows:_sets[set] inSet:set options:options page:NO].count);
     return bodyOut;
   }
   if ([method isEqualToString:@"POST"]) {
@@ -387,10 +413,9 @@ static NSString *WBEtag(id version)
       _seq[set] = @(n);
       row[keyName] = @(n);
     }
-    if (!_sets[set]) _sets[set] = [NSMutableArray array];
     [_sets[set] addObject:row];
     *status = 201;
-    NSDictionary *payload = [self serialize:set row:row expand:nil single:YES];
+    NSDictionary *payload = [self serialize:set row:row options:nil single:YES];
     NSString *loc = [NSString stringWithFormat:@"%@%@(%@)", self.serviceRoot.absoluteString, set, row[keyName]];
     return @{ @"__body": payload, @"__etag": WBEtag(row[@"__etag"]), @"__location": loc };
   }
@@ -408,57 +433,40 @@ static NSString *WBEtag(id version)
   return @"id";
 }
 
-- (NSMutableDictionary *)findSet:(NSString *)set key:(NSString *)key
+- (NSMutableDictionary *)findSet:(NSString *)set key:(id)key
 {
-  NSString *raw = key;
-  NSRange eq = [key rangeOfString:@"="];
-  if (eq.location != NSNotFound) raw = [key substringFromIndex:eq.location + 1];
-  if ([raw hasPrefix:@"'"] && [raw hasSuffix:@"'"] && raw.length >= 2) {
-    raw = [raw substringWithRange:NSMakeRange(1, raw.length - 2)];
-  }
   NSString *keyName = [self keyNameForSet:set];
   for (NSMutableDictionary *row in _sets[set]) {
-    if ([[row[keyName] description] isEqualToString:raw]) return row;
+    if ([[row[keyName] description] isEqualToString:[key description]]) return row;
   }
   return nil;
 }
 
-- (NSArray *)querySet:(NSString *)set query:(NSDictionary *)query page:(BOOL)page
+// Rows of a set, filtered, sorted, and paged as the options say.
+- (NSArray *)rows:(NSArray *)source inSet:(NSString *)set options:(ODataQueryOptions *)options page:(BOOL)page
 {
-  NSArray *rows = [_sets[set] copy] ?: @[];
-  NSString *filter = query[@"$filter"];
-  if (filter.length) {
+  NSArray *rows = [source copy] ?: @[];
+  if (options.filter) {
     NSMutableArray *kept = [NSMutableArray array];
-    for (NSMutableDictionary *row in rows) {
-      if ([self evalFilter:filter set:set row:row]) [kept addObject:row];
+    for (NSDictionary *row in rows) {
+      if (WBTruthy([self valueOf:options.filter it:[WBEntity entityInSet:set row:row] variables:@{}])) [kept addObject:row];
     }
     rows = kept;
   }
-  NSString *order = query[@"$orderby"];
-  if (order.length) {
-    NSArray *clauses = [order componentsSeparatedByString:@","];
-    rows = [rows sortedArrayUsingComparator:^NSComparisonResult(NSDictionary *a, NSDictionary *b) {
-      for (NSString *clause in clauses) {
-        NSArray *bits = [clause componentsSeparatedByString:@" "];
-        NSString *name = [bits.firstObject stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceCharacterSet]];
-        BOOL desc = bits.count > 1 && [[bits.lastObject lowercaseString] isEqualToString:@"desc"];
-        id av = a[name];
-        id bv = b[name];
-        if (av == bv || [av isEqual:bv]) continue;
-        if (av == nil || av == [NSNull null]) return desc ? NSOrderedAscending : NSOrderedDescending;
-        if (bv == nil || bv == [NSNull null]) return desc ? NSOrderedDescending : NSOrderedAscending;
-        NSComparisonResult r = [[av description] compare:[bv description] options:NSNumericSearch];
-        if ([av isKindOfClass:[NSNumber class]] && [bv isKindOfClass:[NSNumber class]]) {
-          r = [av compare:bv];
-        }
-        return desc ? -r : r;
+  if (options.orderBy.count) {
+    rows = [rows sortedArrayUsingComparator:^NSComparisonResult(id a, id b) {
+      for (ODataOrderItem *item in options.orderBy) {
+        id av = [self valueOf:item.expression it:[WBEntity entityInSet:set row:a] variables:@{}];
+        id bv = [self valueOf:item.expression it:[WBEntity entityInSet:set row:b] variables:@{}];
+        NSComparisonResult r = WBOrder(av, bv);
+        if (r != NSOrderedSame) return item.descending ? -r : r;
       }
       return NSOrderedSame;
     }];
   }
   if (page) {
-    NSInteger skip = [query[@"$skip"] integerValue];
-    NSInteger top = query[@"$top"] ? [query[@"$top"] integerValue] : NSIntegerMax;
+    NSInteger skip = options.skip.integerValue;
+    NSInteger top = options.top ? options.top.integerValue : NSIntegerMax;
     if (skip > 0 || top < (NSInteger)rows.count) {
       NSInteger loc = MIN(skip, (NSInteger)rows.count);
       NSInteger len = MIN(top, (NSInteger)rows.count - loc);
@@ -468,237 +476,201 @@ static NSString *WBEtag(id version)
   return rows;
 }
 
-#pragma mark - Filter
+#pragma mark - Expressions
 
-- (BOOL)evalFilter:(NSString *)filter set:(NSString *)set row:(NSDictionary *)row
+static BOOL WBTruthy(id value)
 {
-  NSArray *tokens = [self tokenize:filter];
-  NSUInteger i = 0;
-  BOOL v = [self parseOr:tokens i:&i set:set row:row];
-  return v;
+  return [value isKindOfClass:[NSNumber class]] ? [value boolValue] : NO;
 }
 
-- (NSArray *)tokenize:(NSString *)input
+static BOOL WBNull(id value)
 {
-  NSMutableArray *tokens = [NSMutableArray array];
-  NSUInteger n = input.length, i = 0;
-  while (i < n) {
-    unichar c = [input characterAtIndex:i];
-    if ([[NSCharacterSet whitespaceAndNewlineCharacterSet] characterIsMember:c]) { i++; continue; }
-    if (c == '\'') {
-      NSUInteger j = i + 1;
-      NSMutableString *s = [NSMutableString stringWithString:@"'"];
-      while (j < n) {
-        unichar d = [input characterAtIndex:j];
-        [s appendFormat:@"%C", d];
-        j++;
-        if (d == '\'' && j < n && [input characterAtIndex:j] == '\'') {
-          [s appendString:@"'"];
-          j++;
-          continue;
-        }
-        if (d == '\'') break;
+  return !value || value == [NSNull null];
+}
+
+// null first, then numbers by value, anything else by its text.
+static NSComparisonResult WBOrder(id a, id b)
+{
+  if (WBNull(a) && WBNull(b)) return NSOrderedSame;
+  if (WBNull(a)) return NSOrderedAscending;
+  if (WBNull(b)) return NSOrderedDescending;
+  if ([a isKindOfClass:[NSNumber class]] && [b isKindOfClass:[NSNumber class]]) return [a compare:b];
+  return [[a description] compare:[b description]];
+}
+
+static double WBNumber(id value)
+{
+  return [value respondsToSelector:@selector(doubleValue)] ? [value doubleValue] : 0;
+}
+
+static NSString *WBString(id value)
+{
+  if (WBNull(value)) return nil;
+  return [value isKindOfClass:[NSString class]] ? value : [value description];
+}
+
+// A member of what an expression has come to: an entity's property or
+// navigation property, a complex value's member.
+- (id)member:(NSString *)name of:(id)base
+{
+  if ([base isKindOfClass:[WBEntity class]]) {
+    WBEntity *entity = base;
+    NSArray *navigation = WBNavigation()[entity.set][name];
+    if (navigation) {
+      NSArray *related = [self relatedOne:entity.set row:entity.row nav:name];
+      if ([navigation[1] boolValue]) {
+        NSMutableArray *out = [NSMutableArray array];
+        for (NSDictionary *row in related) [out addObject:[WBEntity entityInSet:navigation[0] row:row]];
+        return out;
       }
-      [tokens addObject:s];
-      i = j;
-      continue;
+      NSDictionary *one = related.firstObject;
+      return one ? [WBEntity entityInSet:navigation[0] row:one] : [NSNull null];
     }
-    if (strchr("()/," , (int)c)) {
-      [tokens addObject:[NSString stringWithFormat:@"%C", c]];
-      i++;
-      continue;
-    }
-    if ([[NSCharacterSet letterCharacterSet] characterIsMember:c] || c == '_') {
-      NSUInteger j = i + 1;
-      while (j < n) {
-        unichar d = [input characterAtIndex:j];
-        if (![[NSCharacterSet alphanumericCharacterSet] characterIsMember:d] && d != '_') break;
-        j++;
-      }
-      [tokens addObject:[input substringWithRange:NSMakeRange(i, j - i)]];
-      i = j;
-      continue;
-    }
-    if (c == '-' || (c >= '0' && c <= '9')) {
-      NSUInteger j = i + 1;
-      while (j < n) {
-        unichar d = [input characterAtIndex:j];
-        if (!((d >= '0' && d <= '9') || d == '.')) break;
-        j++;
-      }
-      [tokens addObject:[input substringWithRange:NSMakeRange(i, j - i)]];
-      i = j;
-      continue;
-    }
-    [tokens addObject:[NSString stringWithFormat:@"%C", c]];
-    i++;
+    return entity.row[name] ?: [NSNull null];
   }
-  return tokens;
-}
-
-- (NSString *)peek:(NSArray *)tok i:(NSUInteger)i
-{
-  return i < tok.count ? tok[i] : nil;
-}
-
-- (BOOL)parseOr:(NSArray *)tok i:(NSUInteger *)i set:(NSString *)set row:(NSDictionary *)row
-{
-  BOOL v = [self parseAnd:tok i:i set:set row:row];
-  while ([[self peek:tok i:*i] isEqualToString:@"or"]) {
-    (*i)++;
-    BOOL r = [self parseAnd:tok i:i set:set row:row];
-    v = v || r;
-  }
-  return v;
-}
-
-- (BOOL)parseAnd:(NSArray *)tok i:(NSUInteger *)i set:(NSString *)set row:(NSDictionary *)row
-{
-  BOOL v = [self parseNot:tok i:i set:set row:row];
-  while ([[self peek:tok i:*i] isEqualToString:@"and"]) {
-    (*i)++;
-    BOOL r = [self parseNot:tok i:i set:set row:row];
-    v = v && r;
-  }
-  return v;
-}
-
-- (BOOL)parseNot:(NSArray *)tok i:(NSUInteger *)i set:(NSString *)set row:(NSDictionary *)row
-{
-  if ([[self peek:tok i:*i] isEqualToString:@"not"]) {
-    (*i)++;
-    return ![self parseNot:tok i:i set:set row:row];
-  }
-  return [self parseCmp:tok i:i set:set row:row];
-}
-
-- (BOOL)parseCmp:(NSArray *)tok i:(NSUInteger *)i set:(NSString *)set row:(NSDictionary *)row
-{
-  if ([[self peek:tok i:*i] isEqualToString:@"("]) {
-    (*i)++;
-    BOOL v = [self parseOr:tok i:i set:set row:row];
-    if ([[self peek:tok i:*i] isEqualToString:@")"]) (*i)++;
-    return v;
-  }
-  id left = [self parseValue:tok i:i set:set row:row];
-  NSString *op = [self peek:tok i:*i];
-  NSArray *ops = @[ @"eq", @"ne", @"gt", @"ge", @"lt", @"le" ];
-  if ([ops containsObject:op]) {
-    (*i)++;
-    id right = [self parseValue:tok i:i set:set row:row];
-    return [self compare:left op:op right:right];
-  }
-  if ([left isKindOfClass:[NSNumber class]]) return [left boolValue];
-  return left != nil && left != [NSNull null];
-}
-
-- (id)parseValue:(NSArray *)tok i:(NSUInteger *)i set:(NSString *)set row:(NSDictionary *)row
-{
-  NSString *t = [self peek:tok i:*i];
-  if (!t) return [NSNull null];
-  if ([t isEqualToString:@"true"]) { (*i)++; return @YES; }
-  if ([t isEqualToString:@"false"]) { (*i)++; return @NO; }
-  if ([t isEqualToString:@"null"]) { (*i)++; return [NSNull null]; }
-  if ([t hasPrefix:@"'"]) {
-    (*i)++;
-    NSString *inner = t.length >= 2 ? [t substringWithRange:NSMakeRange(1, t.length - 2)] : @"";
-    inner = [inner stringByReplacingOccurrencesOfString:@"''" withString:@"'"];
-    return inner;
-  }
-  if ([t isEqualToString:@"tolower"] || [t isEqualToString:@"toupper"] ||
-      [t isEqualToString:@"contains"] || [t isEqualToString:@"startswith"] || [t isEqualToString:@"endswith"]) {
-    return [self parseCall:t tok:tok i:i set:set row:row];
-  }
-  if ([t isEqualToString:@"("]) {
-    (*i)++;
-    id v = [self parseValue:tok i:i set:set row:row];
-    if ([[self peek:tok i:*i] isEqualToString:@")"]) (*i)++;
-    return v;
-  }
-  unichar c0 = [t characterAtIndex:0];
-  if (c0 == '-' || (c0 >= '0' && c0 <= '9')) {
-    (*i)++;
-    return @([t doubleValue]);
-  }
-  /* path: Ident (/ Ident)*  or  Rel/any(…) */
-  NSMutableArray *parts = [NSMutableArray array];
-  while (t && ([[NSCharacterSet letterCharacterSet] characterIsMember:[t characterAtIndex:0]] || [t characterAtIndex:0] == '_')) {
-    if ([t isEqualToString:@"and"] || [t isEqualToString:@"or"] || [t isEqualToString:@"eq"] ||
-        [t isEqualToString:@"ne"] || [t isEqualToString:@"gt"] || [t isEqualToString:@"ge"] ||
-        [t isEqualToString:@"lt"] || [t isEqualToString:@"le"] || [t isEqualToString:@"not"]) break;
-    [parts addObject:t];
-    (*i)++;
-    if ([[self peek:tok i:*i] isEqualToString:@"/"]) {
-      (*i)++;
-      t = [self peek:tok i:*i];
-      continue;
-    }
-    break;
-  }
-  t = [self peek:tok i:*i];
-  if ([parts.lastObject isEqualToString:@"any"] || [parts.lastObject isEqualToString:@"all"]) {
-    return [self parseLambda:parts tok:tok i:i set:set row:row];
-  }
-  return [self resolvePath:parts set:set row:row];
-}
-
-- (id)parseCall:(NSString *)name tok:(NSArray *)tok i:(NSUInteger *)i set:(NSString *)set row:(NSDictionary *)row
-{
-  (*i)++;
-  if ([[self peek:tok i:*i] isEqualToString:@"("]) (*i)++;
-  NSMutableArray *args = [NSMutableArray array];
-  if (![[self peek:tok i:*i] isEqualToString:@")"]) {
-    while (1) {
-      id v = [self parseValue:tok i:i set:set row:row];
-      [args addObject:v ?: [NSNull null]];
-      if ([[self peek:tok i:*i] isEqualToString:@","]) { (*i)++; continue; }
-      break;
-    }
-  }
-  if ([[self peek:tok i:*i] isEqualToString:@")"]) (*i)++;
-  id a0 = args.count ? args[0] : nil;
-  id a1 = args.count > 1 ? args[1] : nil;
-  NSString *s0 = [a0 isKindOfClass:[NSString class]] ? a0 : [a0 description];
-  NSString *s1 = [a1 isKindOfClass:[NSString class]] ? a1 : [a1 description];
-  if ([name isEqualToString:@"tolower"]) return s0.lowercaseString;
-  if ([name isEqualToString:@"toupper"]) return s0.uppercaseString;
-  if ([name isEqualToString:@"contains"]) return @([s0 rangeOfString:s1 ?: @""].location != NSNotFound);
-  if ([name isEqualToString:@"startswith"]) return @([s0 hasPrefix:s1 ?: @""]);
-  if ([name isEqualToString:@"endswith"]) return @([s0 hasSuffix:s1 ?: @""]);
+  if ([base isKindOfClass:[NSDictionary class]]) return base[name] ?: [NSNull null];
   return [NSNull null];
 }
 
-- (id)parseLambda:(NSArray *)parts tok:(NSArray *)tok i:(NSUInteger *)i set:(NSString *)set row:(NSDictionary *)row
+- (id)valueOf:(ODataExpression *)e it:(WBEntity *)it variables:(NSDictionary *)variables
 {
-  NSString *kind = parts.lastObject;
-  NSArray *nav = [parts subarrayWithRange:NSMakeRange(0, parts.count - 1)];
-  NSArray *related = [self related:set row:row path:nav];
-  if ([[self peek:tok i:*i] isEqualToString:@"("]) (*i)++;
-  NSString *var = [self peek:tok i:*i];
-  if (var) (*i)++;
-  if ([[self peek:tok i:*i] isEqualToString:@":"]) (*i)++;
-  BOOL any = [kind isEqualToString:@"any"];
-  BOOL matched = !any;
-  NSString *dest = [self destinationSet:set nav:nav];
-  NSUInteger start = *i;
-  for (NSDictionary *rel in related) {
-    *i = start;
-    BOOL v = [self parseOr:tok i:i set:dest row:rel];
-    if (any && v) { matched = YES; break; }
-    if (!any && !v) { matched = NO; break; }
+  switch (e.kind) {
+    case ODataExpressionLiteral:
+      return e.value ?: [NSNull null];
+    case ODataExpressionVariable:
+      if ([e.name isEqualToString:@"$it"] || [e.name isEqualToString:@"$root"]) return it;
+      return variables[e.name] ?: [NSNull null];
+    case ODataExpressionAlias: {
+      ODataExpression *value = _aliases[e.name];
+      if (!value) WBRefuse([NSString stringWithFormat:@"No value for @%@", e.name]);
+      return [self valueOf:value it:it variables:variables];
+    }
+    case ODataExpressionMember:
+      return [self member:e.name of:e.operand ? [self valueOf:e.operand it:it variables:variables] : it];
+    case ODataExpressionCast:
+      return e.operand ? [self valueOf:e.operand it:it variables:variables] : it;
+    case ODataExpressionCount: {
+      id collection = [self valueOf:e.operand it:it variables:variables];
+      return @([collection isKindOfClass:[NSArray class]] ? [(NSArray *)collection count] : 0);
+    }
+    case ODataExpressionList: {
+      NSMutableArray *items = [NSMutableArray array];
+      for (ODataExpression *item in e.arguments) [items addObject:[self valueOf:item it:it variables:variables]];
+      return items;
+    }
+    case ODataExpressionUnary: {
+      id value = [self valueOf:e.operand it:it variables:variables];
+      if ([e.name isEqualToString:@"not"]) return @(!WBTruthy(value));
+      return WBNull(value) ? [NSNull null] : @(-WBNumber(value));
+    }
+    case ODataExpressionLambda: {
+      id collection = [self valueOf:e.operand it:it variables:variables];
+      NSArray *items = [collection isKindOfClass:[NSArray class]] ? collection : @[];
+      BOOL any = [e.name isEqualToString:@"any"];
+      if (!e.body) return @(items.count > 0);
+      for (id item in items) {
+        NSMutableDictionary *inner = [variables mutableCopy];
+        inner[e.variable] = item;
+        BOOL holds = WBTruthy([self valueOf:e.body it:it variables:inner]);
+        if (any && holds) return @YES;
+        if (!any && !holds) return @NO;
+      }
+      return @(!any);
+    }
+    case ODataExpressionBinary:
+      return [self binary:e it:it variables:variables];
+    case ODataExpressionCall:
+      return [self call:e it:it variables:variables];
   }
-  if (!related.count && any) matched = NO;
-  /* skip to closing paren of lambda */
-  NSInteger depth = 1;
-  while (*i < tok.count && depth > 0) {
-    NSString *t = tok[*i];
-    if ([t isEqualToString:@"("]) depth++;
-    if ([t isEqualToString:@")"]) depth--;
-    if (depth > 0) (*i)++;
-  }
-  if ([[self peek:tok i:*i] isEqualToString:@")"]) (*i)++;
-  return @(matched);
+  return [NSNull null];
 }
+
+- (id)binary:(ODataExpression *)e it:(WBEntity *)it variables:(NSDictionary *)variables
+{
+  NSString *op = e.name;
+  if ([op isEqualToString:@"and"]) {
+    return @(WBTruthy([self valueOf:e.left it:it variables:variables]) && WBTruthy([self valueOf:e.right it:it variables:variables]));
+  }
+  if ([op isEqualToString:@"or"]) {
+    return @(WBTruthy([self valueOf:e.left it:it variables:variables]) || WBTruthy([self valueOf:e.right it:it variables:variables]));
+  }
+  id left = [self valueOf:e.left it:it variables:variables];
+  id right = [self valueOf:e.right it:it variables:variables];
+  if ([@[ @"eq", @"ne", @"gt", @"ge", @"lt", @"le" ] containsObject:op]) {
+    if ([op isEqualToString:@"eq"] || [op isEqualToString:@"ne"]) {
+      BOOL equal = (WBNull(left) && WBNull(right)) ||
+                   (!WBNull(left) && !WBNull(right) && WBOrder(left, right) == NSOrderedSame);
+      return @([op isEqualToString:@"eq"] ? equal : !equal);
+    }
+    if (WBNull(left) || WBNull(right)) return @NO;
+    return @([self compare:left op:op right:right]);
+  }
+  if ([op isEqualToString:@"in"]) {
+    for (id item in [right isKindOfClass:[NSArray class]] ? right : @[]) {
+      if (WBOrder(left, item) == NSOrderedSame) return @YES;
+    }
+    return @NO;
+  }
+  if ([op isEqualToString:@"has"]) {
+    long long flags = (long long)WBNumber(left), bits = (long long)WBNumber(right);
+    return @((flags & bits) == bits);
+  }
+  if (WBNull(left) || WBNull(right)) return [NSNull null];
+  double a = WBNumber(left), b = WBNumber(right);
+  if ([op isEqualToString:@"add"]) return @(a + b);
+  if ([op isEqualToString:@"sub"]) return @(a - b);
+  if ([op isEqualToString:@"mul"]) return @(a * b);
+  if ([op isEqualToString:@"div"] || [op isEqualToString:@"divby"]) return b == 0 ? [NSNull null] : @(a / b);
+  if ([op isEqualToString:@"mod"]) return b == 0 ? [NSNull null] : @(fmod(a, b));
+  WBRefuse([NSString stringWithFormat:@"No operator %@", op]);
+  return nil;
+}
+
+// The canonical functions this service knows (Part 2 section 5.1.1.5-7).
+- (id)call:(ODataExpression *)e it:(WBEntity *)it variables:(NSDictionary *)variables
+{
+  if (e.namedArguments) WBRefuse([NSString stringWithFormat:@"This service has no function %@", e.name]);
+  NSMutableArray *args = [NSMutableArray array];
+  for (ODataExpression *argument in e.arguments) [args addObject:[self valueOf:argument it:it variables:variables]];
+  NSString *name = e.name;
+  NSString *s0 = args.count > 0 ? WBString(args[0]) : nil;
+  NSString *s1 = args.count > 1 ? WBString(args[1]) : nil;
+  if ([name isEqualToString:@"contains"]) return @(s0 && s1 && [s0 rangeOfString:s1].location != NSNotFound);
+  if ([name isEqualToString:@"startswith"]) return @(s0 && s1 && [s0 hasPrefix:s1]);
+  if ([name isEqualToString:@"endswith"]) return @(s0 && s1 && [s0 hasSuffix:s1]);
+  if ([name isEqualToString:@"tolower"]) return s0 ? s0.lowercaseString : [NSNull null];
+  if ([name isEqualToString:@"toupper"]) return s0 ? s0.uppercaseString : [NSNull null];
+  if ([name isEqualToString:@"trim"]) return s0 ? [s0 stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceCharacterSet]] : [NSNull null];
+  if ([name isEqualToString:@"length"]) return s0 ? @(s0.length) : [NSNull null];
+  if ([name isEqualToString:@"concat"]) return (s0 && s1) ? [s0 stringByAppendingString:s1] : [NSNull null];
+  if ([name isEqualToString:@"indexof"]) {
+    if (!s0 || !s1) return [NSNull null];
+    NSRange r = [s0 rangeOfString:s1];
+    return @(r.location == NSNotFound ? -1 : (NSInteger)r.location);
+  }
+  if ([name isEqualToString:@"substring"]) {
+    if (!s0 || args.count < 2) return [NSNull null];
+    NSUInteger from = MIN((NSUInteger)MAX(0, (NSInteger)WBNumber(args[1])), s0.length);
+    NSUInteger length = args.count > 2 ? MIN((NSUInteger)MAX(0, (NSInteger)WBNumber(args[2])), s0.length - from) : s0.length - from;
+    return [s0 substringWithRange:NSMakeRange(from, length)];
+  }
+  if ([name isEqualToString:@"round"]) return WBNull(args.firstObject) ? [NSNull null] : @(round(WBNumber(args[0])));
+  if ([name isEqualToString:@"floor"]) return WBNull(args.firstObject) ? [NSNull null] : @(floor(WBNumber(args[0])));
+  if ([name isEqualToString:@"ceiling"]) return WBNull(args.firstObject) ? [NSNull null] : @(ceil(WBNumber(args[0])));
+  if ([name isEqualToString:@"matchesPattern"]) WBRefuse(@"matchesPattern is OData 4.01; this service speaks 4.0");
+  WBRefuse([NSString stringWithFormat:@"This service has no function %@", name]);
+  return nil;
+}
+
+
+
+
+
+
+
+
+
+
 
 - (BOOL)compare:(id)left op:(NSString *)op right:(id)right
 {
@@ -722,47 +694,12 @@ static NSString *WBEtag(id version)
   return NO;
 }
 
-- (id)resolvePath:(NSArray *)parts set:(NSString *)set row:(NSDictionary *)row
-{
-  if (!parts.count) return [NSNull null];
-  if (parts.count == 1) {
-    id v = row[parts[0]];
-    return v ?: [NSNull null];
-  }
-  NSArray *related = [self related:set row:row path:[parts subarrayWithRange:NSMakeRange(0, parts.count - 1)]];
-  NSDictionary *one = related.firstObject;
-  id v = one[parts.lastObject];
-  return v ?: [NSNull null];
-}
 
 - (NSString *)destinationSet:(NSString *)set nav:(NSArray *)nav
 {
-  NSString *name = nav.lastObject;
-  if ([name isEqualToString:@"Category"]) return @"Categories";
-  if ([name isEqualToString:@"Product"]) return @"Products";
-  if ([name isEqualToString:@"Products"]) return @"Products";
-  if ([name isEqualToString:@"Suppliers"] || [name isEqualToString:@"Supplier"]) return @"Suppliers";
-  if ([name isEqualToString:@"Location"]) return @"Locations";
-  if ([name isEqualToString:@"Stocks"] || [name isEqualToString:@"Stock"]) return @"Stocks";
-  (void)set;
-  return name;
+  return WBNavigation()[set][nav.lastObject][0] ?: nav.lastObject;
 }
 
-- (NSArray *)related:(NSString *)set row:(NSDictionary *)row path:(NSArray *)path
-{
-  NSArray *current = @[ row ];
-  NSString *curSet = set;
-  for (NSString *name in path) {
-    NSMutableArray *next = [NSMutableArray array];
-    NSString *dest = [self destinationSet:curSet nav:@[ name ]];
-    for (NSDictionary *r in current) {
-      [next addObjectsFromArray:[self relatedOne:curSet row:r nav:name]];
-    }
-    current = next;
-    curSet = dest;
-  }
-  return current;
-}
 
 - (NSArray *)relatedOne:(NSString *)set row:(NSDictionary *)row nav:(NSString *)nav
 {
@@ -814,28 +751,29 @@ static NSString *WBEtag(id version)
   return out;
 }
 
-- (NSDictionary *)navigation:(NSString *)set row:(NSDictionary *)row name:(NSString *)name
+- (NSDictionary *)navigation:(NSString *)set row:(NSDictionary *)row name:(NSString *)name options:(ODataQueryOptions *)options
 {
-  NSArray *rel = [self relatedOne:set row:row nav:name];
-  NSString *dest = [self destinationSet:set nav:@[ name ]];
-  BOOL toMany = [name hasSuffix:@"s"] && ![name isEqualToString:@"Products"] ? YES : ([name isEqualToString:@"Products"] || [name isEqualToString:@"Suppliers"] || [name isEqualToString:@"Stocks"] || [name isEqualToString:@"Categories"]);
-  if ([name isEqualToString:@"Category"] || [name isEqualToString:@"Product"] || [name isEqualToString:@"Location"] || [name isEqualToString:@"Supplier"] || [name isEqualToString:@"Stock"]) {
-    toMany = NO;
-  }
-  if ([name isEqualToString:@"Products"] || [name isEqualToString:@"Suppliers"] || [name isEqualToString:@"Stocks"] || [name isEqualToString:@"Categories"]) {
-    toMany = YES;
-  }
-  if (toMany) {
+  NSArray *navigation = WBNavigation()[set][name];
+  if (!navigation) WBRefuse([NSString stringWithFormat:@"%@ has no navigation property %@", set, name]);
+  NSString *dest = navigation[0];
+  NSArray *related = [self relatedOne:set row:row nav:name];
+  if ([navigation[1] boolValue]) {
     NSMutableArray *value = [NSMutableArray array];
-    for (NSDictionary *r in rel) [value addObject:[self serialize:dest row:r expand:nil single:NO]];
+    for (NSDictionary *r in [self rows:related inSet:dest options:options page:YES]) {
+      [value addObject:[self serialize:dest row:r options:options single:NO]];
+    }
     return @{ @"@odata.context": [NSString stringWithFormat:@"$metadata#%@", dest], @"value": value };
   }
-  NSDictionary *one = rel.firstObject;
+  NSDictionary *one = related.firstObject;
   if (!one) return @{};
-  return @{ @"__body": [self serialize:dest row:one expand:nil single:YES] };
+  return @{ @"__body": [self serialize:dest row:one options:options single:YES] };
 }
 
-- (NSDictionary *)serialize:(NSString *)set row:(NSDictionary *)row expand:(NSString *)expand single:(BOOL)single
+// A row as JSON: the properties $select names (all without it, the key
+// always), and the navigation properties $expand names, each with its own
+// options: a nested $filter, $orderby, $top, $skip on a collection, and a
+// nested $select and $expand.
+- (NSDictionary *)serialize:(NSString *)set row:(NSDictionary *)row options:(ODataQueryOptions *)options single:(BOOL)single
 {
   NSMutableDictionary *out = [NSMutableDictionary dictionary];
   NSString *keyName = [self keyNameForSet:set];
@@ -843,36 +781,36 @@ static NSString *WBEtag(id version)
   out[@"@odata.id"] = [NSString stringWithFormat:@"%@%@(%@)", root, set, row[keyName]];
   out[@"@odata.etag"] = WBEtag(row[@"__etag"]);
   if (single) out[@"@odata.context"] = [NSString stringWithFormat:@"$metadata#%@/$entity", set];
-  [row enumerateKeysAndObjectsUsingBlock:^(id key, id obj, BOOL *stop) {
-    NSString *k = key;  // gnustep-base types the key id<NSCopying>
-    (void)stop;
-    if ([k hasPrefix:@"__"]) return;
-    out[k] = obj;
-  }];
-  NSSet *want = [NSSet set];
-  if (expand.length) {
-    NSMutableSet *s = [NSMutableSet set];
-    for (NSString *p in [expand componentsSeparatedByString:@","]) {
-      NSString *t = [p stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceCharacterSet]];
-      if (t.length) [s addObject:t];
+  NSMutableSet *selected = nil;
+  for (ODataSelectItem *item in options.select) {
+    if (item.isStar) {
+      selected = nil;
+      break;
     }
-    want = s;
+    if (!selected) selected = [NSMutableSet setWithObject:keyName];
+    [selected addObject:item.path.lastObject];
   }
-  for (NSString *nav in want) {
-    NSString *leaf = [[nav componentsSeparatedByString:@"/"] firstObject];
-    NSArray *rel = [self relatedOne:set row:row nav:leaf];
-    NSString *dest = [self destinationSet:set nav:@[ leaf ]];
-    BOOL toMany = [leaf isEqualToString:@"Products"] || [leaf isEqualToString:@"Suppliers"] || [leaf isEqualToString:@"Stocks"] || [leaf isEqualToString:@"Categories"];
-    NSString *nested = nil;
-    NSRange slash = [nav rangeOfString:@"/"];
-    if (slash.location != NSNotFound) nested = [nav substringFromIndex:slash.location + 1];
-    if (toMany) {
-      NSMutableArray *arr = [NSMutableArray array];
-      for (NSDictionary *r in rel) [arr addObject:[self serialize:dest row:r expand:nested single:NO]];
-      out[leaf] = arr;
-    } else {
-      NSDictionary *one = rel.firstObject;
-      out[leaf] = one ? [self serialize:dest row:one expand:nested single:NO] : [NSNull null];
+  for (NSString *k in row) {
+    if ([k hasPrefix:@"__"] || (selected && ![selected containsObject:k])) continue;
+    out[k] = row[k];
+  }
+  for (ODataExpandItem *item in options.expand) {
+    NSArray *names = item.isStar ? [WBNavigation()[set] allKeys] : @[ item.path.firstObject ?: @"" ];
+    for (NSString *name in names) {
+      NSArray *navigation = WBNavigation()[set][name];
+      if (!navigation) WBRefuse([NSString stringWithFormat:@"%@ has no navigation property %@", set, name]);
+      NSString *dest = navigation[0];
+      NSArray *related = [self relatedOne:set row:row nav:name];
+      if ([navigation[1] boolValue]) {
+        NSMutableArray *value = [NSMutableArray array];
+        for (NSDictionary *r in [self rows:related inSet:dest options:item.options page:YES]) {
+          [value addObject:[self serialize:dest row:r options:item.options single:NO]];
+        }
+        out[name] = value;
+      } else {
+        NSDictionary *one = related.firstObject;
+        out[name] = one ? [self serialize:dest row:one options:item.options single:NO] : [NSNull null];
+      }
     }
   }
   return out;
@@ -915,13 +853,85 @@ static NSString *WBEtag(id version)
   (void)set;
 }
 
+// The Catalog, as the store's model has it (Examples/Catalog).
 - (NSString *)metadataXML
 {
   return @"<?xml version=\"1.0\" encoding=\"utf-8\"?>"
          @"<edmx:Edmx Version=\"4.0\" xmlns:edmx=\"http://docs.oasis-open.org/odata/ns/edmx\">"
          @"<edmx:DataServices><Schema Namespace=\"Catalog\" xmlns=\"http://docs.oasis-open.org/odata/ns/edm\">"
-         @"<EntityContainer Name=\"Container\"/>"
-         @"</Schema></edmx:DataServices></edmx:Edmx>";
+         @"<EntityType Name=\"Category\"><Key><PropertyRef Name=\"CategoryID\"/></Key>"
+         @"<Property Name=\"CategoryID\" Type=\"Edm.Int32\" Nullable=\"false\"/><Property Name=\"CategoryName\" Type=\"Edm.String\"/>"
+         @"<NavigationProperty Name=\"Products\" Type=\"Collection(Catalog.Product)\" Partner=\"Category\"/></EntityType>"
+         @"<EntityType Name=\"Product\"><Key><PropertyRef Name=\"ProductID\"/></Key>"
+         @"<Property Name=\"ProductID\" Type=\"Edm.Int32\" Nullable=\"false\"/><Property Name=\"ProductName\" Type=\"Edm.String\"/>"
+         @"<Property Name=\"QuantityPerUnit\" Type=\"Edm.String\"/><Property Name=\"UnitPrice\" Type=\"Edm.Decimal\"/>"
+         @"<Property Name=\"Discontinued\" Type=\"Edm.Boolean\"/>"
+         @"<NavigationProperty Name=\"Category\" Type=\"Catalog.Category\" Partner=\"Products\"/>"
+         @"<NavigationProperty Name=\"Suppliers\" Type=\"Collection(Catalog.Supplier)\" Partner=\"Products\"/>"
+         @"<NavigationProperty Name=\"Stocks\" Type=\"Collection(Catalog.Stock)\" Partner=\"Product\"/></EntityType>"
+         @"<EntityType Name=\"Supplier\"><Key><PropertyRef Name=\"SupplierID\"/></Key>"
+         @"<Property Name=\"SupplierID\" Type=\"Edm.Int32\" Nullable=\"false\"/><Property Name=\"CompanyName\" Type=\"Edm.String\"/>"
+         @"<Property Name=\"City\" Type=\"Edm.String\"/><Property Name=\"Country\" Type=\"Edm.String\"/>"
+         @"<NavigationProperty Name=\"Products\" Type=\"Collection(Catalog.Product)\" Partner=\"Suppliers\"/></EntityType>"
+         @"<EntityType Name=\"Location\"><Key><PropertyRef Name=\"LocationID\"/></Key>"
+         @"<Property Name=\"LocationID\" Type=\"Edm.Int32\" Nullable=\"false\"/><Property Name=\"LocationName\" Type=\"Edm.String\"/>"
+         @"<Property Name=\"City\" Type=\"Edm.String\"/><Property Name=\"Country\" Type=\"Edm.String\"/>"
+         @"<NavigationProperty Name=\"Stocks\" Type=\"Collection(Catalog.Stock)\" Partner=\"Location\"/></EntityType>"
+         @"<EntityType Name=\"Stock\"><Key><PropertyRef Name=\"StockID\"/></Key>"
+         @"<Property Name=\"StockID\" Type=\"Edm.Int32\" Nullable=\"false\"/><Property Name=\"Quantity\" Type=\"Edm.Int16\" Nullable=\"false\"/>"
+         @"<NavigationProperty Name=\"Product\" Type=\"Catalog.Product\" Nullable=\"false\" Partner=\"Stocks\"/>"
+         @"<NavigationProperty Name=\"Location\" Type=\"Catalog.Location\" Nullable=\"false\" Partner=\"Stocks\"/></EntityType>"
+         @"<EntityContainer Name=\"Container\">"
+         @"<EntitySet Name=\"Categories\" EntityType=\"Catalog.Category\"/><EntitySet Name=\"Products\" EntityType=\"Catalog.Product\"/>"
+         @"<EntitySet Name=\"Suppliers\" EntityType=\"Catalog.Supplier\"/><EntitySet Name=\"Locations\" EntityType=\"Catalog.Location\"/>"
+         @"<EntitySet Name=\"Stocks\" EntityType=\"Catalog.Stock\"/>"
+         @"</EntityContainer></Schema></edmx:DataServices></edmx:Edmx>";
+}
+
+@end
+
+@implementation WorkbenchNetworkTransport
+
+- (void)startExchange:(ODataExchange *)exchange
+{
+  ODataExchange *inner = [[ODataExchange alloc] initWithRequest:exchange.request target:self action:@selector(innerDidFinish:)];
+  inner.context = @[ exchange, [NSDate date] ];
+  [ODataDefaultTransport() startExchange:inner];
+}
+
+- (void)innerDidFinish:(ODataExchange *)inner
+{
+  ODataExchange *outer = inner.context[0];
+  NSDate *started = inner.context[1];
+  outer.URLResponse = inner.URLResponse;
+  outer.data = inner.data;
+  outer.error = inner.error;
+
+  WorkbenchLogEntry *entry = [[WorkbenchLogEntry alloc] init];
+  NSURLRequest *request = inner.request;
+  entry.method = request.HTTPMethod.uppercaseString ?: @"GET";
+  entry.URL = request.URL.absoluteString ?: @"";
+  NSHTTPURLResponse *http = [inner.URLResponse isKindOfClass:[NSHTTPURLResponse class]] ? (NSHTTPURLResponse *)inner.URLResponse : nil;
+  entry.status = http.statusCode;
+  entry.requestHeaders = request.allHTTPHeaderFields;
+  entry.requestData = request.HTTPBody;
+  entry.responseHeaders = http.allHeaderFields;
+  entry.responseData = inner.data;
+  entry.failure = inner.error.localizedDescription;
+  entry.date = started;
+  entry.duration = -[started timeIntervalSinceNow];
+  entry.storeHint = @"";
+  void (^report)(WorkbenchLogEntry *) = self.didHandle;
+  // The main thread may be waiting for this very exchange: report later,
+  // never wait for it.
+  if (report) [self performSelectorOnMainThread:@selector(report:) withObject:@[ [report copy], entry ] waitUntilDone:NO];
+  [outer finish];
+}
+
+- (void)report:(NSArray *)blockAndEntry
+{
+  void (^report)(WorkbenchLogEntry *) = blockAndEntry[0];
+  report(blockAndEntry[1]);
 }
 
 @end

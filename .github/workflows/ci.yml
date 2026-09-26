@@ -87,6 +87,13 @@ jobs:
             -framework Foundation -framework CoreData -o "$RUNNER_TEMP/ois-classes"
           "$RUNNER_TEMP/ois-classes" "$RUNNER_TEMP/TripPinGenerated.momd"
 
+      # The Workbench's window, driven against its built-in service,
+      # Northwind and TripPin. Network: reported, not fatal.
+      - name: Workbench self-test
+        continue-on-error: true
+        run: |
+          "$RUNNER_TEMP/DerivedData/Build/Products/Debug/Workbench.app/Contents/MacOS/Workbench" --self-test
+
       - name: Upload test results
         uses: actions/upload-artifact@v4
         if: failure()
@@ -155,7 +162,9 @@ jobs:
             libgmp-dev libcairo2-dev libjpeg-dev libtiff-dev libpng-dev libicns-dev \
             libpthread-workqueue-dev libsqlite3-dev \
             libfreetype-dev libfontconfig1-dev libxrender-dev \
-            libxt-dev libxmu-dev libxft-dev libxrandr-dev libxfixes-dev libxcursor-dev
+            libxt-dev libxmu-dev libxft-dev libxrandr-dev libxfixes-dev libxcursor-dev \
+            xvfb
+          # xvfb is a display for the Workbench's self-test.
           # libsqlite3-dev is FreeCoreData's: NSSQLitePersistentStore links it.
           # libxml2-dev is what gives gnustep-base the NSXML momc reads models
           # with. The rest is the GNUstep stack's.
@@ -252,3 +261,11 @@ jobs:
         run: |
           . $PREFIX/System/Library/Makefiles/GNUstep.sh
           make -C Tests/Live live
+
+      - name: Workbench self-test
+        continue-on-error: true
+        run: |
+          . $PREFIX/System/Library/Makefiles/GNUstep.sh
+          cd Examples/Workbench
+          LD_LIBRARY_PATH="$PWD/../../obj${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}" \
+            xvfb-run -a ./Workbench.app/Workbench --self-test

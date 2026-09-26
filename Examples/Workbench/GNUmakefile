@@ -1,5 +1,6 @@
 # AppKit workbench on GNUstep. Requires FreeCoreData + gnustep-gui.
-# In-memory OData v4 behind ODataTransport — no network.
+# Try out an OData v4 service: the built-in in-memory one, Northwind,
+# TripPin, or any other.
 # UI is WorkbenchWindow.xib (GSXib5Loader).
 ifeq ($(GNUSTEP_MAKEFILES),)
 $(error Set GNUSTEP_MAKEFILES (source GNUstep.sh).)

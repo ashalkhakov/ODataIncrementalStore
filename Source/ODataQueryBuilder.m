@@ -107,6 +107,12 @@ static NSString *OISPercentEncode(NSString *value)
     [items addObject:@[ @"$filter", filter ]];
   }
 
+  // /$count takes $filter alone (Part 2 section 4.8): TripPin answers
+  // 400 to $orderby there.
+  if (fetch.resultType == NSCountResultType) {
+    return [self composePath:[set stringByAppendingString:@"/$count"] query:items error:error];
+  }
+
   if (fetch.sortDescriptors.count) {
     NSMutableArray *bits = [NSMutableArray array];
     for (NSSortDescriptor *desc in fetch.sortDescriptors) {
@@ -142,10 +148,6 @@ static NSString *OISPercentEncode(NSString *value)
     [items addObject:@[ @"$skip", [NSString stringWithFormat:@"%lu", (unsigned long)fetch.fetchOffset] ]];
   }
 
-  if (fetch.resultType == NSCountResultType) {
-    return [self composePath:[set stringByAppendingString:@"/$count"] query:items error:error];
-  }
-
   if (fetch.resultType == NSDictionaryResultType && fetch.propertiesToFetch.count) {
     NSMutableArray *names = [NSMutableArray array];
     for (id prop in fetch.propertiesToFetch) {
@@ -159,12 +161,12 @@ static NSString *OISPercentEncode(NSString *value)
     if (names.count) [items addObject:@[ @"$select", [names componentsJoinedByString:@","] ]];
   }
 
-  NSMutableArray *expansions = [NSMutableArray array];
+  NSMutableArray *expansions = [[self expansionsForKeyPaths:fetch.relationshipKeyPathsForPrefetching entity:entity] mutableCopy];
   NSMutableSet *expanded = [NSMutableSet set];
   for (NSString *path in fetch.relationshipKeyPathsForPrefetching) {
-    NSString *mapped = [self.mapper propertyPathForKeyPath:path entity:entity];
-    [expansions addObject:mapped];
-    [expanded addObject:[[mapped componentsSeparatedByString:@"/"] firstObject]];
+    NSString *first = [path componentsSeparatedByString:@"."].firstObject;
+    NSRelationshipDescription *rel = entity.relationshipsByName[first];
+    [expanded addObject:rel ? [self.mapper propertyForRelationship:rel] : [self.mapper wireName:first]];
   }
   if (fetch.resultType == NSManagedObjectResultType || fetch.resultType == NSManagedObjectIDResultType) {
     [expansions addObjectsFromArray:[self toOneKeyExpansionsForEntity:entity except:expanded]];
@@ -174,6 +176,33 @@ static NSString *OISPercentEncode(NSString *value)
   }
 
   return [self composePath:set query:items error:error];
+}
+
+// Prefetch key paths as $expand items, a path through relationships
+// nested (suppliers.products is Suppliers($expand=Products): 4.0 has no
+// paths in $expand), and paths that share a start merged under it.
+- (NSArray *)expansionsForKeyPaths:(NSArray *)paths entity:(NSEntityDescription *)entity
+{
+  NSMutableArray *order = [NSMutableArray array];          // wire names, first seen first
+  NSMutableDictionary *children = [NSMutableDictionary dictionary];  // wire name -> key paths beneath
+  NSMutableDictionary *destinations = [NSMutableDictionary dictionary];
+  for (NSString *path in paths) {
+    NSArray *parts = [path componentsSeparatedByString:@"."];
+    NSRelationshipDescription *rel = entity.relationshipsByName[parts.firstObject];
+    NSString *wire = rel ? [self.mapper propertyForRelationship:rel] : [self.mapper wireName:parts.firstObject];
+    if (!children[wire]) {
+      [order addObject:wire];
+      children[wire] = [NSMutableArray array];
+      if (rel.destinationEntity) destinations[wire] = rel.destinationEntity;
+    }
+    if (parts.count > 1) [children[wire] addObject:[[parts subarrayWithRange:NSMakeRange(1, parts.count - 1)] componentsJoinedByString:@"."]];
+  }
+  NSMutableArray *items = [NSMutableArray array];
+  for (NSString *wire in order) {
+    NSArray *nested = [children[wire] count] && destinations[wire] ? [self expansionsForKeyPaths:children[wire] entity:destinations[wire]] : @[];
+    [items addObject:nested.count ? [NSString stringWithFormat:@"%@($expand=%@)", wire, [nested componentsJoinedByString:@","]] : wire];
+  }
+  return items;
 }
 
 - (NSURL *)URLForIdentifier:(ODataResourceIdentifier *)identifier error:(NSError **)error
