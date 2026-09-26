@@ -10,9 +10,8 @@ NSString * const ODataUserInfoUnmapped = @"OData.unmapped";
 NSString * const ODataModelVersionPrefix = @"odata:";
 
 // The version identifier again, on every entity: FreeCoreData's momc before
-// 854138a (momc-model-version-identifier) does not carry a model's
-// userDefinedModelVersionIdentifier into the compiled model, and an
-// entity's userInfo survives any momc.
+// v0.4.1 does not carry a model's userDefinedModelVersionIdentifier into
+// the compiled model, and an entity's userInfo survives any momc.
 static NSString * const OISUserInfoModelVersion = @"OData.modelVersion";
 
 #pragma mark - Names
