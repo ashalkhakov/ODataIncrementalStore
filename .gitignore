@@ -17,4 +17,5 @@ obj/
 *.so
 *.so.*
 ois-filter
+ois-model
 *.momd

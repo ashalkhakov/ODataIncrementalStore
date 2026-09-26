@@ -276,6 +276,18 @@ static NSString *OISLocalName(NSString *name)
   return NO;
 }
 
+- (BOOL)entityTypeIsContained:(ODataSchemaEntityType *)type
+{
+  for (ODataSchemaEntityType *container in self.entityTypes.allValues) {
+    for (ODataSchemaNavigationProperty *navigation in container.declaredNavigationProperties.allValues) {
+      if (!navigation.containsTarget) continue;
+      ODataSchemaEntityType *target = self.entityTypes[navigation.type];
+      if (target && [self entityType:type isOrDerivesFrom:target]) return YES;
+    }
+  }
+  return NO;
+}
+
 - (NSString *)entitySetForEntityType:(ODataSchemaEntityType *)type
 {
   for (ODataSchemaEntityType *t = type; t; t = [self baseOf:t]) {

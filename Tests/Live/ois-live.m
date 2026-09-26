@@ -14,7 +14,13 @@
 //   references, a 412 conflict, and a delete. TripPin gives each
 //   client a session of its own, so these writes touch nobody's data.
 //
-//   ois-live <directory holding Catalog.momd, Northwind.momd and TripPin.momd>
+// - Models from $metadata: TripPin's built at runtime, as a dynamic client
+//   does, and Northwind's generated ahead of time by ois-model and
+//   compiled with momc (NorthwindGenerated.momd), which the store checks
+//   against the service's schema as Core Data checks a model version.
+//
+//   ois-live <directory holding Catalog.momd, Northwind.momd, TripPin.momd
+//             and NorthwindGenerated.momd>
 //
 // Exits 1 if any check fails. The service is not ours, so CI runs this
 // without letting it fail a build.
@@ -376,6 +382,62 @@ static void tripPin(NSString *models)
   }];
 }
 
+static void modelsFromMetadata(NSString *models)
+{
+  fprintf(stderr, "== Models from $metadata\n");
+  // A dynamic client: nothing known of TripPin until its $metadata is read.
+  NSError *error = nil;
+  NSURL *tripPin = tripPinSession();
+  NSManagedObjectModel *dynamic = [ODataIncrementalStore modelForServiceAtURL:tripPin options:nil error:&error];
+  NSPersistentStoreCoordinator *psc = dynamic ? [[NSPersistentStoreCoordinator alloc] initWithManagedObjectModel:dynamic] : nil;
+  ODataIncrementalStore *store = psc ? (ODataIncrementalStore *)[psc addPersistentStoreWithType:[ODataIncrementalStore storeType]
+                                                                                   configuration:nil URL:tripPin options:nil error:&error] : nil;
+  __block NSString *gender = nil;
+  __block NSUInteger friends = 0;
+  if (store) {
+    NSManagedObjectContext *moc = newContext(psc);
+    [moc performBlockAndWait:^{
+      NSManagedObject *russell = personNamed(moc, @"russellwhyte", NULL);
+      gender = [russell valueForKey:@"gender"];
+      friends = [[russell valueForKey:@"friends"] count];
+    }];
+  }
+  check(store && [gender isEqualToString:@"Male"] && friends > 0 && !store.metadataProblems.count,
+        @"a dynamic client: TripPin's model built from its $metadata",
+        store ? [NSString stringWithFormat:@"%lu entities; Russell is %@ with %lu friends", (unsigned long)dynamic.entities.count, gender, (unsigned long)friends]
+              : reason(error));
+
+  // Generated ahead of time: ois-model wrote it, momc compiled it.
+  NSString *generatedPath = [models stringByAppendingPathComponent:@"NorthwindGenerated.momd"];
+  NSManagedObjectModel *generated = [[NSManagedObjectModel alloc] initWithContentsOfURL:[NSURL fileURLWithPath:generatedPath]];
+  if (!generated) {
+    check(NO, @"a generated model (ois-model, momc) opens against the service", [@"no model at " stringByAppendingString:generatedPath]);
+    return;
+  }
+  NSURL *northwind = [NSURL URLWithString:@"https://services.odata.org/V4/Northwind/Northwind.svc/"];
+  error = nil;
+  NSDictionary *metadata = [ODataIncrementalStore metadataForServiceAtURL:northwind options:nil error:&error];
+  BOOL matches = metadata && [generated isConfiguration:nil compatibleWithStoreMetadata:metadata];
+  psc = [[NSPersistentStoreCoordinator alloc] initWithManagedObjectModel:generated];
+  store = (ODataIncrementalStore *)[psc addPersistentStoreWithType:[ODataIncrementalStore storeType] configuration:nil
+                                                               URL:northwind options:nil error:&error];
+  __block NSUInteger products = 0;
+  __block NSString *chai = nil;
+  if (store) {
+    NSManagedObjectContext *moc = newContext(psc);
+    [moc performBlockAndWait:^{
+      products = [moc countForFetchRequest:[NSFetchRequest fetchRequestWithEntityName:@"Product"] error:NULL];
+      NSFetchRequest *first = [NSFetchRequest fetchRequestWithEntityName:@"Product"];
+      first.predicate = [NSPredicate predicateWithFormat:@"productID == 1"];
+      chai = [[[moc executeFetchRequest:first error:NULL] firstObject] valueForKey:@"productName"];
+    }];
+  }
+  check(matches && store && products == 77 && [chai isEqualToString:@"Chai"],
+        @"a generated model (ois-model, momc) is the service's version, and opens",
+        store ? [NSString stringWithFormat:@"%@; %lu products, the first %@", matches ? @"versions match" : @"versions differ", (unsigned long)products, chai]
+              : reason(error));
+}
+
 int main(int argc, const char *argv[])
 {
   @autoreleasepool {
@@ -384,6 +446,7 @@ int main(int argc, const char *argv[])
     northwind(models);
     northwindTypes(models);
     tripPin(models);
+    modelsFromMetadata(models);
     fprintf(stderr, "%s\n", failures ? "ois-live: FAILED" : "ois-live: all checks passed");
     return failures ? 1 : 0;
   }

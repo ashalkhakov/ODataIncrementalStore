@@ -257,7 +257,10 @@ static NSString *OISJoinedSorted(NSSet *names)
     NSString *set = [self entitySetForEntity:entity];
     ODataSchemaEntityType *setType = [self.schema entityTypeNamed:self.schema.entitySets[set] ?: @""];
     if (!setType) {
-      [problems addObject:[NSString stringWithFormat:@"%@: no entity set %@", entity.name, set]];
+      // A contained entity has no set; its container's navigation reaches it.
+      if (![self.schema entityTypeIsContained:type]) {
+        [problems addObject:[NSString stringWithFormat:@"%@: no entity set %@", entity.name, set]];
+      }
     } else if (![self.schema entityType:type isOrDerivesFrom:setType]) {
       [problems addObject:[NSString stringWithFormat:@"%@: entity set %@ holds %@, not %@", entity.name, set,
                                                      setType.qualifiedName, type.qualifiedName]];

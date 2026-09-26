@@ -71,6 +71,11 @@ NS_ASSUME_NONNULL_BEGIN
 // for its nearest base type that has one.
 - (nullable NSString *)entitySetForEntityType:(ODataSchemaEntityType *)type;
 
+// Whether entities of this type are contained in others (a navigation
+// property with ContainsTarget reaches this type or a base of it): such
+// entities have no entity set, and are reached through their container.
+- (BOOL)entityTypeIsContained:(ODataSchemaEntityType *)type;
+
 @end
 
 NS_ASSUME_NONNULL_END

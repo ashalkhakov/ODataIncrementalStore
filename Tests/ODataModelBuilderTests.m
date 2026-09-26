@@ -1,0 +1,180 @@
+// A Core Data model from $metadata: built at runtime, written as versioned
+// .xcdatamodeld packages, and checked against the service like any model
+// against its store.
+// Copyright (C) 2026 OIS contributors
+// SPDX-License-Identifier: LGPL-2.1-or-later
+
+#import <XCTest/XCTest.h>
+#import "OISCatalogModel.h"
+#import "ODataSnapshotTransport.h"
+
+// A service whose $metadata is whatever the test says; nothing else.
+@interface OISMetadataTransport : NSObject <ODataTransport>
+@property (nonatomic, copy) NSString *xml;
+@end
+
+@implementation OISMetadataTransport
+- (void)startExchange:(ODataExchange *)exchange
+{
+  BOOL metadata = [exchange.request.URL.path hasSuffix:@"$metadata"];
+  exchange.URLResponse = [[NSHTTPURLResponse alloc] initWithURL:exchange.request.URL statusCode:metadata ? 200 : 404
+                                                     HTTPVersion:@"HTTP/1.1" headerFields:@{ @"Content-Type": @"application/xml" }];
+  exchange.data = metadata ? [self.xml dataUsingEncoding:NSUTF8StringEncoding] : [NSData data];
+  [exchange finish];
+}
+@end
+
+@interface ODataModelBuilderTests : XCTestCase
+@end
+
+@implementation ODataModelBuilderTests {
+  NSString *_zooXML;
+  ODataSchema *_zoo;
+}
+
+- (void)setUp
+{
+  [super setUp];
+  [ODataIncrementalStore registerStore];
+  NSString *path = [[OISSnapshotDirectory() stringByAppendingPathComponent:@"Zoo"] stringByAppendingPathComponent:@"metadata.json"];
+  NSDictionary *snapshot = [NSJSONSerialization JSONObjectWithData:[NSData dataWithContentsOfFile:path] options:0 error:NULL];
+  _zooXML = snapshot[@"response"][@"bodyXML"];
+  _zoo = [ODataSchema schemaWithData:[_zooXML dataUsingEncoding:NSUTF8StringEncoding] error:NULL];
+  XCTAssertNotNil(_zoo);
+}
+
+// The Zoo schema, with the keepers' phone numbers added: a new version.
+- (NSString *)zooV2
+{
+  return [_zooXML stringByReplacingOccurrencesOfString:@"<Property Name=\"Code\" Type=\"Edm.String\" Nullable=\"false\"/>"
+                                            withString:@"<Property Name=\"Code\" Type=\"Edm.String\" Nullable=\"false\"/><Property Name=\"Phone\" Type=\"Edm.String\"/>"];
+}
+
+- (ODataSchema *)schemaFrom:(NSString *)xml
+{
+  return [ODataSchema schemaWithData:[xml dataUsingEncoding:NSUTF8StringEncoding] error:NULL];
+}
+
+- (void)testBuildsTheModelTheSchemaDescribes
+{
+  NSManagedObjectModel *model = [ODataModelBuilder modelWithSchema:_zoo];
+  NSEntityDescription *animal = model.entitiesByName[@"Animal"];
+  NSEntityDescription *lion = model.entitiesByName[@"Lion"];
+  NSEntityDescription *keeper = model.entitiesByName[@"Keeper"];
+  XCTAssertNotNil(animal);
+  XCTAssertEqualObjects(lion.superentity.name, @"Animal");
+  XCTAssertEqualObjects(animal.userInfo[ODataUserInfoEntitySet], @"Animals");
+  XCTAssertEqualObjects(keeper.userInfo[ODataUserInfoEntitySet], @"Staff");
+  XCTAssertNil(lion.userInfo[ODataUserInfoEntitySet], @"a derived type is in its base's set");
+  XCTAssertEqualObjects(lion.userInfo[ODataUserInfoType], @"Zoo.Lion");
+
+  NSAttributeDescription *identifier = animal.attributesByName[@"id"];
+  XCTAssertEqual(identifier.attributeType, NSInteger32AttributeType);
+  XCTAssertFalse(identifier.isOptional);
+  XCTAssertEqualObjects(identifier.userInfo[ODataUserInfoProperty], @"Id");
+  XCTAssertEqualObjects(identifier.userInfo[ODataUserInfoKey], @"YES");
+  XCTAssertEqual([animal.attributesByName[@"born"] attributeType], NSDateAttributeType);
+  XCTAssertEqualObjects([animal.attributesByName[@"born"] userInfo][ODataUserInfoType], @"Edm.Date");
+  XCTAssertEqualObjects([animal.attributesByName[@"diet"] userInfo][ODataUserInfoType], @"Zoo.Diet");
+  XCTAssertNotNil(lion.attributesByName[@"maxRoar"]);
+  XCTAssertNotNil(lion.attributesByName[@"name"], @"inherited");
+
+  NSRelationshipDescription *keeperOf = animal.relationshipsByName[@"keeper"];
+  XCTAssertFalse(keeperOf.isToMany);
+  XCTAssertEqualObjects(keeperOf.inverseRelationship.name, @"animals", @"partners are inverses");
+  XCTAssertTrue(keeperOf.inverseRelationship.isToMany);
+  XCTAssertEqualObjects([ODataModelBuilder versionIdentifierOfModel:model], [ODataModelBuilder versionIdentifierForSchema:_zoo]);
+}
+
+- (void)testVersionIdentifierFollowsTheSchema
+{
+  NSString *v1 = [ODataModelBuilder versionIdentifierForSchema:_zoo];
+  XCTAssertTrue([v1 hasPrefix:@"odata:"]);
+  XCTAssertEqualObjects([ODataModelBuilder versionIdentifierForSchema:[self schemaFrom:_zooXML]], v1);
+  XCTAssertNotEqualObjects([ODataModelBuilder versionIdentifierForSchema:[self schemaFrom:[self zooV2]]], v1);
+}
+
+- (void)testGeneratedModelWorksAgainstTheService
+{
+  NSError *error = nil;
+  ODataSnapshotTransport *transport = [[ODataSnapshotTransport alloc] initWithDirectory:[OISSnapshotDirectory() stringByAppendingPathComponent:@"Zoo"]
+                                                                            serviceRoot:[NSURL URLWithString:@"https://zoo.test/Zoo.svc/"] error:&error];
+  NSURL *root = [NSURL URLWithString:@"https://zoo.test/Zoo.svc/"];
+  NSDictionary *options = @{ ODataIncrementalStoreTransportOption: transport };
+  NSManagedObjectModel *model = [ODataIncrementalStore modelForServiceAtURL:root options:options error:&error];
+  XCTAssertNotNil(model, @"%@", error);
+  NSPersistentStoreCoordinator *psc = [[NSPersistentStoreCoordinator alloc] initWithManagedObjectModel:model];
+  ODataIncrementalStore *store = (ODataIncrementalStore *)[psc addPersistentStoreWithType:[ODataIncrementalStore storeType]
+                                                                             configuration:nil URL:root options:options error:&error];
+  XCTAssertNotNil(store, @"%@", error);
+  XCTAssertEqualObjects(store.metadataProblems, @[]);
+  NSManagedObjectContext *context = [[NSManagedObjectContext alloc] init];
+  context.persistentStoreCoordinator = psc;
+  NSArray *animals = [context executeFetchRequest:[NSFetchRequest fetchRequestWithEntityName:@"Animal"] error:&error];
+  XCTAssertEqual(animals.count, (NSUInteger)3, @"%@", error);
+  for (NSManagedObject *animal in animals) {
+    if (![[animal valueForKey:@"name"] isEqual:@"Leo"]) continue;
+    XCTAssertEqualObjects(animal.entity.name, @"Lion");
+    XCTAssertEqualObjects([animal valueForKey:@"features"], @"Mane", @"a generated model holds enumerations as names");
+  }
+  XCTAssertEqualObjects(transport.refusals, @[]);
+}
+
+- (void)testPackagesGainAVersionWhenTheSchemaChanges
+{
+  NSString *package = [NSTemporaryDirectory() stringByAppendingPathComponent:
+                       [NSString stringWithFormat:@"ois-%@/Zoo.xcdatamodeld", [[NSUUID UUID] UUIDString]]];
+  NSError *error = nil;
+  BOOL changed = NO;
+  NSManagedObjectModel *v1 = [ODataModelBuilder modelWithSchema:_zoo];
+  XCTAssertEqualObjects([ODataModelBuilder writeModel:v1 toPackage:package changed:&changed error:&error], @"Zoo", @"%@", error);
+  XCTAssertTrue(changed);
+  XCTAssertEqualObjects([ODataModelBuilder writeModel:v1 toPackage:package changed:&changed error:&error], @"Zoo");
+  XCTAssertFalse(changed, @"the same schema is the same version");
+
+  NSManagedObjectModel *v2 = [ODataModelBuilder modelWithSchema:[self schemaFrom:[self zooV2]]];
+  XCTAssertEqualObjects([ODataModelBuilder writeModel:v2 toPackage:package changed:&changed error:&error], @"Zoo 2");
+  XCTAssertTrue(changed);
+  NSDictionary *current = [NSDictionary dictionaryWithContentsOfFile:[package stringByAppendingPathComponent:@".xccurrentversion"]];
+  XCTAssertEqualObjects(current[@"_XCCurrentVersionName"], @"Zoo 2.xcdatamodel");
+  NSString *old = [NSString stringWithContentsOfFile:[package stringByAppendingPathComponent:@"Zoo.xcdatamodel/contents"]
+                                            encoding:NSUTF8StringEncoding error:NULL];
+  NSString *now = [NSString stringWithContentsOfFile:[package stringByAppendingPathComponent:@"Zoo 2.xcdatamodel/contents"]
+                                            encoding:NSUTF8StringEncoding error:NULL];
+  XCTAssertTrue([old rangeOfString:@"phone"].location == NSNotFound, @"the old version is kept as it was");
+  XCTAssertTrue([now rangeOfString:@"name=\"phone\""].location != NSNotFound);
+  XCTAssertTrue([now rangeOfString:[ODataModelBuilder versionIdentifierOfModel:v2]].location != NSNotFound);
+  XCTAssertTrue([now rangeOfString:@"parentEntity=\"Animal\""].location != NSNotFound);
+  [[NSFileManager defaultManager] removeItemAtPath:package.stringByDeletingLastPathComponent error:NULL];
+}
+
+- (void)testAChangedServiceIsAVersionChange
+{
+  NSURL *root = [NSURL URLWithString:@"https://zoo.test/Zoo.svc/"];
+  OISMetadataTransport *service = [[OISMetadataTransport alloc] init];
+  service.xml = [self zooV2];
+  NSDictionary *options = @{ ODataIncrementalStoreTransportOption: service };
+
+  // The versions an app ships: Core Data picks the one the service matches.
+  NSManagedObjectModel *v1 = [ODataModelBuilder modelWithSchema:_zoo];
+  NSManagedObjectModel *v2 = [ODataModelBuilder modelWithSchema:[self schemaFrom:[self zooV2]]];
+  NSError *error = nil;
+  NSDictionary *metadata = [ODataIncrementalStore metadataForServiceAtURL:root options:options error:&error];
+  XCTAssertNotNil(metadata, @"%@", error);
+  XCTAssertTrue([v2 isConfiguration:nil compatibleWithStoreMetadata:metadata]);
+  XCTAssertFalse([v1 isConfiguration:nil compatibleWithStoreMetadata:metadata]);
+
+  // Opening with the old version fails as Core Data fails any store whose
+  // model has moved on.
+  NSPersistentStoreCoordinator *psc = [[NSPersistentStoreCoordinator alloc] initWithManagedObjectModel:v1];
+  id store = [psc addPersistentStoreWithType:[ODataIncrementalStore storeType] configuration:nil URL:root options:options error:&error];
+  XCTAssertNil(store);
+  NSError *cause = error.userInfo[NSUnderlyingErrorKey] ?: error;
+  XCTAssertEqual(cause.code, NSPersistentStoreIncompatibleVersionHashError, @"%@", error);
+
+  psc = [[NSPersistentStoreCoordinator alloc] initWithManagedObjectModel:v2];
+  error = nil;
+  XCTAssertNotNil([psc addPersistentStoreWithType:[ODataIncrementalStore storeType] configuration:nil URL:root options:options error:&error], @"%@", error);
+}
+
+@end

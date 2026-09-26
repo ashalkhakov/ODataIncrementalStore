@@ -63,12 +63,16 @@ jobs:
       # services agree: Microsoft's public Northwind v4 (read) and TripPin
       # (write, in a session of its own). They are not ours, so a failure
       # here is reported, not fatal.
-      - name: Live service checks (Northwind, TripPin)
+      - name: Live service checks (Northwind, TripPin, generated models)
         continue-on-error: true
         run: |
           xcrun momc Examples/Catalog/Catalog.xcdatamodeld "$RUNNER_TEMP/Catalog.momd"
           xcrun momc Tests/Live/TripPin.xcdatamodeld "$RUNNER_TEMP/TripPin.momd"
           xcrun momc Tests/Live/Northwind.xcdatamodeld "$RUNNER_TEMP/Northwind.momd"
+          clang -fobjc-arc -fmodules -ISource/include Source/*.m Tools/ois-model.m \
+            -framework Foundation -framework CoreData -o "$RUNNER_TEMP/ois-model"
+          "$RUNNER_TEMP/ois-model" https://services.odata.org/V4/Northwind/Northwind.svc/ "$RUNNER_TEMP/NorthwindGenerated.xcdatamodeld"
+          xcrun momc "$RUNNER_TEMP/NorthwindGenerated.xcdatamodeld" "$RUNNER_TEMP/NorthwindGenerated.momd"
           clang -fobjc-arc -fmodules -ISource/include Source/*.m Tests/Live/ois-live.m \
             -framework Foundation -framework CoreData -o "$RUNNER_TEMP/ois-live"
           "$RUNNER_TEMP/ois-live" "$RUNNER_TEMP"
@@ -231,7 +235,7 @@ jobs:
           make test
 
       # As on macOS: real services, reported but not fatal.
-      - name: Live service checks (Northwind, TripPin)
+      - name: Live service checks (Northwind, TripPin, generated models)
         continue-on-error: true
         run: |
           . $PREFIX/System/Library/Makefiles/GNUstep.sh

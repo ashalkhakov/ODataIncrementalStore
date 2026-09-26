@@ -47,6 +47,7 @@ SRCS = \
 	$(SRC_DIR)/ODataValue.m \
 	$(SRC_DIR)/ODataBatch.m \
 	$(SRC_DIR)/ODataSchema.m \
+	$(SRC_DIR)/ODataModelBuilder.m \
 	$(SRC_DIR)/ODataResourceIdentifier.m \
 	$(SRC_DIR)/ODataPredicateTranslator.m \
 	$(SRC_DIR)/ODataQueryBuilder.m \
@@ -56,7 +57,7 @@ OBJS = $(SRCS:.m=.o)
 
 .PHONY: all clean test
 
-all: libODataIncrementalStore.so ois-filter Catalog.momd
+all: libODataIncrementalStore.so ois-filter ois-model Catalog.momd
 
 libODataIncrementalStore.so: $(OBJS)
 	$(CC) -shared -o $@ $(OBJS) $(GNUSTEP_LIBS)
@@ -66,6 +67,11 @@ $(SRC_DIR)/%.o: $(SRC_DIR)/%.m
 
 ois-filter: Tools/ois-filter.m libODataIncrementalStore.so
 	$(CC) $(OBJCFLAGS) -o $@ Tools/ois-filter.m -L. -lODataIncrementalStore $(GNUSTEP_LIBS)
+
+# A Core Data model from a service's $metadata:
+#   ./ois-model https://services.odata.org/V4/Northwind/Northwind.svc/ Northwind.xcdatamodeld
+ois-model: Tools/ois-model.m libODataIncrementalStore.so
+	$(CC) $(OBJCFLAGS) -o $@ Tools/ois-model.m -L. -lODataIncrementalStore $(GNUSTEP_LIBS)
 
 # FreeCoreData's model compiler (make -C Tools/momc install there).
 MOMC ?= momc
@@ -80,5 +86,5 @@ test:
 	$(MAKE) -C Tests run-tests
 
 clean:
-	rm -f $(OBJS) libODataIncrementalStore.so ois-filter
+	rm -f $(OBJS) libODataIncrementalStore.so ois-filter ois-model
 	rm -rf Catalog.momd

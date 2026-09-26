@@ -14,11 +14,15 @@ include $(GNUSTEP_MAKEFILES)/common.make
 CC = clang
 OBJC = clang
 
-TOOL_NAME = ois-live
+TOOL_NAME = ois-live ois-model
 ois-live_OBJC_FILES = ois-live.m
 ois-live_INCLUDE_DIRS = -I../../Source/include
 ois-live_LIB_DIRS = -L../../obj -L../..
 ois-live_TOOL_LIBS += -lODataIncrementalStore -lCoreData
+ois-model_OBJC_FILES = ../../Tools/ois-model.m
+ois-model_INCLUDE_DIRS = -I../../Source/include
+ois-model_LIB_DIRS = -L../../obj -L../..
+ois-model_TOOL_LIBS += -lODataIncrementalStore -lCoreData
 
 ADDITIONAL_OBJCFLAGS += -fobjc-arc -fblocks -fobjc-runtime=gnustep-2.0 \
 	-fconstant-string-class=NSConstantString -fobjc-exceptions
@@ -29,7 +33,10 @@ MOMC ?= momc
 include $(GNUSTEP_MAKEFILES)/tool.make
 -include GNUmakefile.postamble
 
-.PHONY: live Catalog.momd Northwind.momd TripPin.momd
+NORTHWIND = https://services.odata.org/V4/Northwind/Northwind.svc/
+RUN = LD_LIBRARY_PATH="$(CURDIR)/../../obj$${LD_LIBRARY_PATH:+:$$LD_LIBRARY_PATH}"
+
+.PHONY: live Catalog.momd Northwind.momd TripPin.momd NorthwindGenerated.momd
 Catalog.momd: ../../Examples/Catalog/Catalog.xcdatamodeld
 	$(MOMC) $< $@
 
@@ -39,9 +46,15 @@ TripPin.momd: TripPin.xcdatamodeld
 Northwind.momd: Northwind.xcdatamodeld
 	$(MOMC) $< $@
 
-live: all Catalog.momd Northwind.momd TripPin.momd
-	LD_LIBRARY_PATH="$(CURDIR)/../../obj$${LD_LIBRARY_PATH:+:$$LD_LIBRARY_PATH}" \
-	./$(GNUSTEP_OBJ_DIR_NAME)/ois-live .
+# Northwind's model, generated from its $metadata and compiled, as a
+# client built on it would be.
+NorthwindGenerated.momd: all
+	rm -rf NorthwindGenerated.xcdatamodeld
+	$(RUN) ./$(GNUSTEP_OBJ_DIR_NAME)/ois-model $(NORTHWIND) NorthwindGenerated.xcdatamodeld
+	$(MOMC) NorthwindGenerated.xcdatamodeld $@
+
+live: all Catalog.momd Northwind.momd TripPin.momd NorthwindGenerated.momd
+	$(RUN) ./$(GNUSTEP_OBJ_DIR_NAME)/ois-live .
 
 after-clean::
-	rm -rf Catalog.momd Northwind.momd TripPin.momd
+	rm -rf Catalog.momd Northwind.momd TripPin.momd NorthwindGenerated.momd NorthwindGenerated.xcdatamodeld

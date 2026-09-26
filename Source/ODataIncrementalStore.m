@@ -65,6 +65,43 @@ typedef NS_ENUM(NSInteger, OISWriteMode) {
   [NSPersistentStoreCoordinator registerStoreClass:self forStoreType:[self storeType]];
 }
 
++ (ODataSchema *)schemaForServiceAtURL:(NSURL *)url options:(NSDictionary *)options error:(NSError **)error
+{
+  ODataConfiguration *configuration = [[ODataConfiguration alloc] initWithURL:url options:options];
+  ODataClient *client = [[ODataClient alloc] initWithConfiguration:configuration];
+  id transport = options[ODataIncrementalStoreTransportOption];
+  if ([transport respondsToSelector:@selector(startExchange:)]) client.transport = transport;
+  NSData *metadata = [client metadataWithError:error];
+  return metadata ? [ODataSchema schemaWithData:metadata error:error] : nil;
+}
+
++ (NSManagedObjectModel *)modelForServiceAtURL:(NSURL *)url options:(NSDictionary *)options error:(NSError **)error
+{
+  ODataSchema *schema = [self schemaForServiceAtURL:url options:options error:error];
+  return schema ? [ODataModelBuilder modelWithSchema:schema] : nil;
+}
+
++ (NSDictionary *)metadataForSchema:(ODataSchema *)schema
+{
+  NSManagedObjectModel *model = [ODataModelBuilder modelWithSchema:schema];
+  // NSStoreModelVersionHashesVersion is in every store's metadata Core
+  // Data writes, though not in its headers; without it, Apple's
+  // -isConfiguration:compatibleWithStoreMetadata: takes any model for a
+  // match. FreeCoreData compares the hashes either way.
+  return @{
+    NSStoreTypeKey: [self storeType],
+    NSStoreModelVersionHashesKey: model.entityVersionHashesByName,
+    NSStoreModelVersionIdentifiersKey: model.versionIdentifiers.allObjects,
+    @"NSStoreModelVersionHashesVersion": @3,
+  };
+}
+
++ (NSDictionary *)metadataForServiceAtURL:(NSURL *)url options:(NSDictionary *)options error:(NSError **)error
+{
+  ODataSchema *schema = [self schemaForServiceAtURL:url options:options error:error];
+  return schema ? [self metadataForSchema:schema] : nil;
+}
+
 - (instancetype)initWithPersistentStoreCoordinator:(NSPersistentStoreCoordinator *)root
                                  configurationName:(NSString *)name
                                                URL:(NSURL *)url
@@ -124,7 +161,25 @@ typedef NS_ENUM(NSInteger, OISWriteMode) {
   }
   NSString *uuid = [NSIncrementalStore identifierForNewStoreAtURL:url];
   if (![uuid isKindOfClass:[NSString class]]) uuid = [[NSUUID UUID] UUIDString];
-  self.metadata = @{ NSStoreUUIDKey: uuid, NSStoreTypeKey: [[self class] storeType] };
+  NSMutableDictionary *storeMetadata = [@{ NSStoreUUIDKey: uuid, NSStoreTypeKey: [[self class] storeType] } mutableCopy];
+
+  // A model generated from a schema is a version of the service's model,
+  // and is checked as Core Data checks a model against any store: by the
+  // version hashes of the model the service's schema describes now.
+  NSString *modelVersion = [ODataModelBuilder versionIdentifierOfModel:model];
+  if (modelVersion && _schema) {
+    [storeMetadata addEntriesFromDictionary:[[self class] metadataForSchema:_schema]];
+    storeMetadata[NSStoreUUIDKey] = uuid;
+    if (![model isConfiguration:self.configurationName compatibleWithStoreMetadata:storeMetadata]) {
+      NSString *serviceVersion = [ODataModelBuilder versionIdentifierForSchema:_schema];
+      NSString *message = [NSString stringWithFormat:@"The service's schema has changed since the model was generated: the model is %@, the service %@. "
+                                                     @"Generate a new model version from its $metadata.", modelVersion, serviceVersion];
+      if (error) *error = [NSError errorWithDomain:NSCocoaErrorDomain code:NSPersistentStoreIncompatibleVersionHashError
+                                          userInfo:@{ NSLocalizedDescriptionKey: message, NSURLErrorKey: url }];
+      return NO;
+    }
+  }
+  self.metadata = storeMetadata;
   return YES;
 }
 

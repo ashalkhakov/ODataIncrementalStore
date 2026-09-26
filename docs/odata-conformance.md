@@ -59,7 +59,7 @@ calling the client conformant.
 | Area | Section | Status | Notes |
 |---|---|---|---|
 | Service root and `$metadata` fetch | §11.1 | ✅ **live** | Requested as XML. (It used to be sent with a JSON `Accept`, and Northwind refused to open.) |
-| `$metadata` use | §11.1.2 | ❌ | Fetched and discarded. The model is never checked against it, and entity sets, keys and types are not discovered from it. |
+| `$metadata` use | §11.1.2 | ✅ **live** | Read when the store opens (CSDL XML: entity types, keys, base types, properties, navigation, enumerations, entity sets, containment). It fills in what the model leaves unsaid, and the model is checked against it (`metadataProblems`). It can also be the model: built at runtime, or generated as a versioned `.xcdatamodeld` by `ois-model`; see the README. |
 | Status codes and error bodies | §9, JSON §21 | ✅ **live** | The service's message is the `NSError`'s description; its code, target, details, the HTTP status and the body are in `userInfo` (`ODataErrorCodeKey` and friends). XML error bodies too, for `$metadata`. A `412` is `ODataIncrementalStoreErrorOptimisticLocking`, alone or inside a change set. |
 | Errors surfaced from fetches | | ✅ **live** | A failed request fails the fetch with its `NSError`, for collections and relationships alike; it is never an empty result. |
 | Content negotiation for `$count` | §11.2.10 | ✅ **live** | Requested as `text/plain`. |
@@ -118,11 +118,11 @@ calling the client conformant.
 | Entity set names from `userInfo` or by pluralising | ✅ | |
 | Property names from `userInfo` or PascalCase | ✅ | |
 | Single and compound keys | ✅ | |
-| Key discovery from `$metadata` | ❌ | Keys come from `userInfo` or an `id` / `<Entity>ID` attribute. |
-| Derived types (`@odata.type`, type casts) ↔ sub-entities | ❌ | |
+| Key discovery from `$metadata` | ✅ **live** | `userInfo`, else the schema's key (TripPin's `Person` by `UserName`), else an `id` / `<Entity>ID` attribute. Entity sets too: `Person` is in `People`. |
+| Derived types (`@odata.type`, type casts) ↔ sub-entities | ✅ | A row's `@odata.type` makes its object one of the sub-entity; fetching a sub-entity casts (`Animals/Zoo.Lion`); a derived insert carries `@odata.type`. A fetch without sub-entities leaves derived rows out client-side, so its `$count` includes them. |
 | Complex types | ❌ | No Core Data equivalent short of flattening or a transformable. |
 | Collections of primitives | ❌ | Same. |
-| Enumeration types | ❌ | Filters also need the qualified literal form `Ns.Enum'Member'`. |
+| Enumeration types | ✅ **live** | Member names on a String attribute, values on an integer one (flags or'ed); the qualified literal in `$filter` (`Gender eq NS.PersonGender'Female'`). |
 
 ### 4.4 Predicates → `$filter` (Part 2 §5.1.1)
 
@@ -166,7 +166,7 @@ calling the client conformant.
 | `Binary` | Binary Data | ✅ **live** | Written as base64url, the spec's form; both base64url and plain base64 read, since Northwind sends plain base64. Literal `binary'…'`. |
 | `Stream`, media entities | | — | |
 | Geography, geometry | | — | |
-| Enumerations | | ❌ | See 4.3. |
+| Enumerations | String or Integer | ✅ **live** | See 4.3. |
 
 ## 6. Transport and platforms
 
@@ -256,8 +256,10 @@ route 2 against our own services, whatever third-party services do.
 4. ~~**Robustness:** `$batch` change sets for atomic saves, OData error
    bodies, percent-encoded keys, `@odata.editLink`, cache refresh,
    `Prefer: odata.maxpagesize` from `fetchBatchSize`.~~ Done.
-5. **Model:** read `$metadata`: validate the Core Data model against it,
-   discover keys, then derived types and enums.
+5. ~~**Model:** read `$metadata`: validate the Core Data model against it,
+   discover keys, then derived types and enums.~~ Done, with models built
+   from `$metadata` at runtime and generated ahead of time, versioned as
+   Core Data versions a model.
 6. **XML, for XForms:** JSON-to-XML mapping on the client first, since it
    works with every service; then Atom as a second wire format where a
    service offers it (section 7). Parsing CSDL XML in step 5 builds the
