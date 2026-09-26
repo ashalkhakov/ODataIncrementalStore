@@ -9,6 +9,73 @@
 @interface ODataSnapshotStoreTests : XCTestCase
 @end
 
+// A transport that answers later, from a thread of its own, as a network
+// transport does: the store, whose callbacks are synchronous, waits.
+@interface OISLaterTransport : NSObject <ODataTransport>
+@property (nonatomic, strong) ODataSnapshotTransport *inner;
+@property (atomic) NSUInteger finishedElsewhere;
+@end
+
+@implementation OISLaterTransport
+- (void)startExchange:(ODataExchange *)exchange
+{
+  // The context is the starter's; the starting thread travels alongside.
+  [NSThread detachNewThreadSelector:@selector(answer:) toTarget:self withObject:@[ exchange, [NSThread currentThread] ]];
+}
+
+- (void)answer:(NSArray *)job
+{
+  @autoreleasepool {
+    ODataExchange *exchange = job[0];
+    NSThread *starter = job[1];
+    [NSThread sleepForTimeInterval:0.01];
+    NSURLResponse *response = nil;
+    NSError *error = nil;
+    @synchronized(self.inner) {
+      exchange.data = [self.inner sendRequest:exchange.request returningResponse:&response error:&error];
+    }
+    exchange.URLResponse = response;
+    exchange.error = exchange.data ? nil : error;
+    if (starter != [NSThread currentThread]) self.finishedElsewhere++;
+    [exchange finish];
+  }
+}
+@end
+
+// A target that records what it was sent.
+@interface OISExchangeTarget : NSObject
+@property (nonatomic, strong) NSMutableArray *exchanges;
+@property (nonatomic, strong) NSCondition *condition;
+- (void)exchangeDidFinish:(ODataExchange *)exchange;
+- (void)waitFor:(NSUInteger)count;
+@end
+
+@implementation OISExchangeTarget
+- (instancetype)init
+{
+  self = [super init];
+  _exchanges = [NSMutableArray array];
+  _condition = [[NSCondition alloc] init];
+  return self;
+}
+
+- (void)exchangeDidFinish:(ODataExchange *)exchange
+{
+  [_condition lock];
+  [_exchanges addObject:exchange];
+  [_condition signal];
+  [_condition unlock];
+}
+
+- (void)waitFor:(NSUInteger)count
+{
+  NSDate *deadline = [NSDate dateWithTimeIntervalSinceNow:10];
+  [_condition lock];
+  while (_exchanges.count < count && [_condition waitUntilDate:deadline]) {}
+  [_condition unlock];
+}
+@end
+
 @implementation ODataSnapshotStoreTests {
   ODataSnapshotTransport *_transport;
   ODataIncrementalStore *_store;
@@ -575,6 +642,71 @@
   XCTAssertEqualObjects(_transport.batches, @[]);
   XCTAssertTrue([_transport.hits containsObject:@"product-patch.json"]);
   XCTAssertTrue([_transport.hits containsObject:@"product-6-patch.json"]);
+}
+
+#pragma mark - Target-action
+
+- (void)testStoreWaitsForATransportThatAnswersLater
+{
+  OISLaterTransport *later = [[OISLaterTransport alloc] init];
+  later.inner = _transport;
+  NSPersistentStoreCoordinator *psc = [[NSPersistentStoreCoordinator alloc] initWithManagedObjectModel:OISCatalogModel()];
+  NSError *error = nil;
+  id store = [psc addPersistentStoreWithType:[ODataIncrementalStore storeType] configuration:nil URL:OISTestServiceRoot()
+                                     options:@{ ODataIncrementalStoreTransportOption: later } error:&error];
+  XCTAssertNotNil(store, @"%@", error);
+  NSManagedObjectContext *context = [[NSManagedObjectContext alloc] init];
+  context.persistentStoreCoordinator = psc;
+  NSFetchRequest *fetch = [NSFetchRequest fetchRequestWithEntityName:@"Product"];
+  fetch.predicate = [NSPredicate predicateWithFormat:@"unitPrice < 10"];
+  NSArray *rows = [context executeFetchRequest:fetch error:&error];
+  XCTAssertEqual(rows.count, (NSUInteger)3, @"%@", error);
+  // Two pages and $metadata, each answered from another thread.
+  XCTAssertGreaterThanOrEqual(later.finishedElsewhere, (NSUInteger)3);
+  // A save of two requests: a change set, answered later too.
+  fetch.predicate = [NSPredicate predicateWithFormat:@"unitPrice > 20 AND discontinued == NO"];
+  fetch.sortDescriptors = @[ [NSSortDescriptor sortDescriptorWithKey:@"name" ascending:YES] ];
+  fetch.fetchLimit = 25;
+  NSArray *products = [context executeFetchRequest:fetch error:&error];
+  [products[0] setValue:[NSDecimalNumber decimalNumberWithString:@"23"] forKey:@"unitPrice"];
+  [products[1] setValue:[NSDecimalNumber decimalNumberWithString:@"26"] forKey:@"unitPrice"];
+  XCTAssertTrue([context save:&error], @"%@", error);
+  XCTAssertEqualObjects(_transport.batches, @[ @2 ]);
+}
+
+- (void)testClientReportsByTargetAction
+{
+  ODataClient *client = [[ODataClient alloc] initWithConfiguration:[[ODataConfiguration alloc] initWithURL:OISTestServiceRoot() options:nil]];
+  client.transport = _transport;
+  OISExchangeTarget *target = [[OISExchangeTarget alloc] init];
+  NSURL *product = [NSURL URLWithString:@"Products(4)?$expand=Category($select=CategoryID)" relativeToURL:OISTestServiceRoot()];
+  ODataExchange *exchange = [client sendRequest:[NSURLRequest requestWithURL:product.absoluteURL]
+                                         target:target action:@selector(exchangeDidFinish:)];
+  // The snapshot transport answers before returning.
+  XCTAssertTrue(exchange.isFinished);
+  XCTAssertEqual(target.exchanges.count, (NSUInteger)1);
+  XCTAssertEqual(exchange.response.status, 200);
+  XCTAssertNil(exchange.error);
+  [exchange finish];
+  XCTAssertEqual(target.exchanges.count, (NSUInteger)1, @"an exchange finishes once");
+
+  // Later, from another thread; an error status is the exchange's error.
+  OISLaterTransport *later = [[OISLaterTransport alloc] init];
+  later.inner = _transport;
+  client.transport = later;
+  NSURL *missing = [NSURL URLWithString:@"Products?$filter=UnitPrice%20gt%205000&$expand=Category($select=CategoryID)" relativeToURL:OISTestServiceRoot()];
+  [client sendRequest:[NSURLRequest requestWithURL:product.absoluteURL] target:target action:@selector(exchangeDidFinish:)];
+  [client sendRequest:[NSURLRequest requestWithURL:missing.absoluteURL] target:target action:@selector(exchangeDidFinish:)];
+  [target waitFor:3];
+  XCTAssertEqual(target.exchanges.count, (NSUInteger)3);
+  NSUInteger failed = 0;
+  for (ODataExchange *e in target.exchanges) {
+    if (e.error) {
+      failed++;
+      XCTAssertEqual(e.error.code, ODataIncrementalStoreErrorHTTP + 400);
+    }
+  }
+  XCTAssertEqual(failed, (NSUInteger)1);
 }
 
 - (void)testUnmatchedRequestDoesNotHitTheNetwork

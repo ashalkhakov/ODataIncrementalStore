@@ -310,6 +310,17 @@ static BOOL OISAccepts(NSString *accept, NSString *type)
   return nil;
 }
 
+// Answers from memory, so the exchange finishes before this returns.
+- (void)startExchange:(ODataExchange *)exchange
+{
+  NSURLResponse *response = nil;
+  NSError *error = nil;
+  exchange.data = [self sendRequest:exchange.request returningResponse:&response error:&error];
+  exchange.URLResponse = response;
+  exchange.error = exchange.data ? nil : error;
+  [exchange finish];
+}
+
 - (NSData *)sendRequest:(NSURLRequest *)request returningResponse:(NSURLResponse **)response error:(NSError **)error
 {
   if ([request.HTTPMethod isEqualToString:@"POST"] && [OISRelativePath(request.URL, self.serviceRoot) isEqualToString:@"$batch"]) {

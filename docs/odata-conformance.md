@@ -173,6 +173,7 @@ calling the client conformant.
 | Area | Status | Notes |
 |---|---|---|
 | HTTPS | ✅ **live** | `NSURLSession`, on Apple and on GNUstep (libcurl, gnutls). gnustep-base's `NSURLConnection` is only the fallback for a gnustep-base built without libcurl: besides relative redirects, it returns an empty body for a multipart response, which every `$batch` answer is. |
+| Asynchronous transports | ✅ | Transports report by target-action (`ODataExchange`), and may finish on any thread; the client and store wait for them where they must be synchronous. |
 | Basic and Bearer authentication | ✅ | Static credentials; no token refresh hook. |
 | Timeouts | ✅ | |
 | SAP Gateway CSRF token | ❌ | Vendor-specific: fetch `X-CSRF-Token` before writes. Needed only for SAP services. |

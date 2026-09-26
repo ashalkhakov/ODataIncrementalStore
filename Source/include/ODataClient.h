@@ -18,17 +18,64 @@ NS_ASSUME_NONNULL_BEGIN
 - (nullable NSString *)valueForHeader:(NSString *)name;
 @end
 
-/* Swap this in tests. The default path uses NSURLConnection (GNUstep)
-   or NSURLSession (Apple). Snapshot transport never touches the network. */
+// One request on its way, and once it is done, how it went. Whoever
+// starts an exchange gives it a target and an action; -finish sends the
+// action to the target, with the exchange as its argument, once:
+//
+//   - (void)exchangeDidFinish:(ODataExchange *)exchange;
+//
+// That is how both layers report: a transport fills in the HTTP response
+// and data, or an error, and finishes; the client fills in the OData
+// response (or change-set responses), or an OData error, and finishes.
+@interface ODataExchange : NSObject
+- (instancetype)initWithRequest:(NSURLRequest *)request target:(nullable id)target action:(nullable SEL)action NS_DESIGNATED_INITIALIZER;
+- (instancetype)init NS_UNAVAILABLE;
+@property (nonatomic, readonly) NSURLRequest *request;
+@property (nonatomic, strong, nullable) id context;             // the starter's own, untouched
+// Set by the transport.
+@property (nonatomic, strong, nullable) NSURLResponse *URLResponse;
+@property (nonatomic, copy, nullable) NSData *data;
+// Set by the transport (a request that never got an answer) or the client.
+@property (nonatomic, strong, nullable) NSError *error;
+// Set by the client.
+@property (nonatomic, strong, nullable) ODataHTTPResponse *response;
+@property (nonatomic, copy, nullable) NSArray<ODataHTTPResponse *> *responses;  // a change set's, in order
+@property (nonatomic, readonly, getter=isFinished) BOOL finished;
+// Sends the action to the target, from the calling thread, the first time
+// it is called; later calls do nothing. The target is released after.
+- (void)finish;
+@end
+
+// How requests reach a service. Send the exchange's request; when it is
+// done - before returning, or later on any thread - set URLResponse and
+// data, or error, and call -finish.
+//
+// The one rule: do not finish on the thread that started the exchange by
+// waiting for that thread to come back. The store's callbacks are
+// synchronous, so that thread is waiting for -finish, not running its run
+// loop. NSURLSession finishes on its own queue, and a transport that
+// answers from memory finishes before returning; both are fine.
 @protocol ODataTransport <NSObject>
-- (nullable NSData *)sendRequest:(NSURLRequest *)request
-               returningResponse:(NSURLResponse * _Nullable * _Nullable)response
-                           error:(NSError **)error;
+- (void)startExchange:(ODataExchange *)exchange;
 @end
 
 @interface ODataClient : NSObject
 @property (nonatomic, readonly) ODataConfiguration *configuration;
+// nil: NSURLSession, where Foundation has it (Apple, and gnustep-base
+// built with libcurl), else NSURLConnection on a thread of its own.
 @property (nonatomic, strong, nullable) id<ODataTransport> transport;
+
+// Sends a request with the configuration's headers. When it is done, on
+// whatever thread the transport finished on, the action goes to the
+// target: the exchange's response is set, or its error (an HTTP error
+// status is an error, as in -sendRequest:error:). The exchange is
+// returned, too, for its context.
+- (ODataExchange *)sendRequest:(NSURLRequest *)request target:(nullable id)target action:(nullable SEL)action;
+// As -sendChangeSet:error:, reporting the same way, with responses set.
+- (ODataExchange *)sendChangeSet:(NSArray<NSURLRequest *> *)requests target:(nullable id)target action:(nullable SEL)action;
+
+// The same, waited for, for callers that are synchronous themselves, as
+// the store's callbacks are. They wait on a condition, not a run loop.
 
 - (instancetype)initWithConfiguration:(ODataConfiguration *)configuration NS_DESIGNATED_INITIALIZER;
 - (instancetype)init NS_UNAVAILABLE;

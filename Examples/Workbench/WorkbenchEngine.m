@@ -167,6 +167,15 @@ static NSString *WBEtag(id version)
 
 #pragma mark - Transport
 
+// The service is in memory, so the exchange finishes before this returns.
+- (void)startExchange:(ODataExchange *)exchange
+{
+  NSURLResponse *response = nil;
+  exchange.data = [self sendRequest:exchange.request returningResponse:&response error:NULL];
+  exchange.URLResponse = response;
+  [exchange finish];
+}
+
 - (NSData *)sendRequest:(NSURLRequest *)request
       returningResponse:(NSURLResponse **)response
                   error:(NSError **)error

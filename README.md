@@ -171,6 +171,30 @@ followed until the collection ends or `fetchLimit` is reached.
 `NSIncrementalStore` callbacks are synchronous. **Do not load this store on the
 main queue.** Use a private-queue context.
 
+Requests go out through a transport and come back by target-action: an
+`ODataExchange` carries the request, and `-finish` sends its action to its
+target once the response (or an error) is in. `ODataClient` offers the same
+(`-sendRequest:target:action:`, `-sendChangeSet:target:action:`), and its
+synchronous methods, which the store uses, wait on a condition for the
+exchange to finish. So a transport can be as asynchronous as it likes, and
+nothing that uses the store has to be.
+
+A transport of your own (`ODataIncrementalStoreTransportOption`) implements
+one method:
+
+```objc
+- (void)startExchange:(ODataExchange *)exchange
+{
+  // send exchange.request; then, now or later, on any thread:
+  exchange.URLResponse = response;
+  exchange.data = data;          // or exchange.error = error;
+  [exchange finish];
+}
+```
+
+It must not finish by waiting for the thread that started the exchange:
+that thread is waiting for `-finish`, not running its run loop.
+
 ## Roadmap
 
 Client conformance with OData v4, item by item, and the order the gaps

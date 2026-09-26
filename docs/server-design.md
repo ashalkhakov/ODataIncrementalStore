@@ -54,9 +54,11 @@ FreeCoreData) and on Cocoa, with no platform-specific code in its core.
 ### The core takes a request and returns a response
 
 `ODataService` takes an `NSURLRequest` (method, URL, headers, body) and
-returns a status, headers and body. It never sees a socket. That shape is
-deliberately the client's `ODataTransport` protocol turned around, so a
-service can be handed to `ODataIncrementalStore` as its transport:
+answers with a status, headers and body. It never sees a socket. It is an
+`ODataTransport`: it takes an `ODataExchange`, fills in the response and
+finishes it, target-action, as every transport does; an in-memory service
+finishes before returning. So a service can be handed to
+`ODataIncrementalStore` as its transport:
 
 ```objc
 ODataService *service = [[ODataService alloc] initWithDataSource:source

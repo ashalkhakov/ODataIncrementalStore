@@ -30,6 +30,10 @@ NS_ASSUME_NONNULL_BEGIN
                                      error:(NSError **)error NS_DESIGNATED_INITIALIZER;
 - (instancetype)init NS_UNAVAILABLE;
 - (nullable NSDictionary *)snapshotNamed:(NSString *)name;
+// The answer to one request, synchronously; -startExchange: is built on it.
+- (nullable NSData *)sendRequest:(NSURLRequest *)request
+               returningResponse:(NSURLResponse * _Nullable * _Nullable)response
+                           error:(NSError **)error;
 @end
 
 NS_ASSUME_NONNULL_END
