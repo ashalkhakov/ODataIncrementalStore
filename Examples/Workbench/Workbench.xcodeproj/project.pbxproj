@@ -6,14 +6,15 @@
 	objectVersion = 56;
 	objects = {
 /* Begin PBXBuildFile section */
-		AA000000000000000000008A /* main.m in Sources */ = {isa = PBXBuildFile; fileRef = AA000000000000000000008B /* main.m */;};
-		AA000000000000000000008C /* WorkbenchController.m in Sources */ = {isa = PBXBuildFile; fileRef = AA000000000000000000008D /* WorkbenchController.m */;};
-		AA000000000000000000008E /* WorkbenchEngine.m in Sources */ = {isa = PBXBuildFile; fileRef = AA000000000000000000008F /* WorkbenchEngine.m */;};
-		AA0000000000000000000090 /* Catalog.xcdatamodeld in Resources */ = {isa = PBXBuildFile; fileRef = AA0000000000000000000091 /* Catalog.xcdatamodeld */;};
-		AA0000000000000000000092 /* ODataIncrementalStore.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = AA0000000000000000000093 /* ODataIncrementalStore.framework */;};
-		AA0000000000000000000094 /* Cocoa.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = AA0000000000000000000095 /* Cocoa.framework */;};
-		AA0000000000000000000096 /* CoreData.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = AA000000000000000000003D /* CoreData.framework */;};
-		AA0000000000000000000097 /* ODataIncrementalStore.framework in Embed Frameworks */ = {isa = PBXBuildFile; fileRef = AA0000000000000000000093 /* ODataIncrementalStore.framework */; settings = {ATTRIBUTES = (CodeSignOnCopy, RemoveHeadersOnCopy, ); };};
+		AA000000000000000000008A /* main.m in Sources */ = {isa = PBXBuildFile; fileRef = AA000000000000000000008B /* main.m */; };
+		AA000000000000000000008C /* WorkbenchController.m in Sources */ = {isa = PBXBuildFile; fileRef = AA000000000000000000008D /* WorkbenchController.m */; };
+		AA000000000000000000008E /* WorkbenchEngine.m in Sources */ = {isa = PBXBuildFile; fileRef = AA000000000000000000008F /* WorkbenchEngine.m */; };
+		AA0000000000000000000090 /* Catalog.xcdatamodeld in Resources */ = {isa = PBXBuildFile; fileRef = AA0000000000000000000091 /* Catalog.xcdatamodeld */; };
+		AA00000000000000000000B2 /* WorkbenchWindow.xib in Resources */ = {isa = PBXBuildFile; fileRef = AA00000000000000000000B1 /* WorkbenchWindow.xib */; };
+		AA0000000000000000000092 /* ODataIncrementalStore.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = AA0000000000000000000093 /* ODataIncrementalStore.framework */; };
+		AA0000000000000000000094 /* Cocoa.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = AA0000000000000000000095 /* Cocoa.framework */; };
+		AA0000000000000000000096 /* CoreData.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = AA000000000000000000003D /* CoreData.framework */; };
+		AA0000000000000000000097 /* ODataIncrementalStore.framework in Embed Frameworks */ = {isa = PBXBuildFile; fileRef = AA0000000000000000000093 /* ODataIncrementalStore.framework */; settings = {ATTRIBUTES = (CodeSignOnCopy, RemoveHeadersOnCopy, ); }; };
 /* End PBXBuildFile section */
 
 /* Begin PBXContainerItemProxy section */
@@ -48,18 +49,19 @@
 /* End PBXCopyFilesBuildPhase section */
 
 /* Begin PBXFileReference section */
-		AA0000000000000000000009 /* Workbench.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = Workbench.app; sourceTree = BUILT_PRODUCTS_DIR;};
-		AA0000000000000000000099 /* ODataIncrementalStore.xcodeproj */ = {isa = PBXFileReference; lastKnownFileType = "wrapper.pb-project"; name = ODataIncrementalStore.xcodeproj; path = ../../ODataIncrementalStore.xcodeproj; sourceTree = "<group>";};
-		AA0000000000000000000095 /* Cocoa.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = Cocoa.framework; path = System/Library/Frameworks/Cocoa.framework; sourceTree = SDKROOT;};
-		AA000000000000000000003D /* CoreData.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = CoreData.framework; path = System/Library/Frameworks/CoreData.framework; sourceTree = SDKROOT;};
-		AA000000000000000000009C /* ../../Xcode/Configs/Debug.xcconfig */ = {isa = PBXFileReference; lastKnownFileType = text.xcconfig; path = ../../Xcode/Configs/Debug.xcconfig; sourceTree = "<group>";};
-		AA000000000000000000009D /* ../../Xcode/Configs/Release.xcconfig */ = {isa = PBXFileReference; lastKnownFileType = text.xcconfig; path = ../../Xcode/Configs/Release.xcconfig; sourceTree = "<group>";};
-		AA000000000000000000008B /* main.m */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.objc; path = main.m; sourceTree = "<group>";};
-		AA000000000000000000008D /* WorkbenchController.m */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.objc; path = WorkbenchController.m; sourceTree = "<group>";};
-		AA000000000000000000008F /* WorkbenchEngine.m */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.objc; path = WorkbenchEngine.m; sourceTree = "<group>";};
-		AA000000000000000000009E /* WorkbenchController.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = WorkbenchController.h; sourceTree = "<group>";};
-		AA000000000000000000009F /* WorkbenchEngine.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = WorkbenchEngine.h; sourceTree = "<group>";};
-		AA0000000000000000000091 /* Catalog.xcdatamodeld */ = {isa = PBXFileReference; lastKnownFileType = wrapper.xcdatamodeld; name = Catalog.xcdatamodeld; path = ../Catalog/Catalog.xcdatamodeld; sourceTree = "<group>";};
+		AA0000000000000000000009 /* Workbench.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = Workbench.app; sourceTree = BUILT_PRODUCTS_DIR; };
+		AA0000000000000000000099 /* ODataIncrementalStore.xcodeproj */ = {isa = PBXFileReference; lastKnownFileType = "wrapper.pb-project"; name = ODataIncrementalStore.xcodeproj; path = ../../ODataIncrementalStore.xcodeproj; sourceTree = "<group>"; };
+		AA0000000000000000000095 /* Cocoa.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = Cocoa.framework; path = System/Library/Frameworks/Cocoa.framework; sourceTree = SDKROOT; };
+		AA000000000000000000003D /* CoreData.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = CoreData.framework; path = System/Library/Frameworks/CoreData.framework; sourceTree = SDKROOT; };
+		AA000000000000000000009C /* ../../Xcode/Configs/Debug.xcconfig */ = {isa = PBXFileReference; lastKnownFileType = text.xcconfig; path = ../../Xcode/Configs/Debug.xcconfig; sourceTree = "<group>"; };
+		AA000000000000000000009D /* ../../Xcode/Configs/Release.xcconfig */ = {isa = PBXFileReference; lastKnownFileType = text.xcconfig; path = ../../Xcode/Configs/Release.xcconfig; sourceTree = "<group>"; };
+		AA000000000000000000008B /* main.m */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.objc; path = main.m; sourceTree = "<group>"; };
+		AA000000000000000000008D /* WorkbenchController.m */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.objc; path = WorkbenchController.m; sourceTree = "<group>"; };
+		AA000000000000000000008F /* WorkbenchEngine.m */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.objc; path = WorkbenchEngine.m; sourceTree = "<group>"; };
+		AA000000000000000000009E /* WorkbenchController.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = WorkbenchController.h; sourceTree = "<group>"; };
+		AA000000000000000000009F /* WorkbenchEngine.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = WorkbenchEngine.h; sourceTree = "<group>"; };
+		AA0000000000000000000091 /* Catalog.xcdatamodeld */ = {isa = PBXFileReference; lastKnownFileType = wrapper.xcdatamodeld; name = Catalog.xcdatamodeld; path = ../Catalog/Catalog.xcdatamodeld; sourceTree = "<group>"; };
+		AA00000000000000000000B1 /* WorkbenchWindow.xib */ = {isa = PBXFileReference; lastKnownFileType = file.xib; path = WorkbenchWindow.xib; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -95,6 +97,7 @@
 				AA000000000000000000009E /* WorkbenchController.h */,
 				AA000000000000000000008F /* WorkbenchEngine.m */,
 				AA000000000000000000009F /* WorkbenchEngine.h */,
+				AA00000000000000000000B1 /* WorkbenchWindow.xib */,
 				AA0000000000000000000091 /* Catalog.xcdatamodeld */,
 			);
 			name = Workbench;
@@ -211,6 +214,7 @@
 			buildActionMask = 2147483647;
 			files = (
 				AA0000000000000000000090 /* Catalog.xcdatamodeld in Resources */,
+				AA00000000000000000000B2 /* WorkbenchWindow.xib in Resources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
