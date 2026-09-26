@@ -115,7 +115,7 @@ jobs:
       # FreeCoreData's momc-model-version-identifier branch, until its pull
       # request is merged: momc keeps a model version's Identifier, which
       # models generated from $metadata carry.
-      FREECOREDATA_REF: 854138a47033abe302b9a52fd6d696456df20e68
+      FREECOREDATA_REF: 67388204aa0bf4cd2450afec7e183bb494159e57
     defaults:
       run:
         working-directory: ${{ github.workspace }}/source
