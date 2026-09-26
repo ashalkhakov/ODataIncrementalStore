@@ -191,6 +191,8 @@ static NSString *OISQuoted(NSString *text)
 @property (nonatomic, strong, nullable) NSNumber *levels;
 @property (nonatomic, copy, nullable) NSString *search;
 @property (nonatomic, copy) NSDictionary *aliases;
+@property (nonatomic, copy, nullable) NSString *format;
+@property (nonatomic, copy, nullable) NSString *skipToken;
 @end
 
 @interface ODataExpandItem ()
@@ -848,7 +850,15 @@ static NSString *OISQuoted(NSString *text)
       if (ok) aliases[[key substringFromIndex:1]] = e;
     } else if ([key hasPrefix:@"$"]) {
       // 4.01 allows system query options without the $; 4.0 does not.
-      if ([key isEqualToString:@"$format"] || [key isEqualToString:@"$skiptoken"] || [key isEqualToString:@"$deltatoken"] ||
+      if ([key isEqualToString:@"$format"]) {
+        options.format = value;
+        continue;
+      }
+      if ([key isEqualToString:@"$skiptoken"]) {
+        options.skipToken = value;
+        continue;
+      }
+      if ([key isEqualToString:@"$deltatoken"] ||
           [key isEqualToString:@"$schemaversion"] || [key isEqualToString:@"$id"] || [key isEqualToString:@"$index"]) {
         continue;
       }

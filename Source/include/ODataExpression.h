@@ -104,6 +104,10 @@ typedef NS_ENUM(NSInteger, ODataExpressionKind) {
 @property (nonatomic, readonly, strong, nullable) NSNumber *levels;  // -1: max
 @property (nonatomic, readonly, copy, nullable) NSString *search;
 @property (nonatomic, readonly, copy) NSDictionary<NSString *, ODataExpression *> *aliases;  // @p -> value
+// Taken as written: $format (json, or a media type with parameters), and
+// $skiptoken, which only the service that wrote it can read.
+@property (nonatomic, readonly, copy, nullable) NSString *format;
+@property (nonatomic, readonly, copy, nullable) NSString *skipToken;
 
 @end
 

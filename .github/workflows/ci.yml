@@ -166,7 +166,7 @@ jobs:
       # Both pinned to commits, not branches. The patches ref decides the
       # recipe hash the stack is cached under, so a moving branch would keep
       # serving a prefix built from patches that have since changed.
-      GNUSTEP_PATCHES_REF: 44b9f3d8b750c0c2c128a14718a265b83a9a797c
+      GNUSTEP_PATCHES_REF: 0b1925a1fe2e27586e5d8d5639ebec3b20d7489b
       # FreeCoreData v0.4.1: its momc keeps a model version's Identifier,
       # which models generated from $metadata carry.
       FREECOREDATA_REF: e2ca33b7827ac7612cf4dcb12156860f2a0cd134
@@ -324,6 +324,9 @@ jobs:
       # Where it will run: a plain Ubuntu with no GNUstep, and only the
       # libraries every desktop has (AppImage leaves those to the host). The
       # offline self-test drives the window against the built-in service.
+      # The host's fonts are removed first (libfontconfig1 pulls in DejaVu),
+      # so the window lays out with the fonts the image carries or not at
+      # all: a font path that misses them fails here.
       - name: Smoke-test the AppImage on a clean system
         run: |
           image=$(ls ODataWorkbench-Linux-*.AppImage)
@@ -335,6 +338,7 @@ jobs:
                 libfontconfig1 libfreetype6 libx11-6 libx11-xcb1 libxcb1 libgl1 libharfbuzz0b > /dev/null && break
               sleep 10
             done
+            rm -rf /usr/share/fonts
             APPIMAGE_EXTRACT_AND_RUN=1 timeout 300 xvfb-run -a ./'"$image"' --self-test builtin'
 
       - uses: actions/upload-artifact@v4

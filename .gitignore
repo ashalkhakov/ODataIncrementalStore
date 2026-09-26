@@ -26,3 +26,7 @@ Tests/Live/include/
 AppDir/
 *.AppImage
 ODataWorkbench-*.zip
+
+# ThirdParty/GCDWebServer smoke-test builds
+ThirdParty/GCDWebServer/build/
+ThirdParty/GCDWebServer/obj/
