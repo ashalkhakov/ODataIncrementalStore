@@ -34,6 +34,9 @@ NS_ASSUME_NONNULL_BEGIN
 @property (nonatomic, readonly, copy) NSURL *serviceRoot;
 @property (nonatomic, readonly) NSArray<WorkbenchLogEntry *> *log;
 @property (nonatomic, copy, nullable) void (^didHandle)(WorkbenchLogEntry *entry);
+// Exchanges started so far, counted as they start (the log hears of them
+// once they are done).
+@property (atomic, readonly) NSUInteger started;
 // The service behind it, for a look at what it serves.
 @property (nonatomic, readonly) ODataService *service;
 // Nil when the model does not load.
@@ -47,6 +50,7 @@ NS_ASSUME_NONNULL_BEGIN
 // reported once it is done, on the main thread.
 @interface WorkbenchNetworkTransport : NSObject <ODataTransport>
 @property (nonatomic, copy, nullable) void (^didHandle)(WorkbenchLogEntry *entry);
+@property (atomic, readonly) NSUInteger started;
 @end
 
 NS_ASSUME_NONNULL_END

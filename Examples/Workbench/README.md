@@ -32,10 +32,25 @@ What you can do:
   the rest of what a fetch request can say: sort keys, as many as you like,
   through to-one relationships (`$orderby`); relationships to prefetch,
   opened to nest (`$expand=Suppliers($expand=Products)`); and the
-  properties of a dictionary result (`$select`). The GET the store will
-  send is shown before you execute it.
+  properties of a dictionary result (`$select`). Under the lists: a
+  `$search` (the service's own free-text search, ANDed with the
+  predicate), and, for a dictionary result, a grouping: key paths to
+  group by (`category.name`) and aggregates
+  (`count:(id) as products, sum:(unitPrice) as total`, with `sum`, `min`,
+  `max`, `average` and `count`). The GET the store will send is shown
+  before you execute it: `$apply` where the service has it, else the read
+  of the rows the store groups itself.
 - Execute. Rows are real managed objects; select one to see its attributes,
-  fire its faults, or its relationships.
+  fire its faults, or its relationships. Each prefetched relationship is a
+  column, showing what came with the row. Fire relationships reads every
+  relationship and says, for each, whether that asked the service: a
+  prefetched one does not, one that was not prefetched does.
+- Streams: a media entity's resource or a stream property (TripPin's
+  photos), chosen beside the inspector. Download reads it into the store's
+  stream directory and shows its content type, media ETag and size;
+  Upload… sends a file into the selected row's stream (a PUT with its
+  media ETag), or, with no row selected, makes a new media entity from it
+  (a POST), whose other properties you then edit and Save.
 - Change things as an app does: Insert a new object of the entity
   (required values start empty), edit cells, Delete rows; nothing is sent
   until Save, which sends them as POST, PATCH and DELETE, and Revert drops

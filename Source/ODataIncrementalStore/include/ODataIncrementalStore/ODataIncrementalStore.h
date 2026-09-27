@@ -87,6 +87,12 @@ NS_ASSUME_NONNULL_BEGIN
 // a request fails.
 - (nullable NSNotification *)fetchRemoteChanges:(NSError **)error;
 
+// The GET a fetch request is sent as: its collection read (or /$count);
+// for a grouping dictionary fetch, the $apply where the service has it,
+// else the read of the rows it is grouped from here. nil, and why, when
+// the request cannot be sent.
+- (nullable NSURL *)URLForFetchRequest:(NSFetchRequest *)request error:(NSError **)error;
+
 @end
 
 NS_ASSUME_NONNULL_END

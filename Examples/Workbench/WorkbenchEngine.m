@@ -236,6 +236,9 @@ static NSManagedObject *WBInsert(NSManagedObjectContext *context, NSString *enti
 {
   ODataExchange *inner = [[ODataExchange alloc] initWithRequest:exchange.request target:self action:@selector(innerDidFinish:)];
   inner.context = @[ exchange, [NSDate date] ];
+  @synchronized (self) {
+    _started++;
+  }
   [self.service startExchange:inner];
 }
 
@@ -307,6 +310,9 @@ static NSManagedObject *WBInsert(NSManagedObjectContext *context, NSString *enti
 {
   ODataExchange *inner = [[ODataExchange alloc] initWithRequest:exchange.request target:self action:@selector(innerDidFinish:)];
   inner.context = @[ exchange, [NSDate date] ];
+  @synchronized (self) {
+    _started++;
+  }
   [ODataDefaultTransport() startExchange:inner];
 }
 

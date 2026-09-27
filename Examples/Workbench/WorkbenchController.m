@@ -52,6 +52,16 @@ static NSDictionary *WBPreset(NSString *label, NSString *entity, NSString *predi
             @"expand": expand ?: @"", @"type": type ?: @"objects", @"limit": limit ?: @"" };
 }
 
+// The same, with $search, or grouped: key paths and aggregates.
+static NSDictionary *WBPresetWith(NSDictionary *preset, NSString *search, NSString *group, NSString *aggregate)
+{
+  NSMutableDictionary *more = [preset mutableCopy];
+  more[@"search"] = search ?: @"";
+  more[@"group"] = group ?: @"";
+  more[@"aggregate"] = aggregate ?: @"";
+  return more;
+}
+
 static NSArray *WorkbenchPresets(WBService service)
 {
   switch (service) {
@@ -62,7 +72,7 @@ static NSArray *WorkbenchPresets(WBService service)
         WBPreset(@"Beverages + category", @"Product", @"category.name == \"Beverages\"", @"name", YES, @"category", nil, nil),
         WBPreset(@"Top 5 dictionary", @"Product", nil, @"unitPrice", NO, nil, @"dictionary", @"5"),
         WBPreset(@"Count discontinued", @"Product", @"discontinued == YES", @"id", YES, nil, @"count", nil),
-        WBPreset(@"Name begins with C", @"Product", @"name BEGINSWITH[cd] \"c\"", @"name", YES, nil, nil, nil),
+        WBPreset(@"Name begins with C", @"Product", @"name BEGINSWITH[c] \"c\"", @"name", YES, nil, nil, nil),
         WBPreset(@"UK suppliers", @"Supplier", @"country == \"UK\"", @"companyName", YES, @"products", nil, nil),
         WBPreset(@"Stock on hand", @"Stock", @"quantity > 10", @"quantity", NO, @"location", nil, nil),
         WBPreset(@"Suppliers of pricey things (any)", @"Supplier", @"ANY products.unitPrice > 30", @"companyName", YES, nil, nil, nil),
@@ -70,6 +80,10 @@ static NSArray *WorkbenchPresets(WBService service)
         WBPreset(@"Chosen products (in)", @"Product", @"name IN {\"Chai\", \"Tofu\", \"Ikura\"}", @"name", YES, nil, nil, nil),
         WBPreset(@"By category, then price; nested prefetch", @"Product", nil, @"category.name, unitPrice desc", YES,
                  @"category, suppliers.products", nil, nil),
+        WBPresetWith(WBPreset(@"Search: jars OR cote", @"Product", @"discontinued == NO", @"name", YES, nil, nil, nil),
+                     @"jars OR cote", nil, nil),
+        WBPresetWith(WBPreset(@"Grouped by category: count, total, dearest", @"Product", nil, @"category.name", YES, nil, @"dictionary", nil),
+                     nil, @"category.name", @"count:(id) as products, sum:(unitPrice) as total, max:(unitPrice) as dearest"),
       ];
     case WBServiceNorthwind:
       return @[
@@ -83,6 +97,8 @@ static NSArray *WorkbenchPresets(WBService service)
         WBPreset(@"UK suppliers", @"Supplier", @"country == \"UK\"", @"companyName", YES, @"products", nil, nil),
         WBPreset(@"Latest orders, with lines and products", @"Order", nil, @"orderDate desc, orderID", YES,
                  @"customer, order_Details.product", nil, @"10"),
+        WBPresetWith(WBPreset(@"Grouped by category (no $apply: grouped here)", @"Product", nil, @"category.categoryName", YES, nil, @"dictionary", nil),
+                     nil, @"category.categoryName", @"count:(productID) as products, average:(unitPrice) as meanPrice"),
       ];
     case WBServiceTripPin:
       return @[
@@ -95,6 +111,10 @@ static NSArray *WorkbenchPresets(WBService service)
         WBPreset(@"Count people", @"Person", nil, @"userName", YES, nil, @"count", nil),
         WBPreset(@"Top 3 dictionary", @"Person", nil, @"lastName", YES, nil, @"dictionary", @"3"),
         WBPreset(@"People, their photos, their friends' photos", @"Person", nil, @"lastName, firstName", YES, @"photo, friends.photo", nil, nil),
+        WBPreset(@"Photos (media entities: Download, Upload)", @"Photo", nil, @"id", YES, nil, nil, nil),
+        WBPresetWith(WBPreset(@"Search: Russell", @"Person", nil, @"userName", YES, nil, nil, nil), @"Russell", nil, nil),
+        WBPresetWith(WBPreset(@"Search airports: Los, ICAO K…", @"Airport", @"icaoCode BEGINSWITH \"K\"", @"name", YES, nil, nil, nil), @"Los", nil, nil),
+        WBPresetWith(WBPreset(@"Grouped by gender", @"Person", nil, @"gender", YES, nil, @"dictionary", nil), nil, @"gender", @"count:(userName) as people"),
       ];
     case WBServiceOther:
       return @[];
@@ -151,10 +171,22 @@ static id WBCellValue(id value)
   NSTableView *_sortTable;
   NSOutlineView *_expandOutline;
   NSTableView *_selectTable;
+  // Beside them: $search, and grouping (key paths, and aggregates such as
+  // sum:(unitPrice) as total) for dictionary results.
+  NSTextField *_searchField;
+  NSTextField *_groupField;
+  NSTextField *_aggregateField;
+  // A selected object's streams: which, and what to do with it.
+  NSPopUpButton *_streamPopup;
+  NSButton *_downloadButton;
+  NSButton *_uploadButton;
   // The wire log, newest first, and the window that shows one exchange.
   NSMutableArray *_log;
   NSTableView *_logTable;
   NSWindow *_exchangeWindow;
+  BOOL _keepingLogSelection;  // the log's row chosen again after a reload: not shown again
+  // The transport in use, which counts the exchanges it starts.
+  id _wire;
   NSTextView *_requestView;
   NSTextView *_responseView;
 }
@@ -306,6 +338,7 @@ static id WBCellValue(id value)
   _engine.didHandle = ^(WorkbenchLogEntry *entry) {
     [weak appendLog:entry];
   };
+  _wire = _engine;
   NSPersistentStoreCoordinator *psc = [[NSPersistentStoreCoordinator alloc] initWithManagedObjectModel:model];
   NSError *error = nil;
   NSDictionary *options = @{ ODataIncrementalStoreTransportOption: _engine, NSPersistentHistoryTrackingKey: @YES };
@@ -326,6 +359,7 @@ static id WBCellValue(id value)
   transport.didHandle = ^(WorkbenchLogEntry *entry) {
     [weak appendLog:entry];
   };
+  _wire = transport;
   _engine = nil;
   [NSThread detachNewThreadSelector:@selector(connectInBackground:) toTarget:self withObject:@{ @"url": url, @"transport": transport }];
 }
@@ -491,12 +525,31 @@ static BOOL WBIsKey(NSAttributeDescription *attr)
   return all.count > 7 ? [all subarrayWithRange:NSMakeRange(0, 7)] : all;
 }
 
+// The relationships a fetch of objects prefetches, each a column of its
+// own: what came with the rows.
+- (NSArray *)prefetchedRelationshipNames
+{
+  NSMutableArray *names = [NSMutableArray array];
+  for (NSString *path in [_prefetch.allObjects sortedArrayUsingSelector:@selector(compare:)]) {
+    NSString *first = [path componentsSeparatedByString:@"."].firstObject;
+    if ([self currentEntity].relationshipsByName[first] && ![names containsObject:first]) [names addObject:first];
+  }
+  return names;
+}
+
 - (NSArray *)columnNames
 {
+  if ([self currentResultType] == NSDictionaryResultType && ([self groupPaths].count || [self aggregateTexts].count)) {
+    NSMutableArray *names = [[self groupPaths] mutableCopy];
+    for (NSExpressionDescription *description in [self aggregateDescriptionsError:NULL] ?: @[]) [names addObject:description.name];
+    return names;
+  }
   if ([self currentResultType] == NSDictionaryResultType && _select.count) {
     return [_select.allObjects sortedArrayUsingSelector:@selector(compare:)];
   }
-  return [self columnNamesFor:[self currentEntity]];
+  NSArray *columns = [self columnNamesFor:[self currentEntity]];
+  if ([self currentResultType] == NSManagedObjectResultType) columns = [columns arrayByAddingObjectsFromArray:[self prefetchedRelationshipNames]];
+  return columns;
 }
 
 // sort keys go through to-one relationships to an attribute.
@@ -547,6 +600,9 @@ static BOOL WBIsKey(NSAttributeDescription *attr)
   [_prefetch removeAllObjects];
   [_select removeAllObjects];
   [_pathItems removeAllObjects];
+  _searchField.stringValue = @"";
+  _groupField.stringValue = @"";
+  _aggregateField.stringValue = @"";
   [self reloadQueryPanel];
 }
 
@@ -602,6 +658,12 @@ static BOOL WBIsKey(NSAttributeDescription *attr)
       return nil;
     }
   }
+  // $search: the service's own, ANDed with the predicate.
+  NSString *search = [_searchField.stringValue stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceCharacterSet]];
+  if (search.length) {
+    NSPredicate *searching = [ODataSearchPredicate predicateWithSearch:search];
+    request.predicate = request.predicate ? [NSCompoundPredicate andPredicateWithSubpredicates:@[ searching, request.predicate ]] : searching;
+  }
   NSMutableArray *sorts = [NSMutableArray array];
   for (NSDictionary *sort in _sorts) {
     NSString *key = [sort[@"key"] stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceCharacterSet]];
@@ -621,8 +683,81 @@ static BOOL WBIsKey(NSAttributeDescription *attr)
   request.relationshipKeyPathsForPrefetching = [_prefetch.allObjects sortedArrayUsingSelector:@selector(compare:)];
   request.resultType = [self currentResultType];
   request.returnsObjectsAsFaults = (self.faultsButton.state == NSOnState);
-  if (request.resultType == NSDictionaryResultType) request.propertiesToFetch = [self columnNames];
+  if (request.resultType == NSDictionaryResultType) {
+    NSArray *aggregates = [self aggregateDescriptionsError:error];
+    if (!aggregates) return nil;
+    NSArray *groups = [self groupPaths];
+    for (NSString *path in groups) {
+      if (![self keyPathLeadsToAnAttribute:path]) {
+        if (error) *error = [NSError errorWithDomain:@"Workbench" code:4 userInfo:@{ NSLocalizedDescriptionKey:
+            [NSString stringWithFormat:@"Cannot group by %@: not an attribute, or through to-one relationships to one", path] }];
+        return nil;
+      }
+    }
+    if (groups.count || aggregates.count) {
+      // Grouped ($apply=groupby((...),aggregate(...))): the groups' values and the aggregates.
+      if (groups.count) request.propertiesToGroupBy = groups;
+      request.propertiesToFetch = [groups arrayByAddingObjectsFromArray:aggregates];
+    } else {
+      request.propertiesToFetch = [self columnNames];
+    }
+  }
   return request;
+}
+
+// group by: key paths, through to-one relationships (category.name).
+- (NSArray *)groupPaths
+{
+  NSMutableArray *paths = [NSMutableArray array];
+  for (NSString *item in [_groupField.stringValue componentsSeparatedByString:@","]) {
+    NSString *path = [item stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceCharacterSet]];
+    if (path.length) [paths addObject:path];
+  }
+  return paths;
+}
+
+- (NSArray *)aggregateTexts
+{
+  NSMutableArray *texts = [NSMutableArray array];
+  for (NSString *item in [_aggregateField.stringValue componentsSeparatedByString:@","]) {
+    NSString *text = [item stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceCharacterSet]];
+    if (text.length) [texts addObject:text];
+  }
+  return texts;
+}
+
+// aggregate: sum:(unitPrice) as total, count:(id) as products, as Core
+// Data's functions are named; each an expression description.
+- (NSArray *)aggregateDescriptionsError:(NSError **)error
+{
+  NSRegularExpression *form = [NSRegularExpression regularExpressionWithPattern:@"^(sum|min|max|average|count):?\\s*\\(\\s*([A-Za-z_][\\w.]*)\\s*\\)(?:\\s+as\\s+([A-Za-z_]\\w*))?$"
+                                                                        options:NSRegularExpressionCaseInsensitive error:NULL];
+  NSMutableArray *descriptions = [NSMutableArray array];
+  for (NSString *text in [self aggregateTexts]) {
+    NSTextCheckingResult *match = [form firstMatchInString:text options:0 range:NSMakeRange(0, text.length)];
+    NSString *path = match ? [text substringWithRange:[match rangeAtIndex:2]] : nil;
+    if (!match || ![self keyPathLeadsToAnAttribute:path]) {
+      if (error) *error = [NSError errorWithDomain:@"Workbench" code:5 userInfo:@{ NSLocalizedDescriptionKey:
+          [NSString stringWithFormat:@"Cannot aggregate \"%@\": write sum:(unitPrice) as total, with sum, min, max, average or count, of an attribute", text] }];
+      return nil;
+    }
+    NSString *function = [[text substringWithRange:[match rangeAtIndex:1]] lowercaseString];
+    NSRange alias = [match rangeAtIndex:3];
+    NSExpressionDescription *description = [[NSExpressionDescription alloc] init];
+    description.name = alias.location != NSNotFound ? [text substringWithRange:alias]
+                                                     : [NSString stringWithFormat:@"%@_%@", function, [path stringByReplacingOccurrencesOfString:@"." withString:@"_"]];
+    description.expression = [NSExpression expressionForFunction:[function stringByAppendingString:@":"]
+                                                       arguments:@[ [NSExpression expressionForKeyPath:path] ]];
+    NSEntityDescription *entity = [self currentEntity];
+    NSArray *parts = [path componentsSeparatedByString:@"."];
+    for (NSUInteger i = 0; i + 1 < parts.count; i++) entity = [entity.relationshipsByName[parts[i]] destinationEntity];
+    NSAttributeType type = [entity.attributesByName[parts.lastObject] attributeType];
+    if ([function isEqualToString:@"count"]) type = NSInteger64AttributeType;
+    else if ([function isEqualToString:@"average"]) type = NSDoubleAttributeType;
+    description.expressionResultType = type;
+    [descriptions addObject:description];
+  }
+  return descriptions;
 }
 
 // The GET the store would send, from the same schema and version it uses.
@@ -635,19 +770,17 @@ static BOOL WBIsKey(NSAttributeDescription *attr)
     self.wireURLField.stringValue = error.localizedDescription ?: @"bad predicate";
     return;
   }
-  ODataPropertyMapper *mapper = [[ODataPropertyMapper alloc] init];
-  mapper.schema = _store.schema;
-  ODataQueryBuilder *builder = [[ODataQueryBuilder alloc] initWithMapper:mapper serviceRoot:_serviceRoot];
-  ODataConfiguration *configuration = [[ODataConfiguration alloc] initWithURL:_serviceRoot options:nil];
-  builder.version = [configuration versionForService:_store.schema.version];
-  builder.keyAsSegment = _store.schema.keyAsSegmentSupported;
-  NSURL *url = [builder URLForFetch:request entity:[self currentEntity] error:&error];
+  NSURL *url = [_store URLForFetchRequest:request error:&error];
   self.wireURLField.stringValue = url.absoluteString ?: (error.localizedDescription ?: @"");
 }
 
 - (void)controlTextDidChange:(NSNotification *)n
 {
-  (void)n;
+  if (n.object == _groupField || n.object == _aggregateField) {
+    _rows = @[];
+    [self rebuildColumns];
+    [self.tableView reloadData];
+  }
   [self refreshTranslation];
 }
 
@@ -659,6 +792,7 @@ static BOOL WBIsKey(NSAttributeDescription *attr)
   _rows = @[];
   [self.tableView reloadData];
   [self rebuildOperations];
+  [self rebuildStreams];
   [self refreshTranslation];
 }
 
@@ -685,6 +819,9 @@ static BOOL WBIsKey(NSAttributeDescription *attr)
     NSString *trimmed = [path stringByTrimmingCharactersInSet:space];
     if (trimmed.length) [_prefetch addObject:trimmed];
   }
+  _searchField.stringValue = p[@"search"] ?: @"";
+  _groupField.stringValue = p[@"group"] ?: @"";
+  _aggregateField.stringValue = p[@"aggregate"] ?: @"";
   [self reloadQueryPanel];
   NSString *type = p[@"type"];
   if ([type isEqualToString:@"count"]) [self.resultTypePopup selectItemWithTitle:@"count"];
@@ -742,7 +879,11 @@ static BOOL WBIsKey(NSAttributeDescription *attr)
   if (_log.count > 1000) [_log removeLastObject];
   [_logTable reloadData];
   NSUInteger again = shown ? [_log indexOfObjectIdenticalTo:shown] : NSNotFound;
-  if (again != NSNotFound) [_logTable selectRowIndexes:[NSIndexSet indexSetWithIndex:again] byExtendingSelection:NO];
+  if (again != NSNotFound) {
+    _keepingLogSelection = YES;
+    [_logTable selectRowIndexes:[NSIndexSet indexSetWithIndex:again] byExtendingSelection:NO];
+    _keepingLogSelection = NO;
+  }
 }
 
 #pragma mark - The wire log
@@ -921,6 +1062,16 @@ static NSString *WBRawHeaders(NSDictionary *headers)
   if ([obj isKindOfClass:[NSManagedObjectID class]]) return [obj URIRepresentation];
   if ([obj isKindOfClass:[NSManagedObject class]]) {
     @try {
+      NSRelationshipDescription *relationship = [obj entity].relationshipsByName[column.identifier];
+      if (relationship) {
+        // Prefetched: what came with the row, named.
+        id related = [obj valueForKey:column.identifier];
+        if (!relationship.isToMany) return related ? [self titleOf:related] : @"—";
+        NSMutableArray *titles = [NSMutableArray array];
+        for (NSManagedObject *member in related) [titles addObject:[self titleOf:member]];
+        [titles sortUsingSelector:@selector(compare:)];
+        return [NSString stringWithFormat:@"%lu: %@", (unsigned long)titles.count, [titles componentsJoinedByString:@", "]];
+      }
       id value = [obj valueForKey:column.identifier];
       if ([[obj entity].attributesByName[column.identifier] attributeType] == NSBooleanAttributeType && value) {
         return [value boolValue] ? @"true" : @"false";
@@ -975,12 +1126,13 @@ static NSString *WBRawHeaders(NSDictionary *headers)
 - (void)tableViewSelectionDidChange:(NSNotification *)n
 {
   if (n.object == _logTable) {
-    [self showExchange:nil];
+    if (!_keepingLogSelection) [self showExchange:nil];
     return;
   }
   if (n.object != self.tableView) return;
   [self inspectSelection];
   [self rebuildOperations];
+  [self rebuildStreams];
 }
 
 - (NSManagedObject *)selectedObject
@@ -1039,20 +1191,28 @@ static NSString *WBRawHeaders(NSDictionary *headers)
   (void)sender;
   NSManagedObject *object = [self selectedObject];
   if (!object) return;
-  NSMutableString *text = [NSMutableString stringWithFormat:@"%@ relationships\n", object.entity.name];
+  NSMutableString *text = [NSMutableString stringWithFormat:@"%@ relationships (each says whether reading it asked the service)\n", object.entity.name];
   NSArray *names = [[object.entity.relationshipsByName allKeys] sortedArrayUsingSelector:@selector(compare:)];
   for (NSString *name in names) {
     NSRelationshipDescription *rel = object.entity.relationshipsByName[name];
     @try {
+      NSUInteger before = [[_wire valueForKey:@"started"] unsignedIntegerValue];
       id value = [object valueForKey:name];
+      NSMutableString *members = [NSMutableString string];
       if (rel.isToMany) {
-        [text appendFormat:@"\n%@ (to-many, %lu)\n", name, (unsigned long)[value count]];
-        for (NSManagedObject *m in value) [text appendFormat:@"  • %@ %@\n", m.entity.name, [self titleOf:m]];
-      } else {
-        NSManagedObject *one = value;
-        [text appendFormat:@"\n%@ (to-one) → %@\n", name, one ? one.entity.name : @"nil"];
-        if (one) [text appendFormat:@"  %@\n", [self titleOf:one]];
+        for (NSManagedObject *m in value) [members appendFormat:@"  • %@ %@\n", m.entity.name, [self titleOf:m]];
+      } else if (value) {
+        [members appendFormat:@"  %@\n", [self titleOf:value]];
       }
+      NSUInteger asked = [[_wire valueForKey:@"started"] unsignedIntegerValue] - before;
+      NSString *how = asked ? [NSString stringWithFormat:@"%lu request%@ to the service", (unsigned long)asked, asked == 1 ? @"" : @"s"]
+                            : @"no request: prefetched, or read before";
+      if (rel.isToMany) {
+        [text appendFormat:@"\n%@ (to-many, %lu) — %@\n", name, (unsigned long)[value count], how];
+      } else {
+        [text appendFormat:@"\n%@ (to-one) → %@ — %@\n", name, value ? [value entity].name : @"nil", how];
+      }
+      [text appendString:members];
     } @catch (NSException *ex) {
       [text appendFormat:@"\n%@: %@\n", name, ex.reason];
     }
@@ -1130,16 +1290,34 @@ static NSTextField *WBLabel(NSString *text, NSRect frame)
   // a window the screen made shorter has already moved the xib's views.
   CGFloat dy = content.bounds.size.height - 860;
   [content addSubview:WBLabel(@"Sort ($orderby): key paths, first first", NSMakeRect(16, 664 + dy, 300, 16))];
-  _sortTable = [self addList:[NSTableView class] frame:NSMakeRect(16, 548 + dy, 300, 114)
+  _sortTable = [self addList:[NSTableView class] frame:NSMakeRect(16, 576 + dy, 300, 86)
                      columns:@[ @[ @"key", @"key path", @220, @NO ], @[ @"descending", @"desc", @50, @YES ] ]];
   [self addButton:@"+" frame:NSMakeRect(320, 632 + dy, 32, 28) action:@selector(addSort:)];
   [self addButton:@"-" frame:NSMakeRect(320, 600 + dy, 32, 28) action:@selector(removeSort:)];
   [content addSubview:WBLabel(@"Prefetch ($expand): open to nest", NSMakeRect(362, 664 + dy, 360, 16))];
-  _expandOutline = [self addList:[NSOutlineView class] frame:NSMakeRect(362, 548 + dy, 360, 114)
+  _expandOutline = [self addList:[NSOutlineView class] frame:NSMakeRect(362, 576 + dy, 360, 86)
                          columns:@[ @[ @"include", @"", @24, @YES ], @[ @"relationship", @"relationship", @300, @NO ] ]];
   [content addSubview:WBLabel(@"Properties ($select, dictionary results)", NSMakeRect(734, 664 + dy, 366, 16))];
-  _selectTable = [self addList:[NSTableView class] frame:NSMakeRect(734, 548 + dy, 366, 114)
+  _selectTable = [self addList:[NSTableView class] frame:NSMakeRect(734, 576 + dy, 366, 86)
                        columns:@[ @[ @"include", @"", @24, @YES ], @[ @"property", @"property", @300, @NO ] ]];
+  // Under them, what the lists cannot say.
+  [content addSubview:WBLabel(@"$search", NSMakeRect(16, 551 + dy, 60, 16))];
+  _searchField = [self addField:NSMakeRect(78, 548 + dy, 238, 22) hint:@"tea OR \"green tea\""];
+  [content addSubview:WBLabel(@"group by", NSMakeRect(362, 551 + dy, 64, 16))];
+  _groupField = [self addField:NSMakeRect(428, 548 + dy, 294, 22) hint:@"category.name"];
+  [content addSubview:WBLabel(@"aggregate", NSMakeRect(734, 551 + dy, 70, 16))];
+  _aggregateField = [self addField:NSMakeRect(806, 548 + dy, 294, 22) hint:@"sum:(unitPrice) as total, count:(id) as n"];
+  [self buildStreamControls];
+}
+
+- (NSTextField *)addField:(NSRect)frame hint:(NSString *)hint
+{
+  NSTextField *field = [[NSTextField alloc] initWithFrame:frame];
+  [field.cell setPlaceholderString:hint];
+  field.delegate = (id)self;
+  field.autoresizingMask = NSViewMinYMargin;
+  [self.window.contentView addSubview:field];
+  return field;
 }
 
 - (void)reloadQueryPanel
@@ -1274,6 +1452,12 @@ static NSTextField *WBLabel(NSString *text, NSRect frame)
     for (NSString *path in [_prefetch allObjects]) {
       if ([path isEqualToString:item] || [path hasPrefix:[item stringByAppendingString:@"."]]) [_prefetch removeObject:path];
     }
+  }
+  // The prefetched relationships are columns: fetch again to see them.
+  if ([self currentResultType] == NSManagedObjectResultType) {
+    _rows = @[];
+    [self rebuildColumns];
+    [self.tableView reloadData];
   }
   [outline reloadData];
   [self refreshTranslation];
@@ -1529,6 +1713,148 @@ static NSString *WBSignature(ODataSchemaOperation *operation)
   self.statusField.stringValue = [NSString stringWithFormat:@"%@ %@", call.operation.isAction ? @"POST" : @"GET", call.operation.name];
 }
 
+#pragma mark - Streams
+
+// Beside the inspector, which gives up some of its width: the stream, and
+// Download and Upload.
+- (void)buildStreamControls
+{
+  NSScrollView *inspector = self.inspectorView.enclosingScrollView;
+  NSRect frame = inspector.frame;
+  CGFloat right = NSMaxX(frame);
+  frame.size.width -= 144;
+  inspector.frame = frame;
+  CGFloat x = right - 132;
+  NSTextField *label = WBLabel(@"Stream", NSMakeRect(x, NSMaxY(frame) - 18, 132, 16));
+  label.autoresizingMask = NSViewMinXMargin | NSViewMaxYMargin;
+  [self.window.contentView addSubview:label];
+  _streamPopup = [[NSPopUpButton alloc] initWithFrame:NSMakeRect(x, NSMaxY(frame) - 46, 132, 24) pullsDown:NO];
+  _streamPopup.autoresizingMask = NSViewMinXMargin | NSViewMaxYMargin;
+  [self.window.contentView addSubview:_streamPopup];
+  _downloadButton = [self addButton:@"Download" frame:NSMakeRect(x, NSMaxY(frame) - 80, 132, 28) action:@selector(downloadStream:)];
+  _uploadButton = [self addButton:@"Upload…" frame:NSMakeRect(x, NSMaxY(frame) - 112, 132, 28) action:@selector(uploadStream:)];
+  for (NSView *view in @[ _downloadButton, _uploadButton ]) view.autoresizingMask = NSViewMinXMargin | NSViewMaxYMargin;
+  [self rebuildStreams];
+}
+
+// The streams of an entity: "" for its media resource ($value), then its
+// stream properties, as $metadata names them.
+- (NSArray *)streamNamesOf:(NSEntityDescription *)entity
+{
+  ODataSchema *schema = _store.schema;
+  ODataPropertyMapper *mapper = [[ODataPropertyMapper alloc] init];
+  mapper.schema = schema;
+  ODataSchemaEntityType *type = entity && schema ? [mapper entityTypeForEntity:entity] : nil;
+  if (!type) return @[];
+  NSMutableArray *names = [NSMutableArray array];
+  if ([schema entityTypeHasStream:type]) [names addObject:@""];
+  [names addObjectsFromArray:[schema streamPropertiesOfEntityType:type]];
+  return names;
+}
+
+- (void)rebuildStreams
+{
+  [_streamPopup removeAllItems];
+  NSManagedObject *object = [self selectedObject];
+  NSEntityDescription *entity = object ? object.entity : [self currentEntity];
+  NSArray *names = [self streamNamesOf:entity];
+  for (NSString *name in names) {
+    [_streamPopup addItemWithTitle:name.length ? name : @"media ($value)"];
+    _streamPopup.lastItem.representedObject = name;
+  }
+  if (!names.count) [_streamPopup addItemWithTitle:@"(no streams)"];
+  _streamPopup.enabled = names.count > 0;
+  _downloadButton.enabled = names.count > 0;
+  // With no row chosen, an upload makes a new media entity.
+  _uploadButton.enabled = names.count > 0;
+}
+
+static NSString *WBContentTypeOf(NSURL *file)
+{
+  NSDictionary *types = @{ @"jpg": @"image/jpeg", @"jpeg": @"image/jpeg", @"png": @"image/png", @"gif": @"image/gif",
+                           @"txt": @"text/plain", @"json": @"application/json", @"xml": @"application/xml", @"pdf": @"application/pdf" };
+  return types[file.pathExtension.lowercaseString] ?: @"application/octet-stream";
+}
+
+- (IBAction)downloadStream:(id)sender
+{
+  (void)sender;
+  NSManagedObject *object = [self selectedObject];
+  NSString *name = _streamPopup.selectedItem.representedObject;
+  if (!object || !name) {
+    self.statusField.stringValue = @"Select a row, and one of its streams.";
+    return;
+  }
+  ODataStreamTransfer *transfer = [[ODataStreamTransfer alloc] initWithObject:object stream:name.length ? name : nil];
+  NSError *error = nil;
+  NSURL *file = [transfer download:&error];
+  if (!file) {
+    self.statusField.stringValue = [NSString stringWithFormat:@"Download: %@", error.localizedDescription ?: @"failed"];
+    return;
+  }
+  NSData *data = [NSData dataWithContentsOfURL:file];
+  NSMutableString *text = [NSMutableString stringWithFormat:@"%@ of %@ %@\n\n", name.length ? name : @"Media resource", object.entity.name,
+                                                            [self addressOf:object]];
+  [text appendFormat:@"  content type = %@\n  media ETag = %@\n  %lu bytes, in %@\n", transfer.contentType ?: @"(none)",
+                     transfer.mediaETag ?: @"(none)", (unsigned long)data.length, file.path];
+  if ([transfer.contentType hasPrefix:@"text/"] || [transfer.contentType hasPrefix:@"application/json"]) {
+    NSString *body = [[NSString alloc] initWithData:[data subdataWithRange:NSMakeRange(0, MIN(data.length, (NSUInteger)4096))] encoding:NSUTF8StringEncoding];
+    if (body) [text appendFormat:@"\n%@\n", body];
+  }
+  [self show:text in:self.inspectorView];
+  self.statusField.stringValue = [NSString stringWithFormat:@"Downloaded %lu bytes (%@); it is kept while its media ETag is current.",
+                                  (unsigned long)data.length, transfer.contentType ?: @"no content type"];
+}
+
+- (IBAction)uploadStream:(id)sender
+{
+  (void)sender;
+  NSOpenPanel *panel = [NSOpenPanel openPanel];
+  panel.canChooseDirectories = NO;
+  panel.allowsMultipleSelection = NO;
+  if ([panel runModal] != NSModalResponseOK || !panel.URLs.firstObject) return;
+  [self uploadStreamFromFile:panel.URLs.firstObject];
+}
+
+// Into the selected row's stream (PUT, with its media ETag); with no row
+// selected, a new media entity of the entity (POST), to be named and saved.
+- (BOOL)uploadStreamFromFile:(NSURL *)file
+{
+  NSManagedObject *object = [self selectedObject];
+  NSString *name = _streamPopup.selectedItem.representedObject;
+  NSString *type = WBContentTypeOf(file);
+  NSError *error = nil;
+  if (object && name) {
+    ODataStreamTransfer *transfer = [[ODataStreamTransfer alloc] initWithObject:object stream:name.length ? name : nil];
+    if (![transfer uploadFile:file contentType:type error:&error]) {
+      self.statusField.stringValue = [NSString stringWithFormat:@"Upload: %@", error.localizedDescription ?: @"failed"];
+      return NO;
+    }
+    self.statusField.stringValue = [NSString stringWithFormat:@"Uploaded %@ (%@) to %@%@; its media ETag is now %@.", file.lastPathComponent, type,
+                                    [self addressOf:object], name.length ? [@"/" stringByAppendingString:name] : @"/$value", transfer.mediaETag ?: @"unknown"];
+    return YES;
+  }
+  if (![[self streamNamesOf:[self currentEntity]] containsObject:@""]) {
+    self.statusField.stringValue = @"Select a row to upload into its stream; only a media entity is made from a file.";
+    return NO;
+  }
+  ODataStreamTransfer *transfer = [[ODataStreamTransfer alloc] initWithEntityName:[self currentEntityName] context:_context];
+  if (![transfer uploadFile:file contentType:type error:&error]) {
+    self.statusField.stringValue = [NSString stringWithFormat:@"Upload: %@", error.localizedDescription ?: @"failed"];
+    return NO;
+  }
+  NSMutableArray *rows = [NSMutableArray arrayWithObject:transfer.object];
+  for (id row in _rows) {
+    if ([row isKindOfClass:[NSManagedObject class]]) [rows addObject:row];
+  }
+  _rows = rows;
+  [self.tableView reloadData];
+  [self.tableView selectRowIndexes:[NSIndexSet indexSetWithIndex:0] byExtendingSelection:NO];
+  self.statusField.stringValue = [NSString stringWithFormat:@"Created %@ %@ from %@ (POST); edit its other properties and Save.",
+                                  [self currentEntityName], [self addressOf:transfer.object], file.lastPathComponent];
+  return YES;
+}
+
 #pragma mark - Changes at the service
 
 - (IBAction)fetchRemoteChanges:(id)sender
@@ -1643,9 +1969,26 @@ static void WBCheck(BOOL ok, NSString *what, NSString *detail)
   [self setQueryValue:@YES in:_sortTable column:[_sortTable tableColumnWithIdentifier:@"descending"] row:(NSInteger)_sorts.count - 1];
   [self runFetch:nil];
   NSString *wire = [self.wireURLField.stringValue stringByRemovingPercentEncoding];
-  WBCheck(!_lastError && _rows.count && [wire rangeOfString:@"$expand=Category,Suppliers($expand=Products)"].location != NSNotFound &&
+  WBCheck(!_lastError && _rows.count && [wire rangeOfString:@"$expand=Category("].location != NSNotFound &&
+          [wire rangeOfString:@"Suppliers("].location != NSNotFound && [wire rangeOfString:@"$expand=Products("].location != NSNotFound &&
           [wire rangeOfString:@"$orderby=ProductID,Category/CategoryName desc"].location != NSNotFound,
           @"the query panel: nested prefetch, two sort keys", _lastError ?: wire);
+
+  // What was prefetched is in the table, and reading it asks nothing;
+  // what was not asks the service.
+  NSArray *columns = [self.tableView.tableColumns valueForKey:@"identifier"];
+  NSUInteger chai = [[_rows valueForKey:@"name"] indexOfObject:@"Chai"];
+  NSTableColumn *categoryColumn = [self.tableView tableColumnWithIdentifier:@"category"];
+  id shown = chai != NSNotFound && categoryColumn ? [self tableView:self.tableView objectValueForTableColumn:categoryColumn row:(NSInteger)chai] : nil;
+  WBCheck([columns containsObject:@"category"] && [columns containsObject:@"suppliers"] && [shown isEqual:@"Beverages"],
+          @"prefetched relationships are columns", [NSString stringWithFormat:@"%@; Chai's category: %@", columns, shown]);
+  if (chai != NSNotFound) [self.tableView selectRowIndexes:[NSIndexSet indexSetWithIndex:chai] byExtendingSelection:NO];
+  [self fireRelationships:nil];
+  NSString *fired = self.inspectorView.string;
+  WBCheck([fired rangeOfString:@"category (to-one) → Category — no request"].location != NSNotFound &&
+          [fired rangeOfString:@"suppliers (to-many, 2) — no request"].location != NSNotFound &&
+          [fired rangeOfString:@"stocks (to-many, 2) — 1 request to the service"].location != NSNotFound,
+          @"Fire relationships: the prefetched ones ask nothing, the rest ask", fired);
 
   [self.resultTypePopup selectItemWithTitle:@"dictionary"];
   NSTableColumn *property = [_selectTable tableColumnWithIdentifier:@"include"];
@@ -1683,6 +2026,11 @@ static void WBCheck(BOOL ok, NSString *what, NSString *detail)
                                                  (unsigned long)_log.count, (unsigned long)entry.responseData.length, (unsigned long)response.length]);
   if ([entry.URL hasPrefix:@"https://services.odata.org/V4/Northwind"]) [self shoot:@"Exchange" window:_exchangeWindow];
   [_exchangeWindow orderOut:nil];
+  // Closed, it stays closed: the next exchanges do not open it again.
+  [self runFetch:nil];
+  [[NSRunLoop currentRunLoop] runMode:NSDefaultRunLoopMode beforeDate:[NSDate dateWithTimeIntervalSinceNow:0.3]];
+  WBCheck(!_exchangeWindow.isVisible, @"the exchange window stays closed as the log grows", nil);
+  [_logTable deselectAll:nil];
 }
 
 // The text views grow with their text, so there is something to scroll.
@@ -1701,6 +2049,72 @@ static void WBCheck(BOOL ok, NSString *what, NSString *detail)
             [NSString stringWithFormat:@"text %.0f high in a view %.0f high", view.frame.size.height, scrollView.contentSize.height]);
     [self show:before in:view];
   }
+}
+
+- (NSUInteger)presetLabelled:(NSString *)prefix
+{
+  for (NSUInteger i = 0; i < _presets.count; i++) {
+    if ([_presets[i][@"label"] hasPrefix:prefix]) return i;
+  }
+  return NSNotFound;
+}
+
+- (void)runPreset:(NSUInteger)index
+{
+  if (index == NSNotFound) return;
+  [self.presetsPopup selectItemAtIndex:(NSInteger)index];
+  [self applyPreset:self.presetsPopup];
+  [self runFetch:nil];
+}
+
+// $search beside the predicate, and a grouping with its aggregates, as
+// the built-in service answers them: $search, and $apply.
+- (void)checkSearchAndGrouping
+{
+  [self runPreset:[self presetLabelled:@"Search:"]];
+  NSString *wire = [self.wireURLField.stringValue stringByRemovingPercentEncoding];
+  NSArray *names = [_rows valueForKey:@"name"];
+  WBCheck(!_lastError && [wire rangeOfString:@"$search=(jars OR cote)"].location != NSNotFound && [names containsObject:@"Côte de Blaye"] &&
+          [names containsObject:@"Ikura"] && ![names containsObject:@"Chai"],
+          @"$search beside a $filter (Côte found by cote)", _lastError ?: [NSString stringWithFormat:@"%@ %@", wire, names]);
+
+  [self runPreset:[self presetLabelled:@"Grouped by category"]];
+  wire = [self.wireURLField.stringValue stringByRemovingPercentEncoding];
+  NSDictionary *beverages = nil;
+  for (NSDictionary *row in _rows) {
+    if ([row[@"category.name"] isEqual:@"Beverages"]) beverages = row;
+  }
+  WBCheck(!_lastError && [wire rangeOfString:@"$apply=groupby((Category/CategoryName)"].location != NSNotFound &&
+          [beverages[@"products"] integerValue] == 4 && [beverages[@"dearest"] doubleValue] == 263.5 &&
+          [[self.tableView.tableColumns valueForKey:@"identifier"] isEqual:(@[ @"category.name", @"products", @"total", @"dearest" ])],
+          @"grouped by a to-one path, with count, sum and max ($apply)", _lastError ?: [NSString stringWithFormat:@"%@ %@", wire, beverages]);
+}
+
+// A media entity's stream: downloaded; uploaded again; and a new media
+// entity made from a file.
+- (void)checkStreams
+{
+  [self runPreset:[self presetLabelled:@"Photos"]];
+  if (_rows.count) [self.tableView selectRowIndexes:[NSIndexSet indexSetWithIndex:0] byExtendingSelection:NO];
+  [self rebuildStreams];
+  BOOL media = [_streamPopup.selectedItem.representedObject isEqual:@""] && _downloadButton.isEnabled;
+  [self downloadStream:nil];
+  WBCheck(media && [self.inspectorView.string rangeOfString:@"image/jpeg"].location != NSNotFound &&
+          [self.statusField.stringValue hasPrefix:@"Downloaded"],
+          @"Download a photo's media resource ($value)", media ? self.statusField.stringValue : @"no media stream in the menu");
+  NSManagedObject *photo = [self selectedObject];
+  NSURL *file = photo ? [[[ODataStreamTransfer alloc] initWithObject:photo stream:nil] download:NULL] : nil;
+  NSURL *copy = [NSURL fileURLWithPath:[NSTemporaryDirectory() stringByAppendingPathComponent:@"workbench-photo.jpg"]];
+  [[NSFileManager defaultManager] removeItemAtURL:copy error:NULL];
+  BOOL copied = file && [[NSFileManager defaultManager] copyItemAtURL:file toURL:copy error:NULL];
+  WBCheck(copied && [self uploadStreamFromFile:copy] && [self.statusField.stringValue hasPrefix:@"Uploaded"],
+          @"Upload it again (PUT $value, If-Match)", self.statusField.stringValue);
+  [self.tableView deselectAll:nil];
+  [self rebuildStreams];
+  WBCheck(copied && [self uploadStreamFromFile:copy] && [self.statusField.stringValue hasPrefix:@"Created Photo"],
+          @"a new media entity from a file (POST Photos)", self.statusField.stringValue);
+  [self revertChanges:nil];
+  [[NSFileManager defaultManager] removeItemAtURL:copy error:NULL];
 }
 
 - (BOOL)selectOperationContaining:(NSString *)text
@@ -1778,6 +2192,7 @@ static void WBCheck(BOOL ok, NSString *what, NSString *detail)
       [self checkScrolling];
       [self checkQueryPanel];
       [self checkBuiltInOperations];
+      [self checkSearchAndGrouping];
     }
     if (service != WBServiceTripPin) continue;
 
@@ -1800,6 +2215,9 @@ static void WBCheck(BOOL ok, NSString *what, NSString *detail)
     WBCheck(found && [self.inspectorView.string rangeOfString:@"KLAX"].location != NSNotFound,
             @"a service function with parameters: GetNearestAirport(lat, lon)", found ? self.statusField.stringValue : @"not in the operations menu");
     [self shoot:@"TripPin-operation"];
+    [self checkStreams];
+    [self runPreset:0];
+    russell = [[_rows valueForKey:@"userName"] indexOfObject:@"russellwhyte"];
 
     [self editColumn:@"firstName" row:russell value:@"Rusty"];
     WBCheck([self.statusField.stringValue hasPrefix:@"Unsaved: 0 new, 1 changed"], @"an edit waits for Save", self.statusField.stringValue);

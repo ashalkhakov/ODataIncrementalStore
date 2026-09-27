@@ -701,29 +701,31 @@ static NSAttributeDescription *OISAttributeAtKeyPath(NSEntityDescription *entity
 // rows it sends. havingPredicate, the sort, the offset and the limit are
 // then applied here, to what was grouped. Keys are as Core Data's: the
 // grouped key paths (category.name) and the expressions' names.
-- (NSArray *)executeAggregateFetch:(NSFetchRequest *)fetch entity:(NSEntityDescription *)entity
-                           context:(NSManagedObjectContext *)context error:(NSError **)error
+// What a grouping fetch asks, by key path: the grouped key paths, the
+// aggregates as Core Data's key paths name them (local) and as the wire
+// does, what each row gives, and the aggregates' result types and
+// attributes. NO, with the reason, for one that cannot be done.
+- (BOOL)planAggregateFetch:(NSFetchRequest *)fetch entity:(NSEntityDescription *)entity
+                  keyPaths:(NSMutableArray *)keyPaths local:(NSMutableArray *)local wire:(NSMutableArray *)wire
+                   outputs:(NSMutableArray *)outputs resultTypes:(NSMutableDictionary *)resultTypes
+       aggregateAttributes:(NSMutableDictionary *)aggregateAttributes error:(NSError **)error
 {
-  NSMutableArray *keyPaths = [NSMutableArray array];
   for (id property in fetch.propertiesToGroupBy) {
     NSString *keyPath = OISKeyPathOf(property);
     if (!keyPath || !OISAttributeAtKeyPath(entity, keyPath)) {
       if (error) *error = OISError(ODataIncrementalStoreErrorUnsupportedRequest, [NSString stringWithFormat:@"Grouping by %@", property]);
-      return nil;
+      return NO;
     }
     [keyPaths addObject:keyPath];
   }
   NSDictionary *methods = @{ @"sum:": @"sum", @"min:": @"min", @"max:": @"max", @"average:": @"average", @"count:": @"$count" };
-  NSMutableArray *local = [NSMutableArray array], *wire = [NSMutableArray array];
-  NSMutableArray *outputs = [NSMutableArray array];
-  NSMutableDictionary *resultTypes = [NSMutableDictionary dictionary], *aggregateAttributes = [NSMutableDictionary dictionary];
   for (id property in fetch.propertiesToFetch) {
     if (![property isKindOfClass:[NSExpressionDescription class]] || OISKeyPathOf(property)) {
       NSString *keyPath = OISKeyPathOf(property);
       if (!keyPath || ![keyPaths containsObject:keyPath]) {
         if (error) *error = OISError(ODataIncrementalStoreErrorUnsupportedRequest,
                                      [NSString stringWithFormat:@"%@ is fetched but not grouped by", property]);
-        return nil;
+        return NO;
       }
       [outputs addObject:keyPath];
       continue;
@@ -736,7 +738,7 @@ static NSAttributeDescription *OISAttributeAtKeyPath(NSEntityDescription *entity
     NSAttributeDescription *attribute = keyPath ? OISAttributeAtKeyPath(entity, keyPath) : nil;
     if (!method || (!attribute && ![method isEqualToString:@"$count"])) {
       if (error) *error = OISError(ODataIncrementalStoreErrorUnsupportedExpression, [NSString stringWithFormat:@"%@: %@", description.name, e]);
-      return nil;
+      return NO;
     }
     BOOL count = [method isEqualToString:@"$count"];
     [local addObject:[ODataAggregate aggregateOfPath:count ? nil : [keyPath componentsSeparatedByString:@"."]
@@ -747,13 +749,78 @@ static NSAttributeDescription *OISAttributeAtKeyPath(NSEntityDescription *entity
     if (attribute) aggregateAttributes[description.name] = attribute;
     [outputs addObject:description.name];
   }
+  return YES;
+}
+
+// $apply where the service says it has it (Aggregation.ApplySupported);
+// nil where the rows are grouped here.
+- (NSArray *)applyPathsFor:(NSArray *)keyPaths entity:(NSEntityDescription *)entity
+{
+  id apply = [self capability:@"Aggregation.ApplySupported" forEntity:entity];
+  if (!apply || apply == [NSNull null]) return nil;
+  NSMutableArray *paths = [NSMutableArray array];
+  for (NSString *keyPath in keyPaths) [paths addObject:[[_mapper propertyPathForKeyPath:keyPath entity:entity] componentsSeparatedByString:@"/"]];
+  return paths;
+}
+
+// Grouped here: every row the predicate matches, with what the key paths
+// go through, as object IDs.
+- (NSFetchRequest *)rowsToGroupFor:(NSFetchRequest *)fetch entity:(NSEntityDescription *)entity
+                          keyPaths:(NSArray *)keyPaths local:(NSArray *)local
+{
+  NSFetchRequest *all = [NSFetchRequest fetchRequestWithEntityName:entity.name];
+  all.entity = entity;
+  all.predicate = fetch.predicate;
+  NSMutableSet *through = [NSMutableSet set];
+  for (NSString *keyPath in [keyPaths arrayByAddingObjectsFromArray:[local valueForKey:@"path"]]) {
+    if ([(id)keyPath isKindOfClass:[NSNull class]]) continue;  // $count
+    NSArray *parts = [keyPath isKindOfClass:[NSArray class]] ? (NSArray *)keyPath : [keyPath componentsSeparatedByString:@"."];
+    if (parts.count > 1) [through addObject:[[parts subarrayWithRange:NSMakeRange(0, parts.count - 1)] componentsJoinedByString:@"."]];
+  }
+  all.relationshipKeyPathsForPrefetching = through.allObjects;
+  all.resultType = NSManagedObjectIDResultType;
+  return all;
+}
+
+- (NSURL *)URLForFetchRequest:(NSFetchRequest *)request error:(NSError **)error
+{
+  // Named by its entity, a request not yet used by a context has no
+  // entity on Apple, and raises when asked: given its entity here.
+  NSFetchRequest *fetch = [request copy];
+  NSEntityDescription *named = request.entityName ? self.persistentStoreCoordinator.managedObjectModel.entitiesByName[request.entityName] : nil;
+  if (named) fetch.entity = named;
+  NSEntityDescription *entity = named ?: [self resolvedEntity:fetch];
+  if (!entity) {
+    if (error) *error = OISError(ODataIncrementalStoreErrorMissingEntitySet, fetch.entityName ?: @"Unknown");
+    return nil;
+  }
+  if (fetch.resultType != NSDictionaryResultType || ![self aggregates:fetch]) {
+    BOOL sortLocally = NO, countLocally = NO;
+    NSUInteger skip = 0, limit = 0;
+    NSFetchRequest *sendable = [self sendableFetch:fetch entity:entity sortLocally:&sortLocally skip:&skip limit:&limit count:&countLocally error:error];
+    return sendable ? [_builder URLForFetch:sendable entity:entity error:error] : nil;
+  }
+  NSMutableArray *keyPaths = [NSMutableArray array], *local = [NSMutableArray array], *wire = [NSMutableArray array];
+  if (![self planAggregateFetch:fetch entity:entity keyPaths:keyPaths local:local wire:wire outputs:[NSMutableArray array]
+                    resultTypes:[NSMutableDictionary dictionary] aggregateAttributes:[NSMutableDictionary dictionary] error:error]) return nil;
+  NSArray *paths = [self applyPathsFor:keyPaths entity:entity];
+  if (paths) return [_builder URLForAggregateFetch:fetch entity:entity groupPaths:paths aggregates:wire error:error];
+  return [_builder URLForFetch:[self rowsToGroupFor:fetch entity:entity keyPaths:keyPaths local:local] entity:entity error:error];
+}
+
+- (NSArray *)executeAggregateFetch:(NSFetchRequest *)fetch entity:(NSEntityDescription *)entity
+                           context:(NSManagedObjectContext *)context error:(NSError **)error
+{
+  NSMutableArray *keyPaths = [NSMutableArray array], *local = [NSMutableArray array], *wire = [NSMutableArray array];
+  NSMutableArray *outputs = [NSMutableArray array];
+  NSMutableDictionary *resultTypes = [NSMutableDictionary dictionary], *aggregateAttributes = [NSMutableDictionary dictionary];
+  if (![self planAggregateFetch:fetch entity:entity keyPaths:keyPaths local:local wire:wire outputs:outputs
+                    resultTypes:resultTypes aggregateAttributes:aggregateAttributes error:error]) return nil;
 
   // Each row as nested dictionaries, as the key paths read them.
   NSMutableArray *rows = [NSMutableArray array];
-  id apply = [self capability:@"Aggregation.ApplySupported" forEntity:entity];
-  if (apply && apply != [NSNull null]) {
-    NSMutableArray *paths = [NSMutableArray array];
-    for (NSString *keyPath in keyPaths) [paths addObject:[[_mapper propertyPathForKeyPath:keyPath entity:entity] componentsSeparatedByString:@"/"]];
+  NSArray *paths = [self applyPathsFor:keyPaths entity:entity];
+  if (paths) {
     NSURL *url = [_builder URLForAggregateFetch:fetch entity:entity groupPaths:paths aggregates:wire error:error];
     if (!url) return nil;
     NSArray *answers = [self rowsAtURL:url limit:0 pageSize:0 error:error];
@@ -775,17 +842,7 @@ static NSAttributeDescription *OISAttributeAtKeyPath(NSEntityDescription *entity
     }
   } else {
     // Here: every row, with what the key paths go through.
-    NSFetchRequest *all = [NSFetchRequest fetchRequestWithEntityName:entity.name];
-    all.entity = entity;
-    all.predicate = fetch.predicate;
-    NSMutableSet *through = [NSMutableSet set];
-    for (NSString *keyPath in [keyPaths arrayByAddingObjectsFromArray:[local valueForKey:@"path"]]) {
-      if ([(id)keyPath isKindOfClass:[NSNull class]]) continue;  // $count
-      NSArray *parts = [keyPath isKindOfClass:[NSArray class]] ? (NSArray *)keyPath : [keyPath componentsSeparatedByString:@"."];
-      if (parts.count > 1) [through addObject:[[parts subarrayWithRange:NSMakeRange(0, parts.count - 1)] componentsJoinedByString:@"."]];
-    }
-    all.relationshipKeyPathsForPrefetching = through.allObjects;
-    all.resultType = NSManagedObjectIDResultType;
+    NSFetchRequest *all = [self rowsToGroupFor:fetch entity:entity keyPaths:keyPaths local:local];
     NSArray *identifiers = [self executeFetch:all context:context error:error];
     if (!identifiers) return nil;
     // Each row as what its key paths read, from the rows kept.
