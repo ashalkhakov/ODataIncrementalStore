@@ -17,13 +17,13 @@ OBJC = clang
 
 TOOL_NAME = ois-live ois-model
 ois-live_OBJC_FILES = ois-live.m
-ois-live_INCLUDE_DIRS = -I../../Source/include
+ois-live_INCLUDE_DIRS = -I../../Source/ODataKit/include -I../../Source/ODataIncrementalStore/include -I../../Source/ODataKit/include/ODataKit -I../../Source/ODataIncrementalStore/include/ODataIncrementalStore
 ois-live_LIB_DIRS = -L../../obj -L../..
-ois-live_TOOL_LIBS += -lODataIncrementalStore -lCoreData
+ois-live_TOOL_LIBS += -lODataIncrementalStore -lODataKit -lCoreData
 ois-model_OBJC_FILES = ../../Tools/ois-model.m
-ois-model_INCLUDE_DIRS = -I../../Source/include
+ois-model_INCLUDE_DIRS = -I../../Source/ODataKit/include -I../../Source/ODataIncrementalStore/include -I../../Source/ODataKit/include/ODataKit -I../../Source/ODataIncrementalStore/include/ODataIncrementalStore
 ois-model_LIB_DIRS = -L../../obj -L../..
-ois-model_TOOL_LIBS += -lODataIncrementalStore -lCoreData
+ois-model_TOOL_LIBS += -lODataIncrementalStore -lODataKit -lCoreData
 
 ADDITIONAL_OBJCFLAGS += -fobjc-arc -fblocks -fobjc-runtime=gnustep-2.0 \
 	-fconstant-string-class=NSConstantString -fobjc-exceptions
@@ -62,7 +62,7 @@ classes: all
 	rm -rf TripPinClasses Generated TripPinGenerated.momd
 	$(RUN) ./$(GNUSTEP_OBJ_DIR_NAME)/ois-model --classes TripPinClasses $(TRIPPIN) Generated/TripPin.xcdatamodeld
 	$(MOMC) Generated/TripPin.xcdatamodeld TripPinGenerated.momd
-	mkdir -p include && ln -sfn ../../../Source/include include/ODataIncrementalStore
+	mkdir -p include && ln -sfn ../../../Source/ODataIncrementalStore/include/ODataIncrementalStore include/ODataIncrementalStore
 	$(MAKE) -f GNUmakefile.classes MAKEFILE_NAME=GNUmakefile.classes
 	$(RUN) ./$(GNUSTEP_OBJ_DIR_NAME)/ois-classes TripPinGenerated.momd
 

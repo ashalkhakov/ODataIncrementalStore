@@ -451,6 +451,40 @@
 }
 @end
 
+// Answers a media resource's PUT as TripPin does: 200 with the entity,
+// whose @odata.mediaEtag is the new one, and no ETag header. The service
+// behind it answers at once.
+@interface OISEntityAnsweringTransport : NSObject <ODataTransport>
+@property (nonatomic, strong) id<ODataTransport> next;
+@end
+
+@implementation OISEntityAnsweringTransport
+- (void)startExchange:(ODataExchange *)exchange
+{
+  NSString *path = exchange.request.URL.absoluteString;
+  if (![exchange.request.HTTPMethod isEqualToString:@"PUT"] || ![path hasSuffix:@"/$value"]) {
+    [self.next startExchange:exchange];
+    return;
+  }
+  ODataExchange *put = [[ODataExchange alloc] initWithRequest:exchange.request target:nil action:NULL];
+  [self.next startExchange:put];
+  NSInteger status = [(NSHTTPURLResponse *)put.URLResponse statusCode];
+  if (status >= 300) {
+    exchange.URLResponse = put.URLResponse;
+    exchange.data = put.data;
+    [exchange finish];
+    return;
+  }
+  NSURL *entity = [NSURL URLWithString:[path substringToIndex:path.length - @"/$value".length]];
+  ODataExchange *read = [[ODataExchange alloc] initWithRequest:[NSURLRequest requestWithURL:entity] target:nil action:NULL];
+  [self.next startExchange:read];
+  exchange.URLResponse = [[NSHTTPURLResponse alloc] initWithURL:exchange.request.URL statusCode:200 HTTPVersion:@"HTTP/1.1"
+                                                   headerFields:@{ @"Content-Type": @"application/json", @"OData-Version": @"4.0" }];
+  exchange.data = read.data;
+  [exchange finish];
+}
+@end
+
 // Loses the answer to the first write it carries, as a dropped connection
 // would: the service has done it, the client hears nothing.
 @interface OISLosingTransport : NSObject <ODataTransport>
@@ -1426,6 +1460,48 @@
 
 // The client's streams, over the service: a media entity made from a file,
 // its stream downloaded and kept, a stream property put and emptied.
+// A service that answers an upload with the entity, not an ETag header:
+// the media ETag is the entity's, and the file is kept at it.
+- (void)testUploadAnsweredWithTheEntity
+{
+  [self serveAlbumInStoreOfType:NSInMemoryStoreType];
+  ODataSchema *schema = [ODataSchema schemaWithData:[self get:@"$metadata"].data error:NULL];
+  NSManagedObjectModel *model = [ODataModelBuilder modelWithSchema:schema];
+  [ODataIncrementalStore registerStore];
+  OISEntityAnsweringTransport *answering = [[OISEntityAnsweringTransport alloc] init];
+  answering.next = _service;
+  OISRecordingTransport *transport = [[OISRecordingTransport alloc] init];
+  transport.next = answering;
+  NSURL *directory = [NSURL fileURLWithPath:[NSTemporaryDirectory() stringByAppendingPathComponent:[[NSProcessInfo processInfo] globallyUniqueString]]];
+  [_storeFiles addObject:directory];
+  [[NSFileManager defaultManager] createDirectoryAtURL:directory withIntermediateDirectories:YES attributes:nil error:NULL];
+  NSPersistentStoreCoordinator *client = [[NSPersistentStoreCoordinator alloc] initWithManagedObjectModel:model];
+  NSError *error = nil;
+  XCTAssertNotNil([client addPersistentStoreWithType:[ODataIncrementalStore storeType] configuration:nil
+                                                 URL:[NSURL URLWithString:@"http://example.test/odata/"]
+                                             options:(@{ ODataIncrementalStoreTransportOption: transport,
+                                                         ODataIncrementalStoreStreamDirectoryOption: directory }) error:&error], @"%@", error);
+  NSManagedObjectContext *context = [[NSManagedObjectContext alloc] init];
+  context.persistentStoreCoordinator = client;
+  NSURL *first = [directory URLByAppendingPathComponent:@"first.png"];
+  NSURL *second = [directory URLByAppendingPathComponent:@"second.png"];
+  XCTAssertTrue([[@"first" dataUsingEncoding:NSUTF8StringEncoding] writeToURL:first atomically:YES]);
+  XCTAssertTrue([[@"second" dataUsingEncoding:NSUTF8StringEncoding] writeToURL:second atomically:YES]);
+  ODataStreamTransfer *create = [[ODataStreamTransfer alloc] initWithEntityName:@"Photo" context:context];
+  XCTAssertTrue([create uploadFile:first contentType:@"image/png" error:&error], @"%@", error);
+
+  ODataStreamTransfer *media = [[ODataStreamTransfer alloc] initWithObject:create.object stream:nil];
+  NSString *before = media.mediaETag;
+  XCTAssertTrue([media uploadFile:second contentType:@"image/png" error:&error], @"%@", error);
+  NSString *now = [self get:@"Photos(1)"].json[@"@odata.mediaEtag"];
+  XCTAssertEqualObjects(media.mediaETag, now, @"the entity's media ETag");
+  XCTAssertNotEqualObjects(now, before);
+  NSUInteger requests = transport.requests.count;
+  NSURL *downloaded = [[[ODataStreamTransfer alloc] initWithObject:create.object stream:nil] download:&error];
+  XCTAssertEqualObjects([NSData dataWithContentsOfURL:downloaded], [@"second" dataUsingEncoding:NSUTF8StringEncoding]);
+  XCTAssertEqual(transport.requests.count, requests, @"kept at that ETag, not asked again");
+}
+
 - (void)testStreamsThroughTheStore
 {
   [self serveAlbumInStoreOfType:NSInMemoryStoreType];

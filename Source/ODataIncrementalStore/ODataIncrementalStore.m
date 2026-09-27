@@ -2065,12 +2065,20 @@ static BOOL OISKeyIsSet(id value)
     [_lock unlock];
     return YES;
   }
+  // The new media ETag: the response's, or, from a service that answers
+  // with the entity instead (TripPin: 200, no ETag header), its row's.
+  NSString *etag = response.etag;
+  id body = response.status == 200 && response.data.length ? [response JSONWithError:NULL] : nil;
+  if ([body isKindOfClass:[NSDictionary class]]) {
+    [self cacheNodeForObjectID:objectID entity:objectID.entity payload:body error:NULL];
+    etag = etag ?: [self streamInfo:name objectID:objectID][@"mediaEtag"];
+  }
   // What was put is what is there: kept as downloaded, at the new ETag.
   NSURL *directory = [self streamDirectory];
   NSURL *file = [directory URLByAppendingPathComponent:[self fileNameForStream:name objectID:objectID]];
   if ([[NSFileManager defaultManager] createDirectoryAtURL:directory withIntermediateDirectories:YES attributes:nil error:NULL] &&
-      response.etag && [data writeToURL:file options:NSDataWritingAtomic error:NULL]) {
-    [self keepStreamFile:file name:name objectID:objectID etag:response.etag type:contentType];
+      etag && [data writeToURL:file options:NSDataWritingAtomic error:NULL]) {
+    [self keepStreamFile:file name:name objectID:objectID etag:etag type:contentType];
   } else {
     [_lock lock];
     [_streamFiles[objectID] removeObjectForKey:name];

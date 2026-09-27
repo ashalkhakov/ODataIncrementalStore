@@ -109,7 +109,7 @@ calling the client conformant.
 | `relationshipKeyPathsForPrefetching` | `$expand` | ✅ | Inline entities are cached, a to-one's object ID goes in the row, and a to-many's members are kept, so reading the relationship asks nothing, unless the collection came in pages (`Nav@odata.nextLink`). Each expanded entity names its own to-ones (`Products($expand=Category($select=CategoryID))`). Kept members are dropped with their object's row and at every save, which may move them. |
 | `fetchBatchSize` | `Prefer: odata.maxpagesize` | ✅ | The pages are followed to the end, each of that size. |
 | `propertiesToGroupBy`, aggregate `NSExpressionDescription`s (dictionary results) | `$apply` | ✅ | OData Data Aggregation: the predicate as `filter()`, then `groupby((paths),aggregate(…))` or `aggregate(…)`, with `sum:`, `min:`, `max:`, `average:` as those methods and `count:` as `$count`. Sent where `$metadata` has `Aggregation.ApplySupported`; elsewhere the rows are read and grouped and aggregated here, with the same result. `havingPredicate`, the sort, the offset and the limit are applied here to the grouped rows. Keys are Core Data's: `category.name`, and each expression's name. |
-| `ODataSearchPredicate` | `$search` | ✅ | Part 2 §5.1.7: words, `"phrases"`, `AND` (or nothing), `OR`, `NOT`, parentheses. Alone or ANDed at the top of the predicate it is sent as `$search` beside the `$filter` the rest makes, counts too; under `OR` or `NOT` it is `ODataIncrementalStoreErrorUnsupportedPredicate`, and a set `SearchRestrictions` calls unsearchable is not asked. Evaluated in memory it looks for each word in the object's strings, regardless of case and diacritics. |
+| `ODataSearchPredicate` | `$search` | ✅ **live** | Part 2 §5.1.7: words, `"phrases"`, `AND` (or nothing), `OR`, `NOT`, parentheses. Alone or ANDed at the top of the predicate it is sent as `$search` beside the `$filter` the rest makes, counts too; under `OR` or `NOT` it is `ODataIncrementalStoreErrorUnsupportedPredicate`, and a set `SearchRestrictions` calls unsearchable is not asked. Evaluated in memory it looks for each word in the object's strings, regardless of case and diacritics. TripPin searches People and Airports, alone and beside a `$filter`. |
 | To-one fault | `GET Entity(key)/Nav` | ✅ **live** | |
 | To-many fault | `GET Entity(key)/Nav` | ✅ **live** | Every page; the rows are cached. |
 | Firing faults | | ✅ | Every fetched row is cached, and each to-one relationship is expanded to its key (`Nav($select=Key)`), because Core Data asks for every to-one as soon as a fault fires. Firing N faults used to cost N or 2N requests; it costs none. Northwind ignores the nested `$select` and sends the whole related entity, which is cached as well. |
@@ -186,7 +186,7 @@ calling the client conformant.
 | `TimeOfDay`, `Duration` | String / Double with `OData.type` | ✅ | `TimeOfDay` stays a string (`13:20:00`) with an unquoted literal; `Duration` is seconds in a Double (`P1DT2H3M4.5S` is 93784.5), written `PT93784.5S`, with the literal `duration'…'`. |
 | `Guid` | UUID, or String with `OData.type` `Edm.Guid` | ✅ | Unquoted in literals and in key paths. |
 | `Binary` | Binary Data | ✅ **live** | Written as base64url, the spec's form; both base64url and plain base64 read, since Northwind sends plain base64. Literal `binary'…'`. |
-| `Stream`, media entities | | ✅ | Not in a row: a row keeps each stream's links, media ETag and content type; see section 8. |
+| `Stream`, media entities | | ✅ **live** | Not in a row: a row keeps each stream's links, media ETag and content type; see section 8. |
 | Geography, geometry | | — | Left out for now: listed under `OData.unmapped` in a generated model. |
 | Enumerations | String or Integer | ✅ **live** | See 4.3. |
 
@@ -377,7 +377,7 @@ off. Tested against ODataService, which answers this way (see
 (`HasStream="true"`, TripPin's `Photo`) has its content at
 `Entity(key)/$value`, a *stream property* (`Edm.Stream`) at
 `Entity(key)/Property`, each with its own read and edit links, content
-type and ETag. ✅, outside Core Data, with `ODataStreamTransfer`:
+type and ETag. ✅ **live**, outside Core Data, with `ODataStreamTransfer`:
 
 - A row keeps what the service says of each stream
   (`@odata.mediaReadLink`, `mediaEditLink`, `mediaEtag`,
@@ -398,6 +398,12 @@ type and ETag. ✅, outside Core Data, with `ODataStreamTransfer`:
   are then set on the object and saved as any change is.
 - Each waits, or with a target and action does not, as operation calls
   do. Streams are not written inside a `$batch`.
+- **live** against TripPin's `Photo`, a media entity: downloaded, uploaded
+  again, and a new one created from a file and then named. TripPin wants
+  `If-Match` on an upload (`428` without it), ignores `If-None-Match`,
+  refuses bytes that are not an image, and answers an upload `200` with
+  the entity and no `ETag` header, so the new media ETag is read from the
+  entity (it had been lost, and the next upload would have been refused).
 
 ## 9. Vocabularies
 

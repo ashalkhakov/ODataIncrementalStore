@@ -8,9 +8,9 @@ OBJC = clang
 
 TOOL_NAME = ois-classes
 ois-classes_OBJC_FILES = ois-classes.m $(wildcard TripPinClasses/*.m)
-ois-classes_INCLUDE_DIRS = -Iinclude -I../../Source/include -ITripPinClasses
+ois-classes_INCLUDE_DIRS = -Iinclude -I../../Source/ODataKit/include -I../../Source/ODataIncrementalStore/include/ODataIncrementalStore -I../../Source/ODataKit/include/ODataKit -ITripPinClasses
 ois-classes_LIB_DIRS = -L../../obj -L../..
-ois-classes_TOOL_LIBS += -lODataIncrementalStore -lCoreData
+ois-classes_TOOL_LIBS += -lODataIncrementalStore -lODataKit -lCoreData
 
 ADDITIONAL_OBJCFLAGS += -fobjc-arc -fblocks -fobjc-runtime=gnustep-2.0 \
 	-fconstant-string-class=NSConstantString -fobjc-exceptions

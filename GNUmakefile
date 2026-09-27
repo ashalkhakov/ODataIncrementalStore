@@ -110,7 +110,7 @@ ODataIncrementalStore_HEADER_FILES_DIR = Source/ODataIncrementalStore/include/OD
 ODataIncrementalStore_HEADER_FILES_INSTALL_DIR = ODataIncrementalStore
 ODataIncrementalStore_INCLUDE_DIRS = $(OIS_INCLUDE_DIRS)
 ODataIncrementalStore_LIB_DIRS = -L./obj
-ODataIncrementalStore_LIBRARIES_DEPEND_UPON += -lODataKit -lCoreData
+ODataIncrementalStore_LIBRARIES_DEPEND_UPON += -lODataKit -lCoreData -ldispatch
 ODataIncrementalStore_OBJCFLAGS += $(OIS_OBJCFLAGS)
 ODataIncrementalStore_CFLAGS += -fblocks
 

@@ -19,6 +19,10 @@
 //   compiled with momc (NorthwindGenerated.momd), which the store checks
 //   against the service's schema as Core Data checks a model version.
 //
+// - Streams and $search on TripPin, with its own model: a photo, a media
+//   entity, downloaded, uploaded, and created from a file; people and
+//   airports found by $search.
+//
 //   ois-live <directory holding Catalog.momd, Northwind.momd, TripPin.momd
 //             and NorthwindGenerated.momd>
 //
@@ -603,6 +607,78 @@ static void modelsFromMetadata(NSString *models)
               : reason(error));
 }
 
+static void streamsAndSearch(void)
+{
+  fprintf(stderr, "== Streams and $search\n");
+  NSError *error = nil;
+  NSURL *tripPin = tripPinSession();
+  NSManagedObjectModel *model = [ODataIncrementalStore modelForServiceAtURL:tripPin options:nil error:&error];
+  NSPersistentStoreCoordinator *psc = model ? [[NSPersistentStoreCoordinator alloc] initWithManagedObjectModel:model] : nil;
+  NSString *directory = [NSTemporaryDirectory() stringByAppendingPathComponent:[[NSProcessInfo processInfo] globallyUniqueString]];
+  NSDictionary *options = @{ ODataIncrementalStoreStreamDirectoryOption: [NSURL fileURLWithPath:directory] };
+  if (![psc addPersistentStoreWithType:[ODataIncrementalStore storeType] configuration:nil URL:tripPin options:options error:&error]) {
+    check(NO, @"open TripPin with its own model", reason(error));
+    return;
+  }
+  NSManagedObjectContext *moc = newContext(psc);
+  [moc performBlockAndWait:^{
+    NSFetchRequest *fetch = [NSFetchRequest fetchRequestWithEntityName:@"Photo"];
+    fetch.predicate = [NSPredicate predicateWithFormat:@"id == 1"];
+    NSError *e = nil;
+    NSManagedObject *photo = [[moc executeFetchRequest:fetch error:&e] firstObject];
+
+    // A media entity's resource ($value), into a file.
+    ODataStreamTransfer *transfer = photo ? [[ODataStreamTransfer alloc] initWithObject:photo stream:nil] : nil;
+    NSURL *file = [transfer download:&e];
+    NSData *bytes = file ? [NSData dataWithContentsOfURL:file] : nil;
+    BOOL jpeg = bytes.length > 2 && ((const uint8_t *)bytes.bytes)[0] == 0xFF && ((const uint8_t *)bytes.bytes)[1] == 0xD8;
+    check(jpeg && [transfer.contentType isEqualToString:@"image/jpeg"] && transfer.mediaETag.length,
+          @"download a media entity's stream (Photos(1)/$value)",
+          file ? [NSString stringWithFormat:@"%lu bytes, %@, %@", (unsigned long)bytes.length, transfer.contentType, transfer.mediaETag] : reason(e));
+    if (!jpeg) return;
+
+    // Up again, with its media ETag (TripPin wants one: 428 without).
+    NSString *before = transfer.mediaETag;
+    e = nil;
+    BOOL uploaded = [transfer uploadFile:file contentType:@"image/jpeg" error:&e];
+    check(uploaded && transfer.mediaETag.length && ![transfer.mediaETag isEqualToString:before],
+          @"upload a media entity's stream (PUT $value, If-Match)",
+          uploaded ? [NSString stringWithFormat:@"%@ -> %@", before, transfer.mediaETag] : reason(e));
+
+    // A new media entity from a file (POST to the set), then named.
+    ODataStreamTransfer *create = [[ODataStreamTransfer alloc] initWithEntityName:@"Photo" context:moc];
+    e = nil;
+    BOOL created = [create uploadFile:file contentType:@"image/jpeg" error:&e];
+    NSManagedObject *added = create.object;
+    [added setValue:@"From ois-live" forKey:@"name"];
+    BOOL named = created && [moc save:&e];
+    NSFetchRequest *again = [NSFetchRequest fetchRequestWithEntityName:@"Photo"];
+    again.predicate = [NSPredicate predicateWithFormat:@"name == 'From ois-live'"];
+    NSArray *found = named ? [moc executeFetchRequest:again error:&e] : nil;
+    check(created && named && found.count == 1 && !added.objectID.isTemporaryID,
+          @"create a media entity from a file (POST Photos), then set its name",
+          created ? [NSString stringWithFormat:@"%@, %lu found", [added valueForKey:@"id"], (unsigned long)found.count] : reason(e));
+  }];
+
+  [moc performBlockAndWait:^{
+    // $search, alone and beside a $filter.
+    NSError *e = nil;
+    NSFetchRequest *people = [NSFetchRequest fetchRequestWithEntityName:@"Person"];
+    people.predicate = [ODataSearchPredicate predicateWithSearch:@"Russell"];
+    NSArray *russells = [moc executeFetchRequest:people error:&e];
+    check([[russells valueForKey:@"userName"] isEqual:@[ @"russellwhyte" ]], @"$search (People?$search=Russell)", describe([russells valueForKey:@"userName"], e));
+
+    e = nil;
+    NSFetchRequest *airports = [NSFetchRequest fetchRequestWithEntityName:@"Airport"];
+    airports.predicate = [NSCompoundPredicate andPredicateWithSubpredicates:@[
+      [ODataSearchPredicate predicateWithSearch:@"Los"], [NSPredicate predicateWithFormat:@"icaoCode BEGINSWITH 'K'"] ]];
+    NSArray *found = [moc executeFetchRequest:airports error:&e];
+    check([[found valueForKey:@"icaoCode"] isEqual:@[ @"KLAX" ]], @"$search beside $filter (Airports?$search=Los&$filter=startswith(IcaoCode,'K'))",
+          describe([found valueForKey:@"icaoCode"], e));
+  }];
+  [[NSFileManager defaultManager] removeItemAtPath:directory error:NULL];
+}
+
 int main(int argc, const char *argv[])
 {
   @autoreleasepool {
@@ -614,6 +690,7 @@ int main(int argc, const char *argv[])
     modelsFromMetadata(models);
     operations();
     remoteChanges();
+    streamsAndSearch();
     fprintf(stderr, "%s\n", failures ? "ois-live: FAILED" : "ois-live: all checks passed");
     return failures ? 1 : 0;
   }
