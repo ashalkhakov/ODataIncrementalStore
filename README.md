@@ -1,412 +1,212 @@
 # ODataKit
 
-**LGPL-2.1-or-later.** OData v4 for Core Data, in three libraries:
+[![CI](https://github.com/ashalkhakov/ODataKit/actions/workflows/ci.yml/badge.svg)](https://github.com/ashalkhakov/ODataKit/actions/workflows/ci.yml)
+
+**OData v4 for Core Data**, in Objective-C, on **macOS and Linux (GNUstep)**.
+Both directions: a Core Data store whose rows live in a remote OData service,
+and an OData service whose entity sets are a Core Data model. The same
+mapping runs each way, so a model written once is a client's model and a
+service's schema.
 
 | Library | What it is |
 |---|---|
-| `ODataKit` | The shared core: CSDL schema, values, `$filter` expressions, `$batch`, errors, the transport protocol |
-| `ODataIncrementalStore` | The client: an `NSIncrementalStore` that talks to a remote OData v4 service |
-| `ODataService` | The server: an OData v4 service over a Core Data stack ([design](docs/server-design.md)) |
+| `ODataIncrementalStore` | The client: an `NSIncrementalStore`. Fetch requests become `$filter`, `$orderby`, `$expand` and the rest; saves become POST, PATCH, DELETE and `$batch`; ETags become merge conflicts. |
+| `ODataService` | The server: OData 4.01 (and 4.0) over any Core Data store. `ois-serve` runs it behind a reverse proxy. |
+| `ODataKit` | What both share: the model mapping, CSDL, values, the URL and `$filter` grammar, `$batch`. |
 
-`Server/` adds `ODataHTTPServer`, the HTTP listener in front of
-`ODataService`, and the `ois-serve` tool.
+![The Workbench](Examples/Workbench/Workbench.png)
 
-The rest of this page is mostly about the client, `ODataIncrementalStore`, an
-`NSIncrementalStore` that talks to a remote OData v4 service. Written in **modern Objective-C** for **libobjc2** so it builds on
-GNUstep (clang + gnustep-base + [FreeCoreData](https://github.com/ashalkhakov/FreeCoreData))
-and on Apple Core Data.
+## Three ways in
 
-`NSFetchRequest` becomes `$filter` / `$orderby` / `$top` / `$expand`. Saves
-become POST, PATCH, DELETE. ETags become optimistic locks.
+Each takes a few minutes. Build the libraries first ([Building](docs/building.md)):
+on macOS open `ODataKit.xcworkspace`; on GNUstep, with
+[FreeCoreData](https://github.com/ashalkhakov/FreeCoreData) installed, `make && make install`.
 
-This is the combination Microsoft’s [OData4ObjC](https://github.com/OData/odata4objc)
-(archived 2013) and AFIncrementalStore each only half-did — in Objective-C 2.0,
-not Swift, so GNUstep can actually run it.
+### 1. Core Data over an OData service
 
-## Runtime
-
-OIS **will not compile** against GCC’s `libobjc`. The headers refuse anything
-that is not clang + ObjC 2.0 + ARC + blocks.
-
-| | |
-|---|---|
-| Language | Objective-C 2.0 (properties, literals, blocks, ARC, `NS_ENUM`, zeroing weak) |
-| Runtime | **libobjc2** (`-fobjc-runtime=gnustep-2.0`) or Apple’s |
-| ABI | Non-fragile. Ivars live in `@implementation { }` blocks. |
-| Foundation | gnustep-base or Apple Foundation |
-| Core Data | Apple Core Data, or **[FreeCoreData](https://github.com/ashalkhakov/FreeCoreData)** on GNUstep |
-| Transport | `NSURLSession` + `NSCondition`, on Apple and on gnustep-base built with libcurl; `NSURLConnection` otherwise, which on GNUstep cannot follow relative redirects or read `$batch` responses |
-| Strings | `-fconstant-string-class=NSConstantString` on GNUstep |
-
-OIS is ARC. FreeCoreData is MRC (`-fno-objc-arc`). They link: methods named `new…` return +1 on both sides.
-
-```
-clang -fobjc-runtime=gnustep-2.0 -fobjc-arc -fblocks \
-      -fconstant-string-class=NSConstantString
-```
-
-## GNUstep
-
-CI builds this against a GNUstep stack from
-[gnustep-patches](https://github.com/ashalkhakov/gnustep-patches) — see
-`.github/workflows/ci.yml` for the exact recipe.
-
-Install [FreeCoreData](https://github.com/ashalkhakov/FreeCoreData) first — it
-is the Core Data runtime this store subclasses (`NSIncrementalStore`,
-`NSIncrementalStoreNode`, the coordinator). Install its model compiler too
-(`make -C Tools/momc install` there): the tests and example apps compile
-`Catalog.xcdatamodeld` to `.momd`, which is what FreeCoreData loads. Then:
-
-```sh
-export GNUSTEP_MAKEFILES=/usr/share/GNUstep/Makefiles
-. /usr/share/GNUstep/Makefiles/GNUstep.sh
-make
-make install
-```
-
-Without gnustep-make, clang + `gnustep-config` is enough:
-
-```sh
-make -f Makefile
-./ois-filter 'unitPrice > 20 AND discontinued == NO'
-# (UnitPrice gt 20) and (Discontinued eq false)
-```
-
-## Tests (XCTest, no network)
-
-HTTP is a directory of OData v4 request/response snapshots. The suite
-never opens a socket. Tests load `Examples/Catalog/Catalog.xcdatamodeld`
-(the same model as the example apps) — not a hand-built
-`NSManagedObjectModel`.
-
-```sh
-make test
-# or
-make -C Tests run-tests
-```
-
-On Apple: scheme **ODataKitTests** in the workspace (⌘U).
-Snapshots live in `Tests/Snapshots/` and cite the OASIS
-protocol section they pin.
-
-## Example apps
-
-`Examples/Workbench` is the testing bench: a Cocoa window that drives a
-real store against ODataService in the process (no network),
-or a service on the network. Predicate → `$filter`, fetch, fault, expand,
-PATCH/POST/DELETE, operations, wire log.
-
-`Examples/Catalog` is a smaller consumer: table + predicate + inspector.
-
-Both load `Catalog.xcdatamodeld`.
-
-```sh
-make -C Examples/Workbench
-openapp ./Workbench.app   # GNUstep
-```
-
-## Apple / Xcode
-
-Open **`ODataKit.xcworkspace`** (not a lone `.xcodeproj` — the
-example apps need the framework project in the same workspace).
-
-| Scheme | Product |
-|---|---|
-| `ODataKit` | macOS framework, the shared core |
-| `ODataIncrementalStore` | macOS framework, the client (links `ODataKit`) |
-| `ODataService` | macOS framework, the server (links `ODataKit`) |
-| `ODataKitTests` | XCTest for all three, snapshot HTTP, no network (⌘U) |
-| `Catalog` | consumer AppKit app |
-| `Workbench` | in-memory OData workbench |
-
-```
-xcodebuild -workspace ODataKit.xcworkspace \
-  -scheme ODataKitTests -destination 'platform=macOS' test
-```
-
-Each library is a real framework with public headers; a client app embeds
-`ODataKit.framework` and `ODataIncrementalStore.framework` (Catalog does),
-and one that serves too adds `ODataService.framework` (Workbench does).
-GNUstep uses the GNUmakefiles, which build `libODataKit`,
-`libODataIncrementalStore` and `libODataService`; link a client with
-`-lODataIncrementalStore -lODataKit`.
-
-## Usage
+No model of your own: the store builds one from the service's `$metadata`.
+[`Examples/QuickStart/northwind.m`](Examples/QuickStart/northwind.m):
 
 ```objc
-#import <ODataIncrementalStore/ODataIncrementalStore.h>
-
 [ODataIncrementalStore registerStore];
-
-NSError *error = nil;
 NSURL *url = [NSURL URLWithString:@"https://services.odata.org/V4/Northwind/Northwind.svc/"];
-NSPersistentStoreCoordinator *psc =
-    [[NSPersistentStoreCoordinator alloc] initWithManagedObjectModel:model];
-[psc addPersistentStoreWithType:[ODataIncrementalStore storeType]
-                  configuration:nil
-                            URL:url
-                        options:@{ ODataIncrementalStoreAccessTokenOption: token }
-                          error:&error];
-```
-
-```objc
-NSFetchRequest *request = [NSFetchRequest fetchRequestWithEntityName:@"Product"];
-request.predicate = [NSPredicate predicateWithFormat:
-    @"unitPrice > %d AND discontinued == NO", 20];
-request.sortDescriptors = @[ [NSSortDescriptor sortDescriptorWithKey:@"name" ascending:YES] ];
-request.fetchLimit = 25;
-request.relationshipKeyPathsForPrefetching = @[ @"category" ];
-NSArray *products = [context executeFetchRequest:request error:&error];
-```
-
-That fetch is this request:
-
-```
-GET Products?$filter=(UnitPrice gt 20) and (Discontinued eq false)
-           &$orderby=ProductName,ProductID
-           &$top=25
-           &$expand=Category
-```
-
-The key is added to `$orderby` as a tiebreaker, so pages split the same
-way however many rows share a name, and every `@odata.nextLink` is
-followed until the collection ends or `fetchLimit` is reached.
-
-## Models from `$metadata`
-
-A service's schema can be the model, two ways.
-
-**At runtime**, for a client that knows nothing of the service in advance
-(the Workbench will connect to any service this way):
-
-```objc
 NSManagedObjectModel *model = [ODataIncrementalStore modelForServiceAtURL:url options:nil error:&error];
-```
+NSPersistentStoreCoordinator *coordinator = [[NSPersistentStoreCoordinator alloc] initWithManagedObjectModel:model];
+[coordinator addPersistentStoreWithType:[ODataIncrementalStore storeType] configuration:nil URL:url options:nil error:&error];
 
-**Ahead of time**, for a client built on one service, with its own logic on
-top: `ois-model` writes the model as an `.xcdatamodeld`, which Xcode edits
-and `momc` compiles like any other.
+NSFetchRequest *fetch = [NSFetchRequest fetchRequestWithEntityName:@"Product"];
+fetch.predicate = [NSPredicate predicateWithFormat:@"unitPrice > 50"];
+fetch.sortDescriptors = @[ [NSSortDescriptor sortDescriptorWithKey:@"unitPrice" ascending:NO] ];
+fetch.relationshipKeyPathsForPrefetching = @[ @"category" ];
+NSArray *products = [context executeFetchRequest:fetch error:&error];
+// GET Products?$filter=UnitPrice gt 50&$orderby=UnitPrice desc,ProductID&$expand=Category
+```
 
 ```sh
-ois-model https://services.odata.org/V4/Northwind/Northwind.svc/ Northwind.xcdatamodeld
+# macOS, against the frameworks Xcode built
+clang -fobjc-arc -F <build>/Release -framework ODataIncrementalStore -framework ODataKit \
+      -framework CoreData -framework Foundation Examples/QuickStart/northwind.m -o northwind
+# GNUstep
+clang $(gnustep-config --objc-flags) -fobjc-arc -fblocks Examples/QuickStart/northwind.m -o northwind \
+      -lODataIncrementalStore -lODataKit -lCoreData $(gnustep-config --base-libs)
+./northwind
 ```
 
-Entity types become entities (base types are super-entities), properties
-and navigation properties become attributes and relationships in lower
-camel case (`UserName` is `userName`), partners become inverses, and the
-OData names, keys, entity sets and Edm types go into `userInfo`, so the
-model needs nothing else at runtime. Complex values and collections become
-Transformable attributes (see Mapping); stream and spatial properties are
-not mapped, and `ois-model` lists them.
-
-**A changed service is a new model version**, as in Core Data. Run
-`ois-model` again: if the schema has changed, it adds a version to the
-package (`Northwind 2`) and makes it current, keeping the old ones; if not,
-it writes nothing. A store opened with a generated model checks it against
-the service's schema by version hashes, as Core Data checks a model against
-any store, and fails with `NSPersistentStoreIncompatibleVersionHashError`
-when the service has moved on. To pick the version that matches, the
-Core Data way:
-
-```objc
-NSDictionary *metadata = [ODataIncrementalStore metadataForServiceAtURL:url options:nil error:&error];
-NSManagedObjectModel *model = [NSManagedObjectModel mergedModelFromBundles:nil forStoreMetadata:metadata];
+```
+Côte de Blaye                  263.5  Beverages
+Thüringer Rostbratwurst       123.79  Meat/Poultry
+Mishi Kobe Niku                    97  Meat/Poultry
+…
 ```
 
-A model written by hand is not version-checked. The store reads
-`$metadata` when it opens and fills in what the model leaves unsaid (keys,
-entity sets, Edm types, enumerations, derived types), and lists where the
-two disagree in `metadataProblems`
-(`ODataIncrementalStoreRequireMatchingModelOption` makes that fail the
-open).
+Then: your own model, saves, conflicts, operations, changes, streams —
+[the client guide](docs/client.md).
 
-## Mapping
+### 2. A Core Data model as an OData service
 
-| Core Data | OData |
+`ois-serve` serves a compiled model from a store, here the Catalog example
+in SQLite:
+
+```sh
+make -C Server                                   # macOS: Server/build/; GNUstep: Server/obj/
+Server/build/ois-serve -Model Server/build/Catalog.momd -StoreType SQLite \
+                       -StoreURL /tmp/catalog.sqlite -Port 8089
+```
+
+```sh
+curl http://127.0.0.1:8089/odata/'$metadata'
+curl -X POST -H 'Content-Type: application/json' -d '{"CategoryID":1,"CategoryName":"Beverages"}' \
+     http://127.0.0.1:8089/odata/Categories
+curl -X POST -H 'Content-Type: application/json' \
+     -d '{"ProductID":1,"ProductName":"Chai","UnitPrice":18,"Category@odata.bind":"Categories(1)"}' \
+     http://127.0.0.1:8089/odata/Products
+curl -g 'http://127.0.0.1:8089/odata/Products?$filter=UnitPrice%20gt%2010&$expand=Category($select=CategoryName)&$select=ProductName'
+```
+
+```json
+{"@odata.context":"http://127.0.0.1:8089/odata/$metadata#Products(ProductName,Category(CategoryName))",
+ "value":[{"@odata.etag":"W/\"b4e186aa03e79908\"","ProductName":"Chai","Category":{"CategoryName":"Beverages"}}]}
+```
+
+The model's `userInfo` names sets, keys and wire names; handlers change what
+a set does; operations are methods declared in a protocol; production runs
+behind nginx or Caddy (`Server/Examples/`) — [the server guide](docs/server-design.md).
+
+### 3. The Workbench
+
+A window onto both: pick a service (this library's own, in the process, or
+Northwind, TripPin, any URL), build a fetch request, and watch every
+exchange on the wire. Queries, grouping, `$compute`, `$search`,
+application time, streams, saves and conflicts, delta links, asynchronous
+requests — each one a preset.
+
+```sh
+xcodebuild -workspace ODataKit.xcworkspace -scheme Workbench build   # macOS
+make -C Examples/Workbench && openapp Examples/Workbench/Workbench.app   # GNUstep
+```
+
+CI packages it on every push (a universal macOS app, a Linux AppImage), and
+attaches both to each release — [its README](Examples/Workbench/README.md).
+
+## What works
+
+- **Reading**: filters (comparisons, `in`, string, date and arithmetic
+  functions, `any`/`all`, casts, enumerations), sorting through relationships,
+  paging, counts, `$expand` nested with its own options, `$select`, `$search`,
+  `$apply` grouping and aggregation, `$compute`, application time.
+- **Writing**: inserts, updates and deletes with ETags; relationships by
+  `$ref` and `@odata.bind`; a save as one `$batch` change set (multipart, or
+  JSON with a 4.01 service); a stale write as a merge conflict the context's
+  merge policy settles; repeatable requests.
+- **More**: actions and functions as methods; delta links as persistent
+  history; asynchronous requests; streams and media entities; models from
+  `$metadata` at runtime or generated as a versioned `.xcdatamodeld`.
+- **Vocabularies**: Core, Capabilities, Validation, Authorization, Measures,
+  Aggregation, JSON, Repeatability, Temporal.
+- **Server**: all of the above served over any Core Data store, with limits
+  on what one request may ask, authentication as a relying party (OpenID
+  Connect, JWTs, a trusted proxy), and 4.0 or 4.01 by what the client asks.
+- **Checked**: against the snapshot suite on every push, both platforms, and
+  against Microsoft's public Northwind and TripPin services.
+
+At a glance, how each Core Data idea becomes OData and what runs where:
+[How it works](docs/how-it-works.md).
+
+## Limitations
+
+- **Not mapped**: geography and geometry types; a snapshot (hidden) timeline;
+  `$index`; `$apply`'s `nest` and hierarchy transformations.
+- **Client**: `[d]` (diacritic-insensitive) predicates are refused, since OData
+  has no such comparison; a predicate the service cannot filter by is an
+  error, not a silent in-memory filter.
+- **Server**: `$apply` beyond filters, and ordering by a computed value, run in
+  the service's memory (bounded by `maxRowsInMemory`); the rest runs in the
+  store.
+- **XML (Atom)** payloads are not spoken; JSON only.
+- **GNUstep** needs the patched stack from
+  [gnustep-patches](https://github.com/ashalkhakov/gnustep-patches) and
+  FreeCoreData; the fixes are on their way upstream.
+
+Item by item: [client conformance](docs/odata-conformance.md) and
+[server design](docs/server-design.md).
+
+## Architecture
+
+```mermaid
+block-beta
+    columns 3
+    app["Your app · Workbench · Catalog"]:1
+    space
+    server["ois-serve · your server"]:1
+    context["Core Data context"]:1
+    space
+    http["ODataHTTPServer"]:1
+    store["ODataIncrementalStore"]:1
+    wire<["HTTP (or in process)"]>(x)
+    service["ODataService · handlers"]:1
+    client["ODataClient · transports"]:1
+    space
+    serverstore["Core Data store: SQLite, …"]:1
+    kit["ODataKit: model mapping · CSDL · values · URL and $filter grammar · $batch"]:3
+    platform["Apple Foundation and Core Data · GNUstep and FreeCoreData"]:3
+```
+
+The client is a Core Data store; the server is a Core Data application. Both
+stand on ODataKit, so a fetch request and the `$filter` that carries it are
+translated by one grammar in both directions, and a service is an
+`ODataTransport`: a store can talk to it in process, with no network, as the
+tests and the Workbench do.
+
+```mermaid
+flowchart LR
+    fetch["NSFetchRequest"] --> builder["ODataQueryBuilder"]
+    builder -->|"GET Products?$filter=…"| svc["ODataService"]
+    svc --> pb["ODataPredicateBuilder"]
+    pb -->|"NSFetchRequest"| db[("Core Data store")]
+    db --> svc
+    svc -->|"JSON"| rows["rows → NSIncrementalStoreNode"]
+    rows --> objects["managed objects"]
+```
+
+| Path | What |
 |---|---|
-| `NSEntityDescription.name` | Entity type |
-| `userInfo[@"OData.entitySet"]` | Entity set (`Products`) |
-| attribute names | properties (`unitPrice` → `UnitPrice` by default) |
-| `userInfo[@"OData.property"]` | override a wire name |
-| `userInfo[@"OData.key"]` | key attribute(s) |
-| `userInfo[@"OData.type"]` | the Edm type, where one Core Data type stands for several: `Edm.Date` on a Date, `Edm.Duration` on a Double, `Edm.TimeOfDay` or `Edm.Guid` on a String |
-| `userInfo[@"OData.type"]` on an entity | its entity type, qualified (`NS.Employee`); a sub-entity is a derived type |
-| Transformable attribute | a complex value as an `NSDictionary` keyed by the service's property names (`home[@"City"]`), a collection as an `NSArray`; members typed as attributes would be (`NSDate`, `NSDecimalNumber`, …). Predicates reach into them: `address.city == 'Boise'` is `Address/City eq 'Boise'`, `ANY emails == %@` is `Emails/any(x0:x0 eq …)`. A change writes the whole value. |
-| `NSIncrementalStoreNode.version` | `@odata.etag` |
+| `Source/ODataKit/` | The shared core |
+| `Source/ODataIncrementalStore/` | The client store, its HTTP client, model builder, streams |
+| `Source/ODataService/` | The service, its handlers, `$metadata` writer, predicate builder, `$batch`, timelines |
+| `Server/` | `ODataHTTPServer` (vendored GCDWebServer), `ois-serve`, deployment examples |
+| `Examples/` | Workbench, Catalog, the quick start |
+| `Tools/` | `ois-model` (a model from `$metadata`), `ois-filter` |
+| `Tests/` | XCTest: snapshots of real services, the service over loopback; `Tests/Live/` against Northwind and TripPin |
+| `docs/` | Guides, how it works, conformance, server design |
 
-`ODataIncrementalStoreKeyAsSegmentOption` addresses entities as
-`Products/1` rather than `Products(1)`; the store does so by itself when
-`$metadata` says the service supports it. The store speaks OData 4.01 to a
-4.01 service and 4.0 to a 4.0 one, as its `$metadata` says
-(`ODataIncrementalStoreMaxVersionOption` caps it): a 4.0 service refuses
-4.01 syntax, so `IN` becomes `eq … or eq …` there, and `LIKE` and
-`MATCHES` (`matchesPattern`) work only against 4.01.
+## Documentation
 
-## Actions and functions
-
-A service's actions and functions are its entities' methods, over the
-network, and are called that way: one bound to an entity type on an
-object, one bound to a collection on an entity, an unbound one on the
-context, by the name the service imports it under. `$metadata` says what
-there is and what each takes.
-
-```objc
-NSManagedObject *airline = [russell invokeODataOperation:@"GetFavoriteAirline" parameters:nil error:&error];
-
-ODataOperationCall *call = [ODataOperationCall callOfOperation:@"GetNearestAirport" inContext:context];
-call.parameters = @{ @"lat": @33.94, @"lon": @-118.4 };
-NSManagedObject *airport = [call invoke:&error];
-```
-
-Parameters are written as their declared types say (dates, enumerations,
-complex values from dictionaries, objects as references). An entity comes
-back as a managed object in the context, a collection of them as an
-array, anything else as the store reads attributes; `NSNull` when there is
-nothing. `-invokeWithTarget:action:` calls without waiting and sends the
-action on the context's queue.
-
-A function can also be filtered and sorted by, as a computed property the
-service works out:
-
-```objc
-NSExpression *airline = [ODataFunctionExpression expressionForFunction:@"GetFavoriteAirline"
-                                                             onKeyPath:nil parameters:nil resultKeyPath:@"name"];
-// People?$filter=NS.GetFavoriteAirline()/Name eq 'American Airlines'
-```
-
-`ODataSortDescriptor` sorts by any such expression.
-
-For a client built on one service, `ois-model --classes DIR` writes classes
-for the entities, with the operations as real methods:
-
-```sh
-ois-model --classes TripPinClasses https://services.odata.org/V4/TripPinServiceRW/ TripPin.xcdatamodeld
-```
-
-```objc
-Airline *airline = [russell getFavoriteAirline:&error];
-BOOL shared = [russell shareTripWithUserName:@"scottketchum" tripId:@0 error:&error];
-Airport *airport = [TripPinService getNearestAirportInContext:context lat:@33.9 lon:@-118.4 error:&error];
-```
-
-Each entity gets `_Person`, written again with the model, and `Person`,
-written once, for your own code; the model names the classes.
-
-## Changes at the service
-
-A store can follow what changes at the service, and keep Core Data's
-persistent history of it:
-
-```objc
-NSDictionary *options = @{ NSPersistentHistoryTrackingKey: @YES };
-// ...
-NSNotification *changes = [store fetchRemoteChanges:&error];   // the first call starts tracking
-[context mergeChangesFromContextDidSaveNotification:changes];
-```
-
-It follows the service's delta links (`Prefer: odata.track-changes`), and
-where a service gives none, reads the entity sets again and compares. With
-`NSPersistentHistoryTrackingKey`, the changes, and every save the store
-makes, are history transactions, fetched with
-`NSPersistentHistoryChangeRequest` as from any store; the service's changes
-are by `ODataRemoteChangesAuthor`. The history is kept in memory.
-
-## The Workbench
-
-`Examples/Workbench` is an app for trying out an OData service through the
-store: the built-in in-memory one, Northwind, TripPin, or any other. CI
-packages it for macOS (a universal `.app`) and Linux (an AppImage) on every
-push, and attaches both to the release for a `v*` tag; see its README.
-
-## Reading OData's URL syntax
-
-`ODataExpression.h` is the other direction, for a service (and for tests):
-it parses a resource path with its key predicates, and the system query
-options, `$filter` and `$orderby` expressions with OData's precedence,
-lambdas, casts, functions and every literal form, `$select`, `$expand` with
-nested options, `$top`, `$skip`, `$count`, `$search`, into a tree that
-describes itself back as canonical OData.
-
-```objc
-ODataQueryOptions *options = [ODataQueryOptions optionsWithQuery:@{ @"$filter": @"Products/any(p:p/UnitPrice gt 20)",
-                                                                   @"$expand": @"Category($select=Name)" } error:&error];
-```
-
-The server (below) reads requests with it.
-
-## Serving a model
-
-The same mapping runs the other way too: `ODataService` answers OData 4.01
-(and 4.0) requests from a Core Data store, with its `$metadata` written from
-the model by the same `ODataPropertyMapper` and `userInfo` the client reads.
-It serves the service document and `$metadata`, entity sets, entities by
-key, navigation, properties, `$filter`, `$orderby`, `$top`, `$skip`,
-`$count`, `$select`, `$expand`, server-driven paging, POST, PATCH, PUT and
-DELETE with ETags and `@odata.bind`, and `$batch` with atomic change sets.
-
-```objc
-ODataService *service = [[ODataService alloc] initWithPersistentStoreCoordinator:coordinator
-                                                                     serviceRoot:[NSURL URLWithString:@"https://api.example.com/odata/"]];
-[service setHandler:[[MyProducts alloc] initWithEntity:productEntity] forEntitySet:@"Products"];
-```
-
-An `ODataEntitySetHandler` subclass changes what a set does (which rows a
-caller sees, what an insert fills in), and answers at once or, through its
-`ODataReply`, later. Actions and functions are ordinary methods, declared
-in a protocol that inherits `ODataActions` or `ODataFunctions`: the
-service reads their names and types from it, writes them into
-`$metadata`, and routes calls to them (see `ODataService.h`). A service is an `ODataTransport`, so a store can talk
-to it in-process. On the network it runs behind a reverse proxy, from
-`ois-serve`:
-
-```sh
-make -C Server
-Server/obj/ois-serve -Model Catalog.momd -StoreType SQLite -StoreURL /var/lib/catalog.sqlite \
-                     -ServiceRoot https://api.example.com/odata/ -Port 8080
-```
-
-`Server/Examples/` has a configuration file, systemd and launchd units, and
-nginx and Caddy configurations. The design, and what is still to come
-(the Workbench on the server): [docs/server-design.md](docs/server-design.md).
-
-## Threading
-
-`NSIncrementalStore` callbacks are synchronous. **Do not load this store on the
-main queue.** Use a private-queue context.
-
-Requests go out through a transport and come back by target-action: an
-`ODataExchange` carries the request, and `-finish` sends its action to its
-target once the response (or an error) is in. `ODataClient` offers the same
-(`-sendRequest:target:action:`, `-sendChangeSet:target:action:`), and its
-synchronous methods, which the store uses, wait on a condition for the
-exchange to finish. So a transport can be as asynchronous as it likes, and
-nothing that uses the store has to be.
-
-A transport of your own (`ODataIncrementalStoreTransportOption`) implements
-one method:
-
-```objc
-- (void)startExchange:(ODataExchange *)exchange
-{
-  // send exchange.request; then, now or later, on any thread:
-  exchange.URLResponse = response;
-  exchange.data = data;          // or exchange.error = error;
-  [exchange finish];
-}
-```
-
-It must not finish by waiting for the thread that started the exchange:
-that thread is waiting for `-finish`, not running its run loop.
-
-## Roadmap
-
-Client conformance with OData v4, item by item, and the order the gaps
-are being closed in: [docs/odata-conformance.md](docs/odata-conformance.md).
-
-The server's milestones, done and to come:
-[docs/server-design.md](docs/server-design.md).
+- [Building](docs/building.md): toolchains, GNUstep, Xcode, tests
+- [Client guide](docs/client.md) · [Server guide and design](docs/server-design.md)
+- [How it works](docs/how-it-works.md): the mapping, query translation, what runs where
+- [Client conformance](docs/odata-conformance.md): OData v4, item by item
+- [Workbench](Examples/Workbench/README.md)
 
 ## License
 
-GNU Lesser General Public License v2.1 or later. See `LICENSE`.
-FreeCoreData is separate and MIT.
+LGPL 2.1 or later (`LICENSE`). FreeCoreData is separate, and MIT.
