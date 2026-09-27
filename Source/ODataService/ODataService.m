@@ -222,6 +222,7 @@ NSString * const ODataUserInfoETag = @"OData.etag";
   _nonSortableProperties = [NSSet set];
   _allowsUpdate = YES;
   _allowsDelete = YES;
+  _tracksChanges = YES;
   return self;
 }
 
@@ -317,12 +318,42 @@ NSString * const ODataUserInfoETag = @"OData.etag";
 - (NSDictionary *)metadataContainerAnnotations;
 - (NSString *)entitySetForEntity:(NSEntityDescription *)entity;
 - (NSAttributeDescription *)versionAttributeOfEntity:(NSEntityDescription *)entity;
+- (BOOL)tracksChangesOfEntity:(NSEntityDescription *)root;
 @end
 
 static NSEntityDescription *OISRootEntity(NSEntityDescription *entity)
 {
   while (entity.superentity) entity = entity.superentity;
   return entity;
+}
+
+// NSPersistentHistoryTokenExpiredError, which FreeCoreData does not name.
+static const NSInteger OISHistoryTokenExpired = 134301;
+
+// A delta token: the persistent history token, archived, in base64url;
+// 0 for the start of history (a store with none yet may have no token).
+static NSString *OISStringFromHistoryToken(NSPersistentHistoryToken *token)
+{
+  if (!token) return @"0";
+  NSData *data = [NSKeyedArchiver archivedDataWithRootObject:token requiringSecureCoding:YES error:NULL];
+  return data ? ODataBase64URLString(data) : nil;
+}
+
+static BOOL OISHistoryTokenFromString(NSString *string, NSPersistentHistoryToken **token)
+{
+  *token = nil;
+  if ([string isEqualToString:@"0"]) return YES;
+  NSData *data = ODataDataFromBase64(string);
+  if (!data.length) return NO;
+  id object = nil;
+  @try {
+    object = [NSKeyedUnarchiver unarchivedObjectOfClass:[NSPersistentHistoryToken class] fromData:data error:NULL];
+  } @catch (NSException *exception) {
+    object = nil;
+  }
+  if (![object isKindOfClass:[NSPersistentHistoryToken class]]) return NO;
+  *token = object;
+  return YES;
 }
 
 static NSString *OISPercentDecoded(NSString *text)
@@ -413,6 +444,12 @@ typedef NS_ENUM(NSInteger, OISTargetKind) {
 @property (nonatomic) NSUInteger pageSize;
 @property (nonatomic) NSUInteger skipToken;
 @property (nonatomic) BOOL pagedByPreference;
+// Change tracking: the $deltatoken asked about, and the token a delta link
+// in the response carries (the history as it stood when the read began).
+@property (nonatomic, copy, nullable) NSString *deltaToken;
+@property (nonatomic, copy, nullable) NSString *trackingToken;
+@property (nonatomic, copy, nullable) NSArray<NSManagedObjectID *> *deltaChanged;
+@property (nonatomic, copy, nullable) NSArray<NSDictionary *> *deltaDeleted;
 
 // A write in progress.
 @property (nonatomic) BOOL replace;
@@ -618,8 +655,9 @@ typedef NS_ENUM(NSInteger, OISTargetKind) {
     query[key] = value;
   }
   self.JSONAliases = JSONAliases;
+  self.deltaToken = query[@"$deltatoken"];
   for (NSString *key in query) {
-    if ([@[ @"$compute", @"$index", @"$schemaversion", @"$deltatoken" ] containsObject:key]) {
+    if ([@[ @"$compute", @"$index", @"$schemaversion" ] containsObject:key]) {
       [self fail:501 message:[NSString stringWithFormat:@"%@ is not supported", key]];
       return NO;
     }
@@ -1182,11 +1220,20 @@ typedef NS_ENUM(NSInteger, OISTargetKind) {
 // Products(1), OrderItems(OrderID=1,ItemNo=2): an entity's canonical path.
 - (NSString *)canonicalPathOf:(NSManagedObject *)object
 {
-  NSEntityDescription *root = OISRootEntity(object.entity);
+  return [self canonicalPathOfValues:object entity:object.entity];
+}
+
+// The same from the key's values by attribute name (a deletion's
+// tombstone); nil when one is missing.
+- (NSString *)canonicalPathOfValues:(id)values entity:(NSEntityDescription *)entity
+{
+  NSEntityDescription *root = OISRootEntity(entity);
   NSArray<NSAttributeDescription *> *key = [self.mapper keyAttributesForEntity:root];
   NSMutableArray *parts = [NSMutableArray array];
   for (NSAttributeDescription *attribute in key) {
-    NSString *literal = [self.coder literalForValue:[object valueForKey:attribute.name] attribute:attribute];
+    id value = [values valueForKey:attribute.name];
+    if (!value || value == [NSNull null]) return nil;
+    NSString *literal = [self.coder literalForValue:value attribute:attribute];
     [parts addObject:key.count == 1 ? literal : [NSString stringWithFormat:@"%@=%@", [self.mapper propertyForAttribute:attribute], literal]];
   }
   return [NSString stringWithFormat:@"%@(%@)", [self.service entitySetForEntity:root], [parts componentsJoinedByString:@","]];
@@ -2015,6 +2062,10 @@ static NSString *OISSelectListOfPaths(NSArray<NSArray<NSString *> *> *paths)
     [self readApplied];
     return;
   }
+  if (self.deltaToken) {
+    [self readDelta];
+    return;
+  }
   NSError *error = nil;
   NSFetchRequest *fetch = [NSFetchRequest fetchRequestWithEntityName:self.entity.name];
   fetch.predicate = [self collectionPredicateWithFilter:YES error:&error];
@@ -2044,14 +2095,28 @@ static NSString *OISSelectListOfPaths(NSArray<NSArray<NSString *> *> *paths)
     page = (NSUInteger)preferred.integerValue;
     self.pagedByPreference = YES;
   }
-  if (options.skipToken) {
-    NSScanner *scanner = [NSScanner scannerWithString:options.skipToken];
+  NSString *skip = options.skipToken;
+  if (skip) {
+    // A tracked read's pages carry the token it began at: 20~token.
+    NSRange tilde = [skip rangeOfString:@"~"];
+    if (tilde.location != NSNotFound) {
+      self.trackingToken = [skip substringFromIndex:NSMaxRange(tilde)];
+      skip = [skip substringToIndex:tilde.location];
+    }
+    NSScanner *scanner = [NSScanner scannerWithString:skip];
     NSInteger token = 0;
     if (![scanner scanInteger:&token] || !scanner.isAtEnd || token < 0) {
       [self fail:400 message:[NSString stringWithFormat:@"$skiptoken=%@ is not one this service wrote", options.skipToken]];
       return;
     }
     self.skipToken = (NSUInteger)token;
+  }
+  // Changes are followed from before the rows are read: one made while
+  // they are may come again in the delta, but none is missed.
+  if (![self canTrackChanges]) {
+    self.trackingToken = nil;
+  } else if (!self.trackingToken && self.request.preferences[@"odata.track-changes"]) {
+    self.trackingToken = OISStringFromHistoryToken([self.service.coordinator currentPersistentHistoryTokenFromStores:nil]);
   }
   NSUInteger remaining = NSUIntegerMax;
   if (options.top) {
@@ -2065,13 +2130,7 @@ static NSString *OISSelectListOfPaths(NSArray<NSArray<NSString *> *> *paths)
   if (limit != NSUIntegerMax) fetch.fetchLimit = limit < remaining ? limit + 1 : limit;
   if (limit == 0) fetch.fetchLimit = 1;
 
-  NSMutableArray *prefetch = [NSMutableArray array];
-  for (ODataExpandItem *item in options.expand) {
-    if (item.path.count != 1) continue;
-    NSPropertyDescription *property = [self.mapper propertyForWireName:item.path[0] entity:self.entity];
-    if ([property isKindOfClass:[NSRelationshipDescription class]]) [prefetch addObject:property.name];
-  }
-  if (prefetch.count) fetch.relationshipKeyPathsForPrefetching = prefetch;
+  [self prefetchExpansionsIn:fetch];
   self.fetch = fetch;
 
   ODataReply *reply = [self replyWithAction:@selector(didFetch:)];
@@ -2100,6 +2159,17 @@ static NSString *OISSelectListOfPaths(NSArray<NSArray<NSString *> *> *paths)
   [countReply returned:[self.handler countForFetchRequest:count request:self.request reply:countReply]];
 }
 
+// A read a delta link can follow: a set (or a cast of it) with its
+// filter, not part of it by $top or $skip, nor a navigation's or a
+// function's, nor grouped.
+- (BOOL)canTrackChanges
+{
+  ODataQueryOptions *options = self.request.options;
+  if (self.parent || self.members || self.referencesOnly || self.kind != OISTargetCollection) return NO;
+  if (options.top || options.skip || (options.apply.count && ![self applyIsFiltersOnly])) return NO;
+  return [self.service tracksChangesOfEntity:OISRootEntity(self.entity)];
+}
+
 - (void)didCount:(ODataReply *)reply
 {
   if (reply.error) {
@@ -2110,16 +2180,42 @@ static NSString *OISSelectListOfPaths(NSArray<NSArray<NSString *> *> *paths)
   [self writeCollection];
 }
 
+- (void)prefetchExpansionsIn:(NSFetchRequest *)fetch
+{
+  NSMutableArray *prefetch = [NSMutableArray array];
+  for (ODataExpandItem *item in self.request.options.expand) {
+    if (item.path.count != 1) continue;
+    NSPropertyDescription *property = [self.mapper propertyForWireName:item.path[0] entity:self.entity];
+    if ([property isKindOfClass:[NSRelationshipDescription class]]) [prefetch addObject:property.name];
+  }
+  if (prefetch.count) fetch.relationshipKeyPathsForPrefetching = prefetch;
+}
+
 // This request again, from this many rows on.
 - (NSString *)nextLinkWithToken:(NSUInteger)token
+{
+  NSString *skip = [NSString stringWithFormat:@"%lu", (unsigned long)token];
+  if (self.trackingToken) skip = [skip stringByAppendingFormat:@"~%@", self.trackingToken];
+  return [self linkReplacing:@"$skiptoken" with:skip];
+}
+
+// This request's delta link: its options, and where its changes begin.
+- (NSString *)deltaLink
+{
+  return [self linkReplacing:@"$deltatoken" with:self.trackingToken];
+}
+
+// This request again, with this option (and neither $skiptoken nor
+// $deltatoken otherwise).
+- (NSString *)linkReplacing:(NSString *)option with:(NSString *)value
 {
   NSMutableArray *pairs = [NSMutableArray array];
   NSString *raw = self.exchange.request.URL.query;
   for (NSString *pair in raw.length ? [raw componentsSeparatedByString:@"&"] : @[]) {
     NSString *key = OISPercentDecoded([pair componentsSeparatedByString:@"="][0]);
-    if (pair.length && ![key isEqualToString:@"$skiptoken"]) [pairs addObject:pair];
+    if (pair.length && ![key isEqualToString:@"$skiptoken"] && ![key isEqualToString:@"$deltatoken"]) [pairs addObject:pair];
   }
-  [pairs addObject:[NSString stringWithFormat:@"$skiptoken=%lu", (unsigned long)token]];
+  [pairs addObject:[NSString stringWithFormat:@"%@=%@", option, value]];
   NSString *path = [self encodedPathOf:self.exchange.request.URL];
   NSString *rootPath = self.service.serviceRoot.path ?: @"/";
   if (![rootPath hasSuffix:@"/"]) rootPath = [rootPath stringByAppendingString:@"/"];
@@ -2153,9 +2249,164 @@ static NSString *OISSelectListOfPaths(NSArray<NSArray<NSString *> *> *paths)
   if (self.count) body[@"@odata.count"] = self.count;
   body[@"value"] = values;
   if (self.nextLink) body[@"@odata.nextLink"] = self.nextLink;
-  NSMutableDictionary *headers = [NSMutableDictionary dictionary];
-  if (self.pagedByPreference) headers[@"Preference-Applied"] = [NSString stringWithFormat:@"odata.maxpagesize=%lu", (unsigned long)self.pageSize];
+  else if (self.trackingToken) body[@"@odata.deltaLink"] = [self deltaLink];
+  NSMutableArray *applied = [NSMutableArray array];
+  if (self.pagedByPreference) [applied addObject:[NSString stringWithFormat:@"odata.maxpagesize=%lu", (unsigned long)self.pageSize]];
+  if (self.trackingToken) [applied addObject:@"odata.track-changes"];
+  NSDictionary *headers = applied.count ? @{ @"Preference-Applied": [applied componentsJoinedByString:@", "] } : nil;
   [self respondJSON:body status:200 headers:headers];
+}
+
+#pragma mark Deltas
+
+// What changed since a delta link's token (Part 1 section 11.3), from the
+// stores' persistent history: the set's entities added or changed since,
+// as they are now and as the request selects and expands them; those
+// deleted, by the key their tombstone kept; and those that no longer
+// match the request, removed as changed. The changes come in one
+// response, with the delta link to follow next.
+- (void)readDelta
+{
+  NSPersistentHistoryToken *token = nil;
+  if (!OISHistoryTokenFromString(self.deltaToken, &token)) {
+    [self fail:400 message:[NSString stringWithFormat:@"$deltatoken=%@ is not one this service wrote", self.deltaToken]];
+    return;
+  }
+  if (![self canTrackChanges]) {
+    [self fail:410 message:@"The changes of this set are not tracked; read it again"];
+    return;
+  }
+  NSError *error = nil;
+  NSPersistentHistoryChangeRequest *history = [NSPersistentHistoryChangeRequest fetchHistoryAfterToken:token];
+  history.resultType = NSPersistentHistoryResultTypeTransactionsAndChanges;
+  NSPersistentHistoryResult *result = (NSPersistentHistoryResult *)[self.request.context executeRequest:history error:&error];
+  if (!result) {
+    if ([error.domain isEqualToString:NSCocoaErrorDomain] && error.code == OISHistoryTokenExpired) {
+      [self fail:410 message:@"The delta link has expired; read the set again"];
+    } else {
+      [self respondError:error];
+    }
+    return;
+  }
+  // Each object's changes, in order: one that came and went since is not
+  // mentioned.
+  NSMutableOrderedSet *changed = [NSMutableOrderedSet orderedSet];
+  NSMutableSet *born = [NSMutableSet set];
+  NSMutableDictionary *deleted = [NSMutableDictionary dictionary];
+  NSPersistentHistoryToken *last = token;
+  for (NSPersistentHistoryTransaction *transaction in result.result) {
+    last = transaction.token ?: last;
+    for (NSPersistentHistoryChange *change in transaction.changes) {
+      NSManagedObjectID *oid = change.changedObjectID;
+      if (![oid.entity isKindOfEntity:self.entity]) continue;
+      switch (change.changeType) {
+        case NSPersistentHistoryChangeTypeInsert:
+          [born addObject:oid];
+          [changed addObject:oid];
+          break;
+        case NSPersistentHistoryChangeTypeUpdate:
+          [changed addObject:oid];
+          break;
+        case NSPersistentHistoryChangeTypeDelete:
+          [changed removeObject:oid];
+          if ([born containsObject:oid]) {
+            [born removeObject:oid];
+          } else {
+            deleted[oid] = change.tombstone ?: @{};
+          }
+          break;
+      }
+    }
+  }
+  NSMutableArray *paths = [NSMutableArray array];
+  for (NSManagedObjectID *oid in deleted) {
+    NSString *path = [self canonicalPathOfValues:deleted[oid] entity:oid.entity];
+    if (!path) {
+      [self fail:410 message:@"A deleted entity's key was not kept; read the set again"];
+      return;
+    }
+    [paths addObject:path];
+  }
+  self.deltaDeleted = paths;
+  self.deltaChanged = changed.array;
+  self.trackingToken = OISStringFromHistoryToken(last);
+  if (!changed.count) {
+    [self writeDelta:@[] removed:@[]];
+    return;
+  }
+  NSFetchRequest *fetch = [NSFetchRequest fetchRequestWithEntityName:self.entity.name];
+  NSPredicate *matching = [self collectionPredicateWithFilter:YES error:&error];
+  if (!matching) {
+    [self respondError:error];
+    return;
+  }
+  fetch.predicate = [NSCompoundPredicate andPredicateWithSubpredicates:@[ [NSPredicate predicateWithFormat:@"self IN %@", changed.array], matching ]];
+  [self prefetchExpansionsIn:fetch];
+  ODataReply *reply = [self replyWithAction:@selector(didFetchDelta:)];
+  [reply returned:[self.handler objectsForFetchRequest:fetch request:self.request reply:reply]];
+}
+
+- (void)didFetchDelta:(ODataReply *)reply
+{
+  if (reply.error) {
+    [self respondError:reply.error];
+    return;
+  }
+  NSArray *objects = reply.result ?: @[];
+  NSMutableSet *gone = [NSMutableSet setWithArray:self.deltaChanged];
+  for (NSManagedObject *object in objects) [gone removeObject:object.objectID];
+  NSMutableArray *removed = [NSMutableArray array];
+  if (gone.count) {
+    // Changed so that the request no longer matches them; only those the
+    // caller may see are named.
+    NSFetchRequest *fetch = [NSFetchRequest fetchRequestWithEntityName:self.entity.name];
+    NSPredicate *members = [NSPredicate predicateWithFormat:@"self IN %@", gone.allObjects];
+    NSPredicate *visible = [self.handler predicateForVisibleObjectsInRequest:self.request];
+    fetch.predicate = visible ? [NSCompoundPredicate andPredicateWithSubpredicates:@[ members, visible ]] : members;
+    NSError *error = nil;
+    NSArray *others = [self.request.context executeFetchRequest:fetch error:&error];
+    if (!others) {
+      [self respondError:error];
+      return;
+    }
+    for (NSManagedObject *object in others) [removed addObject:[self removedEntry:[self canonicalPathOf:object] reason:@"changed"]];
+  }
+  [self writeDelta:objects removed:removed];
+}
+
+// A deleted entity, or one no longer in the request's rows: 4.01's
+// removed control information, 4.0's $deletedEntity.
+- (NSDictionary *)removedEntry:(NSString *)path reason:(NSString *)reason
+{
+  if ([self.request.version isEqualToString:@"4.0"]) {
+    return @{ @"@odata.context": [NSString stringWithFormat:@"%@#%@/$deletedEntity", [self contextBase], [self setName]],
+              @"id": path, @"reason": reason };
+  }
+  return @{ @"@odata.removed": @{ @"reason": reason }, @"@odata.id": path };
+}
+
+- (void)writeDelta:(NSArray<NSManagedObject *> *)objects removed:(NSArray *)removed
+{
+  NSError *error = nil;
+  NSMutableArray *values = [NSMutableArray array];
+  for (NSManagedObject *object in objects) {
+    NSDictionary *json = [self JSONForObject:object options:self.request.options expected:self.entity error:&error];
+    if (!json) {
+      [self respondError:error];
+      return;
+    }
+    [values addObject:json];
+  }
+  [values addObjectsFromArray:removed];
+  for (NSString *path in self.deltaDeleted) [values addObject:[self removedEntry:path reason:@"deleted"]];
+  NSMutableDictionary *body = [NSMutableDictionary dictionary];
+  if (![self.metadataLevel isEqualToString:@"none"]) {
+    body[@"@odata.context"] = [NSString stringWithFormat:@"%@#%@%@%@/$delta", [self contextBase], [self setName], [self castSuffixFor:self.entity],
+                                                         [self selectListForOptions:self.request.options]];
+  }
+  body[@"value"] = values;
+  body[@"@odata.deltaLink"] = [self deltaLink];
+  [self respondJSON:body status:200 headers:nil];
 }
 
 - (NSDictionary *)entityBodyFor:(NSManagedObject *)object error:(NSError **)error
@@ -3646,6 +3897,20 @@ static NSNumber *OISScalarReturnValue(NSInvocation *invocation, char type)
   return annotations;
 }
 
+- (BOOL)tracksChangesOfEntity:(NSEntityDescription *)root
+{
+  if (![self handlerForEntity:root].tracksChanges || !self.coordinator.persistentStores.count) return NO;
+  for (NSPersistentStore *store in self.coordinator.persistentStores) {
+    id option = store.options[NSPersistentHistoryTrackingKey];
+    BOOL tracking = [option isKindOfClass:[NSDictionary class]] || ([option respondsToSelector:@selector(boolValue)] && [option boolValue]);
+    if (!tracking) return NO;
+  }
+  for (NSAttributeDescription *attribute in [self.mapper keyAttributesForEntity:root]) {
+    if (!attribute.preservesValueInHistoryOnDeletion) return NO;
+  }
+  return YES;
+}
+
 - (NSAttributeDescription *)versionAttributeOfEntity:(NSEntityDescription *)entity
 {
   for (NSAttributeDescription *attribute in entity.attributesByName.allValues) {
@@ -3690,6 +3955,11 @@ static NSNumber *OISScalarReturnValue(NSInvocation *invocation, char type)
       if (handler.nonSortableProperties.count) {
         capabilities[@"Org.OData.Capabilities.V1.SortRestrictions"] = @{ @"NonSortableProperties": paths(handler.nonSortableProperties) };
         [signature appendFormat:@";%@ sort:%@", set, [paths(handler.nonSortableProperties) valueForKey:@"$PropertyPath"]];
+      }
+      // Delta links, where the stores keep history.
+      if ([self tracksChangesOfEntity:OISRootEntity(handler.entity)]) {
+        capabilities[@"Org.OData.Capabilities.V1.ChangeTracking"] = @{ @"Supported": @YES };
+        [signature appendFormat:@";%@ tracked", set];
       }
       setAnnotations[set] = capabilities;
     }

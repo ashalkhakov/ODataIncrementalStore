@@ -71,7 +71,7 @@ calling the client conformant.
 |---|---|---|---|
 | Service root and `$metadata` fetch | §11.1 | ✅ **live** | Requested as XML. (It used to be sent with a JSON `Accept`, and Northwind refused to open.) CSDL JSON (4.01) is read as well, where a document is JSON. |
 | `$metadata` use | §11.1.2 | ✅ **live** | Read when the store opens (CSDL XML: entity types, keys, base types, properties, navigation, enumerations, entity sets, containment). It fills in what the model leaves unsaid, and the model is checked against it (`metadataProblems`). It can also be the model: built at runtime, or generated as a versioned `.xcdatamodeld` by `ois-model`; see the README. |
-| Status codes and error bodies | §9, JSON §21 | ✅ **live** | The service's message is the `NSError`'s description; its code, target, details, the HTTP status and the body are in `userInfo` (`ODataErrorCodeKey` and friends). XML error bodies too, for `$metadata`. A `412` is `ODataIncrementalStoreErrorOptimisticLocking`, alone or inside a change set. |
+| Status codes and error bodies | §9, JSON §21 | ✅ **live** | The service's message is the `NSError`'s description; its code, target, details, the HTTP status and the body are in `userInfo` (`ODataErrorCodeKey` and friends). XML error bodies too, for `$metadata`. A `412` is `ODataIncrementalStoreErrorOptimisticLocking`, alone or inside a change set; a save turns it into merge conflicts, see 4.2. |
 | Errors surfaced from fetches | | ✅ **live** | A failed request fails the fetch with its `NSError`, for collections and relationships alike; it is never an empty result. |
 | Content negotiation for `$count` | §11.2.10 | ✅ **live** | Requested as `text/plain`. |
 | Server-driven paging | §11.2.6.7 | ✅ **live** | See 1.5. `$orderby` always ends with the key, because a service resumes a page after its last row's sort values: sorted by category name alone, Northwind skips 17 of 77 products. |
@@ -100,7 +100,7 @@ calling the client conformant.
 |---|---|---|---|
 | Fetch an entity | `GET EntitySet` | ✅ **live** | Every page. |
 | Fault an object | `GET EntitySet(key)` | ✅ **live** | |
-| `predicate` | `$filter` | ⚠️ | See 4.4. |
+| `predicate` | `$filter` | ✅ | See 4.4. |
 | `sortDescriptors` | `$orderby` | ✅ **live** | Paths through relationships use `/` (`Category/CategoryName`); the key is appended as a tiebreaker. |
 | `fetchLimit`, `fetchOffset` | `$top`, `$skip` | ✅ **live** | |
 | `countForFetchRequest:` | `/$count` | ✅ **live** | |
@@ -126,7 +126,7 @@ calling the client conformant.
 | Insert with relationships | `POST` with `@odata.bind` | ✅ | The only way to create an entity whose relationship is required. TripPin answers `500` to a POST with binds, in breach of JSON Format §24 item 7c. |
 | Delete | `DELETE Entity(key)` | ✅ | |
 | Save atomicity | `$batch` change set | ✅ **live** | See section 3. |
-| Merge conflicts | `412` → `NSMergeConflict` | ⚠️ | `412` becomes an error, but not one Core Data's merge policies understand. |
+| Merge conflicts | `412` → `NSMergeConflict` | ✅ | A `412` on an update or delete (or a `404`: the entity is gone) fails the save with `NSPersistentStoreSaveConflictsError`, one `NSMergeConflict` per object the failed request wrote, holding the row the service has now (none for a deleted entity), read back with its ETag. The context's merge policy settles them and saves again, as with any store; the error policy returns them, with the service's error underneath. FreeCoreData does this from `b7f3a7e` on. |
 
 ### 4.3 Model
 
@@ -331,10 +331,13 @@ names):
   change may carry only the changed properties, which are laid over the
   row the store kept), deleted entities (`@removed` in 4.01,
   `$deletedEntity` in 4.0), and added or deleted links (a change to
-  their source).
+  their source). ODataService answers delta links from persistent
+  history (see `docs/server-design.md`), and the store is tested over it
+  in-process.
 - Where there is no delta link, from a service that does not track
   changes or one that stops (TripPin sends a delta link with a collection
-  but none with a delta response), the set is read again and compared
+  but none with a delta response), or where the delta link is answered
+  `410 Gone` (its history purged), the set is read again and compared
   with the rows from the last read. So changes can be followed on any
   service, at the cost of reading the set.
 - The answer is an `NSManagedObjectContextDidSaveObjectIDsNotification`-

@@ -2915,6 +2915,251 @@ static NSString *OISHTTPDate(NSDate *date)
   XCTAssertEqualObjects([self get:@"Categories/$count"].text, @"6", @"off: each made");
 }
 
+#pragma mark Delta links
+
+// The Catalog in a SQLite store that keeps persistent history, with each
+// key kept in a deletion's tombstone: its sets' changes can be followed.
+- (void)serveTrackedCatalog
+{
+  // A copy: the one loaded may already be in use, and so immutable.
+  NSManagedObjectModel *model = [OISCatalogModel() copy];
+  for (NSEntityDescription *entity in model.entities) {
+    for (NSAttributeDescription *attribute in entity.attributesByName.allValues) attribute.preservesValueInHistoryOnDeletion = YES;
+  }
+  _coordinator = [[NSPersistentStoreCoordinator alloc] initWithManagedObjectModel:model];
+  NSURL *url = [NSURL fileURLWithPath:[NSTemporaryDirectory() stringByAppendingPathComponent:[[NSProcessInfo processInfo] globallyUniqueString]]];
+  [_storeFiles addObject:url];
+  NSError *error = nil;
+  XCTAssertNotNil([_coordinator addPersistentStoreWithType:NSSQLiteStoreType configuration:nil URL:url
+                                                   options:@{ NSPersistentHistoryTrackingKey: @YES } error:&error], @"%@", error);
+  [self seed];
+  _service = [[ODataService alloc] initWithPersistentStoreCoordinator:_coordinator
+                                                          serviceRoot:[NSURL URLWithString:@"http://example.test/odata/"]];
+}
+
+// A link the service wrote, as a path for -get: (which encodes it again).
+- (NSString *)pathOfLink:(NSString *)link
+{
+  NSString *root = @"http://example.test/odata/";
+  NSString *path = [link hasPrefix:root] ? [link substringFromIndex:root.length] : link;
+  return [path stringByRemovingPercentEncoding] ?: path;
+}
+
+- (NSManagedObjectContext *)serviceContext
+{
+  NSManagedObjectContext *context = [[NSManagedObjectContext alloc] init];
+  context.persistentStoreCoordinator = _coordinator;
+  return context;
+}
+
+// Part 1 section 11.3: Prefer: odata.track-changes gives the read a delta
+// link, and the delta link what changed since, from persistent history.
+- (void)testDeltaLinks
+{
+  [self serveTrackedCatalog];
+  XCTAssertTrue([[self get:@"$metadata"].text containsString:@"ChangeTracking"]);
+  NSDictionary *track = @{ @"Prefer": @"odata.track-changes" };
+  OISServiceResponse *read = [self send:@"GET" path:@"Products?$select=ProductName&$filter=UnitPrice gt 15" headers:track body:nil];
+  XCTAssertEqual(read.status, 200, @"%@", read.text);
+  XCTAssertEqualObjects(read.headers[@"Preference-Applied"], @"odata.track-changes");
+  XCTAssertEqual([read.json[@"value"] count], 4u);
+  NSString *link = read.json[@"@odata.deltaLink"];
+  XCTAssertTrue([link containsString:@"$deltatoken="], @"%@", read.text);
+  XCTAssertTrue([link containsString:@"$filter="] && [link containsString:@"$select="], @"the read's options: %@", link);
+
+  OISServiceResponse *delta = [self get:[self pathOfLink:link]];
+  XCTAssertEqual(delta.status, 200, @"%@", delta.text);
+  XCTAssertEqualObjects(delta.json[@"value"], @[], @"nothing yet");
+  XCTAssertEqualObjects(delta.json[@"@odata.context"], @"http://example.test/odata/$metadata#Products(ProductName)/$delta");
+  link = delta.json[@"@odata.deltaLink"];
+
+  // Meanwhile, in the store.
+  NSManagedObjectContext *context = [self serviceContext];
+  NSError *error = nil;
+  [[self productWithID:2 in:context] setValue:@"Chang (new)" forKey:@"name"];
+  [[self productWithID:3 in:context] setValue:[NSDecimalNumber decimalNumberWithString:@"16"] forKey:@"unitPrice"];   // now matches
+  [[self productWithID:4 in:context] setValue:[NSDecimalNumber decimalNumberWithString:@"5"] forKey:@"unitPrice"];    // no longer
+  [context deleteObject:[self productWithID:5 in:context]];
+  NSManagedObject *category = [[self productWithID:1 in:context] valueForKey:@"category"];
+  [self insert:@"Product" into:context values:@{ @"id": @6, @"name": @"Ipoh Coffee", @"unitPrice": [NSDecimalNumber decimalNumberWithString:@"46"],
+                                                  @"discontinued": @NO, @"category": category }];
+  NSManagedObject *fleeting = [self insert:@"Product" into:context values:@{ @"id": @7, @"name": @"Fleeting", @"unitPrice": [NSDecimalNumber decimalNumberWithString:@"50"],
+                                                                             @"discontinued": @NO, @"category": category }];
+  XCTAssertTrue([context save:&error], @"%@", error);
+  [context deleteObject:fleeting];
+  XCTAssertTrue([context save:&error], @"%@", error);
+
+  delta = [self get:[self pathOfLink:link]];
+  XCTAssertEqual(delta.status, 200, @"%@", delta.text);
+  NSArray *values = delta.json[@"value"];
+  NSArray *entities = [values filteredArrayUsingPredicate:[NSPredicate predicateWithFormat:@"ProductName != nil"]];
+  XCTAssertEqualObjects([NSSet setWithArray:[entities valueForKey:@"ProductName"]],
+                        ([NSSet setWithObjects:@"Chang (new)", @"Aniseed Syrup", @"Ipoh Coffee", nil]), @"%@", delta.text);
+  NSMutableDictionary *removed = [NSMutableDictionary dictionary];
+  for (NSDictionary *value in values) {
+    if (value[@"@odata.removed"]) removed[value[@"@odata.id"]] = value[@"@odata.removed"][@"reason"];
+  }
+  XCTAssertEqualObjects(removed, (@{ @"Products(4)": @"changed", @"Products(5)": @"deleted" }), @"%@", delta.text);
+  XCTAssertEqual(values.count, 5u, @"Fleeting came and went unmentioned: %@", delta.text);
+
+  // Followed on, nothing more.
+  link = delta.json[@"@odata.deltaLink"];
+  XCTAssertEqualObjects([self get:[self pathOfLink:link]].json[@"value"], @[]);
+
+  // 4.0's form of a deletion.
+  [context deleteObject:[self productWithID:6 in:context]];
+  XCTAssertTrue([context save:&error], @"%@", error);
+  delta = [self send:@"GET" path:[self pathOfLink:link] headers:@{ @"OData-MaxVersion": @"4.0" } body:nil];
+  XCTAssertEqualObjects(delta.json[@"value"], (@[ @{ @"@odata.context": @"http://example.test/odata/$metadata#Products/$deletedEntity",
+                                                    @"id": @"Products(6)", @"reason": @"deleted" } ]), @"%@", delta.text);
+
+  // Not a token this service wrote; a read that is not the whole set.
+  XCTAssertEqual([self get:@"Products?$deltatoken=nonsense"].status, 400);
+  read = [self send:@"GET" path:@"Products?$top=2" headers:track body:nil];
+  XCTAssertNil(read.headers[@"Preference-Applied"]);
+  XCTAssertNil(read.json[@"@odata.deltaLink"]);
+  XCTAssertEqual([self get:@"Products?$top=2&$deltatoken=0"].status, 410);
+}
+
+// A tracked read in pages: each next link carries where the changes
+// begin, so one made to a page already read still comes in the delta.
+- (void)testDeltaLinkAfterPages
+{
+  [self serveTrackedCatalog];
+  _service.maxPageSize = 2;
+  NSDictionary *track = @{ @"Prefer": @"odata.track-changes" };
+  OISServiceResponse *page = [self send:@"GET" path:@"Products" headers:track body:nil];
+  XCTAssertNil(page.json[@"@odata.deltaLink"], @"only with the last page");
+  NSString *next = page.json[@"@odata.nextLink"];
+  XCTAssertTrue([next containsString:@"~"], @"%@", next);
+
+  NSManagedObjectContext *context = [self serviceContext];
+  [[self productWithID:1 in:context] setValue:@"Chai (new)" forKey:@"name"];
+  NSError *error = nil;
+  XCTAssertTrue([context save:&error], @"%@", error);
+
+  NSString *link = nil;
+  NSUInteger rows = [page.json[@"value"] count];
+  while (next) {
+    page = [self get:[self pathOfLink:next]];  // Prefer not sent again
+    rows += [page.json[@"value"] count];
+    next = page.json[@"@odata.nextLink"];
+    link = page.json[@"@odata.deltaLink"];
+  }
+  XCTAssertEqual(rows, 5u);
+  XCTAssertNotNil(link);
+  OISServiceResponse *delta = [self get:[self pathOfLink:link]];
+  XCTAssertEqualObjects([delta.json[@"value"] valueForKey:@"ProductName"], @[ @"Chai (new)" ], @"%@", delta.text);
+}
+
+// Without persistent history there is nothing to follow changes with.
+- (void)testNoDeltaLinksWithoutHistory
+{
+  XCTAssertFalse([[self get:@"$metadata"].text containsString:@"ChangeTracking"]);
+  OISServiceResponse *read = [self send:@"GET" path:@"Products" headers:@{ @"Prefer": @"odata.track-changes" } body:nil];
+  XCTAssertEqual(read.status, 200);
+  XCTAssertNil(read.headers[@"Preference-Applied"]);
+  XCTAssertNil(read.json[@"@odata.deltaLink"]);
+  XCTAssertEqual([self get:@"Products?$deltatoken=0"].status, 410);
+
+  [self serveTrackedCatalog];
+  [_service handlerForEntitySet:@"Products"].tracksChanges = NO;
+  XCTAssertNil([self send:@"GET" path:@"Products" headers:@{ @"Prefer": @"odata.track-changes" } body:nil].json[@"@odata.deltaLink"]);
+  XCTAssertNotNil([self send:@"GET" path:@"Categories" headers:@{ @"Prefer": @"odata.track-changes" } body:nil].json[@"@odata.deltaLink"]);
+}
+
+// The client follows the service's delta links: -fetchRemoteChanges:
+// asks what changed, not for every set again.
+- (void)testIncrementalStoreFollowsDeltaLinks
+{
+  [self serveTrackedCatalog];
+  OISRecordingTransport *transport = [[OISRecordingTransport alloc] init];
+  transport.next = _service;
+  NSError *error = nil;
+  NSManagedObjectContext *client = [self clientOver:transport options:nil error:&error];
+  XCTAssertNotNil(client, @"%@", error);
+  ODataIncrementalStore *store = (ODataIncrementalStore *)client.persistentStoreCoordinator.persistentStores.firstObject;
+  XCTAssertNotNil([store fetchRemoteChanges:&error], @"%@", error);
+
+  NSManagedObjectContext *context = [self serviceContext];
+  [[self productWithID:2 in:context] setValue:@"Chang (new)" forKey:@"name"];
+  [context deleteObject:[self productWithID:5 in:context]];
+  XCTAssertTrue([context save:&error], @"%@", error);
+
+  [transport.requests removeAllObjects];
+  NSNotification *changes = [store fetchRemoteChanges:&error];
+  XCTAssertNotNil(changes, @"%@", error);
+  for (NSURLRequest *request in transport.requests) {
+    XCTAssertTrue([request.URL.query containsString:@"$deltatoken="], @"%@", request.URL);
+  }
+  NSSet *updated = changes.userInfo[NSUpdatedObjectIDsKey];
+  NSSet *deleted = changes.userInfo[NSDeletedObjectIDsKey];
+  // The deletion changed its category's and supplier's products too.
+  NSSet *products = [updated filteredSetUsingPredicate:[NSPredicate predicateWithFormat:@"entity.name == 'Product'"]];
+  XCTAssertEqual(products.count, 1u, @"%@", changes.userInfo);
+  XCTAssertEqual(deleted.count, 1u, @"%@", changes.userInfo);
+  XCTAssertEqualObjects([[client objectWithID:products.anyObject] valueForKey:@"name"], @"Chang (new)");
+  XCTAssertNil(changes.userInfo[NSInsertedObjectIDsKey]);
+}
+
+// A write refused for its ETag (412) is a save conflict, as Core Data's
+// own stores report one; a merge policy settles it.
+- (void)testStaleWritesAreMergeConflicts
+{
+  NSError *error = nil;
+  NSManagedObjectContext *context = [self clientOver:_service options:nil error:&error];
+  XCTAssertNotNil(context, @"%@", error);
+  NSFetchRequest *fetch = [NSFetchRequest fetchRequestWithEntityName:@"Product"];
+  fetch.predicate = [NSPredicate predicateWithFormat:@"id == 1"];
+  NSManagedObject *chai = [[context executeFetchRequest:fetch error:&error] firstObject];
+  XCTAssertEqualObjects([chai valueForKey:@"name"], @"Chai");
+
+  // Meanwhile, at the service.
+  XCTAssertEqual(([self send:@"PATCH" path:@"Products(1)" headers:nil body:@{ @"ProductName": @"Chai (new)" }].status), 204);
+
+  [chai setValue:[NSDecimalNumber decimalNumberWithString:@"99"] forKey:@"unitPrice"];
+  XCTAssertFalse([context save:&error]);
+  XCTAssertEqualObjects(error.domain, NSCocoaErrorDomain);
+  NSArray *conflicts = error.userInfo[NSPersistentStoreSaveConflictsErrorKey];
+  XCTAssertEqual(conflicts.count, 1u, @"%@", error);
+  NSMergeConflict *conflict = conflicts.firstObject;
+  XCTAssertEqual(conflict.sourceObject, chai);
+  XCTAssertEqualObjects(conflict.persistedSnapshot[@"name"], @"Chai (new)", @"what the service has now");
+  XCTAssertGreaterThan(conflict.newVersionNumber, conflict.oldVersionNumber);
+
+  // Settled by the policy the application chooses, and saved again: the
+  // object's change over the service's, property by property.
+  context.mergePolicy = NSMergeByPropertyObjectTrumpMergePolicy;
+  XCTAssertTrue([context.mergePolicy resolveConflicts:conflicts error:&error], @"%@", error);
+  XCTAssertTrue([context save:&error], @"%@", error);
+  NSDictionary *row = [self get:@"Products(1)"].json;
+  XCTAssertEqualObjects(row[@"ProductName"], @"Chai (new)", @"the service's change kept");
+  XCTAssertEqualObjects(row[@"UnitPrice"], @99, @"and the object's");
+
+  // A context whose merge policy is set settles it on its own.
+  XCTAssertEqual(([self send:@"PATCH" path:@"Products(1)" headers:nil body:@{ @"ProductName": @"Chai (newer)" }].status), 204);
+  [chai setValue:[NSDecimalNumber decimalNumberWithString:@"100"] forKey:@"unitPrice"];
+  BOOL saved = [context save:&error];
+  XCTAssertTrue(saved, @"the merge policy applied: %@", error);
+  row = [self get:@"Products(1)"].json;
+  XCTAssertEqualObjects(row[@"UnitPrice"], @100);
+  XCTAssertEqualObjects(row[@"ProductName"], @"Chai (newer)");
+
+  // Deleted at the service: a conflict with no snapshot.
+  XCTAssertEqual(([self send:@"POST" path:@"Products" headers:nil body:@{ @"ProductID": @50, @"ProductName": @"Kelp" }].status), 201);
+  fetch.predicate = [NSPredicate predicateWithFormat:@"id == 50"];
+  NSManagedObject *kelp = [[context executeFetchRequest:fetch error:&error] firstObject];
+  XCTAssertNotNil(kelp, @"%@", error);
+  OISServiceResponse *deleted = [self send:@"DELETE" path:@"Products(50)" headers:nil data:nil];
+  XCTAssertEqual(deleted.status, 204, @"%@", deleted.text);
+  context.mergePolicy = NSErrorMergePolicy;
+  [kelp setValue:[NSDecimalNumber decimalNumberWithString:@"101"] forKey:@"unitPrice"];
+  XCTAssertFalse([context save:&error]);
+  NSMergeConflict *gone = [error.userInfo[NSPersistentStoreSaveConflictsErrorKey] firstObject];
+  XCTAssertNotNil(gone, @"%@", error);
+  XCTAssertNil(gone.persistedSnapshot);
+}
+
 // $metadata in CSDL JSON, asked for by $format or Accept.
 - (void)testMetadataInJSON
 {

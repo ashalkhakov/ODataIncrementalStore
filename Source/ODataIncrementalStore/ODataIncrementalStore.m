@@ -1013,7 +1013,11 @@ static void OISSetKeyPath(NSMutableDictionary *row, NSString *keyPath, id value)
     }]];
   }
 
-  if (![self sendOperations:operations error:error]) return nil;
+  NSError *sendError = nil;
+  if (![self sendOperations:operations error:&sendError]) {
+    if (error) *error = [self saveConflictFor:sendError operations:operations save:save] ?: sendError;
+    return nil;
+  }
 
   for (NSManagedObject *object in save.insertedObjects) {
     [_lock lock];
@@ -1237,9 +1241,15 @@ static BOOL OISSameRow(NSDictionary *a, NSDictionary *b)
 {
   OISTracking *tracking = _tracking[entity.name];
   NSURL *deltaLink = nil;
-  if (tracking.deltaLink) {
-    NSArray *entries = [self rowsAtURL:tracking.deltaLink limit:0 pageSize:0 trackChanges:NO deltaLink:&deltaLink error:error];
-    if (!entries) return NO;
+  NSError *deltaError = nil;
+  NSArray *entries = tracking.deltaLink ? [self rowsAtURL:tracking.deltaLink limit:0 pageSize:0 trackChanges:NO deltaLink:&deltaLink error:&deltaError] : nil;
+  // 410 Gone: the service no longer follows the changes from there (its
+  // history was purged, say); the set is read again and compared.
+  if (tracking.deltaLink && !entries && deltaError.code != ODataIncrementalStoreErrorHTTP + 410) {
+    if (error) *error = deltaError;
+    return NO;
+  }
+  if (entries) {
     for (NSDictionary *entry in entries) {
       [self applyDeltaEntry:entry tracking:tracking entity:entity inserted:inserted updated:updated deleted:deleted];
     }
@@ -1316,6 +1326,59 @@ static BOOL OISSameRow(NSDictionary *a, NSDictionary *b)
 // with 400, 404, 405, 415 or 501 has run none of it, and gets the requests
 // one at a time from then on. Any other failure fails the save: TripPin,
 // for one, can apply part of a batch and then answer 500.
+// A write refused for its ETag (412): the object changed at the service
+// since it was read; or not found (404): it was deleted there. Its row is read again and kept, so its version moves
+// on, and the save fails as Core Data's own stores fail one (the error
+// NSPersistentStoreSaveConflictsError, its conflicts under
+// NSPersistentStoreSaveConflictsErrorKey), with the service's values as
+// the cached and persisted snapshots, or none for an object it no longer
+// has. A merge policy can then settle it, and the save be tried again.
+- (NSError *)saveConflictFor:(NSError *)failure operations:(NSArray *)operations save:(NSSaveChangesRequest *)save
+{
+  if (failure.code != ODataIncrementalStoreErrorOptimisticLocking && failure.code != ODataIncrementalStoreErrorHTTP + 404) return nil;
+  NSURL *failed = failure.userInfo[NSURLErrorFailingURLErrorKey];
+  NSMutableSet *objectIDs = [NSMutableSet set];
+  for (OISOperation *operation in operations) {
+    if (!operation.objectID) continue;
+    // In a $batch the failed part is named; alone, the one sent last.
+    if (!failed || [operation.request.URL.absoluteString isEqualToString:failed.absoluteString]) [objectIDs addObject:operation.objectID];
+  }
+  if (!objectIDs.count) return nil;
+  NSMutableArray *conflicts = [NSMutableArray array];
+  NSSet *changed = [save.updatedObjects setByAddingObjectsFromSet:save.deletedObjects ?: [NSSet set]];
+  for (NSManagedObject *object in changed) {
+    if (![objectIDs containsObject:object.objectID]) continue;
+    uint64_t oldVersion = [self versionForObjectID:object.objectID];
+    [self discardCachedRowsForObjectIDs:@[ object.objectID ]];
+    NSError *readError = nil;
+    NSIncrementalStoreNode *node = [self newValuesForObjectWithID:object.objectID withContext:object.managedObjectContext error:&readError];
+    NSDictionary *snapshot = nil;
+    if (node) {
+      NSMutableDictionary *values = [NSMutableDictionary dictionary];
+      for (NSPropertyDescription *property in object.entity.properties) {
+        if (![property isKindOfClass:[NSAttributeDescription class]] && ![property isKindOfClass:[NSRelationshipDescription class]]) continue;
+        if ([property isKindOfClass:[NSRelationshipDescription class]] && [(NSRelationshipDescription *)property isToMany]) continue;
+        id value = [node valueForPropertyDescription:property];
+        if (value) values[property.name] = value;
+      }
+      snapshot = values;
+    } else if ([readError.userInfo[ODataErrorHTTPStatusKey] integerValue] != 404) {
+      return nil;  // it cannot be told what the service has
+    }
+    NSMergeConflict *conflict = [[NSMergeConflict alloc] initWithSource:object
+                                                             newVersion:(NSUInteger)(node ? node.version : oldVersion + 1)
+                                                             oldVersion:(NSUInteger)oldVersion
+                                                         cachedSnapshot:snapshot
+                                                      persistedSnapshot:snapshot];
+    [conflicts addObject:conflict];
+  }
+  if (!conflicts.count) return nil;
+  return [NSError errorWithDomain:NSCocoaErrorDomain code:NSPersistentStoreSaveConflictsError userInfo:@{
+    NSLocalizedDescriptionKey: @"The service has changed what this save changes",
+    NSPersistentStoreSaveConflictsErrorKey: conflicts,
+    NSUnderlyingErrorKey: failure }];
+}
+
 - (BOOL)sendOperations:(NSArray *)operations error:(NSError **)error
 {
   if (!operations.count) return YES;

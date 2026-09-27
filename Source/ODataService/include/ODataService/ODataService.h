@@ -177,6 +177,14 @@ FOUNDATION_EXPORT NSString * const ODataUserInfoETag;  // @"OData.etag"
 // every string property. Empty: the set cannot be searched (501), as
 // $metadata says (Capabilities.SearchRestrictions).
 @property (nonatomic, copy, nullable) NSSet<NSString *> *searchableProperties;
+// Whether a read of the set may ask to follow its changes (Prefer:
+// odata.track-changes, Part 1 section 11.3): a delta link, answered from
+// the store's persistent history. Also needs every store to keep history
+// (NSPersistentHistoryTrackingKey) and the set's key attributes to be kept
+// in a deletion's tombstone (preservesValueInHistoryOnDeletion); $metadata
+// says which sets can (Capabilities.ChangeTracking). YES by default; a
+// handler whose rows are not the store's says NO.
+@property (nonatomic) BOOL tracksChanges;
 
 // The rows the caller may see at all, however they are reached: fetched,
 // by key, through navigation or $expand. nil: every row.

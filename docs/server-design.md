@@ -45,8 +45,8 @@ FreeCoreData) and on Cocoa, with no platform-specific code in its core.
 
 ## Non-goals, at first
 
-- Delta links, async requests. (`$batch`, `$apply`, `$search`, streams
-  and media entities were ones; they are done.)
+- Async requests. (`$batch`, `$apply`, `$search`, streams, media
+  entities and delta links were ones; they are done.)
 - XML (Atom) payloads. JSON only, as the client speaks.
 - Being a general-purpose web framework.
 
@@ -430,6 +430,45 @@ and parentheses. The service makes it a predicate: a word or phrase is
 string properties, or the handler's `searchableProperties` (an empty set:
 not searchable, `501`, and `SearchRestrictions` says so). It is ANDed with
 `$filter`, and works in `/$count` and in `$expand`'s options.
+
+### Delta links
+
+A read of a whole set (or a cast of it), with or without `$filter`,
+`$search`, `$select` and `$expand`, but not `$top`, `$skip` or grouping,
+takes `Prefer: odata.track-changes` (Part 1 §11.3): the answer says
+`Preference-Applied`, and its last page has an `@odata.deltaLink`, the
+same request with a `$deltatoken`. The token is Core Data's persistent
+history token, archived, in base64url, taken before the rows are read, so
+a change made meanwhile comes again rather than never. A paged read's next
+links carry it (`$skiptoken=20~token`), so the delta starts from the first
+page, not the last.
+
+The delta link answers what the history holds since the token, in one
+response, with the next delta link:
+
+- entities added or changed, as they are now, through the handler's fetch
+  and the request's own options, so visibility, `$select` and `$expand`
+  hold as they do for the read;
+- entities changed so that the request no longer matches them, visible to
+  the caller, removed with reason `changed`;
+- entities deleted, removed with reason `deleted`, named by the key their
+  tombstone kept; one added and deleted since is not mentioned.
+
+A removal is `@odata.removed` with `@odata.id` in 4.01 and a
+`$deletedEntity` in 4.0. A relationship change is a change of the objects
+on both sides, which come again whole, so there are no `$link` entries.
+
+A set can be followed where every store keeps history
+(`NSPersistentHistoryTrackingKey`, which on both platforms means SQLite;
+`ois-serve` takes it in `StoreOptions`), its key attributes are kept in a
+deletion's tombstone (`preservesValueInHistoryOnDeletion`, "Preserve After
+Deletion" in the model editor), and its handler's `tracksChanges` is left
+`YES`; `$metadata` says so with `Capabilities.ChangeTracking`. Elsewhere
+the preference is not applied, and a `$deltatoken` is `410 Gone`, as is
+one whose history has been purged, or a deletion whose key was not kept:
+the client reads the set again. A token the service did not write is
+`400`. A deleted entity's key is given whether or not the caller could
+see it, since only the key is left to judge by.
 
 ### Streams
 
