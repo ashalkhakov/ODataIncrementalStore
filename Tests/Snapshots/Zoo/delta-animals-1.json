@@ -1,5 +1,5 @@
 {
-  "comment": "The changes since, in OData 4.01's delta format: a change to one property only, a deleted entity by its id, a new entity; the next delta link at the end.",
+  "comment": "The changes since, in OData 4.01's delta format: a change to one property only, a deleted entity by its id, a new entity, a link taken away (4.01's #$deletedLink context); the next delta link at the end.",
   "spec": "OASIS OData 4.01 JSON Format §15 (delta payloads), §4.5 (control information without odata.)",
   "state": "delta",
   "request": {
@@ -42,6 +42,12 @@
           "Keeper": {
             "Code": "K1"
           }
+        },
+        {
+          "@context": "#$deletedLink",
+          "source": "https://zoo.test/Zoo.svc/Animals(2)",
+          "relationship": "Keeper",
+          "target": "https://zoo.test/Zoo.svc/Staff('K1')"
         }
       ],
       "@deltaLink": "https://zoo.test/Zoo.svc/Animals?$expand=Keeper($select=Code)&$deltatoken=2"

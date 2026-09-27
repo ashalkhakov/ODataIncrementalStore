@@ -82,10 +82,20 @@
 
 - (void)testCaseInsensitiveUsesTolower
 {
-  [self assertPredicate:@"name BEGINSWITH[cd] \"ch\""
+  [self assertPredicate:@"name BEGINSWITH[c] \"ch\""
                  filter:@"startswith(tolower(ProductName), tolower('ch'))"];
   [self assertPredicate:@"name CONTAINS[c] \"IPA\""
                  filter:@"contains(tolower(ProductName), tolower('IPA'))"];
+}
+
+// OData has no diacritic-insensitive comparison: [d] is refused, not dropped.
+- (void)testDiacriticInsensitiveIsRefused
+{
+  for (NSString *format in @[ @"name ==[d] 'creme'", @"name BEGINSWITH[cd] 'cr'", @"ANY suppliers.city CONTAINS[d] 'o'" ]) {
+    NSError *error = nil;
+    XCTAssertNil([_translator translatePredicate:[NSPredicate predicateWithFormat:format] error:&error], @"%@", format);
+    XCTAssertEqual(error.code, ODataIncrementalStoreErrorUnsupportedPredicate, @"%@", format);
+  }
 }
 
 - (void)testInAndBetween

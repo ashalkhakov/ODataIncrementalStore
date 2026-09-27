@@ -73,6 +73,53 @@
 
 @end
 
+// Writes later, from another thread, as a handler that asks elsewhere
+// first would: inserts, updates and deletes.
+@interface OISLaterWrites : ODataEntitySetHandler
+@property (nonatomic) NSInteger inserts, updates, deletes;
+@end
+
+@implementation OISLaterWrites
+
+- (void)later:(ODataReply *)reply context:(NSManagedObjectContext *)context work:(id (^)(void))work
+{
+  [reply defer];
+  dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(20 * NSEC_PER_MSEC)), dispatch_get_global_queue(0, 0), ^{
+    [context performBlock:^{
+      [reply finishWithResult:work()];
+    }];
+  });
+}
+
+- (NSManagedObject *)insertObjectWithValues:(NSDictionary *)values request:(ODataRequest *)request reply:(ODataReply *)reply
+{
+  self.inserts++;
+  [self later:reply context:request.context work:^id {
+    return [super insertObjectWithValues:values request:request reply:reply];
+  }];
+  return nil;
+}
+
+- (NSManagedObject *)updateObject:(NSManagedObject *)object values:(NSDictionary *)values request:(ODataRequest *)request reply:(ODataReply *)reply
+{
+  self.updates++;
+  [self later:reply context:request.context work:^id {
+    return [super updateObject:object values:values request:request reply:reply];
+  }];
+  return nil;
+}
+
+- (void)deleteObject:(NSManagedObject *)object request:(ODataRequest *)request reply:(ODataReply *)reply
+{
+  self.deletes++;
+  [self later:reply context:request.context work:^id {
+    [request.context deleteObject:object];
+    return nil;
+  }];
+}
+
+@end
+
 #pragma mark Operations, declared in protocols
 
 @class OISServedProduct;
@@ -564,7 +611,10 @@
 
   OISServiceResponse *old = [self send:@"GET" path:@"$metadata" headers:@{ @"OData-MaxVersion": @"4.0" } body:nil];
   XCTAssertEqualObjects([old header:@"OData-Version"], @"4.0");
-  XCTAssertEqualObjects([ODataSchema schemaWithData:old.data error:NULL].version, @"4.0");
+  NSString *oldXML = [[NSString alloc] initWithData:old.data encoding:NSUTF8StringEncoding];
+  XCTAssertTrue([oldXML containsString:@"<edmx:Edmx Version=\"4.0\""], @"4.0 CSDL for a 4.0 client");
+  XCTAssertEqualObjects([ODataSchema schemaWithData:old.data error:NULL].version, @"4.01",
+                        @"and it says the service speaks 4.01 too (Part 1 section 13.3, item 16)");
 }
 
 #pragma mark Reading
@@ -1508,7 +1558,7 @@
     XCTAssertEqualObjects([expanded.json[@"Reports"] valueForKey:@"Name"], @[ @"Zed" ], @"%@: %@", storeType, expanded.text);
 
     XCTAssertEqual([self get:@"Employees?$orderby=Default.Manager/Budget"].status, 501, @"a store that sorts objects cannot ask an Employee for its budget");
-    XCTAssertEqual([self get:@"Employees?$filter=isof(Name,Edm.String)"].status, 501);
+    XCTAssertEqualObjects([self get:@"Employees/$count?$filter=isof(Name,Edm.String)"].text, @"5", @"%@: its own type", storeType);
     XCTAssertEqual([self get:@"Employees?$filter=isof(Default.Nobody)"].status, 400);
     XCTAssertEqual([self get:@"Employees?$filter=Default.Manager/Nothing eq 1"].status, 400);
     XCTAssertEqual([self get:@"Employees?$filter=isof(Reports,Default.Manager)"].status, 400, @"a collection");
@@ -1572,6 +1622,43 @@
                  @"a to-many takes an array");
 }
 
+// Nested entities whose handler answers later: the write stops at each,
+// and goes on from the top when it answers, doing nothing twice.
+- (void)testDeepWritesThroughHandlersThatAnswerLater
+{
+  OISLaterWrites *products = [[OISLaterWrites alloc] initWithEntity:OISCatalogEntity(@"Product")];
+  [_service setHandler:products forEntitySet:@"Products"];
+  OISServiceResponse *category = [self send:@"POST" path:@"Categories" headers:nil body:@{
+    @"CategoryName": @"Seafood",
+    @"Products": @[ @{ @"ProductName": @"Ikura", @"UnitPrice": @31 }, @{ @"ProductName": @"Konbu", @"UnitPrice": @6 } ] }];
+  XCTAssertEqual(category.status, 201, @"%@", category.text);
+  XCTAssertEqual(products.inserts, 2, @"each asked once");
+  XCTAssertEqualObjects([[category.json[@"Products"] valueForKey:@"ProductName"] sortedArrayUsingSelector:@selector(compare:)], (@[ @"Ikura", @"Konbu" ]));
+  XCTAssertEqualObjects([self get:@"Categories(3)/Products/$count"].text, @"2");
+
+  // A deep update: Ikura changed, Kelp new, Konbu unlinked.
+  OISServiceResponse *updated = [self send:@"PATCH" path:@"Categories(3)" headers:nil body:@{
+    @"Products": @[ @{ @"ProductID": @6, @"UnitPrice": @35 }, @{ @"ProductName": @"Kelp" } ] }];
+  XCTAssertEqual(updated.status, 204, @"%@", updated.text);
+  XCTAssertEqual(products.updates, 1);
+  XCTAssertEqual(products.inserts, 3);
+  XCTAssertEqualObjects([self get:@"Products(6)/UnitPrice"].json[@"value"], @35);
+  XCTAssertEqualObjects([self get:@"Categories(3)/Products/$count"].text, @"2");
+
+  // And a delta that deletes one.
+  OISServiceResponse *delta = [self send:@"PATCH" path:@"Categories(3)" headers:@{ @"OData-Version": @"4.01" } body:@{
+    @"Products@delta": @[ @{ @"@removed": @{ @"reason": @"deleted" }, @"@id": @"Products(6)" } ] }];
+  XCTAssertEqual(delta.status, 204, @"%@", delta.text);
+  XCTAssertEqual(products.deletes, 1);
+  XCTAssertEqual([self get:@"Products(6)"].status, 404);
+
+  // An answer that fails fails the write, and nothing of it is kept.
+  OISServiceResponse *bad = [self send:@"POST" path:@"Categories" headers:nil body:@{
+    @"CategoryName": @"Grains", @"Products": @[ @{ @"ProductName": @"Rice" }, @{ @"ProductName": @"Oats", @"UnitPrice": @"cheap" } ] }];
+  XCTAssertEqual(bad.status, 400, @"%@", bad.text);
+  XCTAssertEqualObjects([self get:@"Categories/$count"].text, @"3");
+}
+
 #pragma mark Date and number functions
 
 - (void)testYearAndDateInFilters
@@ -1599,12 +1686,64 @@
       XCTAssertEqualObjects([self sortedEmployeeNames:path], expected[filter], @"%@: %@", storeType, filter);
     }
   }
-  XCTAssertEqual([self get:@"Employees?$filter=month(Hired) eq 3"].status, 501, @"not a range of the date");
   XCTAssertEqual([self get:@"Employees?$filter=year(Hired) add 1 eq 2026"].status, 501, @"only compared with a literal");
   XCTAssertEqual([self get:@"Employees?$filter=year(Hired) eq year(Hired)"].status, 501);
   XCTAssertEqual([self get:@"Employees?$orderby=year(Hired)"].status, 501);
   XCTAssertEqual([self get:@"Employees?$filter=year(Name) eq 2025"].status, 400);
   XCTAssertEqual([self get:@"Employees?$filter=date(Hired) eq 2025"].status, 400);
+}
+
+// A range in each year, month, day, hour or minute the dates span.
+- (void)testMonthDayAndHourInFilters
+{
+  for (NSString *storeType in @[ NSInMemoryStoreType, NSSQLiteStoreType, NSXMLStoreType ]) {
+    [self serveStaffInStoreOfType:storeType];
+    // Hired 2019-06-01T09:00Z (Ann), 2024-12-31T23:30Z (Bob), 2025-01-01T00:00Z (Cy), never (Di).
+    NSDictionary *expected = @{
+      @"month(Hired) eq 6": @[ @"Ann" ],
+      @"month(Hired) eq 12": @[ @"Bob" ],
+      @"month(Hired) lt 6": @[ @"Cy" ],
+      @"month(Hired) ge 6": @[ @"Ann", @"Bob" ],
+      @"month(Hired) gt 5.5": @[ @"Ann", @"Bob" ],
+      @"month(Hired) ne 12": @[ @"Ann", @"Cy", @"Di" ],
+      @"month(Hired) eq 13": @[],
+      @"month(Hired) eq 0": @[],
+      @"month(Hired) in (1,6)": @[ @"Ann", @"Cy" ],
+      @"month(Manager/Hired) eq 12": @[ @"Cy", @"Di" ],
+      @"day(Hired) eq 31": @[ @"Bob" ],
+      @"day(Hired) eq 1": @[ @"Ann", @"Cy" ],
+      @"day(Hired) gt 1": @[ @"Bob" ],
+      @"day(Hired) eq null": @[ @"Di" ],
+    };
+    for (NSString *filter in expected) {
+      NSString *path = [@"Employees?$filter=" stringByAppendingString:filter];
+      XCTAssertEqualObjects([self sortedEmployeeNames:path], expected[filter], @"%@: %@", storeType, filter);
+    }
+    XCTAssertEqual([self get:@"Employees?$filter=hour(Hired) eq 9"].status, 501, @"%@: six years of days is too many ranges", storeType);
+
+    // Ann hired the morning before Bob: two days of hours.
+    NSManagedObjectContext *context = [[NSManagedObjectContext alloc] init];
+    context.persistentStoreCoordinator = _coordinator;
+    NSFetchRequest *annRequest = [NSFetchRequest fetchRequestWithEntityName:@"Employee"];
+    annRequest.predicate = [NSPredicate predicateWithFormat:@"id == 1"];
+    [[[context executeFetchRequest:annRequest error:NULL] firstObject] setValue:ODataDateFromString(@"2024-12-31T09:15:00Z") forKey:@"hired"];
+    NSError *error = nil;
+    XCTAssertTrue([context save:&error], @"%@", error);
+    expected = @{
+      @"hour(Hired) eq 23": @[ @"Bob" ],
+      @"hour(Hired) lt 10": @[ @"Ann", @"Cy" ],
+      @"hour(Hired) ne 9": @[ @"Bob", @"Cy", @"Di" ],
+      @"minute(Hired) eq 30": @[ @"Bob" ],
+      @"minute(Hired) ge 15": @[ @"Ann", @"Bob" ],
+    };
+    for (NSString *filter in expected) {
+      NSString *path = [@"Employees?$filter=" stringByAppendingString:filter];
+      XCTAssertEqualObjects([self sortedEmployeeNames:path], expected[filter], @"%@: %@", storeType, filter);
+    }
+    XCTAssertEqual([self get:@"Employees?$filter=second(Hired) eq 0"].status, 501, @"%@: 15 hours of minutes is too many", storeType);
+  }
+  XCTAssertEqual([self get:@"Employees?$filter=month(Name) eq 3"].status, 400);
+  XCTAssertEqual([self get:@"Employees?$filter=totaloffsetminutes(Hired) eq 0"].status, 501);
 }
 
 - (NSArray *)productIDsWhere:(NSString *)filter
@@ -1613,6 +1752,26 @@
   OISServiceResponse *response = [self get:path];
   XCTAssertEqual(response.status, 200, @"%@: %@", filter, response.text);
   return [response.json[@"value"] valueForKey:@"ProductID"];
+}
+
+// Casts to a primitive type that holds every value of the property's own
+// (Part 2 section 5.1.1.10.1); the rest depend on rounding or on text.
+- (void)testPrimitiveCastsInFilters
+{
+  // IDs 1 to 5; prices 18, 19, 10, 22, 21.35.
+  XCTAssertEqualObjects([self productIDsWhere:@"cast(ProductID,Edm.Int64) eq 1"], @[ @1 ]);
+  XCTAssertEqualObjects([self productIDsWhere:@"cast(ProductID,Edm.Decimal) gt 2.5"], (@[ @3, @4, @5 ]));
+  XCTAssertEqualObjects([self productIDsWhere:@"cast(ProductID,Edm.Double) lt 2.5"], (@[ @1, @2 ]));
+  XCTAssertEqualObjects([self productIDsWhere:@"cast(UnitPrice,Edm.Decimal) eq 18"], @[ @1 ], @"its own type");
+  XCTAssertEqualObjects([self productIDsWhere:@"cast(ProductName,Edm.String) eq 'Chai'"], @[ @1 ]);
+  XCTAssertEqualObjects([self productIDsWhere:@"cast(ProductID,'Edm.Int64') in (2,3)"], (@[ @2, @3 ]), @"the type in quotes");
+  XCTAssertEqualObjects([self productIDsWhere:@"isof(ProductID,Edm.Int64)"], (@[ @1, @2, @3, @4, @5 ]));
+  XCTAssertEqualObjects([self productIDsWhere:@"isof(UnitPrice,Edm.Decimal)"], (@[ @1, @2, @3, @4, @5 ]));
+  XCTAssertEqualObjects([self productIDsWhere:@"isof(Edm.String)"], @[], @"a product is not a string");
+  XCTAssertEqual([self get:@"Products?$filter=cast(UnitPrice,Edm.Int32) eq 18"].status, 501, @"rounding is the service's to choose");
+  XCTAssertEqual([self get:@"Products?$filter=cast(ProductID,Edm.String) eq '1'"].status, 501);
+  XCTAssertEqual([self get:@"Products?$filter=isof(UnitPrice,Edm.Int32)"].status, 501, @"depends on the value");
+  XCTAssertEqual([self get:@"Products?$filter=cast(Edm.Int32) eq 1"].status, 400);
 }
 
 - (void)testRoundingInFilters
@@ -1688,7 +1847,10 @@ static NSAttributeDescription *OISSwatchAttribute(NSString *name, NSAttributeTyp
   NSArray *rows = @[ @[ @1, @"none", @0, @1 ], @[ @2, @"red", @1, @2 ], @[ @3, @"orange", @3, @3 ],
                      @[ @4, @"white", @7, [NSNull null] ], @[ @5, @"blue", @4, [NSNull null] ], @[ @6, @"unknown", [NSNull null], [NSNull null] ] ];
   for (NSArray *row in rows) {
-    NSMutableDictionary *values = [@{ @"id": row[0], @"name": row[1], @"label": @"Red" } mutableCopy];
+    NSMutableDictionary *values = [@{ @"id": row[0], @"name": row[1] } mutableCopy];
+    // The label: the colours as text, as the service keeps it.
+    NSDictionary *labels = @{ @1: @"Red", @3: @"Red,Green", @7: @"Red,Green,Blue", @4: @"Blue" };
+    if (row[2] != [NSNull null] && labels[row[2]]) values[@"label"] = labels[row[2]];
     if (row[2] != [NSNull null]) values[@"colours"] = row[2];
     if (row[3] != [NSNull null]) values[@"shade"] = row[3];
     [self insert:@"Swatch" into:context values:values];
@@ -1735,7 +1897,15 @@ static NSAttributeDescription *OISSwatchAttribute(NSString *name, NSAttributeTyp
     for (NSString *filter in expected) {
       XCTAssertEqualObjects([self swatchIDsWhere:filter], expected[filter], @"%@: %@", storeType, filter);
     }
-    XCTAssertEqual([self get:@"Swatches?$filter=Label has Default.Colour'Red'"].status, 501, @"kept as text");
+    XCTAssertEqualObjects([self swatchIDsWhere:@"Label has Default.Colour'Red'"], (@[ @2, @3, @4 ]), @"%@: kept as text", storeType);
+    XCTAssertEqualObjects([self swatchIDsWhere:@"Label has Default.Colour'Green,Red'"], (@[ @3, @4 ]), @"%@", storeType);
+    XCTAssertEqualObjects([self swatchIDsWhere:@"Label eq Default.Colour'Green,Red'"], @[ @3 ], @"%@: one value, one text", storeType);
+    // Written in any order, kept as the canonical text.
+    OISServiceResponse *created = [self send:@"POST" path:@"Swatches" headers:nil
+                                        body:@{ @"SwatchID": @7, @"Name": @"cyan", @"Label": @"Blue, Green" }];
+    XCTAssertEqual(created.status, 201, @"%@", created.text);
+    XCTAssertEqualObjects(created.json[@"Label"], @"Green,Blue");
+    XCTAssertEqualObjects([self swatchIDsWhere:@"Label has Default.Colour'Green'"], (@[ @3, @4, @7 ]), @"%@", storeType);
     XCTAssertEqual([self get:@"Swatches?$filter=Name has Default.Colour'Red'"].status, 400);
     XCTAssertEqual([self get:@"Swatches?$filter=Colours has Default.Shade'Dark'"].status, 400);
     XCTAssertEqual([self get:@"Swatches?$filter=Colours has Default.Colour'Purple'"].status, 400);
@@ -2361,10 +2531,64 @@ static NSComparisonPredicate *OISValidation(NSString *keyPath, NSPredicateOperat
   XCTAssertEqual([self get:@"Categories(1)/Products?$filter=QuantityPerUnit eq 'x'"].status, 400, @"however the products are reached");
 }
 
+// A to-many prefetched with $expand: its members are kept, so reading the
+// relationship asks nothing, until a save may have moved them.
+- (void)testPrefetchedToManyNeedsNoRequest
+{
+  OISRecordingTransport *transport = [[OISRecordingTransport alloc] init];
+  transport.next = _service;
+  NSError *error = nil;
+  NSManagedObjectContext *context = [self clientOver:transport options:nil error:&error];
+  XCTAssertNotNil(context, @"%@", error);
+  NSFetchRequest *fetch = [NSFetchRequest fetchRequestWithEntityName:@"Category"];
+  fetch.relationshipKeyPathsForPrefetching = @[ @"products" ];
+  fetch.sortDescriptors = @[ [NSSortDescriptor sortDescriptorWithKey:@"id" ascending:YES] ];
+  NSArray *categories = [context executeFetchRequest:fetch error:&error];
+  XCTAssertEqual(categories.count, 2u, @"%@", error);
+  NSUInteger before = transport.requests.count;
+  XCTAssertTrue([[[transport.requests.lastObject URL] query] containsString:@"$expand=Products"], @"%@", transport.requests.lastObject);
+  NSSet *beverages = [categories[0] valueForKey:@"products"];
+  NSSet *condiments = [categories[1] valueForKey:@"products"];
+  XCTAssertEqual(beverages.count + condiments.count, 5u);
+  XCTAssertEqualObjects([[beverages valueForKey:@"name"] containsObject:@"Chai"] ? @YES : @NO, @YES);
+  XCTAssertEqual(transport.requests.count, before, @"no request for either: %@",
+                 [[transport.requests subarrayWithRange:NSMakeRange(before, transport.requests.count - before)] valueForKey:@"URL"]);
+
+  // A product moved: the next time the collection is read, it is asked for.
+  NSManagedObject *chai = [[beverages filteredSetUsingPredicate:[NSPredicate predicateWithFormat:@"name == 'Chai'"]] anyObject];
+  [chai setValue:categories[1] forKey:@"category"];
+  XCTAssertTrue([context save:&error], @"%@", error);
+  [context refreshObject:categories[1] mergeChanges:NO];
+  before = transport.requests.count;
+  XCTAssertTrue([[[categories[1] valueForKey:@"products"] valueForKey:@"name"] containsObject:@"Chai"]);
+  XCTAssertGreaterThan(transport.requests.count, before, @"asked again after the save");
+}
+
+// Capabilities.FilterFunctions: a function it leaves out is not tried
+// (Part 1 section 13.3, item 20).
+- (void)testClientsFilterOnlyWithTheFunctionsListed
+{
+  _service.containerAnnotations = @{ @"Capabilities.FilterFunctions": @[ @"contains", @"tolower" ] };
+  OISRecordingTransport *transport = [[OISRecordingTransport alloc] init];
+  transport.next = _service;
+  NSError *error = nil;
+  NSManagedObjectContext *context = [self clientOver:transport options:nil error:&error];
+  XCTAssertNotNil(context, @"%@", error);
+  NSFetchRequest *fetch = [NSFetchRequest fetchRequestWithEntityName:@"Product"];
+  fetch.predicate = [NSPredicate predicateWithFormat:@"name CONTAINS[c] 'CHA'"];
+  XCTAssertEqual([context executeFetchRequest:fetch error:&error].count, 2u, @"%@", error);
+  fetch.predicate = [NSPredicate predicateWithFormat:@"name BEGINSWITH 'Ch'"];
+  NSUInteger before = transport.requests.count;
+  XCTAssertNil([context executeFetchRequest:fetch error:&error]);
+  XCTAssertEqual(error.code, ODataIncrementalStoreErrorNotAllowedByService, @"%@", error);
+  XCTAssertTrue([error.localizedDescription rangeOfString:@"startswith"].location != NSNotFound, @"%@", error);
+  XCTAssertEqual(transport.requests.count, before, @"not asked");
+}
+
 - (void)testClientsHeedTheCapabilities
 {
-  // A service that says it does not do $top, $skip, $count, $expand or
-  // $batch, sorting by name or filtering by quantity, or deleting
+  // A service that says it does not do $top, $skip, $count, $expand,
+  // $select or $batch, sorting by name or filtering by quantity, or deleting
   // products: the client does not ask, and does it itself where it can.
   ODataEntitySetHandler *products = [[ODataEntitySetHandler alloc] initWithEntity:OISCatalogEntity(@"Product")];
   products.nonFilterableProperties = [NSSet setWithObject:@"QuantityPerUnit"];
@@ -2373,7 +2597,8 @@ static NSComparisonPredicate *OISValidation(NSString *keyPath, NSPredicateOperat
   [_service setHandler:products forEntitySet:@"Products"];
   _service.containerAnnotations = @{ @"Capabilities.TopSupported": @NO, @"Capabilities.SkipSupported": @NO,
                                      @"Capabilities.BatchSupported": @NO, @"Capabilities.CountRestrictions": @{ @"Countable": @NO },
-                                     @"Capabilities.ExpandRestrictions": @{ @"Expandable": @NO } };
+                                     @"Capabilities.ExpandRestrictions": @{ @"Expandable": @NO },
+                                     @"Capabilities.SelectSupport": @{ @"Supported": @NO } };
   [ODataIncrementalStore registerStore];
   OISRecordingTransport *transport = [[OISRecordingTransport alloc] init];
   transport.next = _service;
@@ -2393,7 +2618,7 @@ static NSComparisonPredicate *OISValidation(NSString *keyPath, NSPredicateOperat
   NSArray *rows = [context executeFetchRequest:fetch error:&error];
   XCTAssertEqualObjects([rows valueForKey:@"name"], (@[ @"Chef Anton's Cajun Seasoning", @"Chang" ]), @"%@", error);
   NSString *query = [[transport.requests[before] URL] query] ?: @"";
-  for (NSString *option in @[ @"orderby", @"top", @"skip", @"expand" ]) {
+  for (NSString *option in @[ @"orderby", @"top", @"skip", @"expand", @"select" ]) {
     XCTAssertTrue([query rangeOfString:option].location == NSNotFound, @"%@ in %@", option, query);
   }
 

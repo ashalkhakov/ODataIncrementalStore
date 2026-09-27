@@ -5,6 +5,7 @@
     "method": "GET",
     "path": "Animals/Zoo.Lion",
     "query": {
+      "$select": "Born,Diet,Features,Home,Id,MaxRoar,Name,Nicknames,PastHomes",
       "$expand": "Keeper($select=Code)"
     }
   },

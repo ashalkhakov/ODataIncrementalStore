@@ -3,7 +3,10 @@
   "spec": "OASIS OData CSDL XML 4.0 \u00a713.2 Entity Set",
   "request": {
     "method": "GET",
-    "path": "Staff"
+    "path": "Staff",
+    "query": {
+      "$select": "Code,Name"
+    }
   },
   "response": {
     "status": 200,

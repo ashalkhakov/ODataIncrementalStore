@@ -10,6 +10,7 @@
 #import "ODataPredicateBuilder.h"
 #import "ODataOperationCatalog.h"
 #import "ODataServiceBatch.h"
+#import <objc/runtime.h>
 
 NSString * const ODataUserInfoETag = @"OData.etag";
 
@@ -373,8 +374,20 @@ typedef NS_ENUM(NSInteger, OISTargetKind) {
 @property (nonatomic, copy, nullable) NSArray<NSManagedObject *> *members;
 // A deep insert's response: the entity with what it created expanded.
 @property (nonatomic, strong, nullable) ODataQueryOptions *responseOptions;
-// A nested insert's answer, taken at once.
-@property (nonatomic, strong, nullable) ODataReply *nestedReply;
+// A deep insert's or update's nested changes, by the body (or delta
+// entry) each is for: the replies of those made, and the objects. A
+// handler that answers later stops the write; its answer starts it again
+// from the top, and what is done is not done twice.
+@property (nonatomic, strong, nullable) NSMutableDictionary<NSValue *, ODataReply *> *nestedReplies;
+@property (nonatomic, strong, nullable) NSMutableDictionary<NSValue *, NSManagedObject *> *nestedObjects;
+@property (nonatomic, strong, nullable) ODataReply *nestedPending;
+@property (nonatomic, strong, nullable) NSValue *nestedPendingKey;
+@property (nonatomic) SEL nestedRestart;
+// The request's entity while a nested change's handler has it.
+@property (nonatomic, strong, nullable) NSEntityDescription *nestedRequestEntity;
+@property (nonatomic) BOOL nestedRestartReplacing;
+// The request's body, parsed once: a write started again reads the same.
+@property (nonatomic, strong, nullable) NSDictionary *parsedBody;
 @property (nonatomic, copy, nullable) NSDictionary<NSString *, ODataExpression *> *operationArguments;
 // Parameter aliases whose values are JSON (@p=[...], @p={...}): an
 // operation's complex and collection arguments.
@@ -1307,7 +1320,8 @@ static const NSInteger OISMaxLevels = 32;
     NSPredicate *visible = [handler predicateForVisibleObjectsInRequest:self.request];
     NSPredicate *filter = nil;
     if (options.filter) {
-      filter = [self.service.predicates predicateForExpression:options.filter entity:destination aliases:self.request.options.aliases error:error];
+      filter = [self.service.predicates predicateForExpression:options.filter entity:destination aliases:self.request.options.aliases
+                                                       context:self.request.context error:error];
       if (!filter) return NO;
     }
     NSArray *members;
@@ -1389,6 +1403,7 @@ static const NSInteger OISMaxLevels = 32;
     NSPredicate *filter = [self.service.predicates predicateForExpression:self.request.options.filter
                                                                    entity:self.entity
                                                                   aliases:self.request.options.aliases
+                                                                  context:self.request.context
                                                                     error:error];
     if (!filter) return nil;
     [parts addObject:filter];
@@ -2244,6 +2259,7 @@ static NSNumber *OISScalarReturnValue(NSInvocation *invocation, char type)
 
 - (NSDictionary *)bodyJSON
 {
+  if (self.parsedBody) return self.parsedBody;
   NSString *type = [self.request valueForHeader:@"Content-Type"].lowercaseString;
   if (type.length && ![type hasPrefix:@"application/json"]) {
     [self fail:415 message:@"The body must be application/json"];
@@ -2255,7 +2271,8 @@ static NSNumber *OISScalarReturnValue(NSInvocation *invocation, char type)
     [self fail:400 message:@"The body must be a JSON object"];
     return nil;
   }
-  return ODataNormalizedControlInformation(json, [self.request valueForHeader:@"OData-Version"] ?: self.request.version);
+  self.parsedBody = ODataNormalizedControlInformation(json, [self.request valueForHeader:@"OData-Version"] ?: self.request.version);
+  return self.parsedBody;
 }
 
 // The object an entity id names: Categories(1), or the whole URL.
@@ -2460,6 +2477,8 @@ static NSNumber *OISScalarReturnValue(NSInvocation *invocation, char type)
 
 - (NSManagedObject *)insertNestedBody:(NSDictionary *)body relationship:(NSRelationshipDescription *)relationship
 {
+  NSManagedObject *done = self.nestedObjects[[NSValue valueWithNonretainedObject:body]];
+  if (done) return done;
   NSEntityDescription *entity = [self entityOfNested:body relationship:relationship];
   if (!entity) return nil;
   ODataEntitySetHandler *handler = [self.service handlerForEntity:entity];
@@ -2471,7 +2490,7 @@ static NSNumber *OISScalarReturnValue(NSInvocation *invocation, char type)
   if (!values || ![self fillKeys:values entity:entity]) return nil;
   NSAttributeDescription *version = [self.service versionAttributeOfEntity:entity];
   if (version) values[version.name] = @1;
-  ODataReply *reply = [self nestedCallOn:entity what:@"created" call:^id(ODataReply *nested) {
+  ODataReply *reply = [self nestedCallOn:entity what:@"created" for:body call:^id(ODataReply *nested) {
     return [handler insertObjectWithValues:values request:self.request reply:nested];
   }];
   if (!reply) return nil;
@@ -2479,23 +2498,39 @@ static NSNumber *OISScalarReturnValue(NSInvocation *invocation, char type)
     [self respondError:ODataServiceError(500, [NSString stringWithFormat:@"A nested %@ was not created", entity.name])];
     return nil;
   }
+  [self nestedDone:reply.result for:body];
   return reply.result;
 }
 
-// A handler's answer, now: a nested entity's change cannot wait for one
-// that answers later. nil, answered, when it fails.
-- (ODataReply *)nestedCallOn:(NSEntityDescription *)entity what:(NSString *)what call:(id (^)(ODataReply *reply))call
+- (void)nestedDone:(NSManagedObject *)object for:(id)body
 {
-  NSEntityDescription *requested = self.request.entity;
-  self.request.entity = entity;
-  ODataReply *reply = [self replyWithAction:@selector(didFinishNested:)];
-  reply.timeout = 0;
-  self.nestedReply = nil;
-  [reply returned:call(reply)];
-  self.request.entity = requested;
-  if (reply.deferred) {
-    [self fail:501 message:[NSString stringWithFormat:@"%@'s handler answers later, which a nested entity cannot wait for", entity.name]];
-    return nil;
+  if (!self.nestedObjects) self.nestedObjects = [NSMutableDictionary dictionary];
+  self.nestedObjects[[NSValue valueWithNonretainedObject:body]] = object;
+}
+
+// A handler's answer to a nested change, for the body it is for: the one
+// it gave before, when the write started again; nil, answered, when it
+// fails; nil, unanswered, when the handler answers later, which starts the
+// write again (didFinishNested:).
+- (ODataReply *)nestedCallOn:(NSEntityDescription *)entity what:(NSString *)what for:(id)body call:(id (^)(ODataReply *reply))call
+{
+  NSValue *key = [NSValue valueWithNonretainedObject:body];
+  ODataReply *reply = self.nestedReplies[key];
+  if (!reply) {
+    NSEntityDescription *requested = self.request.entity;
+    self.request.entity = entity;
+    reply = [self replyWithAction:@selector(didFinishNested:)];
+    [reply returned:call(reply)];
+    if (reply.deferred) {
+      // The handler has the request until it answers.
+      self.nestedRequestEntity = requested;
+      self.nestedPending = reply;
+      self.nestedPendingKey = key;
+      return nil;
+    }
+    self.request.entity = requested;
+    if (!self.nestedReplies) self.nestedReplies = [NSMutableDictionary dictionary];
+    self.nestedReplies[key] = reply;
   }
   if (reply.error) {
     [self respondError:reply.error];
@@ -2506,7 +2541,22 @@ static NSNumber *OISScalarReturnValue(NSInvocation *invocation, char type)
 
 - (void)didFinishNested:(ODataReply *)reply
 {
-  self.nestedReply = reply;
+  // One answered at once is taken where it was asked for.
+  if (reply != self.nestedPending) return;
+  if (!self.nestedReplies) self.nestedReplies = [NSMutableDictionary dictionary];
+  self.nestedReplies[self.nestedPendingKey] = reply;
+  self.nestedPending = nil;
+  self.nestedPendingKey = nil;
+  self.request.entity = self.nestedRequestEntity;
+  self.nestedRequestEntity = nil;
+  if (self.done) return;
+  // sel_isEqual: libobjc2's selectors carry types, and _cmd need not be
+  // the same pointer as @selector().
+  if (sel_isEqual(self.nestedRestart, @selector(insert))) {
+    [self insert];
+  } else if (sel_isEqual(self.nestedRestart, @selector(updateReplacing:))) {
+    [self updateReplacing:self.nestedRestartReplacing];
+  }
 }
 
 #pragma mark Deep updates
@@ -2559,11 +2609,13 @@ static NSNumber *OISScalarReturnValue(NSInvocation *invocation, char type)
     NSEntityDescription *entity = [self entityOfNested:change relationship:relationship];
     if (!entity) return nil;
     NSError *error = nil;
-    NSManagedObject *member = [self existingNested:change entity:entity error:&error];
+    // Found once: started again, the write finds it deleted.
+    NSManagedObject *member = self.nestedObjects[[NSValue valueWithNonretainedObject:change]] ?: [self existingNested:change entity:entity error:&error];
     if (!member) {
       [self respondError:error ?: ODataServiceError(400, @"A removed entity names no entity: give its @id or its key")];
       return nil;
     }
+    [self nestedDone:member for:change];
     [members removeObject:member];
     NSString *reason = [removed isKindOfClass:[NSDictionary class]] ? removed[@"reason"] : nil;
     if ([reason isEqual:@"deleted"]) {
@@ -2572,7 +2624,7 @@ static NSNumber *OISScalarReturnValue(NSInvocation *invocation, char type)
         [self fail:405 message:[NSString stringWithFormat:@"%@ cannot be deleted here", member.entity.name]];
         return nil;
       }
-      if (![self nestedCallOn:member.entity what:@"deleted" call:^id(ODataReply *nested) {
+      if (![self nestedCallOn:member.entity what:@"deleted" for:change call:^id(ODataReply *nested) {
             [handler deleteObject:member request:self.request reply:nested];
             return nil;
           }]) {
@@ -2613,6 +2665,8 @@ static NSNumber *OISScalarReturnValue(NSInvocation *invocation, char type)
 // of it, as by PATCH; one it does not name, created.
 - (NSManagedObject *)upsertNested:(NSDictionary *)body relationship:(NSRelationshipDescription *)relationship
 {
+  NSManagedObject *done = self.nestedObjects[[NSValue valueWithNonretainedObject:body]];
+  if (done) return done;
   NSEntityDescription *entity = [self entityOfNested:body relationship:relationship];
   if (!entity) return nil;
   NSError *error = nil;
@@ -2640,10 +2694,12 @@ static NSNumber *OISScalarReturnValue(NSInvocation *invocation, char type)
     [self fail:405 message:[NSString stringWithFormat:@"%@ cannot be updated here", existing.entity.name]];
     return nil;
   }
-  ODataReply *reply = [self nestedCallOn:existing.entity what:@"updated" call:^id(ODataReply *nested) {
+  ODataReply *reply = [self nestedCallOn:existing.entity what:@"updated" for:body call:^id(ODataReply *nested) {
     return [handler updateObject:existing values:values request:self.request reply:nested];
   }];
-  return reply ? existing : nil;
+  if (!reply) return nil;
+  [self nestedDone:existing for:body];
+  return existing;
 }
 
 // What a deep insert's body nested, as $expand: the response shows it.
@@ -2697,6 +2753,7 @@ static NSNumber *OISScalarReturnValue(NSInvocation *invocation, char type)
 
 - (void)insert
 {
+  self.nestedRestart = _cmd;
   if (!self.handler.allowsInsert) {
     [self methodNotAllowed:@[ @"GET" ]];
     return;
@@ -2767,6 +2824,8 @@ static NSNumber *OISScalarReturnValue(NSInvocation *invocation, char type)
 
 - (void)updateReplacing:(BOOL)replace
 {
+  self.nestedRestart = _cmd;
+  self.nestedRestartReplacing = replace;
   if (!self.handler.allowsUpdate) {
     [self methodNotAllowed:@[ @"GET" ]];
     return;
@@ -3050,12 +3109,12 @@ static NSNumber *OISScalarReturnValue(NSInvocation *invocation, char type)
   annotations[[capabilities stringByAppendingString:@"DeepInsertSupport"]] = @{ @"Supported": @YES, @"ContentIDSupported": @YES };
   annotations[[capabilities stringByAppendingString:@"DeepUpdateSupport"]] = @{ @"Supported": @YES, @"ContentIDSupported": @YES };
   annotations[[capabilities stringByAppendingString:@"FilterFunctions"]] = @[ @"contains", @"startswith", @"endswith", @"tolower", @"toupper",
-                                                                                @"length", @"year", @"date", @"floor", @"ceiling", @"round",
+                                                                                @"length", @"year", @"month", @"day", @"hour", @"minute", @"second", @"date", @"floor", @"ceiling", @"round",
                                                                                 @"now", @"cast", @"isof", @"matchesPattern" ];
-  [annotations addEntriesFromDictionary:self.containerAnnotations ?: @{}];
+  for (NSString *term in self.containerAnnotations) annotations[[ODataMetadataWriter fullTerm:term]] = self.containerAnnotations[term];
   id<ODataAuthenticator> authenticator = self.authenticator;
   NSDictionary *authorization = [authenticator respondsToSelector:@selector(authorizationDescription)] ? [authenticator authorizationDescription] : nil;
-  if (authorization && !annotations[@"Authorization.Authorizations"] && !annotations[@"Org.OData.Authorization.V1.Authorizations"]) {
+  if (authorization && !annotations[@"Org.OData.Authorization.V1.Authorizations"]) {
     annotations[@"Org.OData.Authorization.V1.Authorizations"] = @[ authorization ];
     NSMutableDictionary *scheme = [NSMutableDictionary dictionaryWithObject:authorization[@"Name"] ?: @"" forKey:@"Authorization"];
     NSSet *scopes = [(id)authenticator respondsToSelector:@selector(requiredScopes)] ? [(id)authenticator requiredScopes] : nil;

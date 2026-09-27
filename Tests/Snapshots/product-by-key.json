@@ -5,6 +5,7 @@
     "method": "GET",
     "path": "Products(4)",
     "query": {
+      "$select": "Discontinued,ProductID,ProductName,UnitPrice",
       "$expand": "Category($select=CategoryID)"
     }
   },

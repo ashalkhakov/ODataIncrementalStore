@@ -538,6 +538,16 @@ static NSDictionary<NSString *, NSString *> *OISStandardVocabularies(void)
     if ([value isEqual:@YES] && [target rangeOfString:@"/"].location == NSNotFound) schema->_keyAsSegmentSupported = YES;
   }
   schema->_version = [reader.version copy] ?: @"4.0";
+  // Core.ODataVersions on the container, when there is one, is what the
+  // service says it speaks (Part 1 section 13.3, item 16): its highest.
+  id advertised = schema.containerName ? [schema annotation:@"Core.ODataVersions" forTarget:schema.containerName] : nil;
+  if ([advertised isKindOfClass:[NSString class]]) {
+    NSString *highest = nil;
+    for (NSString *v in [advertised componentsSeparatedByCharactersInSet:[NSCharacterSet whitespaceCharacterSet]]) {
+      if (v.length && (!highest || [v compare:highest options:NSNumericSearch] == NSOrderedDescending)) highest = v;
+    }
+    if (highest) schema->_version = [highest copy];
+  }
   return schema;
 }
 
@@ -651,22 +661,33 @@ static NSDictionary<NSString *, NSString *> *OISStandardVocabularies(void)
   return namespace ? [NSString stringWithFormat:@"%@%@", namespace, [name substringFromIndex:dot.location]] : name;
 }
 
+NSString *ODataSchemaSpelling(NSString *name, id<NSFastEnumeration> _Nullable names)
+{
+  if (!name) return name;
+  NSString *found = nil;
+  for (NSString *candidate in names) {
+    if ([candidate isEqualToString:name]) return name;
+    if (!found && [candidate caseInsensitiveCompare:name] == NSOrderedSame) found = candidate;
+  }
+  return found ?: name;
+}
+
 - (ODataSchemaEntityType *)entityTypeNamed:(NSString *)name
 {
   if (!name) return nil;
-  return self.entityTypes[[self qualifiedName:name]];
+  return self.entityTypes[ODataSchemaSpelling([self qualifiedName:name], self.entityTypes)];
 }
 
 - (ODataSchemaComplexType *)complexTypeNamed:(NSString *)name
 {
   if (!name) return nil;
-  return self.complexTypes[[self qualifiedName:name]];
+  return self.complexTypes[ODataSchemaSpelling([self qualifiedName:name], self.complexTypes)];
 }
 
 - (ODataSchemaEnumType *)enumTypeNamed:(NSString *)name
 {
   if (!name) return nil;
-  return self.enumTypes[[self qualifiedName:name]];
+  return self.enumTypes[ODataSchemaSpelling([self qualifiedName:name], self.enumTypes)];
 }
 
 - (ODataSchemaEntityType *)entityTypeWithSimpleName:(NSString *)name
@@ -675,6 +696,13 @@ static NSDictionary<NSString *, NSString *> *OISStandardVocabularies(void)
   for (ODataSchemaEntityType *type in self.entityTypes.allValues) {
     if (![type.name isEqualToString:name]) continue;
     if (found) return nil;  // two namespaces with one name: ambiguous
+    found = type;
+  }
+  if (found) return found;
+  // Product for PRODUCT, when that is the only one.
+  for (ODataSchemaEntityType *type in self.entityTypes.allValues) {
+    if ([type.name caseInsensitiveCompare:name] != NSOrderedSame) continue;
+    if (found) return nil;
     found = type;
   }
   return found;

@@ -5,6 +5,7 @@
 #import "ODataFunctionExpression.h"
 #import "ODataPredicateTranslator.h"
 #import "ODataError.h"
+#import <ODataKit/ODataExpression.h>
 
 static NSString *OISPercentEncode(NSString *value)
 {
@@ -105,10 +106,84 @@ static NSString *OISPercentEncode(NSString *value)
   return out;
 }
 
+// $select for rows read as objects: the attributes the model has that the
+// service's type has too, and each subentity's own behind its type cast
+// (Zoo.Lion/MaxRoar), so a service sends nothing the store would drop.
+// nil, for every property, without $metadata, when a subentity names no
+// type, or when the set's Capabilities.SelectSupport says it has none.
+- (NSString *)selectForEntity:(NSEntityDescription *)entity
+{
+  ODataSchema *schema = self.mapper.schema;
+  if (!schema) return nil;
+  NSEntityDescription *root = entity;
+  while (root.superentity) root = root.superentity;
+  id support = [schema capability:@"Capabilities.SelectSupport" forEntitySet:[self.mapper entitySetForEntity:root]];
+  if ([support isKindOfClass:[NSDictionary class]] && [support[@"Supported"] isEqual:@NO]) return nil;
+  NSMutableArray *names = [NSMutableArray array];
+  if (![self select:entity cast:nil into:names]) return nil;
+  return names.count ? [names componentsJoinedByString:@","] : nil;
+}
+
+- (BOOL)select:(NSEntityDescription *)entity cast:(NSString *)cast into:(NSMutableArray *)names
+{
+  ODataSchemaEntityType *type = [self.mapper entityTypeForEntity:entity];
+  if (!type) return NO;
+  NSMutableArray *own = [NSMutableArray array];
+  for (NSAttributeDescription *attribute in entity.attributesByName.allValues) {
+    if (attribute.isTransient) continue;
+    if (cast && entity.superentity.attributesByName[attribute.name]) continue;  // the base type's, selected already
+    NSString *wire = [self.mapper propertyForAttribute:attribute];
+    if (![self.mapper.schema property:wire ofEntityType:type]) continue;
+    [own addObject:cast ? [NSString stringWithFormat:@"%@/%@", cast, wire] : wire];
+  }
+  [names addObjectsFromArray:[own sortedArrayUsingSelector:@selector(compare:)]];
+  NSArray *subentities = [entity.subentities sortedArrayUsingDescriptors:@[ [NSSortDescriptor sortDescriptorWithKey:@"name" ascending:YES] ]];
+  for (NSEntityDescription *subentity in subentities) {
+    NSString *qualified = [self.mapper qualifiedTypeForEntity:subentity];
+    if (!qualified || ![self select:subentity cast:qualified into:names]) return NO;
+  }
+  return YES;
+}
+
 - (NSArray *)readingQueryForEntity:(NSEntityDescription *)entity
 {
+  NSMutableArray *items = [NSMutableArray array];
+  NSString *select = [self selectForEntity:entity];
+  if (select) [items addObject:@[ @"$select", select ]];
   NSArray *expansions = [self toOneKeyExpansionsForEntity:entity except:[NSSet set]];
-  return expansions.count ? @[ @[ @"$expand", [expansions componentsJoinedByString:@","] ] ] : @[];
+  if (expansions.count) [items addObject:@[ @"$expand", [expansions componentsJoinedByString:@","] ]];
+  return items;
+}
+
+static void OISCollectCalls(ODataExpression *e, NSMutableSet *into)
+{
+  if (!e) return;
+  if (e.kind == ODataExpressionCall && [e.name rangeOfString:@"."].location == NSNotFound) [into addObject:e.name];
+  OISCollectCalls(e.operand, into);
+  OISCollectCalls(e.left, into);
+  OISCollectCalls(e.right, into);
+  OISCollectCalls(e.body, into);
+  for (ODataExpression *a in e.arguments) OISCollectCalls(a, into);
+  for (ODataExpression *a in e.namedArguments.allValues) OISCollectCalls(a, into);
+}
+
+// A canonical function the set's Capabilities.FilterFunctions leaves out
+// (Part 1 section 13.3, item 20); nil when it lists none, which lets every
+// function be tried.
+- (NSString *)refusedFunctionIn:(NSString *)filter entity:(NSEntityDescription *)entity
+{
+  ODataSchema *schema = self.mapper.schema;
+  if (!schema) return nil;
+  NSEntityDescription *root = entity;
+  while (root.superentity) root = root.superentity;
+  id listed = [schema capability:@"Capabilities.FilterFunctions" forEntitySet:[self.mapper entitySetForEntity:root]];
+  if (![listed isKindOfClass:[NSArray class]] || ![listed count]) return nil;
+  NSMutableSet *used = [NSMutableSet set];
+  OISCollectCalls([ODataExpression expressionWithString:filter error:NULL], used);
+  for (NSString *name in [used.allObjects sortedArrayUsingSelector:@selector(compare:)]) {
+    if (![listed containsObject:name]) return name;
+  }
+  return nil;
 }
 
 - (NSURL *)URLForFetch:(NSFetchRequest *)fetch entity:(NSEntityDescription *)entity error:(NSError **)error
@@ -123,6 +198,12 @@ static NSString *OISPercentEncode(NSString *value)
     if (self.version) t.version = self.version;
     NSString *filter = [t translatePredicate:fetch.predicate error:error];
     if (!filter) return nil;
+    NSString *refused = [self refusedFunctionIn:filter entity:entity];
+    if (refused) {
+      if (error) *error = OISError(ODataIncrementalStoreErrorNotAllowedByService,
+                                   [NSString stringWithFormat:@"%@: the service does not filter with %@ (Capabilities.FilterFunctions)", entity.name, refused]);
+      return nil;
+    }
     [items addObject:@[ @"$filter", filter ]];
   }
 
@@ -178,6 +259,10 @@ static NSString *OISPercentEncode(NSString *value)
       }
     }
     if (names.count) [items addObject:@[ @"$select", [names componentsJoinedByString:@","] ]];
+  } else if (fetch.resultType == NSManagedObjectResultType || fetch.resultType == NSManagedObjectIDResultType) {
+    // Object IDs too: their rows are cached the same.
+    NSString *select = [self selectForEntity:entity];
+    if (select) [items addObject:@[ @"$select", select ]];
   }
 
   NSMutableArray *expansions = [[self expansionsForKeyPaths:fetch.relationshipKeyPathsForPrefetching entity:entity] mutableCopy];
@@ -219,8 +304,22 @@ static NSString *OISPercentEncode(NSString *value)
   }
   NSMutableArray *items = [NSMutableArray array];
   for (NSString *wire in order) {
-    NSArray *nested = [children[wire] count] && destinations[wire] ? [self expansionsForKeyPaths:children[wire] entity:destinations[wire]] : @[];
-    [items addObject:nested.count ? [NSString stringWithFormat:@"%@($expand=%@)", wire, [nested componentsJoinedByString:@","]] : wire];
+    NSEntityDescription *destination = destinations[wire];
+    NSMutableArray *nested = [[children[wire] count] && destination ? [self expansionsForKeyPaths:children[wire] entity:destination] : @[] mutableCopy];
+    NSMutableArray *options = [NSMutableArray array];
+    if (destination) {
+      // Its rows as a fetch's are: trimmed, and naming their to-ones.
+      NSString *select = [self selectForEntity:destination];
+      if (select) [options addObject:[@"$select=" stringByAppendingString:select]];
+      NSMutableSet *named = [NSMutableSet set];
+      for (NSString *path in children[wire]) {
+        NSRelationshipDescription *rel = destination.relationshipsByName[[path componentsSeparatedByString:@"."].firstObject];
+        if (rel) [named addObject:[self.mapper propertyForRelationship:rel]];
+      }
+      [nested addObjectsFromArray:[self toOneKeyExpansionsForEntity:destination except:named]];
+    }
+    if (nested.count) [options addObject:[@"$expand=" stringByAppendingString:[nested componentsJoinedByString:@","]]];
+    [items addObject:options.count ? [NSString stringWithFormat:@"%@(%@)", wire, [options componentsJoinedByString:@";"]] : wire];
   }
   return items;
 }

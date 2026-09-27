@@ -253,6 +253,11 @@ static BOOL OISIsTrue(id value)
 // of its own as it is.
 - (NSString *)fullTerm:(NSString *)term
 {
+  return [[self class] fullTerm:term];
+}
+
++ (NSString *)fullTerm:(NSString *)term
+{
   NSArray *parts = [term componentsSeparatedByString:@"@"];
   NSMutableArray *full = [NSMutableArray array];
   for (NSString *part in parts) {
@@ -518,6 +523,9 @@ static BOOL OISIsTrue(id value)
   }
   if (self.additionalContainerXML) [xml appendString:self.additionalContainerXML];
   NSMutableDictionary *containerAnnotations = [NSMutableDictionary dictionary];
+  // The versions the service speaks, which is how a 4.01 client learns it
+  // may send 4.01 payloads (Part 1 section 13.3, item 16).
+  containerAnnotations[[OISCore stringByAppendingString:@".ODataVersions"]] = @"4.0 4.01";
   for (NSString *term in self.containerAnnotations) containerAnnotations[[self fullTerm:term]] = self.containerAnnotations[term];
   [xml appendString:[self annotationsXML:containerAnnotations]];
   [xml appendString:@"</EntityContainer>"];

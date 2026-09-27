@@ -5,6 +5,7 @@
     "method": "GET",
     "path": "Animals",
     "query": {
+      "$select": "Born,Diet,Features,Home,Id,Name,Nicknames,PastHomes,Zoo.Lion/MaxRoar",
       "$filter": "Features eq Zoo.Features'Mane'",
       "$expand": "Keeper($select=Code)"
     }

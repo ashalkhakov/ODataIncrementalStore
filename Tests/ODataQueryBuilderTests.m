@@ -109,8 +109,9 @@
   NSError *error = nil;
   NSURL *url = [_builder URLForFetch:fetch entity:[self productEntity] error:&error];
   XCTAssertNil(error);
-  // 4.0 has no paths in $expand: nested options, and one item per start.
-  XCTAssertEqualObjects([self queryFromURL:url][@"$expand"], @"Suppliers($expand=Products),Category");
+  // 4.0 has no paths in $expand: nested options, and one item per start;
+  // each expanded row names its to-ones, as a fetched one does.
+  XCTAssertEqualObjects([self queryFromURL:url][@"$expand"], @"Suppliers($expand=Products($expand=Category($select=CategoryID))),Category");
   NSError *parse = nil;
   XCTAssertNotNil([ODataQueryOptions optionsWithQuery:@{ @"$expand": [self queryFromURL:url][@"$expand"] } error:&parse], @"%@", parse);
 }

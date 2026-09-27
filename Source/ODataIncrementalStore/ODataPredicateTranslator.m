@@ -129,6 +129,13 @@ static NSArray<NSEntityDescription *> *OISEntitiesIn(NSExpression *expression)
 
 - (NSString *)translateComparison:(NSComparisonPredicate *)cmp error:(NSError **)error
 {
+  // OData has no diacritic-insensitive comparison, and dropping [d] would
+  // fetch fewer rows than Core Data would match.
+  if (cmp.options & NSDiacriticInsensitivePredicateOption) {
+    if (error) *error = OISError(ODataIncrementalStoreErrorUnsupportedPredicate,
+                                 [NSString stringWithFormat:@"[d] has no OData equivalent: %@", cmp]);
+    return nil;
+  }
   if (cmp.comparisonPredicateModifier != NSDirectPredicateModifier) {
     return [self translateLambda:cmp error:error];
   }

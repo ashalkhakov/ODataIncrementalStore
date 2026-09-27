@@ -3,7 +3,10 @@
   "spec": "OASIS OData 4.01 Part 1 \u00a711.2.2",
   "request": {
     "method": "GET",
-    "path": "Staff('K1')"
+    "path": "Staff('K1')",
+    "query": {
+      "$select": "Code,Name"
+    }
   },
   "response": {
     "status": 200,

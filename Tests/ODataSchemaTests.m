@@ -465,4 +465,129 @@ static NSString * const OISAnnotatedCSDL =
   XCTAssertFalse([item validateValue:&more forKey:@"price" error:NULL]);
 }
 
+#pragma mark - OData 4.01 (Part 1 section 13.3, items 16-18)
+
+// What 4.01 CSDL adds to 4.0: Edm.Untyped and the abstract Edm types as
+// property types, Scale variable and floating, SRID, key aliases for a
+// complex key member, a nullable singleton, entity sets left out of the
+// service document, an enumeration over Edm.Int64, ContainsTarget with
+// OnDelete, action overloads with EntitySetPath, terms of its own, and
+// annotations built of UrlRef, LabeledElement and Apply.
+static NSString *const OIS401CSDL =
+  @"<edmx:Edmx Version=\"4.01\" xmlns:edmx=\"http://docs.oasis-open.org/odata/ns/edmx\">"
+  @"<edmx:Reference Uri=\"https://oasis-tcs.github.io/odata-vocabularies/vocabularies/Org.OData.Core.V1.xml\">"
+  @"<edmx:Include Namespace=\"Org.OData.Core.V1\" Alias=\"Core\"/>"
+  @"<edmx:IncludeAnnotations TermNamespace=\"Org.OData.Core.V1\" Qualifier=\"Tablet\"/></edmx:Reference>"
+  @"<edmx:DataServices><Schema Namespace=\"Shop\" Alias=\"S\" xmlns=\"http://docs.oasis-open.org/odata/ns/edm\">"
+  @"<Term Name=\"Rating\" Type=\"Edm.Int32\" AppliesTo=\"EntityType Property\" Nullable=\"false\" DefaultValue=\"3\"/>"
+  @"<TypeDefinition Name=\"Weight\" UnderlyingType=\"Edm.Decimal\" Precision=\"10\" Scale=\"variable\">"
+  @"<Annotation Term=\"Core.Description\" String=\"kg\"/></TypeDefinition>"
+  @"<EnumType Name=\"Size\" UnderlyingType=\"Edm.Int64\" IsFlags=\"true\">"
+  @"<Member Name=\"Small\" Value=\"1\"/><Member Name=\"Large\" Value=\"4294967296\"/></EnumType>"
+  @"<ComplexType Name=\"Address\" OpenType=\"true\"><Property Name=\"Zip\" Type=\"Edm.String\" Nullable=\"false\"/>"
+  @"<Property Name=\"Where\" Type=\"Edm.GeographyPoint\" SRID=\"variable\"/></ComplexType>"
+  @"<EntityType Name=\"Store\"><Key><PropertyRef Name=\"Address/Zip\" Alias=\"Zip\"/></Key>"
+  @"<Property Name=\"Address\" Type=\"S.Address\" Nullable=\"false\"/>"
+  @"<Property Name=\"Extra\" Type=\"Edm.Untyped\"/>"
+  @"<Property Name=\"Anything\" Type=\"Edm.PrimitiveType\"/>"
+  @"<Property Name=\"Tags\" Type=\"Collection(Edm.String)\" Nullable=\"true\"/>"
+  @"<Property Name=\"Ratio\" Type=\"Edm.Decimal\" Scale=\"floating\" Precision=\"7\"/>"
+  @"<Property Name=\"Weight\" Type=\"S.Weight\"/>"
+  @"<Property Name=\"Size\" Type=\"S.Size\"/>"
+  @"<Property Name=\"Opened\" Type=\"Edm.DateTimeOffset\" Precision=\"3\"/>"
+  @"<NavigationProperty Name=\"Shelves\" Type=\"Collection(S.Shelf)\" ContainsTarget=\"true\"><OnDelete Action=\"Cascade\"/></NavigationProperty>"
+  @"<Annotation Term=\"S.Rating\" Int=\"5\"/>"
+  @"<Annotation Term=\"Core.LongDescription\"><Apply Function=\"odata.concat\"><String>Store </String><Path>Address/Zip</Path></Apply></Annotation>"
+  @"</EntityType>"
+  @"<EntityType Name=\"Shelf\"><Key><PropertyRef Name=\"Id\"/></Key><Property Name=\"Id\" Type=\"Edm.Int32\" Nullable=\"false\"/>"
+  @"<Property Name=\"Anything\" Type=\"Edm.ComplexType\"/></EntityType>"
+  @"<Action Name=\"Restock\" IsBound=\"true\" EntitySetPath=\"store/Shelves\"><Parameter Name=\"store\" Type=\"S.Store\"/>"
+  @"<ReturnType Type=\"Collection(S.Shelf)\" Nullable=\"false\"/></Action>"
+  @"<Action Name=\"Restock\" IsBound=\"true\"><Parameter Name=\"stores\" Type=\"Collection(S.Store)\"/>"
+  @"<Parameter Name=\"size\" Type=\"S.Size\" Nullable=\"true\"><Annotation Term=\"Core.OptionalParameter\"/></Parameter></Action>"
+  @"<Function Name=\"Nearest\" IsComposable=\"true\"><Parameter Name=\"at\" Type=\"Edm.GeographyPoint\"/>"
+  @"<ReturnType Type=\"S.Store\" Nullable=\"true\"/></Function>"
+  @"<EntityContainer Name=\"Container\">"
+  @"<EntitySet Name=\"Stores\" EntityType=\"S.Store\"/>"
+  @"<EntitySet Name=\"Hidden\" EntityType=\"S.Shelf\" IncludeInServiceDocument=\"false\"/>"
+  @"<Singleton Name=\"Flagship\" Type=\"S.Store\" Nullable=\"true\"/>"
+  @"<FunctionImport Name=\"Nearest\" Function=\"S.Nearest\" EntitySet=\"Stores\" IncludeInServiceDocument=\"true\"/>"
+  @"<Annotation Term=\"Core.ODataVersions\" String=\"4.0 4.01\"/>"
+  @"<Annotation Term=\"Core.Links\"><Collection><Record><PropertyValue Property=\"rel\" String=\"help\"/>"
+  @"<PropertyValue Property=\"href\"><UrlRef><String>https://example.test/help</String></UrlRef></PropertyValue></Record></Collection></Annotation>"
+  @"<Annotation Term=\"Core.Description\"><LabeledElement Name=\"Label\"><String>The shop</String></LabeledElement></Annotation>"
+  @"</EntityContainer></Schema></edmx:DataServices></edmx:Edmx>";
+
+- (void)testReadsAny401CSDL
+{
+  NSError *error = nil;
+  ODataSchema *schema = [ODataSchema schemaWithData:[OIS401CSDL dataUsingEncoding:NSUTF8StringEncoding] error:&error];
+  XCTAssertNotNil(schema, @"%@", error);
+  XCTAssertEqualObjects(schema.version, @"4.01");
+  ODataSchemaEntityType *store = [schema entityTypeNamed:@"S.Store"];
+  XCTAssertEqualObjects([schema property:@"Extra" ofEntityType:store].type, @"Edm.Untyped");
+  XCTAssertEqualObjects([schema property:@"Weight" ofEntityType:store].type, @"Edm.Decimal");
+  XCTAssertEqualObjects([schema enumTypeNamed:@"S.Size"].values[@"Large"], @4294967296LL);
+  XCTAssertTrue([schema navigationProperty:@"Shelves" ofEntityType:store].containsTarget);
+  XCTAssertEqualObjects(schema.entitySets[@"Hidden"], @"Shop.Shelf");
+  XCTAssertEqual(schema.operations[@"Shop.Restock"].count, 2u, @"two overloads");
+  XCTAssertEqualObjects([schema annotation:@"Shop.Rating" forTarget:@"Shop.Store"], @5);
+
+  // And a model can be made of it: what Core Data has no type for is left
+  // out or kept whole, never a failure.
+  NSManagedObjectModel *model = [ODataModelBuilder modelWithSchema:schema];
+  NSEntityDescription *entity = model.entitiesByName[@"Store"];
+  XCTAssertNotNil(entity);
+  XCTAssertNotNil(entity.attributesByName[@"size"]);
+  XCTAssertNotNil(model.entitiesByName[@"Shelf"]);
+}
+
+- (void)testTheServiceSaysWhichVersionsItSpeaks
+{
+  NSString *(^csdl)(NSString *, NSString *) = ^NSString *(NSString *edmx, NSString *annotation) {
+    return [NSString stringWithFormat:
+      @"<edmx:Edmx Version=\"%@\" xmlns:edmx=\"http://docs.oasis-open.org/odata/ns/edmx\">"
+      @"<edmx:DataServices><Schema Namespace=\"S\" xmlns=\"http://docs.oasis-open.org/odata/ns/edm\">"
+      @"<EntityType Name=\"T\"><Key><PropertyRef Name=\"Id\"/></Key><Property Name=\"Id\" Type=\"Edm.Int32\"/></EntityType>"
+      @"<EntityContainer Name=\"C\"><EntitySet Name=\"Ts\" EntityType=\"S.T\"/>%@</EntityContainer>"
+      @"</Schema></edmx:DataServices></edmx:Edmx>", edmx, annotation];
+  };
+  ODataSchema *(^read)(NSString *) = ^ODataSchema *(NSString *xml) {
+    return [ODataSchema schemaWithData:[xml dataUsingEncoding:NSUTF8StringEncoding] error:NULL];
+  };
+  XCTAssertEqualObjects(read(csdl(@"4.0", @"")).version, @"4.0");
+  XCTAssertEqualObjects(read(csdl(@"4.0", @"<Annotation Term=\"Org.OData.Core.V1.ODataVersions\" String=\"4.0 4.01\"/>")).version, @"4.01",
+                        @"4.0 CSDL, and the service speaks 4.01 too");
+  XCTAssertEqualObjects(read(csdl(@"4.01", @"<Annotation Term=\"Org.OData.Core.V1.ODataVersions\" String=\"4.0\"/>")).version, @"4.0",
+                        @"what it advertises wins");
+
+  // ODataService advertises both.
+  ODataConfiguration *configuration = [[ODataConfiguration alloc] initWithURL:[NSURL URLWithString:@"https://example.test/"] options:nil];
+  XCTAssertEqualObjects([configuration versionForService:read(csdl(@"4.0", @"<Annotation Term=\"Org.OData.Core.V1.ODataVersions\" String=\"4.0 4.01\"/>")).version], @"4.01");
+}
+
+- (void)testIdentifiersAreSpelledAsTheSchemaSpellsThem
+{
+  ODataSchema *schema = _store.schema;
+  XCTAssertEqualObjects(ODataSchemaSpelling(@"animals", schema.entitySets), @"Animals");
+  XCTAssertEqualObjects(ODataSchemaSpelling(@"Nothing", schema.entitySets), @"Nothing");
+  XCTAssertEqualObjects([schema entityTypeNamed:@"zoo.lion"].qualifiedName, @"Zoo.Lion");
+  XCTAssertEqualObjects([schema entityTypeWithSimpleName:@"LION"].qualifiedName, @"Zoo.Lion");
+
+  NSEntityDescription *keeper = [[NSEntityDescription alloc] init];
+  keeper.name = @"Keeper";
+  keeper.userInfo = @{ ODataUserInfoEntitySet: @"staff" };
+  NSAttributeDescription *name = OISAttribute(@"name", NSStringAttributeType);
+  name.userInfo = @{ ODataUserInfoProperty: @"NAME" };
+  keeper.properties = @[ name ];
+  ODataPropertyMapper *mapper = [[ODataPropertyMapper alloc] init];
+  mapper.schema = schema;
+  XCTAssertEqualObjects([mapper entitySetForEntity:keeper], @"Staff");
+  XCTAssertEqualObjects([mapper propertyForAttribute:name], @"Name");
+
+  ODataValueCoder *values = [[ODataValueCoder alloc] init];
+  values.schema = schema;
+  XCTAssertEqualObjects([values literalForValue:@"mane,STRIPES" typeName:@"Zoo.Features"], @"Zoo.Features'Mane,Stripes'");
+}
+
 @end

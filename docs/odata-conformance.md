@@ -15,8 +15,7 @@ which `ODataIncrementalStoreMaxVersionOption` lowers). This matters: a 4.0
 service refuses 4.01 syntax outright (Northwind answers `in` with `400`,
 TripPin with `500`, **live**). Responses are read by their own
 `OData-Version`, 4.01's shorter control information included (2.4). The
-4.01-only client requirements of Part 1 §13.3 (items 16–20) are not yet
-reviewed one by one.
+4.01-only client requirements are items 16–20 of section 1.
 
 | Mark | Meaning |
 |---|---|
@@ -44,6 +43,11 @@ calling the client conformant.
 | 9 | MUST use case-sensitive options, operators, functions | ✅ | |
 | 10 | SHOULD support Basic authentication over HTTPS | ✅ | Also Bearer tokens. |
 | 11–15 | MAY: entity references, delta, async, `metadata=minimal`, streaming | — | Optional. The client asks for `metadata=minimal`; see 2.1. |
+| 16 | 4.01: MUST send 4.0 payloads to a service that does not advertise 4.01 in `Core.ODataVersions` | ✅ | The container's `Core.ODataVersions` decides, its highest version listed; without it, `<edmx:Edmx Version>` does, since only a 4.01 service writes 4.01 CSDL. `ODataService` advertises `4.0 4.01`. |
+| 17 | 4.01: MUST spell identifiers in payloads and URLs as `$metadata` does | ✅ | Property, navigation property, entity set, type and enumeration member names are given `$metadata`'s spelling where the model's differs only in case (`Id` for `ID`, `Staff` for `staff`), names from `userInfo` included. |
+| 18 | 4.01: MUST be prepared for any valid 4.01 CSDL | ✅ | Tested with `Edm.Untyped` and abstract property types, `Scale` variable and floating, `SRID`, key aliases, a nullable singleton, `IncludeInServiceDocument`, `Edm.Int64` enumerations, `ContainsTarget` with `OnDelete`, action overloads with `EntitySetPath`, terms of its own, `IncludeAnnotations`, and `UrlRef`, `LabeledElement` and `Apply` annotations: parsed, and a model built from it. JSON CSDL is not read yet. |
+| 19 | 4.01: MUST be prepared for any valid 4.01 response in the format asked for | ✅ | Control information without `odata.` (2.4), `@removed` and `#$deletedEntity`, `#$link` and `#$deletedLink` in deltas, decimals with exponents, `Nav@count` and unknown annotations. |
+| 20 | 4.01: SHOULD check Capabilities before 4.01 syntax, or be ready for `400` and `501` | ✅ | `in` and `matchesPattern` go only to a service that speaks 4.01; a canonical function the set's `Capabilities.FilterFunctions` leaves out is refused before anything is sent (`ODataIncrementalStoreErrorNotAllowedByService`); a `400` or `501` otherwise is the fetch's error. |
 
 ## 2. JSON format consumer (JSON Format §24)
 
@@ -99,8 +103,9 @@ calling the client conformant.
 | `sortDescriptors` | `$orderby` | ✅ **live** | Paths through relationships use `/` (`Category/CategoryName`); the key is appended as a tiebreaker. |
 | `fetchLimit`, `fetchOffset` | `$top`, `$skip` | ✅ **live** | |
 | `countForFetchRequest:` | `/$count` | ✅ **live** | |
-| `propertiesToFetch` (dictionary results) | `$select` | ⚠️ | Only for `NSDictionaryResultType`. Could also trim managed-object fetches. |
-| `relationshipKeyPathsForPrefetching` | `$expand` | ⚠️ | Inline entities are cached, and a to-one's object ID goes in the row. A prefetched to-many's membership is not, so reading the relationship is still a request. |
+| `propertiesToFetch` (dictionary results) | `$select` | ✅ | Those properties. |
+| Rows read as objects | `$select` | ✅ | A fetch of objects or object IDs, a fault and a relationship read ask for the model's attributes that the service's type has, and a subentity's own behind its cast (`Zoo.Lion/MaxRoar`); an expanded entity's options do the same. Nothing is trimmed without `$metadata`, when a subentity names no type, or where `Capabilities.SelectSupport` says the set has none. |
+| `relationshipKeyPathsForPrefetching` | `$expand` | ✅ | Inline entities are cached, a to-one's object ID goes in the row, and a to-many's members are kept, so reading the relationship asks nothing, unless the collection came in pages (`Nav@odata.nextLink`). Each expanded entity names its own to-ones (`Products($expand=Category($select=CategoryID))`). Kept members are dropped with their object's row and at every save, which may move them. |
 | `fetchBatchSize` | `Prefer: odata.maxpagesize` | ✅ | The pages are followed to the end, each of that size. |
 | To-one fault | `GET Entity(key)/Nav` | ✅ **live** | |
 | To-many fault | `GET Entity(key)/Nav` | ✅ **live** | Every page; the rows are cached. |
@@ -144,7 +149,7 @@ calling the client conformant.
 | `BETWEEN` | `ge` … `and` … `le` | ✅ | gnustep-base rewrites it before translation. |
 | `BEGINSWITH`, `ENDSWITH`, `CONTAINS` | `startswith`, `endswith`, `contains` | ✅ | |
 | `[c]` | `tolower(…)` on both sides | ✅ | |
-| `[d]` | | ❌ | Ignored silently. OData has no diacritic-insensitive comparison, so this should be an error. |
+| `[d]` | | ✅ refused | OData has no diacritic-insensitive comparison, so the fetch fails with `ODataIncrementalStoreErrorUnsupportedPredicate` rather than match fewer rows than Core Data would. |
 | `lowercase:`, `uppercase:` | `tolower`, `toupper` | ✅ | |
 | `nil` | `null` | ✅ | |
 | Key paths through to-one relationships | `Nav/Prop` | ✅ | |

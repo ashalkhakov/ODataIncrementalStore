@@ -111,6 +111,11 @@ NS_ASSUME_NONNULL_BEGIN
 @property (nonatomic, readonly) BOOL usesBearerToken;
 @end
 
+// A name as $metadata spells it: the one of names that differs from it only
+// in case (a 4.01 client sends identifiers as $metadata has them, Part 1
+// section 13.3, item 17), else the name itself.
+FOUNDATION_EXPORT NSString *ODataSchemaSpelling(NSString *name, id<NSFastEnumeration> _Nullable names);
+
 @interface ODataSchema : NSObject
 
 + (nullable instancetype)schemaWithData:(NSData *)csdl error:(NSError **)error;
@@ -123,7 +128,8 @@ NS_ASSUME_NONNULL_BEGIN
 // type and parameter names).
 @property (nonatomic, readonly) NSDictionary<NSString *, NSArray<ODataSchemaOperation *> *> *operations;
 @property (nonatomic, readonly) NSDictionary<NSString *, ODataSchemaOperationImport *> *operationImports;  // by name
-// The OData version the service speaks: <edmx:Edmx Version="4.01">.
+// The OData version the service speaks: the highest its container's
+// Core.ODataVersions lists ("4.0 4.01"), else <edmx:Edmx Version="4.01">.
 @property (nonatomic, readonly, copy) NSString *version;
 // The entity container is annotated Org.OData.Capabilities.V1.KeyAsSegmentSupported.
 @property (nonatomic, readonly) BOOL keyAsSegmentSupported;

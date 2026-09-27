@@ -5,6 +5,7 @@
     "method": "GET",
     "path": "Animals",
     "query": {
+      "$select": "Born,Diet,Features,Home,Id,Name,Nicknames,PastHomes,Zoo.Lion/MaxRoar",
       "$orderby": "Zoo.Age(On=2024-01-01) desc,Id",
       "$expand": "Keeper($select=Code)"
     }

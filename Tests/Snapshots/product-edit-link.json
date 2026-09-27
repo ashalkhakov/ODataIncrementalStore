@@ -5,6 +5,7 @@
     "method": "GET",
     "path": "Products",
     "query": {
+      "$select": "Discontinued,ProductID,ProductName,UnitPrice",
       "$filter": "ProductName eq 'Ikura'",
       "$expand": "Category($select=CategoryID)"
     }

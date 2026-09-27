@@ -3,7 +3,10 @@
   "spec": "OASIS OData 4.0 Protocol \u00a711.2.3",
   "request": {
     "method": "GET",
-    "path": "Products(4)/Category"
+    "path": "Products(4)/Category",
+    "query": {
+      "$select": "CategoryID,CategoryName"
+    }
   },
   "response": {
     "status": 200,

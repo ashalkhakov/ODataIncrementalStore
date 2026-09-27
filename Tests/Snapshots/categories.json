@@ -2,7 +2,10 @@
   "spec": "OASIS OData 4.01 Part 1 \u00a711.2.1 Requesting Entity Collections",
   "request": {
     "method": "GET",
-    "path": "Categories"
+    "path": "Categories",
+    "query": {
+      "$select": "CategoryID,CategoryName"
+    }
   },
   "response": {
     "status": 200,

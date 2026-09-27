@@ -273,7 +273,7 @@ static NSError *OISViolation(NSManagedObject *object, NSString *key, NSString *m
 - (NSString *)entitySetForEntity:(NSEntityDescription *)entity
 {
   NSString *override = entity.userInfo[ODataUserInfoEntitySet];
-  if ([override isKindOfClass:[NSString class]]) return override;
+  if ([override isKindOfClass:[NSString class]]) return ODataSchemaSpelling(override, self.schema.entitySets);
   ODataSchemaEntityType *type = [self entityTypeForEntity:entity];
   NSString *set = type ? [self.schema entitySetForEntityType:type] : nil;
   if (set) return set;
@@ -342,14 +342,14 @@ static NSError *OISViolation(NSManagedObject *object, NSString *key, NSString *m
 - (NSString *)propertyForAttribute:(NSAttributeDescription *)attribute
 {
   NSString *override = attribute.userInfo[ODataUserInfoProperty];
-  if ([override isKindOfClass:[NSString class]]) return override;
+  if ([override isKindOfClass:[NSString class]]) return [self schemaName:override inEntity:attribute.entity navigation:NO];
   return [self schemaName:[self wireName:attribute.name] inEntity:attribute.entity navigation:NO];
 }
 
 - (NSString *)propertyForRelationship:(NSRelationshipDescription *)relationship
 {
   NSString *override = relationship.userInfo[ODataUserInfoProperty];
-  if ([override isKindOfClass:[NSString class]]) return override;
+  if ([override isKindOfClass:[NSString class]]) return [self schemaName:override inEntity:relationship.entity navigation:YES];
   return [self schemaName:[self wireName:relationship.name] inEntity:relationship.entity navigation:YES];
 }
 

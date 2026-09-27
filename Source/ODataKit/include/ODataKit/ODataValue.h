@@ -96,6 +96,14 @@ FOUNDATION_EXPORT NSNumber * _Nullable ODataDurationFromString(NSString *string)
 FOUNDATION_EXPORT NSString *ODataDurationString(double seconds);
 FOUNDATION_EXPORT NSData * _Nullable ODataDataFromBase64(NSString *string);  // base64url or base64
 FOUNDATION_EXPORT NSString *ODataBase64URLString(NSData *data);
+// An enumeration value's number, from member names and numbers
+// ("Red,Blue", "Red, 4"); nil for text that is neither.
+FOUNDATION_EXPORT NSNumber * _Nullable ODataEnumValue(ODataSchemaEnumType *type, NSString *text);
+// A number as its canonical text: the member with that value, or for
+// flags, the members whose bits make it up, in declaration order; a value
+// no member names stays a number. One value, one text, so an enumeration
+// kept as text compares as its values do.
+FOUNDATION_EXPORT NSString *ODataEnumText(ODataSchemaEnumType *type, NSNumber *value);
 // A type name from @odata.type: "#NS.Type", "NS.Type", or a context URL
 // ending in "#NS.Type", as NS.Type.
 FOUNDATION_EXPORT NSString *ODataTypeNameFromControlInformation(NSString *value);

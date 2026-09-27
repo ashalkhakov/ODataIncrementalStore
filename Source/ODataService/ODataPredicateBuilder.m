@@ -160,6 +160,8 @@ static NSPredicate *OISCompare(NSExpression *left, NSPredicateOperatorType type,
 @property (nonatomic) BOOL sorting;
 @property (nonatomic) NSInteger variables;
 @property (nonatomic, strong, nullable) NSError *error;
+// The request's, for the span of a date month() and the like range over.
+@property (nonatomic, strong, nullable) NSManagedObjectContext *context;
 @end
 
 @implementation OISPredicateBuild
@@ -241,6 +243,56 @@ static NSPredicate *OISCompare(NSExpression *left, NSPredicateOperatorType type,
   return type;
 }
 
+// A primitive type a cast or isof names (Edm.Decimal); nil for another.
+- (NSString *)primitiveTypeNamed:(ODataExpression *)e
+{
+  e = [self resolve:e];
+  NSString *name = nil;
+  if (e.kind == ODataExpressionCast && !e.operand) name = e.name;
+  if (e.kind == ODataExpressionLiteral && [e.value isKindOfClass:[NSString class]]) name = e.value;
+  return [name hasPrefix:@"Edm."] ? name : nil;
+}
+
+// Whether every value of one primitive type is a value of the other, as
+// it is: Int32 in Int64, Decimal or Double.
+static BOOL OISWidens(NSString *from, NSString *to)
+{
+  if ([from isEqualToString:to]) return YES;
+  NSDictionary<NSString *, NSArray *> *wider = @{
+    @"Edm.Byte": @[ @"Edm.Int16", @"Edm.Int32", @"Edm.Int64", @"Edm.Decimal", @"Edm.Single", @"Edm.Double" ],
+    @"Edm.SByte": @[ @"Edm.Int16", @"Edm.Int32", @"Edm.Int64", @"Edm.Decimal", @"Edm.Single", @"Edm.Double" ],
+    @"Edm.Int16": @[ @"Edm.Int32", @"Edm.Int64", @"Edm.Decimal", @"Edm.Single", @"Edm.Double" ],
+    @"Edm.Int32": @[ @"Edm.Int64", @"Edm.Decimal", @"Edm.Double" ],
+    @"Edm.Int64": @[ @"Edm.Decimal" ],
+    @"Edm.Single": @[ @"Edm.Double" ],
+  };
+  return [wider[from] containsObject:to];
+}
+
+// A property's value as a primitive type that holds every value of its
+// own: itself, compared as the wider type. Another cast (a narrowing one,
+// which the spec rounds as it sees fit, or to and from strings) is 501.
+- (OISTerm *)value:(OISTerm *)base castTo:(NSString *)type
+{
+  NSString *own = base.kind == OISTermValue && base.attribute && !base.expression && !base.caseFunction && !base.stepFunction
+      ? [self.mapper declaredTypeForAttribute:base.attribute] : nil;
+  if (!own || !OISWidens(own, type)) {
+    return [self unsupported:[NSString stringWithFormat:@"A cast of %@%@ to %@", base.wireName ?: @"a value",
+                              own ? [NSString stringWithFormat:@" (%@)", own] : @"", type]];
+  }
+  if ([own isEqualToString:type]) return base;
+  OISTerm *t = [[OISTerm alloc] init];
+  t.kind = OISTermValue;
+  t.variable = base.variable;
+  t.keyPath = base.keyPath;
+  t.guard = base.guard;
+  t.nullables = base.nullables;
+  // Untyped by the attribute: 2.5 is a Decimal here, compared as a plain number.
+  t.computed = YES;
+  t.wireName = [NSString stringWithFormat:@"cast(%@,%@)", base.wireName ?: @"", type];
+  return t;
+}
+
 // base as type: an object that is null unless it is of the type, a
 // collection of those of its members that are.
 - (OISTerm *)cast:(OISTerm *)base to:(NSEntityDescription *)type named:(NSString *)name
@@ -300,6 +352,15 @@ static NSPredicate *OISCompare(NSExpression *left, NSPredicateOperatorType type,
 {
   NSArray<ODataExpression *> *args = e.arguments ?: @[];
   if (args.count != 1 && args.count != 2) return [self fail:400 message:@"isof takes a type, or an expression and a type"];
+  NSString *primitive = [self primitiveTypeNamed:args.lastObject];
+  if (primitive) {
+    // Of a type that holds its every value: true, null included (null is
+    // assignable to any type). Anything else depends on the value: 501.
+    if (args.count != 2) return [NSPredicate predicateWithValue:NO];
+    OISTerm *value = [self term:args[0]];
+    if (!value) return nil;
+    return [self value:value castTo:primitive] ? [NSPredicate predicateWithValue:YES] : nil;
+  }
   NSEntityDescription *type = [self typeNamed:args.lastObject what:@"isof"];
   if (!type) return nil;
   OISTerm *object = args.count == 2 ? [self term:args[0]] : [self itTerm];
@@ -569,7 +630,7 @@ static NSPredicate *OISCompare(NSExpression *left, NSPredicateOperatorType type,
     t.nullables = inner.nullables;
     return t;
   }
-  NSSet *dateSteps = [NSSet setWithObjects:@"year", @"date", nil];
+  NSSet *dateSteps = [NSSet setWithObjects:@"year", @"date", @"month", @"day", @"hour", @"minute", @"second", nil];
   NSSet *numberSteps = [NSSet setWithObjects:@"floor", @"ceiling", @"round", nil];
   if ([dateSteps containsObject:e.name] || [numberSteps containsObject:e.name]) {
     if (args.count != 1) return [self fail:400 message:[NSString stringWithFormat:@"%@ takes one argument", e.name]];
@@ -592,9 +653,8 @@ static NSPredicate *OISCompare(NSExpression *left, NSPredicateOperatorType type,
     t.wireName = e.description;
     return t;
   }
-  if ([@[ @"month", @"day", @"hour", @"minute", @"second", @"fractionalseconds", @"time", @"totaloffsetminutes", @"totalseconds" ] containsObject:e.name]) {
-    // Not a range of the date: no predicate every store evaluates.
-    return [self unsupported:[NSString stringWithFormat:@"The function %@ (year and date are)", e.name]];
+  if ([@[ @"fractionalseconds", @"time", @"totaloffsetminutes", @"totalseconds" ] containsObject:e.name]) {
+    return [self unsupported:[NSString stringWithFormat:@"The function %@ (year, month, day, hour, minute, second and date are)", e.name]];
   }
   if ([e.name isEqualToString:@"length"]) {
     if (args.count != 1) return [self fail:400 message:@"length takes one argument"];
@@ -617,6 +677,12 @@ static NSPredicate *OISCompare(NSExpression *left, NSPredicateOperatorType type,
   }
   if ([e.name isEqualToString:@"cast"]) {
     if (args.count != 1 && args.count != 2) return [self fail:400 message:@"cast takes a type, or an expression and a type"];
+    NSString *primitive = [self primitiveTypeNamed:args.lastObject];
+    if (primitive) {
+      if (args.count != 2) return [self fail:400 message:[NSString stringWithFormat:@"An entity is not cast to %@", primitive]];
+      OISTerm *base = [self term:args[0]];
+      return base ? [self value:base castTo:primitive] : nil;
+    }
     NSEntityDescription *type = [self typeNamed:args.lastObject what:@"cast"];
     OISTerm *base = !type ? nil : args.count == 2 ? [self term:args[0]] : [self itTerm];
     return base ? [self cast:base to:type named:args.lastObject.description] : nil;
@@ -795,6 +861,7 @@ static NSString *OISConstantString(OISTerm *t)
     if (type != NSEqualToPredicateOperatorType && type != NSNotEqualToPredicateOperatorType) return [NSPredicate predicateWithValue:NO];
     return OISCompare(x, type, [NSExpression expressionForConstantValue:nil], 0);
   }
+  if (OISDatePartPeriod(f)) return [self datePart:t type:type literal:literal of:x];
 
   // The integer n the comparison is about; a fraction makes eq false, ne
   // true, and moves lt, le, gt, ge to the integer next to it.
@@ -877,6 +944,149 @@ static NSString *OISConstantString(OISTerm *t)
   }
 }
 
+// month, day, hour, minute and second: the calendar unit they count
+// within (a year, a month, a day, an hour, a minute), and their own.
+static NSCalendarUnit OISDatePartPeriod(NSString *f)
+{
+  NSDictionary *periods = @{ @"month": @(NSCalendarUnitYear), @"day": @(NSCalendarUnitMonth), @"hour": @(NSCalendarUnitDay),
+                             @"minute": @(NSCalendarUnitHour), @"second": @(NSCalendarUnitMinute) };
+  return [periods[f] unsignedIntegerValue];
+}
+
+static NSCalendarUnit OISDatePartUnit(NSString *f)
+{
+  NSDictionary *units = @{ @"month": @(NSCalendarUnitMonth), @"day": @(NSCalendarUnitDay), @"hour": @(NSCalendarUnitHour),
+                           @"minute": @(NSCalendarUnitMinute), @"second": @(NSCalendarUnitSecond) };
+  return [units[f] unsignedIntegerValue];
+}
+
+// date plus n of a calendar unit (gnustep-base has no
+// -dateByAddingUnit:value:toDate:options:).
+static NSDate *OISAddUnits(NSCalendar *calendar, NSCalendarUnit unit, NSInteger n, NSDate *date)
+{
+  NSDateComponents *step = [[NSDateComponents alloc] init];
+  switch (unit) {
+    case NSCalendarUnitYear: step.year = n; break;
+    case NSCalendarUnitMonth: step.month = n; break;
+    case NSCalendarUnitDay: step.day = n; break;
+    case NSCalendarUnitHour: step.hour = n; break;
+    case NSCalendarUnitMinute: step.minute = n; break;
+    default: step.second = n; break;
+  }
+  return [calendar dateByAddingComponents:step toDate:date options:0];
+}
+
+// The most ranges a date part is asked as: an OR that long is still a
+// statement SQLite takes (at most 999 variables in older versions).
+static const NSUInteger OISMaxDateRanges = 200;
+
+// month(d) op n, and day, hour, minute and second: not one range of d but
+// one in each year (for month), month (day), day (hour), hour (minute) or
+// minute (second), from the earliest d the store has to the latest, as it
+// is when the request asks. month(Hired) eq 3 over 2023 to 2025 is three
+// Marches, in UTC as dates are written. A store can use an index for each;
+// a span of more than OISMaxDateRanges is 501.
+- (NSPredicate *)datePart:(OISTerm *)t type:(NSPredicateOperatorType)type literal:(ODataExpression *)literal of:(NSExpression *)x
+{
+  NSString *f = t.stepFunction;
+  id value = literal.value;
+  if (![value isKindOfClass:[NSNumber class]] || [literal.literalType isEqualToString:@"Edm.Boolean"]) {
+    return [self fail:400 message:[NSString stringWithFormat:@"%@() is compared with a number, not %@", f, literal]];
+  }
+  double given = [value doubleValue];
+  long long n = (long long)floor(given);
+  if ((double)n != given) {
+    // Whole values only: f < 4.5 is f <= 4, f > 4.5 is f >= 5.
+    if (type == NSEqualToPredicateOperatorType || type == NSNotEqualToPredicateOperatorType) {
+      return [NSPredicate predicateWithValue:type == NSNotEqualToPredicateOperatorType];
+    }
+    if (type == NSLessThanPredicateOperatorType) type = NSLessThanOrEqualToPredicateOperatorType;
+    if (type == NSGreaterThanPredicateOperatorType || type == NSGreaterThanOrEqualToPredicateOperatorType) {
+      type = NSGreaterThanOrEqualToPredicateOperatorType;
+      n += 1;
+    }
+  }
+  NSAttributeDescription *attribute = t.inner.attribute;
+  if (!self.context || !attribute || !attribute.entity) {
+    return [self unsupported:[NSString stringWithFormat:@"%@() of anything but a date property", f]];
+  }
+
+  // The span: the earliest and the latest date there is.
+  NSDate *bounds[2] = { nil, nil };
+  for (int i = 0; i < 2; i++) {
+    NSFetchRequest *fetch = [[NSFetchRequest alloc] init];
+    fetch.entity = attribute.entity;
+    fetch.predicate = [NSPredicate predicateWithFormat:@"%K != nil", attribute.name];
+    fetch.sortDescriptors = @[ [NSSortDescriptor sortDescriptorWithKey:attribute.name ascending:i == 0] ];
+    fetch.fetchLimit = 1;
+    NSError *error = nil;
+    NSArray *rows = [self.context executeFetchRequest:fetch error:&error];
+    if (!rows) return [self fail:500 message:[NSString stringWithFormat:@"%@() could not read the dates: %@", f, error.localizedDescription]];
+    id date = [rows.firstObject valueForKey:attribute.name];
+    bounds[i] = [date isKindOfClass:[NSDate class]] ? date : nil;
+  }
+  BOOL different = type == NSNotEqualToPredicateOperatorType;
+  if (!bounds[0] || !bounds[1]) return [NSPredicate predicateWithValue:different];
+
+  NSCalendar *calendar = [[NSCalendar alloc] initWithCalendarIdentifier:NSCalendarIdentifierGregorian];
+  calendar.timeZone = [NSTimeZone timeZoneForSecondsFromGMT:0];
+  NSCalendarUnit period = OISDatePartPeriod(f), part = OISDatePartUnit(f);
+  // Month and day count from 1; hour, minute and second from 0.
+  long long base = part == NSCalendarUnitMonth || part == NSCalendarUnitDay ? 1 : 0;
+  NSTimeInterval shortest = period == NSCalendarUnitYear ? 365 * 86400.0 : period == NSCalendarUnitMonth ? 28 * 86400.0
+                          : period == NSCalendarUnitDay ? 86400.0 : period == NSCalendarUnitHour ? 3600.0 : 60.0;
+  if ([bounds[1] timeIntervalSinceDate:bounds[0]] / shortest + 1 > OISMaxDateRanges) {
+    return [self unsupported:[NSString stringWithFormat:@"%@() over %@, whose dates span more than %lu of what it counts in,",
+                              f, attribute.name, (unsigned long)OISMaxDateRanges]];
+  }
+  NSPredicateOperatorType op = different ? NSEqualToPredicateOperatorType : type;
+  NSMutableArray<NSArray<NSDate *> *> *ranges = [NSMutableArray array];
+  NSDate *start = nil;
+  [calendar rangeOfUnit:period startDate:&start interval:NULL forDate:bounds[0]];
+  while (start && [start compare:bounds[1]] != NSOrderedDescending) {
+    NSDate *end = OISAddUnits(calendar, period, 1, start);
+    // The start of the k-th unit of this period, held inside it (day 31
+    // of April is its end).
+    NSDate *(^at)(long long) = ^NSDate *(long long k) {
+      if (k <= base) return start;
+      NSDate *d = OISAddUnits(calendar, part, (NSInteger)(k - base), start);
+      return !d || [d compare:end] == NSOrderedDescending ? end : d;
+    };
+    NSDate *lo, *hi;
+    switch (op) {
+      case NSEqualToPredicateOperatorType: lo = at(n); hi = at(n + 1); break;
+      case NSLessThanPredicateOperatorType: lo = start; hi = at(n); break;
+      case NSLessThanOrEqualToPredicateOperatorType: lo = start; hi = at(n + 1); break;
+      case NSGreaterThanPredicateOperatorType: lo = at(n + 1); hi = end; break;
+      case NSGreaterThanOrEqualToPredicateOperatorType: lo = at(n); hi = end; break;
+      default: return [self unsupported:[NSString stringWithFormat:@"%@() with that operator", f]];
+    }
+    // A unit that is not there (day 31 of April) is where it would end.
+    if (n < base || (op == NSEqualToPredicateOperatorType && [at(n) isEqualToDate:end])) {
+      if (op == NSEqualToPredicateOperatorType) lo = hi = end;
+    }
+    if ([lo compare:hi] == NSOrderedAscending) {
+      if ([ranges.lastObject[1] isEqualToDate:lo]) {
+        ranges[ranges.count - 1] = @[ ranges.lastObject[0], hi ];
+      } else {
+        [ranges addObject:@[ lo, hi ]];
+      }
+    }
+    start = end;
+  }
+  NSMutableArray *each = [NSMutableArray array];
+  for (NSArray<NSDate *> *range in ranges) {
+    [each addObject:OISAnd(OISCompare(x, NSGreaterThanOrEqualToPredicateOperatorType, [NSExpression expressionForConstantValue:range[0]], 0),
+                           OISCompare(x, NSLessThanPredicateOperatorType, [NSExpression expressionForConstantValue:range[1]], 0))];
+  }
+  NSPredicate *any = each.count == 1 ? each.firstObject
+                   : each.count ? [NSCompoundPredicate orPredicateWithSubpredicates:each] : [NSPredicate predicateWithValue:NO];
+  if (!different) return any;
+  // null ne n, as for any value.
+  NSPredicate *none = OISCompare(x, NSEqualToPredicateOperatorType, [NSExpression expressionForConstantValue:nil], 0);
+  return [NSCompoundPredicate orPredicateWithSubpredicates:@[ none, [NSCompoundPredicate notPredicateWithSubpredicate:any] ]];
+}
+
 - (NSPredicate *)comparison:(NSPredicateOperatorType)type left:(OISTerm *)l right:(OISTerm *)r
 {
   if (l.caseFunction && OISConstantString(r) &&
@@ -948,13 +1158,15 @@ static NSString *OISConstantString(OISTerm *t)
     return [self fail:400 message:[NSString stringWithFormat:@"has: %@ is not an enumeration", left]];
   }
   NSAttributeType core = attribute.attributeType;
-  if (core != NSInteger16AttributeType && core != NSInteger32AttributeType && core != NSInteger64AttributeType) {
-    return [self unsupported:[NSString stringWithFormat:@"has on %@, an enumeration kept as text", left]];
+  // Kept as text, each value is its canonical text (ODataEnumText).
+  BOOL text = core == NSStringAttributeType;
+  if (!text && core != NSInteger16AttributeType && core != NSInteger32AttributeType && core != NSInteger64AttributeType) {
+    return [self fail:400 message:[NSString stringWithFormat:@"has: %@ is kept as neither a number nor text", left]];
   }
   if (literal.kind != ODataExpressionLiteral || ![[self.mapper.schema qualifiedName:literal.literalType ?: @""] isEqualToString:type.qualifiedName]) {
     return [self fail:400 message:[NSString stringWithFormat:@"has takes a value of %@, not %@", type.qualifiedName, literal]];
   }
-  id mask = [self.mapper.values coreDataValueForJSON:literal.value attribute:attribute];
+  id mask = text ? ODataEnumValue(type, [literal.value description]) : [self.mapper.values coreDataValueForJSON:literal.value attribute:attribute];
   if (![mask isKindOfClass:[NSNumber class]]) {
     return [self fail:400 message:[NSString stringWithFormat:@"%@ is not a value of %@", literal, type.qualifiedName]];
   }
@@ -976,6 +1188,11 @@ static NSString *OISConstantString(OISTerm *t)
       long long value = type.values[member].longLongValue;
       if ((value & bits) == bits) [values addObject:@(value)];
     }
+  }
+  if (text) {
+    NSMutableArray *texts = [NSMutableArray array];
+    for (NSNumber *value in values) [texts addObject:ODataEnumText(type, value)];
+    values = texts;
   }
   NSPredicate *p = values.count ? OISCompare([self pathExpression:l], NSInPredicateOperatorType, [NSExpression expressionForConstantValue:values], 0)
                                 : [NSPredicate predicateWithValue:NO];
@@ -1109,7 +1326,17 @@ static NSString *OISConstantString(OISTerm *t)
                                 aliases:(NSDictionary *)aliases
                                   error:(NSError **)error
 {
+  return [self predicateForExpression:expression entity:entity aliases:aliases context:nil error:error];
+}
+
+- (NSPredicate *)predicateForExpression:(ODataExpression *)expression
+                                 entity:(NSEntityDescription *)entity
+                                aliases:(NSDictionary *)aliases
+                                context:(NSManagedObjectContext *)context
+                                  error:(NSError **)error
+{
   OISPredicateBuild *build = [self buildForEntity:entity aliases:aliases];
+  build.context = context;
   NSPredicate *predicate = [build predicate:expression];
   if (!predicate && error) *error = build.error ?: ODataServiceError(400, @"The filter does not apply");
   return predicate;

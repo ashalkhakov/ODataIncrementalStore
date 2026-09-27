@@ -679,7 +679,7 @@
   ODataClient *client = [[ODataClient alloc] initWithConfiguration:[[ODataConfiguration alloc] initWithURL:OISTestServiceRoot() options:nil]];
   client.transport = _transport;
   OISExchangeTarget *target = [[OISExchangeTarget alloc] init];
-  NSURL *product = [NSURL URLWithString:@"Products(4)?$expand=Category($select=CategoryID)" relativeToURL:OISTestServiceRoot()];
+  NSURL *product = [NSURL URLWithString:@"Products(4)?$select=Discontinued,ProductID,ProductName,UnitPrice&$expand=Category($select=CategoryID)" relativeToURL:OISTestServiceRoot()];
   ODataExchange *exchange = [client sendRequest:[NSURLRequest requestWithURL:product.absoluteURL]
                                          target:target action:@selector(exchangeDidFinish:)];
   // The snapshot transport answers before returning.
@@ -694,7 +694,7 @@
   OISLaterTransport *later = [[OISLaterTransport alloc] init];
   later.inner = _transport;
   client.transport = later;
-  NSURL *missing = [NSURL URLWithString:@"Products?$filter=UnitPrice%20gt%205000&$expand=Category($select=CategoryID)" relativeToURL:OISTestServiceRoot()];
+  NSURL *missing = [NSURL URLWithString:@"Products?$filter=UnitPrice%20gt%205000&$select=Discontinued,ProductID,ProductName,UnitPrice&$expand=Category($select=CategoryID)" relativeToURL:OISTestServiceRoot()];
   [client sendRequest:[NSURLRequest requestWithURL:product.absoluteURL] target:target action:@selector(exchangeDidFinish:)];
   [client sendRequest:[NSURLRequest requestWithURL:missing.absoluteURL] target:target action:@selector(exchangeDidFinish:)];
   [target waitFor:3];

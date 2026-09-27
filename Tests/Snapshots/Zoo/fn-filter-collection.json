@@ -5,6 +5,7 @@
     "method": "GET",
     "path": "Staff",
     "query": {
+      "$select": "Code,Name",
       "$filter": "Animals/Zoo.Heaviest()/Name eq 'Leo'"
     }
   },

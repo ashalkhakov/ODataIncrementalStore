@@ -42,6 +42,9 @@ NS_ASSUME_NONNULL_BEGIN
 // cast(Boss,NS.Manager)) and isof(NS.Manager), isof(Boss,NS.Manager);
 // year, date, floor, ceiling and round compared with a literal, as a range
 // of their argument (year(d) eq 2025 is 2025-01-01 <= d < 2026-01-01);
+// with a context, month, day, hour, minute and second as well, as a range
+// in each year (month(d) eq 3), month, day, hour or minute the dates the
+// context reads span;
 // has, of an enumeration kept as a number, as IN the values with the bits.
 //
 // A cast asks an object's type with "entity IN {the type, its
@@ -54,6 +57,13 @@ NS_ASSUME_NONNULL_BEGIN
 - (nullable NSPredicate *)predicateForExpression:(ODataExpression *)expression
                                           entity:(NSEntityDescription *)entity
                                          aliases:(nullable NSDictionary<NSString *, ODataExpression *> *)aliases
+                                           error:(NSError **)error;
+// The context to read the span of a date from, for month() and the rest;
+// called on its queue.
+- (nullable NSPredicate *)predicateForExpression:(ODataExpression *)expression
+                                          entity:(NSEntityDescription *)entity
+                                         aliases:(nullable NSDictionary<NSString *, ODataExpression *> *)aliases
+                                         context:(nullable NSManagedObjectContext *)context
                                            error:(NSError **)error;
 
 // $orderby: each item a property path through to-one relationships, or a

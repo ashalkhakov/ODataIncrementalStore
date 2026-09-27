@@ -27,6 +27,9 @@ NS_ASSUME_NONNULL_BEGIN
 
 - (instancetype)initWithModel:(NSManagedObjectModel *)model mapper:(ODataPropertyMapper *)mapper NS_DESIGNATED_INITIALIZER;
 - (instancetype)init NS_UNAVAILABLE;
+// A term by a standard vocabulary's own alias (Core.Description) with its
+// namespace (Org.OData.Core.V1.Description); any other term as it is.
++ (NSString *)fullTerm:(NSString *)term;
 
 @property (nonatomic, readonly) NSManagedObjectModel *model;
 @property (nonatomic, readonly) ODataPropertyMapper *mapper;

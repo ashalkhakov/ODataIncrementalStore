@@ -64,6 +64,7 @@ typedef NS_ENUM(NSInteger, OISWriteMode) {
   NSMutableDictionary *_versions;   // object ID -> node version, bumped when the ETag changes
   NSMutableDictionary *_deferred;   // object ID -> relationship names to write after insert
   NSMutableDictionary *_editLinks;  // object ID -> @odata.editLink, where the service gave one
+  NSMutableDictionary *_members;    // object ID -> to-many name -> member IDs, from an $expand
   BOOL _batchRefused;               // the service answered $batch itself with an error
   NSLock *_lock;
   ODataHistoryLog *_history;        // with NSPersistentHistoryTrackingKey
@@ -125,6 +126,7 @@ typedef NS_ENUM(NSInteger, OISWriteMode) {
   self = [super initWithPersistentStoreCoordinator:root configurationName:name URL:url options:options];
   if (!self) return nil;
   _nodeCache = [NSMutableDictionary dictionary];
+  _members = [NSMutableDictionary dictionary];
   _etags = [NSMutableDictionary dictionary];
   _versions = [NSMutableDictionary dictionary];
   _deferred = [NSMutableDictionary dictionary];
@@ -223,6 +225,10 @@ typedef NS_ENUM(NSInteger, OISWriteMode) {
       if (error) *error = OISError(ODataIncrementalStoreErrorUnsupportedRequest, @"Expected NSSaveChangesRequest");
       return nil;
     }
+    // A save may move members from one collection to another.
+    [_lock lock];
+    [_members removeAllObjects];
+    [_lock unlock];
     return [self executeSave:(NSSaveChangesRequest *)request error:error];
   }
   if ([request isKindOfClass:[NSPersistentHistoryChangeRequest class]]) {
@@ -276,6 +282,11 @@ typedef NS_ENUM(NSInteger, OISWriteMode) {
     return nil;
   }
   if (relationship.isToMany) {
+    // Its members, when an $expand brought them all.
+    [_lock lock];
+    NSArray *members = _members[objectID][relationship.name];
+    [_lock unlock];
+    if (members) return [members mutableCopy];
     NSArray *rows = [self rowsAtURL:url limit:0 pageSize:0 error:error];
     if (!rows) return nil;
     NSMutableArray *ids = [NSMutableArray array];
@@ -920,7 +931,11 @@ static BOOL OISSameRow(NSDictionary *a, NSDictionary *b)
                 deleted:(NSMutableArray *)deleted
 {
   NSString *context = [entry[@"@odata.context"] isKindOfClass:[NSString class]] ? entry[@"@odata.context"] : @"";
-  if ([context hasSuffix:@"/$link"] || [context hasSuffix:@"/$deletedLink"]) {
+  // What the entry is, by the end of its context: 4.0 has #Customers/$link,
+  // 4.01 #$link as well (JSON Format section 15).
+  NSRange cut = [context rangeOfCharacterFromSet:[NSCharacterSet characterSetWithCharactersInString:@"/#"] options:NSBackwardsSearch];
+  NSString *kind = cut.location == NSNotFound ? @"" : [context substringFromIndex:cut.location + 1];
+  if ([kind isEqualToString:@"$link"] || [kind isEqualToString:@"$deletedLink"]) {
     NSManagedObjectID *source = [entry[@"source"] isKindOfClass:[NSString class]] ? [self objectIDNamed:entry[@"source"] among:tracking.rows] : nil;
     if (!source) return;
     NSMutableSet *names = [updated[source] mutableCopy] ?: [NSMutableSet set];
@@ -931,7 +946,7 @@ static BOOL OISSameRow(NSDictionary *a, NSDictionary *b)
     [self discardCachedRowsForObjectIDs:@[ source ]];
     return;
   }
-  if (entry[@"@odata.removed"] || [context hasSuffix:@"/$deletedEntity"]) {
+  if (entry[@"@odata.removed"] || [kind isEqualToString:@"$deletedEntity"]) {
     id name = entry[@"@odata.id"] ?: entry[@"id"];
     NSManagedObjectID *oid = [name isKindOfClass:[NSString class]] ? [self objectIDNamed:name among:tracking.rows]
                                                                    : [self objectIDFromPayload:entry entity:entity error:NULL];
@@ -1507,11 +1522,26 @@ static BOOL OISKeyIsSet(id value)
         if ([self payloadIsWhole:inline_ entity:related.entity]) [self cacheNodeForObjectID:related entity:related.entity payload:inline_ error:NULL];
       }
     } else if ([inline_ isKindOfClass:[NSArray class]]) {
+      // The members too, when they all came: none unnamed, and no
+      // Nav@odata.nextLink to more.
+      NSMutableArray *members = payload[[[_mapper propertyForRelationship:rel] stringByAppendingString:@"@odata.nextLink"]] ? nil : [NSMutableArray array];
       for (NSDictionary *row in inline_) {
-        if (![row isKindOfClass:[NSDictionary class]] || ![self payloadIsWhole:row entity:destination]) continue;
-        NSManagedObjectID *related = [self objectIDFromPayload:row entity:destination error:NULL];
-        if (related) [self cacheNodeForObjectID:related entity:related.entity payload:row error:NULL];
+        NSManagedObjectID *related = [row isKindOfClass:[NSDictionary class]] ? [self objectIDFromPayload:row entity:destination error:NULL] : nil;
+        if (!related) {
+          members = nil;
+          continue;
+        }
+        [members addObject:related];
+        if ([self payloadIsWhole:row entity:destination]) [self cacheNodeForObjectID:related entity:related.entity payload:row error:NULL];
       }
+      [_lock lock];
+      if (members) {
+        if (!_members[objectID]) _members[objectID] = [NSMutableDictionary dictionary];
+        _members[objectID][rel.name] = [members copy];
+      } else {
+        [_members[objectID] removeObjectForKey:rel.name];
+      }
+      [_lock unlock];
     }
   }
   [self rememberETag:payload[@"@odata.etag"] forObjectID:objectID];
@@ -1575,6 +1605,8 @@ static BOOL OISKeyIsSet(id value)
   [_lock lock];
   if (objectIDs) [_nodeCache removeObjectsForKeys:objectIDs];
   else [_nodeCache removeAllObjects];
+  if (objectIDs) [_members removeObjectsForKeys:objectIDs];
+  else [_members removeAllObjects];
   [_lock unlock];
 }
 
@@ -1582,6 +1614,7 @@ static BOOL OISKeyIsSet(id value)
 {
   [_lock lock];
   [_nodeCache removeObjectForKey:objectID];
+  [_members removeObjectForKey:objectID];
   [_etags removeObjectForKey:objectID];
   [_versions removeObjectForKey:objectID];
   [_deferred removeObjectForKey:objectID];

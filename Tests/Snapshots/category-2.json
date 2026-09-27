@@ -2,7 +2,10 @@
   "spec": "OASIS OData 4.01 Part 1 \u00a711.2.2 Requesting an Individual Entity",
   "request": {
     "method": "GET",
-    "path": "Categories(2)"
+    "path": "Categories(2)",
+    "query": {
+      "$select": "CategoryID,CategoryName"
+    }
   },
   "response": {
     "status": 200,

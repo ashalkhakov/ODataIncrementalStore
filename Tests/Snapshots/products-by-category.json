@@ -6,6 +6,7 @@
     "method": "GET",
     "path": "Products",
     "query": {
+      "$select": "Discontinued,ProductID,ProductName,UnitPrice",
       "$filter": "Category/CategoryID eq 2",
       "$expand": "Category($select=CategoryID)"
     }

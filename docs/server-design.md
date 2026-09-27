@@ -429,10 +429,12 @@ that every `$filter` the translator writes parses.
 comparisons, `in`, `and`/`or`/`not`, arithmetic, `contains`,
 `startswith`, `endswith`, `tolower`/`toupper`, `length`, `now`, `any` and
 `all` (as `SUBQUERY`), `$count` of a to-many relationship, parameter
-aliases, type casts and `isof`, and `year`, `date`, `floor`, `ceiling`
-and `round` compared with a literal, and `has` (all below). Casts to
-primitive types, the other date functions (`month`, `day`, `hour`, …), and
-a service's own functions answer `501`. Literals are typed by the attribute they meet.
+aliases, type casts and `isof`, casts to a primitive type that holds
+every value of the property's own, `year`, `month`, `day`, `hour`,
+`minute`, `second`, `date`, `floor`, `ceiling` and `round` compared with
+a literal, and `has` (all below). Narrowing casts and casts to and from
+strings, `time`, `totaloffsetminutes` and the rest, and a service's own
+functions answer `501`. Literals are typed by the attribute they meet.
 `tolower(Name) eq 'abc'` becomes `name ==[c] 'abc'`, which a SQL store can
 use without lowering every row. gnustep-base names its arithmetic
 functions differently from Apple (`_add`, not `add:to:`) and has no
@@ -461,13 +463,25 @@ eq -5` is `-5.5 < price <= -4.5` (half away from zero); `ne` is outside
 the range or null, `in` each value's range, and a fraction makes `eq`
 false and moves the others to the whole number beside it. A SQL store can
 use an index for that. Compared with anything but a literal, or ordered
-by, they are `501`; `month`, `day` and the rest are not ranges, and are
-`501` too.
+by, they are `501`.
+`month`, `day`, `hour`, `minute` and `second` are not one range but one
+in each year, month, day, hour or minute: `month(Hired) eq 3` is every
+March from the earliest `Hired` the store has to the latest, which two
+fetches of one row each find (the builder is given the request's context
+for that). A span of more than 200 of them (six years of days for `hour`)
+is `501`, since an `OR` that long is more than SQLite takes.
+A cast to a primitive type holds when the type takes every value of the
+property's: `cast(Quantity,Edm.Decimal) gt 2.5` is the quantity compared
+as a number, `isof(Quantity,Edm.Int64)` is true (null too: it casts to
+anything). A narrowing cast rounds as the service sees fit, and one to or
+from a string depends on text, so both are `501`.
 `has` has no bitwise `and` a store evaluates either, but an enumeration
 has few values: a flags one's are the combinations of its members' bits,
 a plain one's its members'. `Colours has Default.Colour'Red'` is
 `colours IN {1, 3, 5, 7}`, the values that have the bit, which every
-store takes. An enumeration kept as text, or of more than 16 flags, is
+store takes. An enumeration kept as text is kept as its canonical text
+(`Red,Green` whatever order or numbers it was written in), so it is `IN`
+those values' texts. One of more than 16 flags is
 `501`.
 **It never builds a predicate by formatting a string for
 `+predicateWithFormat:`**. The one exception is a key path off a lambda's
@@ -608,9 +622,11 @@ the loopback check, so neither the client nor the core links the listener.
    - references: `PUT` and `DELETE` a to-one `$ref`, `POST` to a to-many
      one and `DELETE` from it by `$id` or by key, which is how the client
      changes relationships;
-   - deep inserts, to any depth, each entity through its set's handler (one
-     that answers later cannot be waited for there, `501`), answered with
-     what was created expanded;
+   - deep inserts, to any depth, each entity through its set's handler,
+     answered with what was created expanded. A handler that answers
+     later stops the write there; its answer starts the write again from
+     the top, and what was done is not done again (each nested change is
+     remembered by the part of the body it is for);
    - deep updates (Part 1 section 11.4.3.1): a nested entity that names
      one there (by `@id`, or its key) updates it, as by PATCH, and one
      that names none is created; a to-one takes an entity or null, a

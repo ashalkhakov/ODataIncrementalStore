@@ -125,7 +125,7 @@
   XCTAssertNotNil(changes, @"%@", error);
   NSDictionary *keys = [self keysIn:changes];
   XCTAssertEqualObjects(keys[NSInsertedObjectIDsKey], @[ @"Animals(7)" ]);
-  XCTAssertEqualObjects(keys[NSUpdatedObjectIDsKey], @[ @"Animals(1)" ]);
+  XCTAssertEqualObjects(keys[NSUpdatedObjectIDsKey], (@[ @"Animals(1)", @"Animals(2)" ]), @"Leo's keeper link was taken away");
   XCTAssertEqualObjects(keys[NSDeletedObjectIDsKey], @[ @"Animals(3)" ]);
   [_context mergeChangesFromContextDidSaveNotification:changes];
   XCTAssertEqualObjects([zebra valueForKey:@"name"], @"Zed");

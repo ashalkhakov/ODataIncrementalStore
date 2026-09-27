@@ -378,6 +378,18 @@ static NSNumber *OISEnumNumber(ODataSchemaEnumType *type, NSString *text)
   return @(total);
 }
 
+// Member names as the enumeration spells them: red,BLUE is Red,Blue.
+static NSString *OISEnumSpelling(ODataSchemaEnumType *type, NSString *text)
+{
+  if (!type || ![text isKindOfClass:[NSString class]]) return text;
+  NSMutableArray *members = [NSMutableArray array];
+  for (NSString *member in [text componentsSeparatedByString:@","]) {
+    NSString *trimmed = [member stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceCharacterSet]];
+    [members addObject:ODataSchemaSpelling(trimmed, type.memberNames)];
+  }
+  return [members componentsJoinedByString:@","];
+}
+
 // A number as member names: the member with that value, or for flags, the
 // members whose bits make it up. A value no member names stays a number.
 static NSString *OISEnumText(ODataSchemaEnumType *type, NSNumber *number)
@@ -399,6 +411,16 @@ static NSString *OISEnumText(ODataSchemaEnumType *type, NSNumber *number)
     if (covered == n) return [members componentsJoinedByString:@","];
   }
   return number.stringValue;
+}
+
+NSNumber *ODataEnumValue(ODataSchemaEnumType *type, NSString *text)
+{
+  return [text isKindOfClass:[NSString class]] ? OISEnumNumber(type, text) : nil;
+}
+
+NSString *ODataEnumText(ODataSchemaEnumType *type, NSNumber *value)
+{
+  return OISEnumText(type, value);
 }
 
 static ODataEdmType OISEdmTypeOfValue(id value)
@@ -500,7 +522,10 @@ static NSString *OISElementType(NSString *typeName)
              : ([json isKindOfClass:[NSString class]] && type ? OISEnumNumber(type, json) : nil);
       }
       if ([json isKindOfClass:[NSNumber class]] && type) return OISEnumText(type, json);
-      return [json isKindOfClass:[NSString class]] ? json : [json description];
+      if (![json isKindOfClass:[NSString class]]) return [json description];
+      // Kept as its canonical text: Blue,Red and 3 are Red,Blue.
+      NSNumber *number = type ? OISEnumNumber(type, json) : nil;
+      return number ? OISEnumText(type, number) : json;
     }
     case ODataEdmComplex: {
       if (![json isKindOfClass:[NSDictionary class]]) return nil;
@@ -594,7 +619,7 @@ static NSString *OISElementType(NSString *typeName)
     case ODataEdmEnum: {
       ODataSchemaEnumType *type = [self.schema enumTypeNamed:typeName];
       if ([value isKindOfClass:[NSNumber class]]) return type ? OISEnumText(type, value) : [value stringValue];
-      return [value description];
+      return OISEnumSpelling(type, [value description]);
     }
     case ODataEdmComplex: {
       if (![value isKindOfClass:[NSDictionary class]]) return value;
@@ -678,7 +703,7 @@ static NSString *OISElementType(NSString *typeName)
     case ODataEdmEnum: {
       // OData 4.0 wants the qualified form: NS.Color'Red,Blue'.
       ODataSchemaEnumType *enumType = [self.schema enumTypeNamed:typeName];
-      NSString *members = [value isKindOfClass:[NSNumber class]] && enumType ? OISEnumText(enumType, value) : [value description];
+      NSString *members = [value isKindOfClass:[NSNumber class]] && enumType ? OISEnumText(enumType, value) : OISEnumSpelling(enumType, [value description]);
       NSString *escaped = [members stringByReplacingOccurrencesOfString:@"'" withString:@"''"];
       return enumType ? [NSString stringWithFormat:@"%@'%@'", enumType.qualifiedName, escaped] : [NSString stringWithFormat:@"'%@'", escaped];
     }

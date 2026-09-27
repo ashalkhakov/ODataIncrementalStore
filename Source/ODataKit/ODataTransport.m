@@ -106,12 +106,13 @@ static ODataMessage *OISMessageFromJSON(id json)
 static NSString *OISControlName(NSString *annotation)
 {
   static NSSet *names;
-  if (!names) {
+  static dispatch_once_t once;
+  dispatch_once(&once, ^{
     names = [NSSet setWithArray:@[ @"context", @"metadataEtag", @"type", @"count", @"nextLink", @"deltaLink", @"id",
                                    @"editLink", @"readLink", @"etag", @"navigationLink", @"associationLink",
                                    @"mediaEditLink", @"mediaReadLink", @"mediaContentType", @"mediaEtag",
                                    @"removed", @"delta", @"bind" ]];
-  }
+  });
   return [names containsObject:annotation] ? [@"odata." stringByAppendingString:annotation] : nil;
 }
 
