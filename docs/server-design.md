@@ -45,8 +45,9 @@ FreeCoreData) and on Cocoa, with no platform-specific code in its core.
 
 ## Non-goals, at first
 
-- Async requests. (`$batch`, `$apply`, `$search`, streams, media
-  entities and delta links were ones; they are done.)
+- None left of those first listed: `$batch`, `$apply`, `$search`,
+  streams, media entities, delta links and asynchronous requests are
+  done.
 - XML (Atom) payloads. JSON only, as the client speaks.
 - Being a general-purpose web framework.
 
@@ -430,6 +431,28 @@ and parentheses. The service makes it a predicate: a word or phrase is
 string properties, or the handler's `searchableProperties` (an empty set:
 not searchable, `501`, and `SearchRestrictions` says so). It is ANDed with
 `$filter`, and works in `/$count` and in `$expand`'s options.
+
+### Asynchronous requests
+
+A request that prefers `respond-async` (Part 1 §8.2.8.8) is answered as
+any request is. One answered while the service first runs it, or within
+`Prefer: wait=N`, is answered so, and the preference is not applied. One
+still under way, because a handler or the authenticator deferred, is
+answered `202 Accepted`, `Preference-Applied: respond-async`, with a
+status monitor (`$async/<id>`) in `Location` and `Retry-After: 1`. This
+sits at `-startExchange:`, around the whole request, so a `$batch` is
+answered this way as a whole.
+
+The monitor (§11.6) is a resource like any other, authenticated as they
+are: `GET` is `202` while the request is under way, then `200` with its
+answer as `application/http` (and, in 4.01, `AsyncResult` with its
+status); `DELETE` forgets it (the work itself is not stopped: a handler
+has no way to be told). Only the principal who sent the request may ask;
+anyone else, like a monitor that is not there, is `404`. An answer is
+kept `asyncResultDuration` (600 seconds) after it is ready, and 0 turns
+asynchronous requests off. The container says
+`Capabilities.AsynchronousRequestsSupported`. A deferred reply is still
+bounded by `replyTimeout`, so an application with long work raises it.
 
 ### Delta links
 

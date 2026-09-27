@@ -46,6 +46,28 @@
 }
 @end
 
+// A request the service accepted to answer later (202): its status
+// monitor, polled until it answers, within the configuration's asyncTimeout.
+@interface OISStatusMonitor : NSObject
+@property (nonatomic, strong) ODataExchange *exchange;  // the one sent: its request, the caller's context
+@property (nonatomic, copy) NSURL *URL;
+@property (nonatomic, strong) NSDate *deadline;
+// Finishes the caller's exchange from the answer, as the first response would have.
+@property (nonatomic, copy) void (^finish)(ODataExchange *wire);
+@end
+
+@implementation OISStatusMonitor
+@end
+
+static NSString *OISHeaderOf(NSHTTPURLResponse *response, NSString *name)
+{
+  NSDictionary *headers = response.allHeaderFields;
+  for (NSString *key in headers) {
+    if ([key caseInsensitiveCompare:name] == NSOrderedSame) return headers[key];
+  }
+  return nil;
+}
+
 #pragma mark - The client
 
 @implementation ODataClient
@@ -68,11 +90,13 @@
   return exchange;
 }
 
-- (void)transport:(NSURLRequest *)request context:(ODataExchange *)exchange action:(SEL)action
+// The wire exchange carries context (the client's exchange, or a status
+// monitor) back to action.
+- (void)transport:(NSURLRequest *)request context:(id)context action:(SEL)action
 {
   id<ODataTransport> transport = self.transport ?: ODataDefaultTransport();
   ODataExchange *wire = [[ODataExchange alloc] initWithRequest:request target:self action:action];
-  wire.context = exchange;
+  wire.context = context;
   if (!transport) {
     wire.error = OISError(ODataIncrementalStoreErrorTransport, @"No transport: this Foundation has neither NSURLSession nor NSURLConnection");
     [wire finish];
@@ -112,6 +136,7 @@
 
 - (void)requestDidFinish:(ODataExchange *)wire
 {
+  if ([self awaitedMonitor:wire finish:^(ODataExchange *answer) { [self requestDidFinish:answer]; }]) return;
   ODataExchange *exchange = wire.context;
   NSError *error = nil;
   exchange.response = [self responseFrom:wire error:&error];
@@ -121,6 +146,86 @@
   [exchange finish];
 }
 
+// 202 to a request that preferred respond-async: its answer is at the
+// status monitor in Location (Part 1 section 11.6), polled for it here;
+// finish is given the answer as though it had been the response.
+- (BOOL)awaitedMonitor:(ODataExchange *)wire finish:(void (^)(ODataExchange *answer))finish
+{
+  NSHTTPURLResponse *http = (NSHTTPURLResponse *)wire.URLResponse;
+  NSString *location = [http isKindOfClass:[NSHTTPURLResponse class]] && http.statusCode == 202 ? OISHeaderOf(http, @"Location") : nil;
+  NSString *prefer = [wire.request valueForHTTPHeaderField:@"Prefer"];
+  if (wire.error || !location || ![prefer.lowercaseString containsString:@"respond-async"]) return NO;
+  OISStatusMonitor *monitor = [[OISStatusMonitor alloc] init];
+  monitor.exchange = wire;
+  monitor.URL = [NSURL URLWithString:location relativeToURL:wire.request.URL].absoluteURL;
+  monitor.deadline = [NSDate dateWithTimeIntervalSinceNow:self.configuration.asyncTimeout];
+  monitor.finish = finish;
+  [self poll:monitor after:http];
+  return YES;
+}
+
+// Asks the monitor again once Retry-After has passed (a second when it
+// does not say).
+- (void)poll:(OISStatusMonitor *)monitor after:(NSHTTPURLResponse *)response
+{
+  NSString *retry = OISHeaderOf(response, @"Retry-After");
+  NSTimeInterval delay = retry.length ? MAX(0.0, retry.doubleValue) : 1.0;
+  delay = MIN(delay, MAX(0.0, monitor.deadline.timeIntervalSinceNow));
+  dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(delay * NSEC_PER_SEC)),
+                 dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0), ^{
+    [self transport:[self monitorRequest:monitor method:@"GET"] context:monitor action:@selector(monitorDidAnswer:)];
+  });
+}
+
+// Signed as any request, but not asking to be answered later itself.
+- (NSURLRequest *)monitorRequest:(OISStatusMonitor *)monitor method:(NSString *)method
+{
+  NSMutableURLRequest *request = [NSMutableURLRequest requestWithURL:monitor.URL];
+  request.HTTPMethod = method;
+  [self.configuration applyToRequest:request];
+  [request setValue:nil forHTTPHeaderField:@"Prefer"];
+  [request setValue:nil forHTTPHeaderField:@"Repeatability-Request-ID"];
+  [request setValue:nil forHTTPHeaderField:@"Repeatability-First-Sent"];
+  return request;
+}
+
+- (void)monitorDidAnswer:(ODataExchange *)wire
+{
+  OISStatusMonitor *monitor = (OISStatusMonitor *)wire.context;
+  NSHTTPURLResponse *http = (NSHTTPURLResponse *)wire.URLResponse;
+  if (!wire.error && [http isKindOfClass:[NSHTTPURLResponse class]] && http.statusCode == 202) {
+    if (monitor.deadline.timeIntervalSinceNow > 0) {
+      [self poll:monitor after:http];
+      return;
+    }
+    // Given up on: the service may stop the work.
+    [self transport:[self monitorRequest:monitor method:@"DELETE"] context:nil action:@selector(monitorDidForget:)];
+    ODataExchange *caller = monitor.exchange.context;
+    caller.error = OISError(ODataIncrementalStoreErrorTransport, [NSString stringWithFormat:@"The service had not answered at %@ in time", monitor.URL]);
+    [caller finish];
+    return;
+  }
+  // The answer, as application/http; anything else stands as it is.
+  NSString *type = [http isKindOfClass:[NSHTTPURLResponse class]] ? OISHeaderOf(http, @"Content-Type") : nil;
+  ODataBatchPart *message = http.statusCode == 200 && [type.lowercaseString hasPrefix:@"application/http"] ? ODataHTTPMessage(wire.data) : nil;
+  ODataExchange *answer = [[ODataExchange alloc] initWithRequest:monitor.exchange.request target:nil action:NULL];
+  answer.context = monitor.exchange.context;
+  answer.error = wire.error;
+  answer.URLResponse = wire.URLResponse;
+  answer.data = wire.data;
+  if (message && message.status) {
+    answer.URLResponse = [[NSHTTPURLResponse alloc] initWithURL:monitor.exchange.request.URL statusCode:message.status
+                                                    HTTPVersion:@"HTTP/1.1" headerFields:message.headers];
+    answer.data = message.body;
+  }
+  // Not a 202 any more, so not polled again.
+  monitor.finish(answer);
+}
+
+- (void)monitorDidForget:(ODataExchange *)wire
+{
+}
+
 // Waits for an exchange started by `start`, for as long as the request's
 // own timeout allows and then some; a transport that never finishes is an
 // error rather than a hang.
@@ -128,7 +233,8 @@
 {
   OISWaiter *waiter = [[OISWaiter alloc] init];
   ODataExchange *exchange = start(waiter);
-  NSDate *deadline = [NSDate dateWithTimeIntervalSinceNow:self.configuration.timeout + 30.0];
+  NSTimeInterval asynchronous = self.configuration.respondAsync ? self.configuration.asyncTimeout : 0;
+  NSDate *deadline = [NSDate dateWithTimeIntervalSinceNow:self.configuration.timeout + asynchronous + 30.0];
   if (![waiter waitUntil:deadline]) {
     if (error) *error = OISError(ODataIncrementalStoreErrorTransport, @"The transport did not finish the request");
     return nil;
@@ -241,6 +347,7 @@
 
 - (void)changeSetDidFinish:(ODataExchange *)wire
 {
+  if ([self awaitedMonitor:wire finish:^(ODataExchange *answer) { [self changeSetDidFinish:answer]; }]) return;
   ODataExchange *exchange = wire.context;
   NSArray *requests = exchange.context;
   NSError *error = nil;

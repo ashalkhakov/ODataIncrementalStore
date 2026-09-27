@@ -11,6 +11,7 @@
 #import "ODataOperationCatalog.h"
 #import "ODataServiceBatch.h"
 #import "ODataApply.h"
+#import "ODataBatch.h"
 #import "ODataCSDL.h"
 #import <objc/runtime.h>
 
@@ -319,6 +320,31 @@ NSString * const ODataUserInfoETag = @"OData.etag";
 - (NSString *)entitySetForEntity:(NSEntityDescription *)entity;
 - (NSAttributeDescription *)versionAttributeOfEntity:(NSEntityDescription *)entity;
 - (BOOL)tracksChangesOfEntity:(NSEntityDescription *)root;
+@end
+
+// An asynchronous request: the client's exchange until it is answered
+// (202, or the answer itself when that comes first), who sent it, and its
+// answer once there is one.
+@interface OISAsyncJob : NSObject
+@property (nonatomic, copy) NSString *identifier;
+@property (nonatomic, weak) ODataService *service;
+@property (nonatomic, strong, nullable) ODataExchange *exchange;
+@property (nonatomic, strong, nullable) ODataRequest *request;
+@property (nonatomic) BOOL accepted;
+@property (nonatomic) BOOL finished;
+@property (nonatomic, strong, nullable) NSDate *finishedAt;
+@property (nonatomic) NSInteger status;
+@property (nonatomic, copy, nullable) NSDictionary *headers;
+@property (nonatomic, copy, nullable) NSData *body;
+- (void)exchangeDidFinish:(ODataExchange *)inner;
+- (void)accept;
+@end
+
+@interface ODataService (OISAsync)
+- (void)acceptAsyncJob:(OISAsyncJob *)job exchange:(ODataExchange *)exchange;
+- (nullable OISAsyncJob *)asyncJobWithIdentifier:(NSString *)identifier;
+- (void)forgetAsyncJob:(OISAsyncJob *)job;
+- (NSString *)statusMonitorOf:(OISAsyncJob *)job;
 @end
 
 static NSEntityDescription *OISRootEntity(NSEntityDescription *entity)
@@ -842,6 +868,10 @@ typedef NS_ENUM(NSInteger, OISTargetKind) {
   if ([first.name isEqualToString:@"$metadata"] && segments.count == 1) {
     self.kind = OISTargetMetadata;
     [self dispatch];
+    return;
+  }
+  if ([first.name isEqualToString:@"$async"]) {
+    [self statusMonitor:segments.count == 2 ? segments[1].name : nil];
     return;
   }
   if ([first.name isEqualToString:@"$batch"]) {
@@ -2255,6 +2285,47 @@ static NSString *OISSelectListOfPaths(NSArray<NSArray<NSString *> *> *paths)
   if (self.trackingToken) [applied addObject:@"odata.track-changes"];
   NSDictionary *headers = applied.count ? @{ @"Preference-Applied": [applied componentsJoinedByString:@", "] } : nil;
   [self respondJSON:body status:200 headers:headers];
+}
+
+#pragma mark Status monitors
+
+// Part 1 section 11.6: 202 while the request is under way, then its answer
+// as application/http (4.01 says its status in AsyncResult too); DELETE
+// forgets it. One that is not there, or not the caller's, is 404.
+- (void)statusMonitor:(NSString *)identifier
+{
+  OISAsyncJob *job = identifier ? [self.service asyncJobWithIdentifier:identifier] : nil;
+  NSString *owner = job.request.principal.subject;
+  if (!job || (owner && ![owner isEqualToString:self.request.principal.subject ?: @""])) {
+    [self fail:404 message:@"There is no such asynchronous request"];
+    return;
+  }
+  if ([self.request.method isEqualToString:@"DELETE"]) {
+    [self.service forgetAsyncJob:job];
+    [self respondStatus:204 headers:nil body:nil];
+    return;
+  }
+  if (![self.request.method isEqualToString:@"GET"]) {
+    [self methodNotAllowed:@[ @"GET", @"DELETE" ]];
+    return;
+  }
+  BOOL finished;
+  NSInteger status;
+  NSDictionary *headers;
+  NSData *body;
+  @synchronized (job) {
+    finished = job.finished;
+    status = job.status;
+    headers = job.headers;
+    body = job.body;
+  }
+  if (!finished) {
+    [self respondStatus:202 headers:@{ @"Location": [self.service statusMonitorOf:job], @"Retry-After": @"1" } body:nil];
+    return;
+  }
+  NSMutableDictionary *out = [NSMutableDictionary dictionaryWithObject:@"application/http" forKey:@"Content-Type"];
+  if ([self.request.version isEqualToString:@"4.01"]) out[@"AsyncResult"] = [NSString stringWithFormat:@"%ld", (long)status];
+  [self respondStatus:200 headers:out body:ODataHTTPResponseMessage(status, headers ?: @{}, body)];
 }
 
 #pragma mark Deltas
@@ -3712,10 +3783,52 @@ static NSNumber *OISScalarReturnValue(NSInvocation *invocation, char type)
 
 #pragma mark - The service
 
+@implementation OISAsyncJob
+
+- (void)exchangeDidFinish:(ODataExchange *)inner
+{
+  ODataExchange *client = nil;
+  @synchronized (self) {
+    NSHTTPURLResponse *http = (NSHTTPURLResponse *)inner.URLResponse;
+    self.status = [http isKindOfClass:[NSHTTPURLResponse class]] ? http.statusCode : 500;
+    self.headers = [http isKindOfClass:[NSHTTPURLResponse class]] ? http.allHeaderFields : @{};
+    self.body = inner.data ?: [NSData data];
+    self.finished = YES;
+    self.finishedAt = [NSDate date];
+    if (!self.accepted) {
+      client = self.exchange;
+      self.exchange = nil;
+    }
+  }
+  // Answered before it was accepted: as though it had not asked.
+  if (client) {
+    client.URLResponse = inner.URLResponse;
+    client.data = inner.data;
+    [client finish];
+  }
+}
+
+- (void)accept
+{
+  ODataExchange *client = nil;
+  @synchronized (self) {
+    if (self.finished || self.accepted) return;
+    self.accepted = YES;
+    client = self.exchange;
+    self.exchange = nil;
+  }
+  [self.service acceptAsyncJob:self exchange:client];
+}
+
+@end
+
 @implementation ODataService {
   // Repeatable requests: by client and request ID, what was answered.
   NSMutableDictionary<NSString *, NSDictionary *> *_remembered;
   NSLock *_rememberedLock;
+  // Asynchronous requests, by status monitor.
+  NSMutableDictionary<NSString *, OISAsyncJob *> *_jobs;
+  NSLock *_jobsLock;
 }
 
 - (instancetype)initWithPersistentStoreCoordinator:(NSPersistentStoreCoordinator *)coordinator serviceRoot:(NSURL *)serviceRoot
@@ -3731,6 +3844,9 @@ static NSNumber *OISScalarReturnValue(NSInvocation *invocation, char type)
   _maxVersion = @"4.01";
   _replyTimeout = 60;
   _repeatabilityDuration = 3600;
+  _asyncResultDuration = 600;
+  _jobs = [NSMutableDictionary dictionary];
+  _jobsLock = [[NSLock alloc] init];
   _remembered = [NSMutableDictionary dictionary];
   _rememberedLock = [[NSLock alloc] init];
   _handlers = [NSMutableDictionary dictionary];
@@ -3880,6 +3996,8 @@ static NSNumber *OISScalarReturnValue(NSInvocation *invocation, char type)
                                                                                 @"now", @"cast", @"isof", @"matchesPattern" ];
   // Repeatable requests, remembered repeatabilityDuration.
   if (self.repeatabilityDuration > 0) annotations[@"Org.OData.Repeatability.V1.Supported"] = @YES;
+  // Prefer: respond-async, where a request takes its time.
+  if (self.asyncResultDuration > 0) annotations[@"Org.OData.Capabilities.V1.AsynchronousRequestsSupported"] = @YES;
   // $apply, as far as it goes (Data Aggregation section 6.1).
   annotations[@"Org.OData.Aggregation.V1.ApplySupported"] = @{
     @"Transformations": @[ @"filter", @"groupby", @"aggregate" ],
@@ -3993,7 +4111,97 @@ static NSNumber *OISScalarReturnValue(NSInvocation *invocation, char type)
 
 - (void)startExchange:(ODataExchange *)exchange
 {
+  NSTimeInterval wait = 0;
+  if (self.asyncResultDuration > 0 && OISPrefersRespondAsync(exchange.request, &wait)) {
+    [self startAsynchronously:exchange wait:wait];
+    return;
+  }
   [self startExchange:exchange inContext:nil saves:YES authenticated:NO principal:nil];
+}
+
+#pragma mark Asynchronous requests
+
+// Prefer: respond-async, and wait=N, how long the client would rather
+// wait for the answer itself.
+static BOOL OISPrefersRespondAsync(NSURLRequest *request, NSTimeInterval *wait)
+{
+  BOOL async = NO;
+  for (NSString *item in [[request valueForHTTPHeaderField:@"Prefer"] ?: @"" componentsSeparatedByString:@","]) {
+    NSString *part = [[item componentsSeparatedByString:@";"][0] stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceCharacterSet]].lowercaseString;
+    if ([part isEqualToString:@"respond-async"]) async = YES;
+    if ([part hasPrefix:@"wait="]) *wait = [[part substringFromIndex:5] doubleValue];
+  }
+  return async;
+}
+
+// Answered as any request is; one still under way when that returns, or
+// after wait, is accepted.
+- (void)startAsynchronously:(ODataExchange *)exchange wait:(NSTimeInterval)wait
+{
+  OISAsyncJob *job = [[OISAsyncJob alloc] init];
+  // A letter first: the monitor's id is a path segment, read as a name.
+  job.identifier = [@"a" stringByAppendingString:[[NSUUID UUID].UUIDString stringByReplacingOccurrencesOfString:@"-" withString:@""].lowercaseString];
+  job.service = self;
+  job.exchange = exchange;
+  ODataExchange *inner = [[ODataExchange alloc] initWithRequest:exchange.request target:job action:@selector(exchangeDidFinish:)];
+  job.request = [self startExchange:inner inContext:nil saves:YES authenticated:NO principal:nil];
+  if (wait > 0) {
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(wait * NSEC_PER_SEC)),
+                   dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0), ^{
+      [job accept];
+    });
+  } else {
+    [job accept];
+  }
+}
+
+- (NSString *)statusMonitorOf:(OISAsyncJob *)job
+{
+  NSString *root = self.serviceRoot.absoluteString;
+  if (![root hasSuffix:@"/"]) root = [root stringByAppendingString:@"/"];
+  return [NSString stringWithFormat:@"%@$async/%@", root, job.identifier];
+}
+
+// Answers that have been ready longer than they are kept are let go.
+- (void)forgetOldAsyncJobs
+{
+  for (NSString *identifier in _jobs.allKeys) {
+    OISAsyncJob *job = _jobs[identifier];
+    NSDate *finishedAt = nil;
+    @synchronized (job) {
+      finishedAt = job.finishedAt;
+    }
+    if (finishedAt && -[finishedAt timeIntervalSinceNow] > self.asyncResultDuration) [_jobs removeObjectForKey:identifier];
+  }
+}
+
+- (void)acceptAsyncJob:(OISAsyncJob *)job exchange:(ODataExchange *)exchange
+{
+  [_jobsLock lock];
+  [self forgetOldAsyncJobs];
+  _jobs[job.identifier] = job;
+  [_jobsLock unlock];
+  NSString *asked = [exchange.request valueForHTTPHeaderField:@"OData-MaxVersion"];
+  BOOL v40 = [self.maxVersion isEqualToString:@"4.0"] || (asked && [asked compare:@"4.01" options:NSNumericSearch] == NSOrderedAscending);
+  [self answer:exchange status:202 headers:@{ @"Location": [self statusMonitorOf:job], @"Preference-Applied": @"respond-async",
+                                              @"Retry-After": @"1", @"OData-Version": v40 ? @"4.0" : @"4.01" }
+          body:nil];
+}
+
+- (OISAsyncJob *)asyncJobWithIdentifier:(NSString *)identifier
+{
+  [_jobsLock lock];
+  [self forgetOldAsyncJobs];
+  OISAsyncJob *job = _jobs[identifier];
+  [_jobsLock unlock];
+  return job;
+}
+
+- (void)forgetAsyncJob:(OISAsyncJob *)job
+{
+  [_jobsLock lock];
+  [_jobs removeObjectForKey:job.identifier];
+  [_jobsLock unlock];
 }
 
 #pragma mark Repeatable requests
@@ -4087,12 +4295,12 @@ static NSDateFormatter *OISHTTPDateFormatter(void)
   [_rememberedLock unlock];
 }
 
-- (void)startExchange:(ODataExchange *)exchange inContext:(NSManagedObjectContext *)shared saves:(BOOL)saves
-        authenticated:(BOOL)authenticated principal:(ODataPrincipal *)principal
+- (ODataRequest *)startExchange:(ODataExchange *)exchange inContext:(NSManagedObjectContext *)shared saves:(BOOL)saves
+                  authenticated:(BOOL)authenticated principal:(ODataPrincipal *)principal
 {
   [self prepare];
   NSString *repeatabilityKey = nil, *repeatabilitySignature = nil;
-  if (!shared && [self answeredRepeat:exchange key:&repeatabilityKey signature:&repeatabilitySignature]) return;
+  if (!shared && [self answeredRepeat:exchange key:&repeatabilityKey signature:&repeatabilitySignature]) return nil;
   OISServiceCall *call = [[OISServiceCall alloc] init];
   call.repeatabilityKey = repeatabilityKey;
   call.repeatabilitySignature = repeatabilitySignature;
@@ -4124,6 +4332,7 @@ static NSDateFormatter *OISHTTPDateFormatter(void)
       [call respondError:ODataServiceError(500, @"The request failed inside the service")];
     }
   }];
+  return call.request;
 }
 
 @end

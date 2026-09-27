@@ -252,6 +252,15 @@ FOUNDATION_EXPORT NSString * const ODataUserInfoETag;  // @"OData.etag"
 // 400, Repeatability-Result: rejected. An answer 5xx is not remembered.
 // 0 turns it off. Default: 3600 seconds.
 @property (nonatomic) NSTimeInterval repeatabilityDuration;
+// Asynchronous requests (Part 1 sections 8.2.8.8 and 11.6). A request that
+// prefers respond-async and is not answered at once (a handler or the
+// authenticator defers, for longer than Prefer: wait=N allows) is answered
+// 202 Accepted with a status monitor, $async/<id>, in Location. A GET of
+// the monitor is 202 while the request is under way, then 200 with its
+// answer as application/http; DELETE forgets it. Only who sent the request
+// may ask. An answer is kept this long after it is ready. 0: respond-async
+// is not applied. Default: 600 seconds.
+@property (nonatomic) NSTimeInterval asyncResultDuration;
 // Who each request is from (ODataAuthentication.h). A request that names
 // no one is answered 401, unless allowsAnonymousRequests; without an
 // authenticator (the default) every request is anonymous and answered.

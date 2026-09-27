@@ -24,8 +24,9 @@ NS_ASSUME_NONNULL_BEGIN
 @interface ODataService (OISBatchSupport)
 // An exchange answered in this context, which is saved only when saves is
 // YES; nil: a context of its own, saved. authenticated: from principal
-// (nil: anonymous), without asking the authenticator.
-- (void)startExchange:(ODataExchange *)exchange inContext:(nullable NSManagedObjectContext *)context saves:(BOOL)saves
+// (nil: anonymous), without asking the authenticator. Returns the request
+// as the service reads it, whose principal is who is asking once known.
+- (ODataRequest *)startExchange:(ODataExchange *)exchange inContext:(nullable NSManagedObjectContext *)context saves:(BOOL)saves
         authenticated:(BOOL)authenticated principal:(nullable ODataPrincipal *)principal;
 @end
 

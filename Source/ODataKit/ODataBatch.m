@@ -144,6 +144,34 @@ static ODataBatchPart *OISHTTPMessage(NSData *data, NSString *contentID)
   return part;
 }
 
+ODataBatchPart *ODataHTTPMessage(NSData *data)
+{
+  return data ? OISHTTPMessage(data, nil) : nil;
+}
+
+NSString *ODataHTTPReasonPhrase(NSInteger status)
+{
+  NSDictionary *phrases = @{ @200: @"OK", @201: @"Created", @202: @"Accepted", @204: @"No Content", @304: @"Not Modified",
+                             @400: @"Bad Request", @401: @"Unauthorized", @403: @"Forbidden", @404: @"Not Found",
+                             @405: @"Method Not Allowed", @406: @"Not Acceptable", @409: @"Conflict", @410: @"Gone",
+                             @412: @"Precondition Failed", @415: @"Unsupported Media Type", @424: @"Failed Dependency",
+                             @500: @"Internal Server Error", @501: @"Not Implemented", @504: @"Gateway Timeout" };
+  return phrases[@(status)] ?: @"Status";
+}
+
+NSData *ODataHTTPResponseMessage(NSInteger status, NSDictionary *headers, NSData *body)
+{
+  NSMutableData *out = [NSMutableData data];
+  OISAppend(out, [NSString stringWithFormat:@"HTTP/1.1 %ld %@\r\n", (long)status, ODataHTTPReasonPhrase(status)]);
+  for (NSString *name in [headers.allKeys sortedArrayUsingSelector:@selector(compare:)]) {
+    if ([name caseInsensitiveCompare:@"Content-Length"] == NSOrderedSame) continue;
+    OISAppend(out, [NSString stringWithFormat:@"%@: %@\r\n", name, headers[name]]);
+  }
+  OISAppend(out, @"\r\n");
+  if (body.length) [out appendData:body];
+  return out;
+}
+
 NSArray *ODataBatchParts(NSData *body, NSString *boundary)
 {
   NSString *delimiter = [@"--" stringByAppendingString:boundary];

@@ -23,16 +23,6 @@
 @implementation OISBatchItem
 @end
 
-static NSString *OISReasonPhrase(NSInteger status)
-{
-  NSDictionary *phrases = @{ @200: @"OK", @201: @"Created", @202: @"Accepted", @204: @"No Content", @304: @"Not Modified",
-                             @400: @"Bad Request", @401: @"Unauthorized", @403: @"Forbidden", @404: @"Not Found",
-                             @405: @"Method Not Allowed", @406: @"Not Acceptable", @409: @"Conflict", @412: @"Precondition Failed",
-                             @415: @"Unsupported Media Type", @424: @"Failed Dependency", @500: @"Internal Server Error",
-                             @501: @"Not Implemented" };
-  return phrases[@(status)] ?: @"Status";
-}
-
 static NSString *OISHeaderValue(NSDictionary *headers, NSString *name)
 {
   for (NSString *key in headers) {
@@ -408,7 +398,7 @@ static void OISAppendText(NSMutableData *data, NSString *text)
 {
   OISAppendText(out, [NSString stringWithFormat:@"--%@\r\nContent-Type: application/http\r\nContent-Transfer-Encoding: binary\r\n", boundary]);
   if (item.identifier) OISAppendText(out, [NSString stringWithFormat:@"Content-ID: %@\r\n", item.identifier]);
-  OISAppendText(out, [NSString stringWithFormat:@"\r\nHTTP/1.1 %ld %@\r\n", (long)item.status, OISReasonPhrase(item.status)]);
+  OISAppendText(out, [NSString stringWithFormat:@"\r\nHTTP/1.1 %ld %@\r\n", (long)item.status, ODataHTTPReasonPhrase(item.status)]);
   for (NSString *name in [item.responseHeaders.allKeys sortedArrayUsingSelector:@selector(compare:)]) {
     if ([name caseInsensitiveCompare:@"Content-Length"] == NSOrderedSame) continue;
     OISAppendText(out, [NSString stringWithFormat:@"%@: %@\r\n", name, item.responseHeaders[name]]);

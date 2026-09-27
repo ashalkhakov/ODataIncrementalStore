@@ -42,7 +42,7 @@ calling the client conformant.
 | 8 | MUST use the `$` prefix on system query options | ✅ | |
 | 9 | MUST use case-sensitive options, operators, functions | ✅ | |
 | 10 | SHOULD support Basic authentication over HTTPS | ✅ | Also Bearer tokens. |
-| 11–15 | MAY: entity references, delta, async, `metadata=minimal`, streaming | — | Optional. The client asks for `metadata=minimal`; see 2.1. |
+| 11–15 | MAY: entity references, delta, async, `metadata=minimal`, streaming | ⚠️ | Optional. The client asks for `metadata=minimal` (see 2.1), and follows delta links and status monitors (section 8). |
 | 16 | 4.01: MUST send 4.0 payloads to a service that does not advertise 4.01 in `Core.ODataVersions` | ✅ | The container's `Core.ODataVersions` decides, its highest version listed; without it, `<edmx:Edmx Version>` does, since only a 4.01 service writes 4.01 CSDL. `ODataService` advertises `4.0 4.01`. |
 | 17 | 4.01: MUST spell identifiers in payloads and URLs as `$metadata` does | ✅ | Property, navigation property, entity set, type and enumeration member names are given `$metadata`'s spelling where the model's differs only in case (`Id` for `ID`, `Staff` for `staff`), names from `userInfo` included. |
 | 18 | 4.01: MUST be prepared for any valid 4.01 CSDL | ✅ | Tested with `Edm.Untyped` and abstract property types, `Scale` variable and floating, `SRID`, key aliases, a nullable singleton, `IncludeInServiceDocument`, `Edm.Int64` enumerations, `ContainsTarget` with `OnDelete`, action overloads with `EntitySetPath`, terms of its own, `IncludeAnnotations`, and `UrlRef`, `LabeledElement` and `Apply` annotations: parsed, and a model built from it. CSDL JSON is read too (`ODataCSDL` turns it into the XML it says the same as), and so is the specification's own example. |
@@ -89,7 +89,7 @@ calling the client conformant.
 | Deep insert | §11.4.2.2 | — | Not needed: a save that inserts related objects is one `$batch` change set, with binds, which is as atomic. |
 | Actions and functions | §11.5 | ✅ **live** | `ODataOperationCall`; see section 8. |
 | Delta | §11.3 | ✅ **live** | As persistent history; see section 8. |
-| Async | | — | No Core Data equivalent in a fetch or save; planned in section 8. |
+| Async | §8.2.8.8, §11.6 | ✅ | With `ODataIncrementalStoreRespondAsyncOption`, inside the transport exchange; see section 8. |
 | Streams | §11.1.2, §11.4.7–8 | ✅ | Outside Core Data, with `ODataStreamTransfer`; see section 8. |
 
 ## 4. Core Data mapping
@@ -360,13 +360,18 @@ names):
   updates (**live**: a PATCHed person is not in it), which a service that
   sends no further delta link then shows at the next read-and-compare.
 
-**Asynchronous requests** (Part 1 §8.2.8.8, §11.6). A request sent with
-`Prefer: respond-async` may be answered `202 Accepted` with a status
-monitor URL in `Location`; the client polls that URL (honouring
-`Retry-After`) until it answers with the result, and may `DELETE` it to
-cancel. This is for long-running work, a large `$batch` or a slow action.
-It belongs in the client, inside one exchange, so neither the store nor
-its callers notice. Low priority.
+**Asynchronous requests** (Part 1 §8.2.8.8, §11.6). ✅ With
+`ODataIncrementalStoreRespondAsyncOption`, every request prefers
+`respond-async`. One answered `202 Accepted` with a status monitor in
+`Location` is followed inside `ODataClient`'s exchange, so neither the
+store nor its callers notice: the monitor is polled as `Retry-After`
+asks (a second when it does not say), signed as any request, until it
+answers; an `application/http` answer is unwrapped and stands as the
+response, a `$batch` change set's too. After `asyncTimeout` (600 seconds)
+the monitor is `DELETE`d and the request fails. This is for long work, a
+large `$batch` or a slow action, behind proxies that cut long requests
+off. Tested against ODataService, which answers this way (see
+`docs/server-design.md`).
 
 **Streams** (Part 1 §11.1.2, §11.4.7–8) are blobs: a *media entity*
 (`HasStream="true"`, TripPin's `Photo`) has its content at

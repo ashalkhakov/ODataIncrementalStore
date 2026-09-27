@@ -18,6 +18,7 @@ NSString * const ODataMessagesURLKey = @"ODataMessagesURL";
 NSString * const ODataMessagesObjectIDKey = @"ODataMessagesObjectID";
 NSString * const ODataIncrementalStoreTrackedEntitiesOption = @"ODataIncrementalStoreTrackedEntities";
 NSString * const ODataIncrementalStoreStreamDirectoryOption = @"ODataIncrementalStoreStreamDirectory";
+NSString * const ODataIncrementalStoreRespondAsyncOption = @"ODataIncrementalStoreRespondAsync";
 NSString * const ODataIncrementalStoreKeyAsSegmentOption = @"ODataIncrementalStoreKeyAsSegment";
 NSString * const ODataIncrementalStoreMaxVersionOption = @"ODataIncrementalStoreMaxVersion";
 NSString * const ODataIncrementalStoreIEEE754CompatibleOption = @"ODataIncrementalStoreIEEE754Compatible";
@@ -52,6 +53,8 @@ NSString * const ODataIncrementalStoreType = @"ODataIncrementalStore";
   _IEEE754Compatible = ieee ? [ieee boolValue] : YES;
   id batch = options[ODataIncrementalStoreBatchSavesOption];
   _batchSaves = batch ? [batch boolValue] : YES;
+  _respondAsync = [options[ODataIncrementalStoreRespondAsyncOption] boolValue];
+  _asyncTimeout = 600;
   id maxVersion = options[ODataIncrementalStoreMaxVersionOption];
   _maxVersion = [maxVersion isKindOfClass:[NSString class]] ? [maxVersion copy] : @"4.01";
   _version = @"4.0";
@@ -81,6 +84,12 @@ NSString * const ODataIncrementalStoreType = @"ODataIncrementalStore";
     });
     [request setValue:[NSUUID UUID].UUIDString forHTTPHeaderField:@"Repeatability-Request-ID"];
     [request setValue:[formatter stringFromDate:[NSDate date]] forHTTPHeaderField:@"Repeatability-First-Sent"];
+  }
+  if (self.respondAsync) {
+    NSString *prefer = [request valueForHTTPHeaderField:@"Prefer"];
+    if (![prefer.lowercaseString containsString:@"respond-async"]) {
+      [request setValue:prefer.length ? [prefer stringByAppendingString:@",respond-async"] : @"respond-async" forHTTPHeaderField:@"Prefer"];
+    }
   }
   // JSON is the default, not a rule: $metadata asks for XML and $count for
   // text, and a service answers 406 or 415 when Accept rules those out.

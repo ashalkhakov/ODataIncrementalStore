@@ -30,6 +30,12 @@ FOUNDATION_EXPORT NSString * const ODataIncrementalStoreIEEE754CompatibleOption;
 // $batch change set, so it takes effect whole or not at all. A service
 // that refuses $batch gets the requests one at a time regardless.
 FOUNDATION_EXPORT NSString * const ODataIncrementalStoreBatchSavesOption;
+// NSNumber BOOL, default NO: requests prefer respond-async (Part 1 section
+// 8.2.8.8). A service may then answer one that takes its time with 202
+// and a status monitor, which the client polls, as Retry-After asks, until
+// it has the answer; callers see only the answer. For long work (a large
+// $batch, a slow action) behind proxies that cut long requests off.
+FOUNDATION_EXPORT NSString * const ODataIncrementalStoreRespondAsyncOption;
 // NSNumber BOOL, default NO: fail to open when the model does not match
 // the service's $metadata, rather than report it in metadataProblems.
 FOUNDATION_EXPORT NSString * const ODataIncrementalStoreRequireMatchingModelOption;
@@ -102,6 +108,10 @@ FOUNDATION_EXPORT NSString * const ODataIncrementalStoreCredentialProviderOption
 // answers a repeat as it answered the first. Set from $metadata
 // (Repeatability.Supported on the container).
 @property (nonatomic) BOOL repeatable;
+// ODataIncrementalStoreRespondAsyncOption; and how long to poll a status
+// monitor before giving up (and DELETE-ing it). Default: 600 seconds.
+@property (nonatomic) BOOL respondAsync;
+@property (nonatomic) NSTimeInterval asyncTimeout;
 @property (nonatomic, copy) NSString *maxVersion;
 // The OData-Version requests carry, and the one their URLs and bodies are
 // written in: 4.0 until the store has read $metadata.

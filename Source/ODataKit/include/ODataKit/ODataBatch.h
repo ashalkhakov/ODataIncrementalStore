@@ -35,6 +35,15 @@ FOUNDATION_EXPORT NSData *ODataChangeSetBody(NSArray<NSURLRequest *> *requests, 
 // The boundary parameter of a multipart Content-Type, or nil.
 FOUNDATION_EXPORT NSString * _Nullable ODataMultipartBoundary(NSString *contentType);
 
+// One application/http message (a request or a response), as a batch
+// part or a status monitor's answer carries it; nil if it is not one.
+FOUNDATION_EXPORT ODataBatchPart * _Nullable ODataHTTPMessage(NSData *data);
+
+// A response as an application/http message: status line, headers (not
+// Content-Length), a blank line, the body.
+FOUNDATION_EXPORT NSData *ODataHTTPResponseMessage(NSInteger status, NSDictionary<NSString *, NSString *> *headers, NSData * _Nullable body);
+FOUNDATION_EXPORT NSString *ODataHTTPReasonPhrase(NSInteger status);
+
 // The HTTP messages in a multipart/mixed body, in order, with any nested
 // change set flattened into its members. Requests and responses both.
 FOUNDATION_EXPORT NSArray<ODataBatchPart *> * _Nullable ODataBatchParts(NSData *body, NSString *boundary);

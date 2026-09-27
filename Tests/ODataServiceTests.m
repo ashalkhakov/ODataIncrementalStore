@@ -2915,6 +2915,114 @@ static NSString *OISHTTPDate(NSDate *date)
   XCTAssertEqualObjects([self get:@"Categories/$count"].text, @"6", @"off: each made");
 }
 
+#pragma mark Asynchronous requests
+
+// A status monitor's answer, once it has one: polled as a client would.
+- (OISServiceResponse *)waitOnMonitor:(NSString *)location headers:(NSDictionary *)headers
+{
+  NSString *path = [self pathOfLink:location];
+  OISServiceResponse *response = nil;
+  for (int i = 0; i < 200; i++) {
+    response = [self send:@"GET" path:path headers:headers body:nil];
+    if (response.status != 202) break;
+    usleep(10000);
+  }
+  return response;
+}
+
+// Part 1 sections 8.2.8.8 and 11.6: a request that prefers respond-async
+// and is not answered at once is accepted, and its answer is at the status
+// monitor.
+- (void)testAsynchronousRequests
+{
+  XCTAssertTrue([[self get:@"$metadata"].text containsString:@"AsynchronousRequestsSupported"]);
+  [_service setHandler:[[OISLaterProducts alloc] initWithEntity:OISCatalogEntity(@"Product")] forEntitySet:@"Products"];
+  NSDictionary *async = @{ @"Prefer": @"respond-async" };
+  OISServiceResponse *accepted = [self send:@"GET" path:@"Products?$select=ProductName" headers:async body:nil];
+  XCTAssertEqual(accepted.status, 202, @"%@", accepted.text);
+  XCTAssertEqualObjects(accepted.headers[@"Preference-Applied"], @"respond-async");
+  NSString *monitor = accepted.headers[@"Location"];
+  XCTAssertTrue([monitor hasPrefix:@"http://example.test/odata/$async/"], @"%@", monitor);
+
+  OISServiceResponse *done = [self waitOnMonitor:monitor headers:nil];
+  XCTAssertEqual(done.status, 200, @"%@", done.text);
+  XCTAssertEqualObjects(done.headers[@"Content-Type"], @"application/http");
+  XCTAssertEqualObjects(done.headers[@"AsyncResult"], @"200");
+  ODataBatchPart *answer = ODataHTTPMessage(done.data);
+  XCTAssertEqual(answer.status, 200);
+  NSDictionary *json = [NSJSONSerialization JSONObjectWithData:answer.body options:0 error:NULL];
+  XCTAssertEqual([json[@"value"] count], 4u, @"the handler's answer: %@", json);
+  XCTAssertEqual([self get:[self pathOfLink:monitor]].status, 200, @"kept for another look");
+
+  XCTAssertEqual([self send:@"DELETE" path:[self pathOfLink:monitor] headers:nil body:nil].status, 204);
+  XCTAssertEqual([self get:[self pathOfLink:monitor]].status, 404, @"forgotten");
+  XCTAssertEqual([self get:@"$async/anothermonitor"].status, 404);
+
+  // Answered at once, or within wait=: answered as though not asked.
+  OISServiceResponse *direct = [self send:@"GET" path:@"Categories" headers:async body:nil];
+  XCTAssertEqual(direct.status, 200);
+  XCTAssertNil(direct.headers[@"Preference-Applied"]);
+  direct = [self send:@"GET" path:@"Products" headers:@{ @"Prefer": @"respond-async, wait=3" } body:nil];
+  XCTAssertEqual(direct.status, 200, @"%@", direct.text);
+  XCTAssertEqual([direct.json[@"value"] count], 4u);
+
+  // Turned off.
+  _service.asyncResultDuration = 0;
+  XCTAssertEqual([self send:@"GET" path:@"Products" headers:async body:nil].status, 200);
+}
+
+// A status monitor is only for who sent the request.
+- (void)testStatusMonitorsAreTheSenders
+{
+  _service.authenticator = [[OISLaterAuthenticator alloc] init];
+  OISServiceResponse *accepted = [self send:@"POST" path:@"Categories"
+                                    headers:@{ @"Prefer": @"respond-async", @"Authorization": @"Token alice" }
+                                       body:@{ @"CategoryName": @"Asynchronous" }];
+  XCTAssertEqual(accepted.status, 202, @"the authenticator answers later: %@", accepted.text);
+  NSString *monitor = accepted.headers[@"Location"];
+  XCTAssertEqual([self waitOnMonitor:monitor headers:@{ @"Authorization": @"Token bob" }].status, 404);
+  OISServiceResponse *done = [self waitOnMonitor:monitor headers:@{ @"Authorization": @"Token alice" }];
+  XCTAssertEqual(done.status, 200, @"%@", done.text);
+  XCTAssertEqual(ODataHTTPMessage(done.data).status, 201);
+}
+
+// The client waits out a status monitor inside one exchange: a fetch and a
+// $batch save see only their answers.
+- (void)testIncrementalStorePollsStatusMonitors
+{
+  [_service setHandler:[[OISLaterProducts alloc] initWithEntity:OISCatalogEntity(@"Product")] forEntitySet:@"Products"];
+  [_service setHandler:[[OISLaterWrites alloc] initWithEntity:OISCatalogEntity(@"Category")] forEntitySet:@"Categories"];
+  OISRecordingTransport *transport = [[OISRecordingTransport alloc] init];
+  transport.next = _service;
+  NSError *error = nil;
+  NSManagedObjectContext *client = [self clientOver:transport options:@{ ODataIncrementalStoreRespondAsyncOption: @YES } error:&error];
+  XCTAssertNotNil(client, @"%@", error);
+
+  NSArray *products = [client executeFetchRequest:[NSFetchRequest fetchRequestWithEntityName:@"Product"] error:&error];
+  XCTAssertEqual(products.count, 4u, @"%@", error);
+  NSPredicate *polls = [NSPredicate predicateWithFormat:@"URL.absoluteString CONTAINS '$async/'"];
+  XCTAssertGreaterThan([transport.requests filteredArrayUsingPredicate:polls].count, 0u, @"it was answered later");
+
+  [transport.requests removeAllObjects];
+  NSManagedObject *first = [NSEntityDescription insertNewObjectForEntityForName:@"Category" inManagedObjectContext:client];
+  [first setValue:@"First" forKey:@"name"];
+  NSManagedObject *second = [NSEntityDescription insertNewObjectForEntityForName:@"Category" inManagedObjectContext:client];
+  [second setValue:@"Second" forKey:@"name"];
+  XCTAssertTrue([client save:&error], @"%@", error);
+  XCTAssertGreaterThan([transport.requests filteredArrayUsingPredicate:polls].count, 0u);
+
+  // Two changes: one $batch change set, answered later too.
+  [transport.requests removeAllObjects];
+  [first setValue:@"First (new)" forKey:@"name"];
+  [second setValue:@"Second (new)" forKey:@"name"];
+  XCTAssertTrue([client save:&error], @"%@", error);
+  NSPredicate *batches = [NSPredicate predicateWithFormat:@"URL.absoluteString ENDSWITH '$batch'"];
+  XCTAssertEqual([transport.requests filteredArrayUsingPredicate:batches].count, 1u, @"%@", transport.requests);
+  XCTAssertGreaterThan([transport.requests filteredArrayUsingPredicate:polls].count, 0u);
+  XCTAssertEqualObjects([self get:@"Categories/$count"].text, @"4");
+  XCTAssertEqualObjects([self get:@"Categories/$count?$filter=endswith(CategoryName,'(new)')"].text, @"2");
+}
+
 #pragma mark Delta links
 
 // The Catalog in a SQLite store that keeps persistent history, with each
