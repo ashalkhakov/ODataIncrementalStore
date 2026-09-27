@@ -1,7 +1,18 @@
-# ODataIncrementalStore
+# ODataKit
 
-**LGPL-2.1-or-later.** An `NSIncrementalStore` that talks to a remote OData v4
-service. Written in **modern Objective-C** for **libobjc2** so it builds on
+**LGPL-2.1-or-later.** OData v4 for Core Data, in three libraries:
+
+| Library | What it is |
+|---|---|
+| `ODataKit` | The shared core: CSDL schema, values, `$filter` expressions, `$batch`, errors, the transport protocol |
+| `ODataIncrementalStore` | The client: an `NSIncrementalStore` that talks to a remote OData v4 service |
+| `ODataService` | The server: an OData v4 service over a Core Data stack ([design](docs/server-design.md)) |
+
+`Server/` adds `ODataHTTPServer`, the HTTP listener in front of
+`ODataService`, and the `ois-serve` tool.
+
+The rest of this page is mostly about the client, `ODataIncrementalStore`, an
+`NSIncrementalStore` that talks to a remote OData v4 service. Written in **modern Objective-C** for **libobjc2** so it builds on
 GNUstep (clang + gnustep-base + [FreeCoreData](https://github.com/ashalkhakov/FreeCoreData))
 and on Apple Core Data.
 
@@ -74,14 +85,14 @@ make test
 make -C Tests run-tests
 ```
 
-On Apple: scheme **ODataIncrementalStoreTests** in the workspace (⌘U).
+On Apple: scheme **ODataKitTests** in the workspace (⌘U).
 Snapshots live in `Tests/Snapshots/` and cite the OASIS
 protocol section they pin.
 
 ## Example apps
 
 `Examples/Workbench` is the testing bench: a Cocoa window that drives a
-real store against the library's own server in the process (no network),
+real store against ODataService in the process (no network),
 or a service on the network. Predicate → `$filter`, fetch, fault, expand,
 PATCH/POST/DELETE, operations, wire log.
 
@@ -96,23 +107,29 @@ openapp ./Workbench.app   # GNUstep
 
 ## Apple / Xcode
 
-Open **`ODataIncrementalStore.xcworkspace`** (not a lone `.xcodeproj` — the
+Open **`ODataKit.xcworkspace`** (not a lone `.xcodeproj` — the
 example apps need the framework project in the same workspace).
 
 | Scheme | Product |
 |---|---|
-| `ODataIncrementalStore` | macOS framework |
-| `ODataIncrementalStoreTests` | XCTest, snapshot HTTP, no network (⌘U) |
+| `ODataKit` | macOS framework, the shared core |
+| `ODataIncrementalStore` | macOS framework, the client (links `ODataKit`) |
+| `ODataService` | macOS framework, the server (links `ODataKit`) |
+| `ODataKitTests` | XCTest for all three, snapshot HTTP, no network (⌘U) |
 | `Catalog` | consumer AppKit app |
 | `Workbench` | in-memory OData workbench |
 
 ```
-xcodebuild -workspace ODataIncrementalStore.xcworkspace \
-  -scheme ODataIncrementalStoreTests -destination 'platform=macOS' test
+xcodebuild -workspace ODataKit.xcworkspace \
+  -scheme ODataKitTests -destination 'platform=macOS' test
 ```
 
-The framework is a real `ODataIncrementalStore.framework` (public headers +
-module map). Catalog and Workbench embed it. GNUstep uses the GNUmakefiles.
+Each library is a real framework with public headers; a client app embeds
+`ODataKit.framework` and `ODataIncrementalStore.framework` (Catalog does),
+and one that serves too adds `ODataService.framework` (Workbench does).
+GNUstep uses the GNUmakefiles, which build `libODataKit`,
+`libODataIncrementalStore` and `libODataService`; link a client with
+`-lODataIncrementalStore -lODataKit`.
 
 ## Usage
 

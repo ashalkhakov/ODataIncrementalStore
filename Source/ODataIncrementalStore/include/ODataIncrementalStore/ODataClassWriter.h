@@ -25,8 +25,8 @@
 // Parameters are all optional: nil ones are not sent.
 
 #pragma once
-#import "OISCoreData.h"
-#import "ODataSchema.h"
+#import <ODataKit/OISCoreData.h>
+#import <ODataKit/ODataSchema.h>
 
 NS_ASSUME_NONNULL_BEGIN
 

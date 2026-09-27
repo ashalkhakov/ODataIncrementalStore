@@ -4,6 +4,7 @@
 
 #pragma once
 #import "ODataIncrementalStore.h"
+#import "ODataService.h"
 
 NS_ASSUME_NONNULL_BEGIN
 

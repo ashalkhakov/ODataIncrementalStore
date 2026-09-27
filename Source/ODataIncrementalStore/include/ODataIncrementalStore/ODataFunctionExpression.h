@@ -29,7 +29,7 @@
 // waits: evaluate it where the object's context may be used.
 
 #pragma once
-#import "OISCoreData.h"
+#import <ODataKit/OISCoreData.h>
 
 NS_ASSUME_NONNULL_BEGIN
 

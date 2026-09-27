@@ -27,22 +27,22 @@ LIBRARY_NAME = libODataHTTPServer
 libODataHTTPServer_OBJC_FILES = ODataHTTPServer.m $(GCDWebServer_OBJC_FILES)
 libODataHTTPServer_HEADER_FILES = ODataHTTPServer.h
 libODataHTTPServer_HEADER_FILES_INSTALL_DIR = ODataHTTPServer
-libODataHTTPServer_INCLUDE_DIRS = -I. -I../Source/include $(GCDWebServer_INCLUDE_DIRS)
+libODataHTTPServer_INCLUDE_DIRS = -I. -I../Source/ODataKit/include -I../Source/ODataIncrementalStore/include -I../Source/ODataService/include -I../Source/ODataKit/include/ODataKit -I../Source/ODataIncrementalStore/include/ODataIncrementalStore -I../Source/ODataService/include/ODataService $(GCDWebServer_INCLUDE_DIRS)
 libODataHTTPServer_OBJCFLAGS = $(FLAGS)
 libODataHTTPServer_LIB_DIRS = -L../obj
-libODataHTTPServer_LIBRARIES_DEPEND_UPON = -lODataIncrementalStore -lCoreData $(GCDWebServer_LIBS)
+libODataHTTPServer_LIBRARIES_DEPEND_UPON = -lODataService -lODataKit -lCoreData $(GCDWebServer_LIBS)
 
 TOOL_NAME = ois-serve ois-serve-check
 ois-serve_OBJC_FILES = ois-serve.m
 ois-serve-check_OBJC_FILES = Tests/ois-serve-check.m
-ois-serve_INCLUDE_DIRS = -I. -I../Source/include
-ois-serve-check_INCLUDE_DIRS = -I. -I../Source/include
+ois-serve_INCLUDE_DIRS = -I. -I../Source/ODataKit/include -I../Source/ODataIncrementalStore/include -I../Source/ODataService/include -I../Source/ODataKit/include/ODataKit -I../Source/ODataIncrementalStore/include/ODataIncrementalStore -I../Source/ODataService/include/ODataService
+ois-serve-check_INCLUDE_DIRS = -I. -I../Source/ODataKit/include -I../Source/ODataIncrementalStore/include -I../Source/ODataService/include -I../Source/ODataKit/include/ODataKit -I../Source/ODataIncrementalStore/include/ODataIncrementalStore -I../Source/ODataService/include/ODataService
 ois-serve_OBJCFLAGS = $(FLAGS)
 ois-serve-check_OBJCFLAGS = $(FLAGS)
 ois-serve_LIB_DIRS = -L./obj -L../obj
 ois-serve-check_LIB_DIRS = -L./obj -L../obj
-ois-serve_TOOL_LIBS = -lODataHTTPServer -lODataIncrementalStore -lCoreData $(GCDWebServer_LIBS)
-ois-serve-check_TOOL_LIBS = -lODataHTTPServer -lODataIncrementalStore -lCoreData $(GCDWebServer_LIBS)
+ois-serve_TOOL_LIBS = -lODataHTTPServer -lODataService -lODataKit -lCoreData $(GCDWebServer_LIBS)
+ois-serve-check_TOOL_LIBS = -lODataHTTPServer -lODataService -lODataKit -lCoreData $(GCDWebServer_LIBS)
 
 include $(GNUSTEP_MAKEFILES)/library.make
 include $(GNUSTEP_MAKEFILES)/tool.make
@@ -59,11 +59,11 @@ else
 CC = clang
 BUILD_DIR = build
 FLAGS = -fobjc-arc -fblocks -fobjc-exceptions -Wall -Wno-unused-parameter
-INCLUDES = -I. -I../Source/include $(GCDWebServer_INCLUDE_DIRS)
+INCLUDES = -I. -I../Source/ODataKit/include -I../Source/ODataIncrementalStore/include -I../Source/ODataService/include -I../Source/ODataKit/include/ODataKit -I../Source/ODataIncrementalStore/include/ODataIncrementalStore -I../Source/ODataService/include/ODataService $(GCDWebServer_INCLUDE_DIRS)
 LIBS = -framework Foundation -framework CoreData -framework Security -framework SystemConfiguration -framework CoreServices -lz
-LIBRARY_SOURCES = $(wildcard ../Source/*.m)
+LIBRARY_SOURCES = $(wildcard ../Source/*/*.m)
 SOURCES = ODataHTTPServer.m $(LIBRARY_SOURCES) $(GCDWebServer_OBJC_FILES)
-HEADERS = $(wildcard *.h ../Source/include/*.h ../Source/*.h)
+HEADERS = $(wildcard *.h ../Source/*/include/*/*.h ../Source/*/*.h)
 
 all: $(BUILD_DIR)/ois-serve $(BUILD_DIR)/ois-serve-check
 

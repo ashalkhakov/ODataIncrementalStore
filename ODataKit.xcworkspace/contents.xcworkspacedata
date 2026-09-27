@@ -8,6 +8,6 @@
       location = "group:Examples/Workbench/Workbench.xcodeproj">
    </FileRef>
    <FileRef
-      location = "group:ODataIncrementalStore.xcodeproj">
+      location = "group:ODataKit.xcodeproj">
    </FileRef>
 </Workspace>

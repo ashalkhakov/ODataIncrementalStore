@@ -57,7 +57,7 @@
 // It serves until SIGINT or SIGTERM, logs to standard error, and exits 0
 // on a clean stop, 1 on a configuration it cannot use.
 
-#import "ODataIncrementalStore.h"
+#import "ODataService.h"
 #import "ODataHTTPServer.h"
 
 static void OISFail(NSString *message)

@@ -11,7 +11,7 @@
 // path on unchanged. The URLs the service writes begin with its serviceRoot,
 // so give the service the public one.
 //
-// A separate library from ODataIncrementalStore, so that neither the client
+// A separate library from ODataService, so that neither the client
 // nor the service's core links the listener.
 
 #pragma once

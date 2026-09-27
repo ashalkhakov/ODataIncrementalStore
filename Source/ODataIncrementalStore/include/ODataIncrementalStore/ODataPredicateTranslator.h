@@ -3,8 +3,8 @@
 
 #pragma once
 #import <Foundation/Foundation.h>
-#import "OISCoreData.h"
-#import "ODataPropertyMapper.h"
+#import <ODataKit/OISCoreData.h>
+#import <ODataKit/ODataPropertyMapper.h>
 
 NS_ASSUME_NONNULL_BEGIN
 

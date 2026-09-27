@@ -91,6 +91,7 @@ make
 openapp ./Workbench.app
 ```
 
-Apple: open `ODataIncrementalStore.xcworkspace` at the library root, scheme
-**Workbench**. The app embeds `ODataIncrementalStore.framework`, copies
+Apple: open `ODataKit.xcworkspace` at the library root, scheme
+**Workbench**. The app embeds `ODataKit.framework`,
+`ODataIncrementalStore.framework` and `ODataService.framework`, copies
 `WorkbenchWindow.xib`, and compiles `Catalog.xcdatamodeld`.

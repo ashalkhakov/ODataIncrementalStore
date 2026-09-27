@@ -17,7 +17,7 @@
                BlueprintIdentifier = "AA0000000000000000000002"
                BuildableName = "ODataIncrementalStore.framework"
                BlueprintName = "ODataIncrementalStore"
-               ReferencedContainer = "container:../../ODataIncrementalStore.xcodeproj">
+               ReferencedContainer = "container:../../ODataKit.xcodeproj">
             </BuildableReference>
          </BuildActionEntry>
          <BuildActionEntry

@@ -11,10 +11,10 @@ OBJC = clang
 
 APP_NAME = Catalog
 Catalog_OBJC_FILES = main.m CatalogController.m
-Catalog_INCLUDE_DIRS = -I../../Source/include
+Catalog_INCLUDE_DIRS = -I../../Source/ODataKit/include -I../../Source/ODataIncrementalStore/include -I../../Source/ODataKit/include/ODataKit -I../../Source/ODataIncrementalStore/include/ODataIncrementalStore
 Catalog_LIB_DIRS = -L../../obj -L../..
-Catalog_OBJC_LIBS += -lODataIncrementalStore -lCoreData
-Catalog_TOOL_LIBS += -lODataIncrementalStore -lCoreData
+Catalog_OBJC_LIBS += -lODataIncrementalStore -lODataKit -lCoreData
+Catalog_TOOL_LIBS += -lODataIncrementalStore -lODataKit -lCoreData
 Catalog_RESOURCE_FILES = CatalogWindow.xib
 
 ADDITIONAL_OBJCFLAGS += -fobjc-arc -fblocks -fobjc-runtime=gnustep-2.0 \

@@ -10,11 +10,8 @@
 // few operations of its own.
 
 #pragma once
-#if __has_include(<ODataIncrementalStore/ODataIncrementalStore.h>)
 #import <ODataIncrementalStore/ODataIncrementalStore.h>
-#else
-#import "ODataIncrementalStore.h"
-#endif
+#import <ODataService/ODataService.h>
 
 NS_ASSUME_NONNULL_BEGIN
 

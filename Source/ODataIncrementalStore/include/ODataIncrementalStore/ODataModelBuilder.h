@@ -32,8 +32,8 @@
 // attribute; they are listed in the entity's userInfo under OData.unmapped.
 
 #pragma once
-#import "OISCoreData.h"
-#import "ODataSchema.h"
+#import <ODataKit/OISCoreData.h>
+#import <ODataKit/ODataSchema.h>
 
 NS_ASSUME_NONNULL_BEGIN
 

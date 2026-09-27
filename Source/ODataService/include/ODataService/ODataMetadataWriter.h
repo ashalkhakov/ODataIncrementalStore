@@ -16,8 +16,8 @@
 // ODataModelBuilder); the definitions are copied from there.
 
 #pragma once
-#import "OISCoreData.h"
-#import "ODataPropertyMapper.h"
+#import <ODataKit/OISCoreData.h>
+#import <ODataKit/ODataPropertyMapper.h>
 
 NS_ASSUME_NONNULL_BEGIN
 

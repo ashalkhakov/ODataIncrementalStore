@@ -10,8 +10,9 @@
 // them. One line per check; exits 0 only if all pass. The protocol itself
 // is tested without sockets, in Tests/ODataServiceTests.m.
 
-#import "ODataIncrementalStore.h"
+#import "ODataService.h"
 #import "ODataHTTPServer.h"
+#import <ODataKit/ODataBatch.h>
 #include <arpa/inet.h>
 #include <netinet/in.h>
 #include <sys/socket.h>

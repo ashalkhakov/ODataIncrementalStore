@@ -6,6 +6,8 @@
 	objectVersion = 56;
 	objects = {
 /* Begin PBXBuildFile section */
+		AB00000000000000000D0300 /* ODataKit.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = AB00000000000000000D0200 /* ODataKit.framework */; };
+		AB00000000000000000D0400 /* ODataKit.framework in Embed Frameworks */ = {isa = PBXBuildFile; fileRef = AB00000000000000000D0200 /* ODataKit.framework */; settings = {ATTRIBUTES = (CodeSignOnCopy, RemoveHeadersOnCopy, ); }; };
 		AA0000000000000000000066 /* main.m in Sources */ = {isa = PBXBuildFile; fileRef = AA0000000000000000000067 /* main.m */; };
 		AA0000000000000000000068 /* CatalogController.m in Sources */ = {isa = PBXBuildFile; fileRef = AA0000000000000000000069 /* CatalogController.m */; };
 		AA000000000000000000006A /* Catalog.xcdatamodeld in Resources */ = {isa = PBXBuildFile; fileRef = AA000000000000000000006B /* Catalog.xcdatamodeld */; };
@@ -17,16 +19,30 @@
 /* End PBXBuildFile section */
 
 /* Begin PBXContainerItemProxy section */
+		AB00000000000000000D0000 /* PBXContainerItemProxy */ = {
+			isa = PBXContainerItemProxy;
+			containerPortal = AA0000000000000000000073 /* ODataKit.xcodeproj */;
+			proxyType = 1;
+			remoteGlobalIDString = AA0000000000000000000006;
+			remoteInfo = ODataKit;
+		};
+		AB00000000000000000D0100 /* PBXContainerItemProxy */ = {
+			isa = PBXContainerItemProxy;
+			containerPortal = AA0000000000000000000073 /* ODataKit.xcodeproj */;
+			proxyType = 2;
+			remoteGlobalIDString = AA0000000000000000000007;
+			remoteInfo = ODataKit;
+		};
 		AA0000000000000000000072 /* PBXContainerItemProxy */ = {
 			isa = PBXContainerItemProxy;
-			containerPortal = AA0000000000000000000073 /* ODataIncrementalStore.xcodeproj */;
+			containerPortal = AA0000000000000000000073 /* ODataKit.xcodeproj */;
 			proxyType = 1;
 			remoteGlobalIDString = AA0000000000000000000002;
 			remoteInfo = ODataIncrementalStore;
 		};
 		AA0000000000000000000074 /* PBXContainerItemProxy */ = {
 			isa = PBXContainerItemProxy;
-			containerPortal = AA0000000000000000000073 /* ODataIncrementalStore.xcodeproj */;
+			containerPortal = AA0000000000000000000073 /* ODataKit.xcodeproj */;
 			proxyType = 2;
 			remoteGlobalIDString = AA0000000000000000000003;
 			remoteInfo = ODataIncrementalStore;
@@ -41,6 +57,7 @@
 			dstSubfolderSpec = 10;
 			files = (
 				AA0000000000000000000071 /* ODataIncrementalStore.framework in Embed Frameworks */,
+				AB00000000000000000D0400 /* ODataKit.framework in Embed Frameworks */,
 			);
 			name = "Embed Frameworks";
 			runOnlyForDeploymentPostprocessing = 0;
@@ -49,7 +66,7 @@
 
 /* Begin PBXFileReference section */
 		AA0000000000000000000007 /* Catalog.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = Catalog.app; sourceTree = BUILT_PRODUCTS_DIR; };
-		AA0000000000000000000073 /* ODataIncrementalStore.xcodeproj */ = {isa = PBXFileReference; lastKnownFileType = "wrapper.pb-project"; name = ODataIncrementalStore.xcodeproj; path = ../../ODataIncrementalStore.xcodeproj; sourceTree = "<group>"; };
+		AA0000000000000000000073 /* ODataKit.xcodeproj */ = {isa = PBXFileReference; lastKnownFileType = "wrapper.pb-project"; name = ODataKit.xcodeproj; path = ../../ODataKit.xcodeproj; sourceTree = "<group>"; };
 		AA000000000000000000006F /* Cocoa.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = Cocoa.framework; path = System/Library/Frameworks/Cocoa.framework; sourceTree = SDKROOT; };
 		AA000000000000000000003D /* CoreData.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = CoreData.framework; path = System/Library/Frameworks/CoreData.framework; sourceTree = SDKROOT; };
 		AA0000000000000000000076 /* ../../Xcode/Configs/Debug.xcconfig */ = {isa = PBXFileReference; lastKnownFileType = text.xcconfig; path = ../../Xcode/Configs/Debug.xcconfig; sourceTree = "<group>"; };
@@ -67,6 +84,7 @@
 			buildActionMask = 2147483647;
 			files = (
 				AA000000000000000000006C /* ODataIncrementalStore.framework in Frameworks */,
+				AB00000000000000000D0300 /* ODataKit.framework in Frameworks */,
 				AA000000000000000000006E /* Cocoa.framework in Frameworks */,
 				AA0000000000000000000070 /* CoreData.framework in Frameworks */,
 			);
@@ -79,7 +97,7 @@
 			isa = PBXGroup;
 			children = (
 				AA000000000000000000007B /* Catalog */,
-				AA0000000000000000000073 /* ODataIncrementalStore.xcodeproj */,
+				AA0000000000000000000073 /* ODataKit.xcodeproj */,
 				AA000000000000000000007C /* Configs */,
 				AA000000000000000000007D /* Frameworks */,
 				AA000000000000000000007E /* Products */,
@@ -102,6 +120,7 @@
 			isa = PBXGroup;
 			children = (
 				AA000000000000000000006D /* ODataIncrementalStore.framework */,
+				AB00000000000000000D0200 /* ODataKit.framework */,
 			);
 			name = Products;
 			sourceTree = "<group>";
@@ -148,6 +167,7 @@
 			);
 			dependencies = (
 				AA0000000000000000000083 /* PBXTargetDependency */,
+				AB00000000000000000D0500 /* PBXTargetDependency */,
 			);
 			name = Catalog;
 			productName = Catalog;
@@ -183,7 +203,7 @@
 			projectReferences = (
 				{
 					ProductGroup = AA000000000000000000007F /* Products */;
-					ProjectRef = AA0000000000000000000073 /* ODataIncrementalStore.xcodeproj */;
+					ProjectRef = AA0000000000000000000073 /* ODataKit.xcodeproj */;
 				},
 			);
 			projectRoot = "";
@@ -194,6 +214,13 @@
 /* End PBXProject section */
 
 /* Begin PBXReferenceProxy section */
+		AB00000000000000000D0200 /* ODataKit.framework */ = {
+			isa = PBXReferenceProxy;
+			fileType = wrapper.framework;
+			path = ODataKit.framework;
+			remoteRef = AB00000000000000000D0100 /* PBXContainerItemProxy */;
+			sourceTree = BUILT_PRODUCTS_DIR;
+		};
 		AA000000000000000000006D /* ODataIncrementalStore.framework */ = {
 			isa = PBXReferenceProxy;
 			fileType = wrapper.framework;
@@ -228,6 +255,11 @@
 /* End PBXSourcesBuildPhase section */
 
 /* Begin PBXTargetDependency section */
+		AB00000000000000000D0500 /* PBXTargetDependency */ = {
+			isa = PBXTargetDependency;
+			name = ODataKit;
+			targetProxy = AB00000000000000000D0000 /* PBXContainerItemProxy */;
+		};
 		AA0000000000000000000083 /* PBXTargetDependency */ = {
 			isa = PBXTargetDependency;
 			name = ODataIncrementalStore;

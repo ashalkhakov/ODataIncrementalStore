@@ -13,7 +13,8 @@ ifeq ($(origin CC),default)
 CC = clang
 endif
 SRC_DIR = Source
-INC = -I$(SRC_DIR)/include
+LIBS_ = ODataKit ODataIncrementalStore ODataService
+INC = $(foreach l,$(LIBS_),-I$(SRC_DIR)/$(l)/include -I$(SRC_DIR)/$(l)/include/$(l))
 
 ifeq ($(findstring gcc,$(CC)),gcc)
 $(error OIS requires clang + libobjc2. GCC's libobjc is the old fragile runtime.)
@@ -39,52 +40,36 @@ OBJCFLAGS = $(GNUSTEP_FLAGS) \
 	-Wall -Wno-unused-parameter \
 	$(INC)
 
-SRCS = \
-	$(SRC_DIR)/ODataError.m \
-	$(SRC_DIR)/ODataConfiguration.m \
-	$(SRC_DIR)/ODataClient.m \
-	$(SRC_DIR)/ODataPropertyMapper.m \
-	$(SRC_DIR)/ODataValue.m \
-	$(SRC_DIR)/ODataBatch.m \
-	$(SRC_DIR)/ODataSchema.m \
-	$(SRC_DIR)/ODataOperationCall.m \
-	$(SRC_DIR)/ODataLexer.m \
-	$(SRC_DIR)/ODataExpression.m \
-	$(SRC_DIR)/ODataHistory.m \
-	$(SRC_DIR)/ODataClassWriter.m \
-	$(SRC_DIR)/ODataFunctionExpression.m \
-	$(SRC_DIR)/ODataModelBuilder.m \
-	$(SRC_DIR)/ODataResourceIdentifier.m \
-	$(SRC_DIR)/ODataPredicateTranslator.m \
-	$(SRC_DIR)/ODataQueryBuilder.m \
-	$(SRC_DIR)/ODataIncrementalStore.m \
-	$(SRC_DIR)/ODataPredicateBuilder.m \
-	$(SRC_DIR)/ODataMetadataWriter.m \
-	$(SRC_DIR)/ODataOperationCatalog.m \
-	$(SRC_DIR)/ODataService.m \
-	$(SRC_DIR)/ODataServiceBatch.m \
-	$(SRC_DIR)/ODataAuthentication.m \
-	$(SRC_DIR)/OISSignature.m
+KIT_SRCS = $(wildcard $(SRC_DIR)/ODataKit/*.m)
+CLIENT_SRCS = $(wildcard $(SRC_DIR)/ODataIncrementalStore/*.m)
+SERVICE_SRCS = $(wildcard $(SRC_DIR)/ODataService/*.m)
+SRCS = $(KIT_SRCS) $(CLIENT_SRCS) $(SERVICE_SRCS)
 
 OBJS = $(SRCS:.m=.o)
 
 .PHONY: all clean test
 
-all: libODataIncrementalStore.so ois-filter ois-model Catalog.momd
+all: libODataKit.so libODataIncrementalStore.so libODataService.so ois-filter ois-model Catalog.momd
 
-libODataIncrementalStore.so: $(OBJS)
-	$(CC) -shared -o $@ $(OBJS) $(GNUSTEP_LIBS)
+libODataKit.so: $(KIT_SRCS:.m=.o)
+	$(CC) -shared -o $@ $^ $(GNUSTEP_LIBS)
+
+libODataIncrementalStore.so: $(CLIENT_SRCS:.m=.o) libODataKit.so
+	$(CC) -shared -o $@ $(CLIENT_SRCS:.m=.o) -L. -lODataKit $(GNUSTEP_LIBS)
+
+libODataService.so: $(SERVICE_SRCS:.m=.o) libODataKit.so
+	$(CC) -shared -o $@ $(SERVICE_SRCS:.m=.o) -L. -lODataKit $(GNUSTEP_LIBS)
 
 $(SRC_DIR)/%.o: $(SRC_DIR)/%.m
 	$(CC) $(OBJCFLAGS) -c $< -o $@
 
 ois-filter: Tools/ois-filter.m libODataIncrementalStore.so
-	$(CC) $(OBJCFLAGS) -o $@ Tools/ois-filter.m -L. -lODataIncrementalStore $(GNUSTEP_LIBS)
+	$(CC) $(OBJCFLAGS) -o $@ Tools/ois-filter.m -L. -lODataIncrementalStore -lODataKit $(GNUSTEP_LIBS)
 
 # A Core Data model from a service's $metadata:
 #   ./ois-model https://services.odata.org/V4/Northwind/Northwind.svc/ Northwind.xcdatamodeld
 ois-model: Tools/ois-model.m libODataIncrementalStore.so
-	$(CC) $(OBJCFLAGS) -o $@ Tools/ois-model.m -L. -lODataIncrementalStore $(GNUSTEP_LIBS)
+	$(CC) $(OBJCFLAGS) -o $@ Tools/ois-model.m -L. -lODataIncrementalStore -lODataKit $(GNUSTEP_LIBS)
 
 # FreeCoreData's model compiler (make -C Tools/momc install there).
 MOMC ?= momc
@@ -99,5 +84,5 @@ test:
 	$(MAKE) -C Tests run-tests
 
 clean:
-	rm -f $(OBJS) libODataIncrementalStore.so ois-filter ois-model
+	rm -f $(OBJS) libODataKit.so libODataIncrementalStore.so libODataService.so ois-filter ois-model
 	rm -rf Catalog.momd

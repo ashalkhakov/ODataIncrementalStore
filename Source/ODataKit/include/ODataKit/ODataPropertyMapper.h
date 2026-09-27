@@ -4,11 +4,16 @@
 #pragma once
 #import <Foundation/Foundation.h>
 #import "OISCoreData.h"
-#import "ODataConfiguration.h"
 #import "ODataValue.h"
 #import "ODataSchema.h"
 
 NS_ASSUME_NONNULL_BEGIN
+
+typedef NS_ENUM(NSInteger, ODataPropertyNaming) {
+  ODataPropertyNamingAsIs = 0,
+  ODataPropertyNamingPascalCase = 1
+};
+
 
 FOUNDATION_EXPORT NSString * const ODataUserInfoEntitySet;
 FOUNDATION_EXPORT NSString * const ODataUserInfoProperty;

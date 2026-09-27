@@ -1,0 +1,1060 @@
+// !$*UTF8*$!
+{
+	archiveVersion = 1;
+	classes = {
+	};
+	objectVersion = 56;
+	objects = {
+
+/* Begin PBXBuildFile section */
+		B03B84E8BA5512080567AE56 /* ODataPredicateTranslator.m in Sources */ = {isa = PBXBuildFile; fileRef = B46D23185F0C0B62CDA96C23 /* ODataPredicateTranslator.m */; };
+		B056C28D90E548DB0DE4533D /* ODataExpression.h in Headers */ = {isa = PBXBuildFile; fileRef = B3CAB60E43B84AA3A08DEE26 /* ODataExpression.h */; settings = {ATTRIBUTES = (Public, ); }; };
+		B0827FE68E0A5A8C636C2735 /* ODataQueryBuilderTests.m in Sources */ = {isa = PBXBuildFile; fileRef = BC6FA83F81430EB8A0015BEC /* ODataQueryBuilderTests.m */; };
+		B0CC462EB67116ACAD0811D3 /* ODataService.h in Headers */ = {isa = PBXBuildFile; fileRef = B819C7A9F0C4AD1745DBA5AB /* ODataService.h */; settings = {ATTRIBUTES = (Public, ); }; };
+		B1136C3CCE10EED37A7CAB7D /* ODataClient.m in Sources */ = {isa = PBXBuildFile; fileRef = BBE8BFCE7F326F9C9CC749E6 /* ODataClient.m */; };
+		B113AFB12161139866678838 /* ODataTransport.m in Sources */ = {isa = PBXBuildFile; fileRef = BB661710CE4123B5519A3D44 /* ODataTransport.m */; };
+		B196C8762DFD4DD1590E7E42 /* OISSignature.m in Sources */ = {isa = PBXBuildFile; fileRef = BC713C43C4F5EBCCD1BC7B99 /* OISSignature.m */; };
+		B1BAAA965DEB43CE5A73BB46 /* ODataMetadataWriter.m in Sources */ = {isa = PBXBuildFile; fileRef = B231A9C1DC572C8F92288D90 /* ODataMetadataWriter.m */; };
+		B1DFBE97AEDA3083872469DD /* ODataPredicateTranslatorTests.m in Sources */ = {isa = PBXBuildFile; fileRef = B12850242CD55705EBBFC314 /* ODataPredicateTranslatorTests.m */; };
+		B246A689DF785A799BAAA7F7 /* ODataPredicateBuilder.m in Sources */ = {isa = PBXBuildFile; fileRef = B5181AA8755FAB53B3668708 /* ODataPredicateBuilder.m */; };
+		B2615B5E134F64925491B824 /* ODataServiceTests.m in Sources */ = {isa = PBXBuildFile; fileRef = B30806AF7F73C52A54B41C4B /* ODataServiceTests.m */; };
+		B28C550E4A1FC5534F7C90C5 /* ODataServiceBatch.m in Sources */ = {isa = PBXBuildFile; fileRef = BCFA68AC1F779AD086BBF30F /* ODataServiceBatch.m */; };
+		B292F4F0E57B32C12E7BC865 /* Foundation.framework in FrameworksODataService */ = {isa = PBXBuildFile; fileRef = B6EA5FCF47CD332114D2DC1E /* Foundation.framework */; };
+		B2A761C3BB1A86032F79E542 /* ODataBatch.h in Headers */ = {isa = PBXBuildFile; fileRef = B58B1F7F6499F45B258C535A /* ODataBatch.h */; settings = {ATTRIBUTES = (Public, ); }; };
+		B2EEB9995D807FECAB876C8A /* ODataQueryBuilder.m in Sources */ = {isa = PBXBuildFile; fileRef = B344AAE95D18785B0D0D1047 /* ODataQueryBuilder.m */; };
+		B32AE50625D90AA74508F611 /* ODataPredicateTranslator.h in Headers */ = {isa = PBXBuildFile; fileRef = BF7487A25CF257D7FB1C0CB4 /* ODataPredicateTranslator.h */; settings = {ATTRIBUTES = (Public, ); }; };
+		B393644308DD23BC62AFC5FA /* ODataLexer.m in Sources */ = {isa = PBXBuildFile; fileRef = BC40C0C255657A288601624F /* ODataLexer.m */; };
+		B3996675A59FAFEA536215B9 /* OISRuntime.h in Headers */ = {isa = PBXBuildFile; fileRef = B1063AFB2AEDE67A44BCE921 /* OISRuntime.h */; settings = {ATTRIBUTES = (Public, ); }; };
+		B4929E6C576494718DC7799D /* CoreData.framework in FrameworksODataIncrementalStore */ = {isa = PBXBuildFile; fileRef = B34C6BA09D1A851E774BD249 /* CoreData.framework */; };
+		B495F2F31718763EDE6FF61A /* ODataTransport.h in Headers */ = {isa = PBXBuildFile; fileRef = BA496A27A63D29266C0986D0 /* ODataTransport.h */; settings = {ATTRIBUTES = (Public, ); }; };
+		B4A603B55B3DDDC2F0227E90 /* ODataBatch.m in Sources */ = {isa = PBXBuildFile; fileRef = BE5990D4C84E1EC229CA5056 /* ODataBatch.m */; };
+		B4D03138626C152A624D8872 /* ODataError.h in Headers */ = {isa = PBXBuildFile; fileRef = B70B76AA54D43A93B2D925E3 /* ODataError.h */; settings = {ATTRIBUTES = (Public, ); }; };
+		B4D68D31BCB0D7D0AA9A8296 /* ODataSnapshotTransport.m in Sources */ = {isa = PBXBuildFile; fileRef = B191A67677A52F0F4E768076 /* ODataSnapshotTransport.m */; };
+		B50211572C769AD4F93E4B02 /* ODataKit.framework in FrameworksODataService */ = {isa = PBXBuildFile; fileRef = AA0000000000000000000007 /* ODataKit.framework */; };
+		B52F12E9A99E56EB29276C06 /* Security.framework in FrameworksODataService */ = {isa = PBXBuildFile; fileRef = B2D17EDD20D3E3D1D2E1BB14 /* Security.framework */; };
+		B5A27492DCFD33E47FFFEEF6 /* CoreData.framework in FrameworksODataService */ = {isa = PBXBuildFile; fileRef = B34C6BA09D1A851E774BD249 /* CoreData.framework */; };
+		B5B54B64009D89755AB6335D /* ODataModelBuilder.m in Sources */ = {isa = PBXBuildFile; fileRef = BE18B9CC76197344359F5B12 /* ODataModelBuilder.m */; };
+		B5D431B2FBEDE8D6FCE16614 /* Catalog.xcdatamodeld in Resources */ = {isa = PBXBuildFile; fileRef = B0E36935DEF624A456553498 /* Catalog.xcdatamodeld */; };
+		B5DC91F69565B358421CB479 /* ODataConfiguration.m in Sources */ = {isa = PBXBuildFile; fileRef = B547B0E626E38AD1C686253C /* ODataConfiguration.m */; };
+		B5E554FAC478D4C304EA9F66 /* ODataIncrementalStore.framework in Frameworkstests */ = {isa = PBXBuildFile; fileRef = AA0000000000000000000003 /* ODataIncrementalStore.framework */; };
+		B5F79C07652F6271480ABB00 /* ODataHistory.h in Headers */ = {isa = PBXBuildFile; fileRef = BB9F29FEB793BAA8B5C0BEBA /* ODataHistory.h */; settings = {ATTRIBUTES = (Public, ); }; };
+		B6234E4BEE3F35AA8278B3E3 /* ODataOperationTests.m in Sources */ = {isa = PBXBuildFile; fileRef = BB577E5CF4CE2F6A616D6346 /* ODataOperationTests.m */; };
+		B62D873BFA2F4D3E6148A7ED /* ODataIncrementalStore.h in Headers */ = {isa = PBXBuildFile; fileRef = B9A9EBCC267966B02A08460E /* ODataIncrementalStore.h */; settings = {ATTRIBUTES = (Public, ); }; };
+		B62DF2ACFBCB3C71904F682F /* Snapshots in Resources */ = {isa = PBXBuildFile; fileRef = B315A771ED707A8BA994611E /* Snapshots */; };
+		B6418E7931C73E169294969C /* ODataAuthentication.m in Sources */ = {isa = PBXBuildFile; fileRef = B2FB262C55182612B9FC4702 /* ODataAuthentication.m */; };
+		B6A6E2F03C55E7070FE961ED /* ODataResourceIdentifierTests.m in Sources */ = {isa = PBXBuildFile; fileRef = BAB24C12D8392296AA12EE21 /* ODataResourceIdentifierTests.m */; };
+		B70E5AEB65C0484FB7C4A697 /* ODataKit.framework in FrameworksODataIncrementalStore */ = {isa = PBXBuildFile; fileRef = AA0000000000000000000007 /* ODataKit.framework */; };
+		B70ED169F5BF131E5777151B /* ODataFunctionExpression.h in Headers */ = {isa = PBXBuildFile; fileRef = B17A4FB32CBA0358D70B3867 /* ODataFunctionExpression.h */; settings = {ATTRIBUTES = (Public, ); }; };
+		B716E34B5557F9CD803F2DFB /* ODataOperationCall.h in Headers */ = {isa = PBXBuildFile; fileRef = B50637744D7E63DF0131F408 /* ODataOperationCall.h */; settings = {ATTRIBUTES = (Public, ); }; };
+		B72C96816FACDF88B4F7DCA7 /* ODataKit.h in Headers */ = {isa = PBXBuildFile; fileRef = B313072022835CC670C3B02E /* ODataKit.h */; settings = {ATTRIBUTES = (Public, ); }; };
+		B7774B248A55D702318AC3A4 /* Foundation.framework in FrameworksODataIncrementalStore */ = {isa = PBXBuildFile; fileRef = B6EA5FCF47CD332114D2DC1E /* Foundation.framework */; };
+		B7826154FD25D8F66DF99B70 /* ODataHistoryTests.m in Sources */ = {isa = PBXBuildFile; fileRef = BFC56714DFD6BE2E829E1CBD /* ODataHistoryTests.m */; };
+		B7853E4CF8ED2915675F57EF /* ODataSchema.m in Sources */ = {isa = PBXBuildFile; fileRef = B7C84FC11DD7261A0B3709F7 /* ODataSchema.m */; };
+		B7B8F887EC14B3DE237D2293 /* ODataPropertyMapper.m in Sources */ = {isa = PBXBuildFile; fileRef = B4E08C88136730A6E67CF2C4 /* ODataPropertyMapper.m */; };
+		B821722B214935367A9158C7 /* CoreData.framework in FrameworksODataKit */ = {isa = PBXBuildFile; fileRef = B34C6BA09D1A851E774BD249 /* CoreData.framework */; };
+		B83627C2E745D238BEDF7D87 /* OISCoreData.h in Headers */ = {isa = PBXBuildFile; fileRef = BAE259C1DAC5A4D95D1DD9A2 /* OISCoreData.h */; settings = {ATTRIBUTES = (Public, ); }; };
+		B843882E37C1DFB0C0203B4B /* Foundation.framework in FrameworksODataKit */ = {isa = PBXBuildFile; fileRef = B6EA5FCF47CD332114D2DC1E /* Foundation.framework */; };
+		B86AD2D142AFFA5D011CBFAC /* ODataPredicatePairTests.m in Sources */ = {isa = PBXBuildFile; fileRef = B4573556B65EE028BAAA51C5 /* ODataPredicatePairTests.m */; };
+		B8A3A4CB3D524EA1BCFAEB85 /* OISCatalogModel.m in Sources */ = {isa = PBXBuildFile; fileRef = B4B5957ACFE62A5DC5BCE768 /* OISCatalogModel.m */; };
+		B8A660C027CF3AD224C5401F /* ODataClassWriter.m in Sources */ = {isa = PBXBuildFile; fileRef = BC33F218A5148A57BD4A53FE /* ODataClassWriter.m */; };
+		B95AE21DA72B1576715BCE0D /* ODataError.m in Sources */ = {isa = PBXBuildFile; fileRef = BF9FF9B4E0ED3F9F68AFFD67 /* ODataError.m */; };
+		BA14CA501F7CB1A83428DD6E /* ODataKit.framework in Frameworkstests */ = {isa = PBXBuildFile; fileRef = AA0000000000000000000007 /* ODataKit.framework */; };
+		BA157150B5CB2C5ADF50B9AC /* ODataValueTests.m in Sources */ = {isa = PBXBuildFile; fileRef = BE3D9212857CED74B596EC06 /* ODataValueTests.m */; };
+		BA39A0E142501F3F8733AACA /* ODataExpression.m in Sources */ = {isa = PBXBuildFile; fileRef = BC4150830A60E511EDFED020 /* ODataExpression.m */; };
+		BA3C703456618080D55A6A26 /* ODataOperationCall.m in Sources */ = {isa = PBXBuildFile; fileRef = BD3640A4CB161AED48DC4423 /* ODataOperationCall.m */; };
+		BA47E2E5231C4AE98C3569DD /* ODataSchemaTests.m in Sources */ = {isa = PBXBuildFile; fileRef = B1CA5073147126022D056B88 /* ODataSchemaTests.m */; };
+		BA4A0899B0CF8FC6175304FD /* ODataPredicateBuilder.h in Headers */ = {isa = PBXBuildFile; fileRef = B0AA8F4082DCB7C43D0890C0 /* ODataPredicateBuilder.h */; settings = {ATTRIBUTES = (Public, ); }; };
+		BAAB8B5037876849D9045CBB /* ODataService.framework in Frameworkstests */ = {isa = PBXBuildFile; fileRef = AA000000000000000000000B /* ODataService.framework */; };
+		BAC96729ECDF8821F156F529 /* ODataResourceIdentifier.h in Headers */ = {isa = PBXBuildFile; fileRef = B0FAE061A6730BA02D7A5F65 /* ODataResourceIdentifier.h */; settings = {ATTRIBUTES = (Public, ); }; };
+		BB0673E2BF66A188434D8600 /* ODataClient.h in Headers */ = {isa = PBXBuildFile; fileRef = BC113BE91BB65A75F9436F4D /* ODataClient.h */; settings = {ATTRIBUTES = (Public, ); }; };
+		BB1B8B4AFFD0690481907376 /* ODataFunctionExpression.m in Sources */ = {isa = PBXBuildFile; fileRef = BB52ADA75DDA9EBD42F14062 /* ODataFunctionExpression.m */; };
+		BB2BF34FB6588288B4B1D001 /* ODataPropertyMapper.h in Headers */ = {isa = PBXBuildFile; fileRef = B79B75970DACDB3F20CB0BAB /* ODataPropertyMapper.h */; settings = {ATTRIBUTES = (Public, ); }; };
+		BC0BBC5190FF7556BC42A7FE /* ODataValue.m in Sources */ = {isa = PBXBuildFile; fileRef = BC2A4D85AAF3941E049BB375 /* ODataValue.m */; };
+		BC755F953112296E0E8137D1 /* ODataQueryBuilder.h in Headers */ = {isa = PBXBuildFile; fileRef = B253B19DC7762A954B421E56 /* ODataQueryBuilder.h */; settings = {ATTRIBUTES = (Public, ); }; };
+		BC8A6A545BCB85FFAB63EEE8 /* ODataExpressionTests.m in Sources */ = {isa = PBXBuildFile; fileRef = BCBBD3FD3B096F870E7CB13B /* ODataExpressionTests.m */; };
+		BC8D312BFD572BADCEDA503E /* ODataValue.h in Headers */ = {isa = PBXBuildFile; fileRef = B9F38C2E717E0720D785C25D /* ODataValue.h */; settings = {ATTRIBUTES = (Public, ); }; };
+		BC9365A5222B2F21A8EABC9C /* ODataHistory.m in Sources */ = {isa = PBXBuildFile; fileRef = B47892F8D7359812D36C1DFB /* ODataHistory.m */; };
+		BCA4C7DD8D71B7252EFC0591 /* ODataModelBuilderTests.m in Sources */ = {isa = PBXBuildFile; fileRef = BDD1234B5A5212850A89D94D /* ODataModelBuilderTests.m */; };
+		BCF5DA096F6F5533BCE201E6 /* ODataSchema.h in Headers */ = {isa = PBXBuildFile; fileRef = B233C550667A3AE3794DC078 /* ODataSchema.h */; settings = {ATTRIBUTES = (Public, ); }; };
+		BDCBE111A5DF21D34CBA6A18 /* ODataConfiguration.h in Headers */ = {isa = PBXBuildFile; fileRef = B407D3FC2B304942F1F25F16 /* ODataConfiguration.h */; settings = {ATTRIBUTES = (Public, ); }; };
+		BDDD168F1D1E0B4A80E2EF7D /* ODataAuthentication.h in Headers */ = {isa = PBXBuildFile; fileRef = B5D9A994642F530EDFA9A0A6 /* ODataAuthentication.h */; settings = {ATTRIBUTES = (Public, ); }; };
+		BE091186569B520087CF38E1 /* ODataResourceIdentifier.m in Sources */ = {isa = PBXBuildFile; fileRef = BDCB268D2AE52459E3231048 /* ODataResourceIdentifier.m */; };
+		BE0B436E039420C123CC879C /* ODataClassWriter.h in Headers */ = {isa = PBXBuildFile; fileRef = B60D518BAB79759508EDA91D /* ODataClassWriter.h */; settings = {ATTRIBUTES = (Public, ); }; };
+		BE207C1400DC78698A6643EB /* ODataSnapshotStoreTests.m in Sources */ = {isa = PBXBuildFile; fileRef = BE914FCABC97BAE1BBC56DFE /* ODataSnapshotStoreTests.m */; };
+		BE256093E4BA09FAFAA1F8A1 /* ODataIncrementalStore.m in Sources */ = {isa = PBXBuildFile; fileRef = BD0E19D21EB9182A389283F8 /* ODataIncrementalStore.m */; };
+		BE917EA201D75F17121BF885 /* ODataMetadataWriter.h in Headers */ = {isa = PBXBuildFile; fileRef = B4560315BDB2AE56BE9BCE17 /* ODataMetadataWriter.h */; settings = {ATTRIBUTES = (Public, ); }; };
+		BE9903CE28D7A94C675A726A /* ODataService.m in Sources */ = {isa = PBXBuildFile; fileRef = B50F95B0017EBAF55BEFC746 /* ODataService.m */; };
+		BEFB5589EC3DACE2024EC81F /* ODataModelBuilder.h in Headers */ = {isa = PBXBuildFile; fileRef = BB6F30CF82E3EDEBC90F595F /* ODataModelBuilder.h */; settings = {ATTRIBUTES = (Public, ); }; };
+		BF79F82E6E0F4202CAE3D0B8 /* ODataOperationCatalog.m in Sources */ = {isa = PBXBuildFile; fileRef = BA2EB602AA25995D34810903 /* ODataOperationCatalog.m */; };
+		BFDD379CA7076830C1BD3EAC /* CoreData.framework in Frameworkstests */ = {isa = PBXBuildFile; fileRef = B34C6BA09D1A851E774BD249 /* CoreData.framework */; };
+/* End PBXBuildFile section */
+
+/* Begin PBXContainerItemProxy section */
+		B24961C645D91879213DA767 /* PBXContainerItemProxy */ = {
+			isa = PBXContainerItemProxy;
+			containerPortal = AA0000000000000000000001 /* Project object */;
+			proxyType = 1;
+			remoteGlobalIDString = AA0000000000000000000002;
+			remoteInfo = ODataIncrementalStore;
+		};
+		B2C93B53AAF1D8ABC4AE3643 /* PBXContainerItemProxy */ = {
+			isa = PBXContainerItemProxy;
+			containerPortal = AA0000000000000000000001 /* Project object */;
+			proxyType = 1;
+			remoteGlobalIDString = AA000000000000000000000A;
+			remoteInfo = ODataService;
+		};
+		BACDDCF2A7CF8421FE50581B /* PBXContainerItemProxy */ = {
+			isa = PBXContainerItemProxy;
+			containerPortal = AA0000000000000000000001 /* Project object */;
+			proxyType = 1;
+			remoteGlobalIDString = AA0000000000000000000006;
+			remoteInfo = ODataKit;
+		};
+		BB0398755638ECDE6999B375 /* PBXContainerItemProxy */ = {
+			isa = PBXContainerItemProxy;
+			containerPortal = AA0000000000000000000001 /* Project object */;
+			proxyType = 1;
+			remoteGlobalIDString = AA0000000000000000000006;
+			remoteInfo = ODataKit;
+		};
+		BEC6964CC8D34611B0F18C71 /* PBXContainerItemProxy */ = {
+			isa = PBXContainerItemProxy;
+			containerPortal = AA0000000000000000000001 /* Project object */;
+			proxyType = 1;
+			remoteGlobalIDString = AA0000000000000000000006;
+			remoteInfo = ODataKit;
+		};
+/* End PBXContainerItemProxy section */
+
+/* Begin PBXFileReference section */
+		AA0000000000000000000003 /* ODataIncrementalStore.framework */ = {isa = PBXFileReference; explicitFileType = wrapper.framework; includeInIndex = 0; path = ODataIncrementalStore.framework; sourceTree = BUILT_PRODUCTS_DIR; };
+		AA0000000000000000000005 /* ODataKitTests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = ODataKitTests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
+		AA0000000000000000000007 /* ODataKit.framework */ = {isa = PBXFileReference; explicitFileType = wrapper.framework; includeInIndex = 0; path = ODataKit.framework; sourceTree = BUILT_PRODUCTS_DIR; };
+		AA000000000000000000000B /* ODataService.framework */ = {isa = PBXFileReference; explicitFileType = wrapper.framework; includeInIndex = 0; path = ODataService.framework; sourceTree = BUILT_PRODUCTS_DIR; };
+		B06EFE374025CC510AA2B235 /* ODataLexer.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = ODataLexer.h; sourceTree = "<group>"; };
+		B0AA8F4082DCB7C43D0890C0 /* ODataPredicateBuilder.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = ODataPredicateBuilder.h; sourceTree = "<group>"; };
+		B0E36935DEF624A456553498 /* Catalog.xcdatamodeld */ = {isa = PBXFileReference; lastKnownFileType = wrapper.xcdatamodeld; name = Catalog.xcdatamodeld; path = ../Examples/Catalog/Catalog.xcdatamodeld; sourceTree = "<group>"; };
+		B0FAE061A6730BA02D7A5F65 /* ODataResourceIdentifier.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = ODataResourceIdentifier.h; sourceTree = "<group>"; };
+		B1063AFB2AEDE67A44BCE921 /* OISRuntime.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = OISRuntime.h; sourceTree = "<group>"; };
+		B12850242CD55705EBBFC314 /* ODataPredicateTranslatorTests.m */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.objc; path = ODataPredicateTranslatorTests.m; sourceTree = "<group>"; };
+		B17A4FB32CBA0358D70B3867 /* ODataFunctionExpression.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = ODataFunctionExpression.h; sourceTree = "<group>"; };
+		B191A67677A52F0F4E768076 /* ODataSnapshotTransport.m */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.objc; path = ODataSnapshotTransport.m; sourceTree = "<group>"; };
+		B1CA5073147126022D056B88 /* ODataSchemaTests.m */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.objc; path = ODataSchemaTests.m; sourceTree = "<group>"; };
+		B231A9C1DC572C8F92288D90 /* ODataMetadataWriter.m */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.objc; path = ODataMetadataWriter.m; sourceTree = "<group>"; };
+		B233C550667A3AE3794DC078 /* ODataSchema.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = ODataSchema.h; sourceTree = "<group>"; };
+		B23EDC0754AEEF5A1DF192AB /* OISCatalogModel.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = OISCatalogModel.h; sourceTree = "<group>"; };
+		B253B19DC7762A954B421E56 /* ODataQueryBuilder.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = ODataQueryBuilder.h; sourceTree = "<group>"; };
+		B2D17EDD20D3E3D1D2E1BB14 /* Security.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = Security.framework; path = System/Library/Frameworks/Security.framework; sourceTree = SDKROOT; };
+		B2DC65FC070C5C691975B2C9 /* Debug.xcconfig */ = {isa = PBXFileReference; lastKnownFileType = text.xcconfig; path = Debug.xcconfig; sourceTree = "<group>"; };
+		B2FB262C55182612B9FC4702 /* ODataAuthentication.m */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.objc; path = ODataAuthentication.m; sourceTree = "<group>"; };
+		B30806AF7F73C52A54B41C4B /* ODataServiceTests.m */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.objc; path = ODataServiceTests.m; sourceTree = "<group>"; };
+		B313072022835CC670C3B02E /* ODataKit.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = ODataKit.h; sourceTree = "<group>"; };
+		B315A771ED707A8BA994611E /* Snapshots */ = {isa = PBXFileReference; lastKnownFileType = folder; path = Snapshots; sourceTree = "<group>"; };
+		B344AAE95D18785B0D0D1047 /* ODataQueryBuilder.m */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.objc; path = ODataQueryBuilder.m; sourceTree = "<group>"; };
+		B34C6BA09D1A851E774BD249 /* CoreData.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = CoreData.framework; path = System/Library/Frameworks/CoreData.framework; sourceTree = SDKROOT; };
+		B3CAB60E43B84AA3A08DEE26 /* ODataExpression.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = ODataExpression.h; sourceTree = "<group>"; };
+		B407D3FC2B304942F1F25F16 /* ODataConfiguration.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = ODataConfiguration.h; sourceTree = "<group>"; };
+		B4560315BDB2AE56BE9BCE17 /* ODataMetadataWriter.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = ODataMetadataWriter.h; sourceTree = "<group>"; };
+		B4573556B65EE028BAAA51C5 /* ODataPredicatePairTests.m */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.objc; path = ODataPredicatePairTests.m; sourceTree = "<group>"; };
+		B46D23185F0C0B62CDA96C23 /* ODataPredicateTranslator.m */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.objc; path = ODataPredicateTranslator.m; sourceTree = "<group>"; };
+		B47363F11C69287493103F3C /* ODataServiceBatch.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = ODataServiceBatch.h; sourceTree = "<group>"; };
+		B47892F8D7359812D36C1DFB /* ODataHistory.m */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.objc; path = ODataHistory.m; sourceTree = "<group>"; };
+		B4B5957ACFE62A5DC5BCE768 /* OISCatalogModel.m */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.objc; path = OISCatalogModel.m; sourceTree = "<group>"; };
+		B4E08C88136730A6E67CF2C4 /* ODataPropertyMapper.m */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.objc; path = ODataPropertyMapper.m; sourceTree = "<group>"; };
+		B50637744D7E63DF0131F408 /* ODataOperationCall.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = ODataOperationCall.h; sourceTree = "<group>"; };
+		B50F95B0017EBAF55BEFC746 /* ODataService.m */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.objc; path = ODataService.m; sourceTree = "<group>"; };
+		B5181AA8755FAB53B3668708 /* ODataPredicateBuilder.m */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.objc; path = ODataPredicateBuilder.m; sourceTree = "<group>"; };
+		B547B0E626E38AD1C686253C /* ODataConfiguration.m */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.objc; path = ODataConfiguration.m; sourceTree = "<group>"; };
+		B58B1F7F6499F45B258C535A /* ODataBatch.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = ODataBatch.h; sourceTree = "<group>"; };
+		B5D9A994642F530EDFA9A0A6 /* ODataAuthentication.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = ODataAuthentication.h; sourceTree = "<group>"; };
+		B6017AF3F8161EB1084CAC48 /* ODataOperationCatalog.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = ODataOperationCatalog.h; sourceTree = "<group>"; };
+		B60D518BAB79759508EDA91D /* ODataClassWriter.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = ODataClassWriter.h; sourceTree = "<group>"; };
+		B6EA5FCF47CD332114D2DC1E /* Foundation.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = Foundation.framework; path = System/Library/Frameworks/Foundation.framework; sourceTree = SDKROOT; };
+		B6F2AF149AE64F17992A9EE4 /* OISSignature.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = OISSignature.h; sourceTree = "<group>"; };
+		B70B76AA54D43A93B2D925E3 /* ODataError.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = ODataError.h; sourceTree = "<group>"; };
+		B79B75970DACDB3F20CB0BAB /* ODataPropertyMapper.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = ODataPropertyMapper.h; sourceTree = "<group>"; };
+		B7C84FC11DD7261A0B3709F7 /* ODataSchema.m */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.objc; path = ODataSchema.m; sourceTree = "<group>"; };
+		B819C7A9F0C4AD1745DBA5AB /* ODataService.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = ODataService.h; sourceTree = "<group>"; };
+		B849440EA1988760AE04014C /* Common.xcconfig */ = {isa = PBXFileReference; lastKnownFileType = text.xcconfig; path = Common.xcconfig; sourceTree = "<group>"; };
+		B8BAA48F1E3C0D550E02A4AC /* OISJWTFixtures.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = OISJWTFixtures.h; sourceTree = "<group>"; };
+		B96F500CA192B767B41628E0 /* ODataIncrementalStore+Private.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = "ODataIncrementalStore+Private.h"; sourceTree = "<group>"; };
+		B9A9EBCC267966B02A08460E /* ODataIncrementalStore.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = ODataIncrementalStore.h; sourceTree = "<group>"; };
+		B9F38C2E717E0720D785C25D /* ODataValue.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = ODataValue.h; sourceTree = "<group>"; };
+		BA2EB602AA25995D34810903 /* ODataOperationCatalog.m */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.objc; path = ODataOperationCatalog.m; sourceTree = "<group>"; };
+		BA496A27A63D29266C0986D0 /* ODataTransport.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = ODataTransport.h; sourceTree = "<group>"; };
+		BA6CD829A19DB17DC392EA5D /* ODataSnapshotTransport.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = ODataSnapshotTransport.h; sourceTree = "<group>"; };
+		BA934D5DCEE0B9BFF6B72C76 /* README.md */ = {isa = PBXFileReference; lastKnownFileType = net.daringfireball.markdown; path = README.md; sourceTree = "<group>"; };
+		BAB24C12D8392296AA12EE21 /* ODataResourceIdentifierTests.m */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.objc; path = ODataResourceIdentifierTests.m; sourceTree = "<group>"; };
+		BAE259C1DAC5A4D95D1DD9A2 /* OISCoreData.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = OISCoreData.h; sourceTree = "<group>"; };
+		BB52ADA75DDA9EBD42F14062 /* ODataFunctionExpression.m */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.objc; path = ODataFunctionExpression.m; sourceTree = "<group>"; };
+		BB577E5CF4CE2F6A616D6346 /* ODataOperationTests.m */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.objc; path = ODataOperationTests.m; sourceTree = "<group>"; };
+		BB661710CE4123B5519A3D44 /* ODataTransport.m */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.objc; path = ODataTransport.m; sourceTree = "<group>"; };
+		BB6F30CF82E3EDEBC90F595F /* ODataModelBuilder.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = ODataModelBuilder.h; sourceTree = "<group>"; };
+		BB9F29FEB793BAA8B5C0BEBA /* ODataHistory.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = ODataHistory.h; sourceTree = "<group>"; };
+		BBE8BFCE7F326F9C9CC749E6 /* ODataClient.m */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.objc; path = ODataClient.m; sourceTree = "<group>"; };
+		BC113BE91BB65A75F9436F4D /* ODataClient.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = ODataClient.h; sourceTree = "<group>"; };
+		BC12C590BE6848DD3A5ED165 /* Release.xcconfig */ = {isa = PBXFileReference; lastKnownFileType = text.xcconfig; path = Release.xcconfig; sourceTree = "<group>"; };
+		BC2A4D85AAF3941E049BB375 /* ODataValue.m */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.objc; path = ODataValue.m; sourceTree = "<group>"; };
+		BC33F218A5148A57BD4A53FE /* ODataClassWriter.m */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.objc; path = ODataClassWriter.m; sourceTree = "<group>"; };
+		BC40C0C255657A288601624F /* ODataLexer.m */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.objc; path = ODataLexer.m; sourceTree = "<group>"; };
+		BC4150830A60E511EDFED020 /* ODataExpression.m */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.objc; path = ODataExpression.m; sourceTree = "<group>"; };
+		BC6FA83F81430EB8A0015BEC /* ODataQueryBuilderTests.m */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.objc; path = ODataQueryBuilderTests.m; sourceTree = "<group>"; };
+		BC713C43C4F5EBCCD1BC7B99 /* OISSignature.m */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.objc; path = OISSignature.m; sourceTree = "<group>"; };
+		BCBBD3FD3B096F870E7CB13B /* ODataExpressionTests.m */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.objc; path = ODataExpressionTests.m; sourceTree = "<group>"; };
+		BCFA68AC1F779AD086BBF30F /* ODataServiceBatch.m */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.objc; path = ODataServiceBatch.m; sourceTree = "<group>"; };
+		BD0E19D21EB9182A389283F8 /* ODataIncrementalStore.m */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.objc; path = ODataIncrementalStore.m; sourceTree = "<group>"; };
+		BD3640A4CB161AED48DC4423 /* ODataOperationCall.m */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.objc; path = ODataOperationCall.m; sourceTree = "<group>"; };
+		BDCB268D2AE52459E3231048 /* ODataResourceIdentifier.m */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.objc; path = ODataResourceIdentifier.m; sourceTree = "<group>"; };
+		BDD1234B5A5212850A89D94D /* ODataModelBuilderTests.m */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.objc; path = ODataModelBuilderTests.m; sourceTree = "<group>"; };
+		BE18B9CC76197344359F5B12 /* ODataModelBuilder.m */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.objc; path = ODataModelBuilder.m; sourceTree = "<group>"; };
+		BE3D9212857CED74B596EC06 /* ODataValueTests.m */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.objc; path = ODataValueTests.m; sourceTree = "<group>"; };
+		BE5990D4C84E1EC229CA5056 /* ODataBatch.m */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.objc; path = ODataBatch.m; sourceTree = "<group>"; };
+		BE688693FD0367AEDE595F95 /* GNUmakefile */ = {isa = PBXFileReference; lastKnownFileType = text; path = GNUmakefile; sourceTree = "<group>"; };
+		BE914FCABC97BAE1BBC56DFE /* ODataSnapshotStoreTests.m */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.objc; path = ODataSnapshotStoreTests.m; sourceTree = "<group>"; };
+		BF7487A25CF257D7FB1C0CB4 /* ODataPredicateTranslator.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = ODataPredicateTranslator.h; sourceTree = "<group>"; };
+		BF9FF9B4E0ED3F9F68AFFD67 /* ODataError.m */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.objc; path = ODataError.m; sourceTree = "<group>"; };
+		BFC56714DFD6BE2E829E1CBD /* ODataHistoryTests.m */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.objc; path = ODataHistoryTests.m; sourceTree = "<group>"; };
+/* End PBXFileReference section */
+
+/* Begin PBXFrameworksBuildPhase section */
+		B1F02340544B4BDBDBF1B6F2 /* Frameworks */ = {
+			isa = PBXFrameworksBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				BA14CA501F7CB1A83428DD6E /* ODataKit.framework in Frameworkstests */,
+				B5E554FAC478D4C304EA9F66 /* ODataIncrementalStore.framework in Frameworkstests */,
+				BAAB8B5037876849D9045CBB /* ODataService.framework in Frameworkstests */,
+				BFDD379CA7076830C1BD3EAC /* CoreData.framework in Frameworkstests */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		BC217EFB7B303D472631C7F8 /* Frameworks */ = {
+			isa = PBXFrameworksBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				B843882E37C1DFB0C0203B4B /* Foundation.framework in FrameworksODataKit */,
+				B821722B214935367A9158C7 /* CoreData.framework in FrameworksODataKit */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		BC4B541AD14BC59F70472FFD /* Frameworks */ = {
+			isa = PBXFrameworksBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				B50211572C769AD4F93E4B02 /* ODataKit.framework in FrameworksODataService */,
+				B292F4F0E57B32C12E7BC865 /* Foundation.framework in FrameworksODataService */,
+				B5A27492DCFD33E47FFFEEF6 /* CoreData.framework in FrameworksODataService */,
+				B52F12E9A99E56EB29276C06 /* Security.framework in FrameworksODataService */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		BF76392B83B984900218FDF5 /* Frameworks */ = {
+			isa = PBXFrameworksBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				B70E5AEB65C0484FB7C4A697 /* ODataKit.framework in FrameworksODataIncrementalStore */,
+				B7774B248A55D702318AC3A4 /* Foundation.framework in FrameworksODataIncrementalStore */,
+				B4929E6C576494718DC7799D /* CoreData.framework in FrameworksODataIncrementalStore */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXFrameworksBuildPhase section */
+
+/* Begin PBXGroup section */
+		B02474B55FBBDAF38BA986EF /* ODataKit */ = {
+			isa = PBXGroup;
+			children = (
+				B688DF77A530D92AECD8556F /* ODataKit */,
+				BE5990D4C84E1EC229CA5056 /* ODataBatch.m */,
+				BF9FF9B4E0ED3F9F68AFFD67 /* ODataError.m */,
+				BC4150830A60E511EDFED020 /* ODataExpression.m */,
+				BC40C0C255657A288601624F /* ODataLexer.m */,
+				B4E08C88136730A6E67CF2C4 /* ODataPropertyMapper.m */,
+				B7C84FC11DD7261A0B3709F7 /* ODataSchema.m */,
+				BB661710CE4123B5519A3D44 /* ODataTransport.m */,
+				BC2A4D85AAF3941E049BB375 /* ODataValue.m */,
+				B06EFE374025CC510AA2B235 /* ODataLexer.h */,
+			);
+			path = ODataKit;
+			sourceTree = "<group>";
+		};
+		B198F727665C929286DC20B9 /* ODataService */ = {
+			isa = PBXGroup;
+			children = (
+				B5D9A994642F530EDFA9A0A6 /* ODataAuthentication.h */,
+				B4560315BDB2AE56BE9BCE17 /* ODataMetadataWriter.h */,
+				B0AA8F4082DCB7C43D0890C0 /* ODataPredicateBuilder.h */,
+				B819C7A9F0C4AD1745DBA5AB /* ODataService.h */,
+			);
+			path = include/ODataService;
+			sourceTree = "<group>";
+		};
+		B3BE878A5BCF244A2399ECEF /* Tests */ = {
+			isa = PBXGroup;
+			children = (
+				BCBBD3FD3B096F870E7CB13B /* ODataExpressionTests.m */,
+				BFC56714DFD6BE2E829E1CBD /* ODataHistoryTests.m */,
+				BDD1234B5A5212850A89D94D /* ODataModelBuilderTests.m */,
+				BB577E5CF4CE2F6A616D6346 /* ODataOperationTests.m */,
+				B4573556B65EE028BAAA51C5 /* ODataPredicatePairTests.m */,
+				B12850242CD55705EBBFC314 /* ODataPredicateTranslatorTests.m */,
+				BC6FA83F81430EB8A0015BEC /* ODataQueryBuilderTests.m */,
+				BAB24C12D8392296AA12EE21 /* ODataResourceIdentifierTests.m */,
+				B1CA5073147126022D056B88 /* ODataSchemaTests.m */,
+				B30806AF7F73C52A54B41C4B /* ODataServiceTests.m */,
+				BE914FCABC97BAE1BBC56DFE /* ODataSnapshotStoreTests.m */,
+				B191A67677A52F0F4E768076 /* ODataSnapshotTransport.m */,
+				BE3D9212857CED74B596EC06 /* ODataValueTests.m */,
+				B4B5957ACFE62A5DC5BCE768 /* OISCatalogModel.m */,
+				BA6CD829A19DB17DC392EA5D /* ODataSnapshotTransport.h */,
+				B23EDC0754AEEF5A1DF192AB /* OISCatalogModel.h */,
+				B8BAA48F1E3C0D550E02A4AC /* OISJWTFixtures.h */,
+				B315A771ED707A8BA994611E /* Snapshots */,
+				B0E36935DEF624A456553498 /* Catalog.xcdatamodeld */,
+				BA934D5DCEE0B9BFF6B72C76 /* README.md */,
+				BE688693FD0367AEDE595F95 /* GNUmakefile */,
+			);
+			path = Tests;
+			sourceTree = "<group>";
+		};
+		B43327175E3C0E96DAA29407 /* Products */ = {
+			isa = PBXGroup;
+			children = (
+				AA0000000000000000000007 /* ODataKit.framework */,
+				AA0000000000000000000003 /* ODataIncrementalStore.framework */,
+				AA000000000000000000000B /* ODataService.framework */,
+				AA0000000000000000000005 /* ODataKitTests.xctest */,
+			);
+			name = Products;
+			sourceTree = "<group>";
+		};
+		B66ADC382DA4DC6DC7D4A96A = {
+			isa = PBXGroup;
+			children = (
+				BE431C0CCA659E146D7E3C41 /* Source */,
+				B3BE878A5BCF244A2399ECEF /* Tests */,
+				BA85222A4C5BA88C05D0FA92 /* Xcode */,
+				B6C04955F1B3371B54DEF0D9 /* Frameworks */,
+				B43327175E3C0E96DAA29407 /* Products */,
+			);
+			sourceTree = "<group>";
+		};
+		B688DF77A530D92AECD8556F /* ODataKit */ = {
+			isa = PBXGroup;
+			children = (
+				B58B1F7F6499F45B258C535A /* ODataBatch.h */,
+				B70B76AA54D43A93B2D925E3 /* ODataError.h */,
+				B3CAB60E43B84AA3A08DEE26 /* ODataExpression.h */,
+				B313072022835CC670C3B02E /* ODataKit.h */,
+				B79B75970DACDB3F20CB0BAB /* ODataPropertyMapper.h */,
+				B233C550667A3AE3794DC078 /* ODataSchema.h */,
+				BA496A27A63D29266C0986D0 /* ODataTransport.h */,
+				B9F38C2E717E0720D785C25D /* ODataValue.h */,
+				BAE259C1DAC5A4D95D1DD9A2 /* OISCoreData.h */,
+				B1063AFB2AEDE67A44BCE921 /* OISRuntime.h */,
+			);
+			path = include/ODataKit;
+			sourceTree = "<group>";
+		};
+		B6C04955F1B3371B54DEF0D9 /* Frameworks */ = {
+			isa = PBXGroup;
+			children = (
+				B6EA5FCF47CD332114D2DC1E /* Foundation.framework */,
+				B34C6BA09D1A851E774BD249 /* CoreData.framework */,
+				B2D17EDD20D3E3D1D2E1BB14 /* Security.framework */,
+			);
+			name = Frameworks;
+			sourceTree = "<group>";
+		};
+		BA85222A4C5BA88C05D0FA92 /* Xcode */ = {
+			isa = PBXGroup;
+			children = (
+				B849440EA1988760AE04014C /* Common.xcconfig */,
+				B2DC65FC070C5C691975B2C9 /* Debug.xcconfig */,
+				BC12C590BE6848DD3A5ED165 /* Release.xcconfig */,
+			);
+			name = Xcode;
+			path = Xcode/Configs;
+			sourceTree = "<group>";
+		};
+		BAABCA21E02DF4482523285A /* ODataIncrementalStore */ = {
+			isa = PBXGroup;
+			children = (
+				B60D518BAB79759508EDA91D /* ODataClassWriter.h */,
+				BC113BE91BB65A75F9436F4D /* ODataClient.h */,
+				B407D3FC2B304942F1F25F16 /* ODataConfiguration.h */,
+				B17A4FB32CBA0358D70B3867 /* ODataFunctionExpression.h */,
+				BB9F29FEB793BAA8B5C0BEBA /* ODataHistory.h */,
+				B9A9EBCC267966B02A08460E /* ODataIncrementalStore.h */,
+				BB6F30CF82E3EDEBC90F595F /* ODataModelBuilder.h */,
+				B50637744D7E63DF0131F408 /* ODataOperationCall.h */,
+				BF7487A25CF257D7FB1C0CB4 /* ODataPredicateTranslator.h */,
+				B253B19DC7762A954B421E56 /* ODataQueryBuilder.h */,
+				B0FAE061A6730BA02D7A5F65 /* ODataResourceIdentifier.h */,
+			);
+			path = include/ODataIncrementalStore;
+			sourceTree = "<group>";
+		};
+		BD111D72ED150E047D0AEC1B /* ODataService */ = {
+			isa = PBXGroup;
+			children = (
+				B198F727665C929286DC20B9 /* ODataService */,
+				B2FB262C55182612B9FC4702 /* ODataAuthentication.m */,
+				B231A9C1DC572C8F92288D90 /* ODataMetadataWriter.m */,
+				BA2EB602AA25995D34810903 /* ODataOperationCatalog.m */,
+				B5181AA8755FAB53B3668708 /* ODataPredicateBuilder.m */,
+				B50F95B0017EBAF55BEFC746 /* ODataService.m */,
+				BCFA68AC1F779AD086BBF30F /* ODataServiceBatch.m */,
+				BC713C43C4F5EBCCD1BC7B99 /* OISSignature.m */,
+				B6017AF3F8161EB1084CAC48 /* ODataOperationCatalog.h */,
+				B47363F11C69287493103F3C /* ODataServiceBatch.h */,
+				B6F2AF149AE64F17992A9EE4 /* OISSignature.h */,
+			);
+			path = ODataService;
+			sourceTree = "<group>";
+		};
+		BD169836D62C82FB94B63A56 /* ODataIncrementalStore */ = {
+			isa = PBXGroup;
+			children = (
+				BAABCA21E02DF4482523285A /* ODataIncrementalStore */,
+				BC33F218A5148A57BD4A53FE /* ODataClassWriter.m */,
+				BBE8BFCE7F326F9C9CC749E6 /* ODataClient.m */,
+				B547B0E626E38AD1C686253C /* ODataConfiguration.m */,
+				BB52ADA75DDA9EBD42F14062 /* ODataFunctionExpression.m */,
+				B47892F8D7359812D36C1DFB /* ODataHistory.m */,
+				BD0E19D21EB9182A389283F8 /* ODataIncrementalStore.m */,
+				BE18B9CC76197344359F5B12 /* ODataModelBuilder.m */,
+				BD3640A4CB161AED48DC4423 /* ODataOperationCall.m */,
+				B46D23185F0C0B62CDA96C23 /* ODataPredicateTranslator.m */,
+				B344AAE95D18785B0D0D1047 /* ODataQueryBuilder.m */,
+				BDCB268D2AE52459E3231048 /* ODataResourceIdentifier.m */,
+				B96F500CA192B767B41628E0 /* ODataIncrementalStore+Private.h */,
+			);
+			path = ODataIncrementalStore;
+			sourceTree = "<group>";
+		};
+		BE431C0CCA659E146D7E3C41 /* Source */ = {
+			isa = PBXGroup;
+			children = (
+				B02474B55FBBDAF38BA986EF /* ODataKit */,
+				BD169836D62C82FB94B63A56 /* ODataIncrementalStore */,
+				BD111D72ED150E047D0AEC1B /* ODataService */,
+			);
+			path = Source;
+			sourceTree = "<group>";
+		};
+/* End PBXGroup section */
+
+/* Begin PBXHeadersBuildPhase section */
+		B27C49A74AE342B275DBC9B8 /* Headers */ = {
+			isa = PBXHeadersBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				B2A761C3BB1A86032F79E542 /* ODataBatch.h in Headers */,
+				B4D03138626C152A624D8872 /* ODataError.h in Headers */,
+				B056C28D90E548DB0DE4533D /* ODataExpression.h in Headers */,
+				B72C96816FACDF88B4F7DCA7 /* ODataKit.h in Headers */,
+				BB2BF34FB6588288B4B1D001 /* ODataPropertyMapper.h in Headers */,
+				BCF5DA096F6F5533BCE201E6 /* ODataSchema.h in Headers */,
+				B495F2F31718763EDE6FF61A /* ODataTransport.h in Headers */,
+				BC8D312BFD572BADCEDA503E /* ODataValue.h in Headers */,
+				B83627C2E745D238BEDF7D87 /* OISCoreData.h in Headers */,
+				B3996675A59FAFEA536215B9 /* OISRuntime.h in Headers */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		B443CF61DE4508ED0E64ED5F /* Headers */ = {
+			isa = PBXHeadersBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				BE0B436E039420C123CC879C /* ODataClassWriter.h in Headers */,
+				BB0673E2BF66A188434D8600 /* ODataClient.h in Headers */,
+				BDCBE111A5DF21D34CBA6A18 /* ODataConfiguration.h in Headers */,
+				B70ED169F5BF131E5777151B /* ODataFunctionExpression.h in Headers */,
+				B5F79C07652F6271480ABB00 /* ODataHistory.h in Headers */,
+				B62D873BFA2F4D3E6148A7ED /* ODataIncrementalStore.h in Headers */,
+				BEFB5589EC3DACE2024EC81F /* ODataModelBuilder.h in Headers */,
+				B716E34B5557F9CD803F2DFB /* ODataOperationCall.h in Headers */,
+				B32AE50625D90AA74508F611 /* ODataPredicateTranslator.h in Headers */,
+				BC755F953112296E0E8137D1 /* ODataQueryBuilder.h in Headers */,
+				BAC96729ECDF8821F156F529 /* ODataResourceIdentifier.h in Headers */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		BEFA78745E7A7AAF39DF2253 /* Headers */ = {
+			isa = PBXHeadersBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				BDDD168F1D1E0B4A80E2EF7D /* ODataAuthentication.h in Headers */,
+				BE917EA201D75F17121BF885 /* ODataMetadataWriter.h in Headers */,
+				BA4A0899B0CF8FC6175304FD /* ODataPredicateBuilder.h in Headers */,
+				B0CC462EB67116ACAD0811D3 /* ODataService.h in Headers */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXHeadersBuildPhase section */
+
+/* Begin PBXNativeTarget section */
+		AA0000000000000000000002 /* ODataIncrementalStore */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = B623C5FAA458910B803C135E /* Build configuration list for PBXNativeTarget "ODataIncrementalStore" */;
+			buildPhases = (
+				B443CF61DE4508ED0E64ED5F /* Headers */,
+				B9A3D83196A607B242CF9470 /* Sources */,
+				BF76392B83B984900218FDF5 /* Frameworks */,
+				BD3E4A478861C022A73B748D /* Resources */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+				BC3CFD4666E9D608FFBC3061 /* PBXTargetDependency */,
+			);
+			name = ODataIncrementalStore;
+			productName = ODataIncrementalStore;
+			productReference = AA0000000000000000000003 /* ODataIncrementalStore.framework */;
+			productType = "com.apple.product-type.framework";
+		};
+		AA0000000000000000000004 /* ODataKitTests */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = BDB3DCDF048728377DCE1639 /* Build configuration list for PBXNativeTarget "ODataKitTests" */;
+			buildPhases = (
+				B6F3DAB911EFB9B9E639D50B /* Sources */,
+				B1F02340544B4BDBDBF1B6F2 /* Frameworks */,
+				B0D1B3EDC47F7A2A77609E61 /* Resources */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+				B6B02CBD7A4AE16CEFAFF6A7 /* PBXTargetDependency */,
+				B44EC8D779B99271609FDFD0 /* PBXTargetDependency */,
+				B5B2C8540E6E6F51A70D878A /* PBXTargetDependency */,
+			);
+			name = ODataKitTests;
+			productName = ODataKitTests;
+			productReference = AA0000000000000000000005 /* ODataKitTests.xctest */;
+			productType = "com.apple.product-type.bundle.unit-test";
+		};
+		AA0000000000000000000006 /* ODataKit */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = B743FEC53CBBF4A9A753463D /* Build configuration list for PBXNativeTarget "ODataKit" */;
+			buildPhases = (
+				B27C49A74AE342B275DBC9B8 /* Headers */,
+				BDF160D57AD7E780F823E63A /* Sources */,
+				BC217EFB7B303D472631C7F8 /* Frameworks */,
+				B08B4F4E875FF16DC330C2A4 /* Resources */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+			);
+			name = ODataKit;
+			productName = ODataKit;
+			productReference = AA0000000000000000000007 /* ODataKit.framework */;
+			productType = "com.apple.product-type.framework";
+		};
+		AA000000000000000000000A /* ODataService */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = B888F567E35547B17DD86E60 /* Build configuration list for PBXNativeTarget "ODataService" */;
+			buildPhases = (
+				BEFA78745E7A7AAF39DF2253 /* Headers */,
+				BB224F2966D2BEF28308F6A1 /* Sources */,
+				BC4B541AD14BC59F70472FFD /* Frameworks */,
+				B8DB6E00FF3FFE29E73EBB10 /* Resources */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+				BBE9CE3B2CF9D9B0085E1536 /* PBXTargetDependency */,
+			);
+			name = ODataService;
+			productName = ODataService;
+			productReference = AA000000000000000000000B /* ODataService.framework */;
+			productType = "com.apple.product-type.framework";
+		};
+/* End PBXNativeTarget section */
+
+/* Begin PBXProject section */
+		AA0000000000000000000001 /* Project object */ = {
+			isa = PBXProject;
+			attributes = {
+				BuildIndependentTargetsInParallel = 1;
+				LastUpgradeCheck = 1500;
+				ORGANIZATIONNAME = "OIS contributors";
+				TargetAttributes = {
+					AA0000000000000000000006 = {
+						CreatedOnToolsVersion = 15.0;
+					};
+					AA0000000000000000000002 = {
+						CreatedOnToolsVersion = 15.0;
+					};
+					AA000000000000000000000A = {
+						CreatedOnToolsVersion = 15.0;
+					};
+					AA0000000000000000000004 = {
+						CreatedOnToolsVersion = 15.0;
+					};
+				};
+			};
+			buildConfigurationList = B812314D856B639773231C92 /* Build configuration list for PBXProject "ODataKit" */;
+			compatibilityVersion = "Xcode 14.0";
+			developmentRegion = en;
+			hasScannedForEncodings = 0;
+			knownRegions = (
+				en,
+				Base,
+			);
+			mainGroup = B66ADC382DA4DC6DC7D4A96A;
+			productRefGroup = B43327175E3C0E96DAA29407 /* Products */;
+			projectDirPath = "";
+			projectRoot = "";
+			targets = (
+				AA0000000000000000000006 /* ODataKit */,
+				AA0000000000000000000002 /* ODataIncrementalStore */,
+				AA000000000000000000000A /* ODataService */,
+				AA0000000000000000000004 /* ODataKitTests */,
+			);
+		};
+/* End PBXProject section */
+
+/* Begin PBXResourcesBuildPhase section */
+		B08B4F4E875FF16DC330C2A4 /* Resources */ = {
+			isa = PBXResourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		B0D1B3EDC47F7A2A77609E61 /* Resources */ = {
+			isa = PBXResourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				B62DF2ACFBCB3C71904F682F /* Snapshots in Resources */,
+				B5D431B2FBEDE8D6FCE16614 /* Catalog.xcdatamodeld in Resources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		B8DB6E00FF3FFE29E73EBB10 /* Resources */ = {
+			isa = PBXResourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		BD3E4A478861C022A73B748D /* Resources */ = {
+			isa = PBXResourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXResourcesBuildPhase section */
+
+/* Begin PBXSourcesBuildPhase section */
+		B6F3DAB911EFB9B9E639D50B /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				BC8A6A545BCB85FFAB63EEE8 /* ODataExpressionTests.m in Sources */,
+				B7826154FD25D8F66DF99B70 /* ODataHistoryTests.m in Sources */,
+				BCA4C7DD8D71B7252EFC0591 /* ODataModelBuilderTests.m in Sources */,
+				B6234E4BEE3F35AA8278B3E3 /* ODataOperationTests.m in Sources */,
+				B86AD2D142AFFA5D011CBFAC /* ODataPredicatePairTests.m in Sources */,
+				B1DFBE97AEDA3083872469DD /* ODataPredicateTranslatorTests.m in Sources */,
+				B0827FE68E0A5A8C636C2735 /* ODataQueryBuilderTests.m in Sources */,
+				B6A6E2F03C55E7070FE961ED /* ODataResourceIdentifierTests.m in Sources */,
+				BA47E2E5231C4AE98C3569DD /* ODataSchemaTests.m in Sources */,
+				B2615B5E134F64925491B824 /* ODataServiceTests.m in Sources */,
+				BE207C1400DC78698A6643EB /* ODataSnapshotStoreTests.m in Sources */,
+				B4D68D31BCB0D7D0AA9A8296 /* ODataSnapshotTransport.m in Sources */,
+				BA157150B5CB2C5ADF50B9AC /* ODataValueTests.m in Sources */,
+				B8A3A4CB3D524EA1BCFAEB85 /* OISCatalogModel.m in Sources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		B9A3D83196A607B242CF9470 /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				B8A660C027CF3AD224C5401F /* ODataClassWriter.m in Sources */,
+				B1136C3CCE10EED37A7CAB7D /* ODataClient.m in Sources */,
+				B5DC91F69565B358421CB479 /* ODataConfiguration.m in Sources */,
+				BB1B8B4AFFD0690481907376 /* ODataFunctionExpression.m in Sources */,
+				BC9365A5222B2F21A8EABC9C /* ODataHistory.m in Sources */,
+				BE256093E4BA09FAFAA1F8A1 /* ODataIncrementalStore.m in Sources */,
+				B5B54B64009D89755AB6335D /* ODataModelBuilder.m in Sources */,
+				BA3C703456618080D55A6A26 /* ODataOperationCall.m in Sources */,
+				B03B84E8BA5512080567AE56 /* ODataPredicateTranslator.m in Sources */,
+				B2EEB9995D807FECAB876C8A /* ODataQueryBuilder.m in Sources */,
+				BE091186569B520087CF38E1 /* ODataResourceIdentifier.m in Sources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		BB224F2966D2BEF28308F6A1 /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				B6418E7931C73E169294969C /* ODataAuthentication.m in Sources */,
+				B1BAAA965DEB43CE5A73BB46 /* ODataMetadataWriter.m in Sources */,
+				BF79F82E6E0F4202CAE3D0B8 /* ODataOperationCatalog.m in Sources */,
+				B246A689DF785A799BAAA7F7 /* ODataPredicateBuilder.m in Sources */,
+				BE9903CE28D7A94C675A726A /* ODataService.m in Sources */,
+				B28C550E4A1FC5534F7C90C5 /* ODataServiceBatch.m in Sources */,
+				B196C8762DFD4DD1590E7E42 /* OISSignature.m in Sources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		BDF160D57AD7E780F823E63A /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				B4A603B55B3DDDC2F0227E90 /* ODataBatch.m in Sources */,
+				B95AE21DA72B1576715BCE0D /* ODataError.m in Sources */,
+				BA39A0E142501F3F8733AACA /* ODataExpression.m in Sources */,
+				B393644308DD23BC62AFC5FA /* ODataLexer.m in Sources */,
+				B7B8F887EC14B3DE237D2293 /* ODataPropertyMapper.m in Sources */,
+				B7853E4CF8ED2915675F57EF /* ODataSchema.m in Sources */,
+				B113AFB12161139866678838 /* ODataTransport.m in Sources */,
+				BC0BBC5190FF7556BC42A7FE /* ODataValue.m in Sources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXSourcesBuildPhase section */
+
+/* Begin PBXTargetDependency section */
+		B44EC8D779B99271609FDFD0 /* PBXTargetDependency */ = {
+			isa = PBXTargetDependency;
+			target = AA0000000000000000000002 /* ODataIncrementalStore */;
+			targetProxy = B24961C645D91879213DA767 /* PBXContainerItemProxy */;
+		};
+		B5B2C8540E6E6F51A70D878A /* PBXTargetDependency */ = {
+			isa = PBXTargetDependency;
+			target = AA000000000000000000000A /* ODataService */;
+			targetProxy = B2C93B53AAF1D8ABC4AE3643 /* PBXContainerItemProxy */;
+		};
+		B6B02CBD7A4AE16CEFAFF6A7 /* PBXTargetDependency */ = {
+			isa = PBXTargetDependency;
+			target = AA0000000000000000000006 /* ODataKit */;
+			targetProxy = BACDDCF2A7CF8421FE50581B /* PBXContainerItemProxy */;
+		};
+		BBE9CE3B2CF9D9B0085E1536 /* PBXTargetDependency */ = {
+			isa = PBXTargetDependency;
+			target = AA0000000000000000000006 /* ODataKit */;
+			targetProxy = BB0398755638ECDE6999B375 /* PBXContainerItemProxy */;
+		};
+		BC3CFD4666E9D608FFBC3061 /* PBXTargetDependency */ = {
+			isa = PBXTargetDependency;
+			target = AA0000000000000000000006 /* ODataKit */;
+			targetProxy = BEC6964CC8D34611B0F18C71 /* PBXContainerItemProxy */;
+		};
+/* End PBXTargetDependency section */
+
+/* Begin XCBuildConfiguration section */
+		B00AB47783580CD055190065 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			baseConfigurationReference = B2DC65FC070C5C691975B2C9 /* Debug.xcconfig */;
+			buildSettings = {
+				COMBINE_HIDPI_IMAGES = YES;
+				DEFINES_MODULE = NO;
+				DYLIB_COMPATIBILITY_VERSION = 1;
+				DYLIB_CURRENT_VERSION = 1;
+				DYLIB_INSTALL_NAME_BASE = "@rpath";
+				HEADER_SEARCH_PATHS = (
+					"$(SRCROOT)/Source/ODataKit/include",
+					"$(SRCROOT)/Source/ODataIncrementalStore/include",
+					"$(SRCROOT)/Source/ODataService/include",
+					"$(SRCROOT)/Source/ODataKit/include/ODataKit",
+					"$(SRCROOT)/Source/ODataIncrementalStore/include/ODataIncrementalStore",
+					"$(SRCROOT)/Source/ODataService/include/ODataService",
+				);
+				INFOPLIST_KEY_NSHumanReadableCopyright = "Copyright (C) 2026 OIS contributors. LGPL-2.1-or-later.";
+				INSTALL_PATH = "$(LOCAL_LIBRARY_DIR)/Frameworks";
+				LD_RUNPATH_SEARCH_PATHS = (
+					"@executable_path/../Frameworks",
+					"@loader_path/Frameworks",
+					"@loader_path/..",
+				);
+				MODULEMAP_FILE = "";
+				PRODUCT_BUNDLE_IDENTIFIER = io.github.ashalkhakov.ODataKit;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SKIP_INSTALL = YES;
+			};
+			name = Debug;
+		};
+		B08A8D745E6D2F7503EE67BD /* Debug */ = {
+			isa = XCBuildConfiguration;
+			baseConfigurationReference = B2DC65FC070C5C691975B2C9 /* Debug.xcconfig */;
+			buildSettings = {
+			};
+			name = Debug;
+		};
+		B44D3323D9E0FBC44342D5AD /* Release */ = {
+			isa = XCBuildConfiguration;
+			baseConfigurationReference = BC12C590BE6848DD3A5ED165 /* Release.xcconfig */;
+			buildSettings = {
+			};
+			name = Release;
+		};
+		B48BD636EDA6C5306DACF860 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			baseConfigurationReference = B2DC65FC070C5C691975B2C9 /* Debug.xcconfig */;
+			buildSettings = {
+				BUNDLE_LOADER = "$(TEST_HOST)";
+				CLANG_WARN_QUOTED_INCLUDE_IN_FRAMEWORK_HEADER = NO;
+				COMBINE_HIDPI_IMAGES = YES;
+				GENERATE_INFOPLIST_FILE = YES;
+				HEADER_SEARCH_PATHS = (
+					"$(SRCROOT)/Source/ODataKit/include",
+					"$(SRCROOT)/Source/ODataIncrementalStore/include",
+					"$(SRCROOT)/Source/ODataService/include",
+					"$(SRCROOT)/Source/ODataKit/include/ODataKit",
+					"$(SRCROOT)/Source/ODataIncrementalStore/include/ODataIncrementalStore",
+					"$(SRCROOT)/Source/ODataService/include/ODataService",
+					"$(SRCROOT)/Tests",
+				);
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/../Frameworks",
+					"@loader_path/../Frameworks",
+				);
+				PRODUCT_BUNDLE_IDENTIFIER = io.github.ashalkhakov.ODataKit.tests;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SKIP_INSTALL = YES;
+			};
+			name = Debug;
+		};
+		B51F4AC1A3CEF06AEEA72A6C /* Debug */ = {
+			isa = XCBuildConfiguration;
+			baseConfigurationReference = B2DC65FC070C5C691975B2C9 /* Debug.xcconfig */;
+			buildSettings = {
+				COMBINE_HIDPI_IMAGES = YES;
+				DEFINES_MODULE = NO;
+				DYLIB_COMPATIBILITY_VERSION = 1;
+				DYLIB_CURRENT_VERSION = 1;
+				DYLIB_INSTALL_NAME_BASE = "@rpath";
+				HEADER_SEARCH_PATHS = (
+					"$(SRCROOT)/Source/ODataKit/include",
+					"$(SRCROOT)/Source/ODataIncrementalStore/include",
+					"$(SRCROOT)/Source/ODataService/include",
+					"$(SRCROOT)/Source/ODataKit/include/ODataKit",
+					"$(SRCROOT)/Source/ODataIncrementalStore/include/ODataIncrementalStore",
+					"$(SRCROOT)/Source/ODataService/include/ODataService",
+				);
+				INFOPLIST_KEY_NSHumanReadableCopyright = "Copyright (C) 2026 OIS contributors. LGPL-2.1-or-later.";
+				INSTALL_PATH = "$(LOCAL_LIBRARY_DIR)/Frameworks";
+				LD_RUNPATH_SEARCH_PATHS = (
+					"@executable_path/../Frameworks",
+					"@loader_path/Frameworks",
+					"@loader_path/..",
+				);
+				MODULEMAP_FILE = "";
+				PRODUCT_BUNDLE_IDENTIFIER = io.github.ashalkhakov.ODataService;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SKIP_INSTALL = YES;
+			};
+			name = Debug;
+		};
+		B6ECA4911FC07188ACB8FD89 /* Release */ = {
+			isa = XCBuildConfiguration;
+			baseConfigurationReference = BC12C590BE6848DD3A5ED165 /* Release.xcconfig */;
+			buildSettings = {
+				COMBINE_HIDPI_IMAGES = YES;
+				DEFINES_MODULE = NO;
+				DYLIB_COMPATIBILITY_VERSION = 1;
+				DYLIB_CURRENT_VERSION = 1;
+				DYLIB_INSTALL_NAME_BASE = "@rpath";
+				HEADER_SEARCH_PATHS = (
+					"$(SRCROOT)/Source/ODataKit/include",
+					"$(SRCROOT)/Source/ODataIncrementalStore/include",
+					"$(SRCROOT)/Source/ODataService/include",
+					"$(SRCROOT)/Source/ODataKit/include/ODataKit",
+					"$(SRCROOT)/Source/ODataIncrementalStore/include/ODataIncrementalStore",
+					"$(SRCROOT)/Source/ODataService/include/ODataService",
+				);
+				INFOPLIST_KEY_NSHumanReadableCopyright = "Copyright (C) 2026 OIS contributors. LGPL-2.1-or-later.";
+				INSTALL_PATH = "$(LOCAL_LIBRARY_DIR)/Frameworks";
+				LD_RUNPATH_SEARCH_PATHS = (
+					"@executable_path/../Frameworks",
+					"@loader_path/Frameworks",
+					"@loader_path/..",
+				);
+				MODULEMAP_FILE = "";
+				PRODUCT_BUNDLE_IDENTIFIER = io.github.ashalkhakov.ODataIncrementalStore;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SKIP_INSTALL = YES;
+			};
+			name = Release;
+		};
+		B9C6516F7827B446C82736F9 /* Release */ = {
+			isa = XCBuildConfiguration;
+			baseConfigurationReference = BC12C590BE6848DD3A5ED165 /* Release.xcconfig */;
+			buildSettings = {
+				BUNDLE_LOADER = "$(TEST_HOST)";
+				CLANG_WARN_QUOTED_INCLUDE_IN_FRAMEWORK_HEADER = NO;
+				COMBINE_HIDPI_IMAGES = YES;
+				GENERATE_INFOPLIST_FILE = YES;
+				HEADER_SEARCH_PATHS = (
+					"$(SRCROOT)/Source/ODataKit/include",
+					"$(SRCROOT)/Source/ODataIncrementalStore/include",
+					"$(SRCROOT)/Source/ODataService/include",
+					"$(SRCROOT)/Source/ODataKit/include/ODataKit",
+					"$(SRCROOT)/Source/ODataIncrementalStore/include/ODataIncrementalStore",
+					"$(SRCROOT)/Source/ODataService/include/ODataService",
+					"$(SRCROOT)/Tests",
+				);
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/../Frameworks",
+					"@loader_path/../Frameworks",
+				);
+				PRODUCT_BUNDLE_IDENTIFIER = io.github.ashalkhakov.ODataKit.tests;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SKIP_INSTALL = YES;
+			};
+			name = Release;
+		};
+		BA19BBA2482BE7C75E214397 /* Release */ = {
+			isa = XCBuildConfiguration;
+			baseConfigurationReference = BC12C590BE6848DD3A5ED165 /* Release.xcconfig */;
+			buildSettings = {
+				COMBINE_HIDPI_IMAGES = YES;
+				DEFINES_MODULE = NO;
+				DYLIB_COMPATIBILITY_VERSION = 1;
+				DYLIB_CURRENT_VERSION = 1;
+				DYLIB_INSTALL_NAME_BASE = "@rpath";
+				HEADER_SEARCH_PATHS = (
+					"$(SRCROOT)/Source/ODataKit/include",
+					"$(SRCROOT)/Source/ODataIncrementalStore/include",
+					"$(SRCROOT)/Source/ODataService/include",
+					"$(SRCROOT)/Source/ODataKit/include/ODataKit",
+					"$(SRCROOT)/Source/ODataIncrementalStore/include/ODataIncrementalStore",
+					"$(SRCROOT)/Source/ODataService/include/ODataService",
+				);
+				INFOPLIST_KEY_NSHumanReadableCopyright = "Copyright (C) 2026 OIS contributors. LGPL-2.1-or-later.";
+				INSTALL_PATH = "$(LOCAL_LIBRARY_DIR)/Frameworks";
+				LD_RUNPATH_SEARCH_PATHS = (
+					"@executable_path/../Frameworks",
+					"@loader_path/Frameworks",
+					"@loader_path/..",
+				);
+				MODULEMAP_FILE = "";
+				PRODUCT_BUNDLE_IDENTIFIER = io.github.ashalkhakov.ODataService;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SKIP_INSTALL = YES;
+			};
+			name = Release;
+		};
+		BAF4FB8609EFD63875DC6E2E /* Release */ = {
+			isa = XCBuildConfiguration;
+			baseConfigurationReference = BC12C590BE6848DD3A5ED165 /* Release.xcconfig */;
+			buildSettings = {
+				COMBINE_HIDPI_IMAGES = YES;
+				DEFINES_MODULE = NO;
+				DYLIB_COMPATIBILITY_VERSION = 1;
+				DYLIB_CURRENT_VERSION = 1;
+				DYLIB_INSTALL_NAME_BASE = "@rpath";
+				HEADER_SEARCH_PATHS = (
+					"$(SRCROOT)/Source/ODataKit/include",
+					"$(SRCROOT)/Source/ODataIncrementalStore/include",
+					"$(SRCROOT)/Source/ODataService/include",
+					"$(SRCROOT)/Source/ODataKit/include/ODataKit",
+					"$(SRCROOT)/Source/ODataIncrementalStore/include/ODataIncrementalStore",
+					"$(SRCROOT)/Source/ODataService/include/ODataService",
+				);
+				INFOPLIST_KEY_NSHumanReadableCopyright = "Copyright (C) 2026 OIS contributors. LGPL-2.1-or-later.";
+				INSTALL_PATH = "$(LOCAL_LIBRARY_DIR)/Frameworks";
+				LD_RUNPATH_SEARCH_PATHS = (
+					"@executable_path/../Frameworks",
+					"@loader_path/Frameworks",
+					"@loader_path/..",
+				);
+				MODULEMAP_FILE = "";
+				PRODUCT_BUNDLE_IDENTIFIER = io.github.ashalkhakov.ODataKit;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SKIP_INSTALL = YES;
+			};
+			name = Release;
+		};
+		BFC6D2932F1DE542427C718C /* Debug */ = {
+			isa = XCBuildConfiguration;
+			baseConfigurationReference = B2DC65FC070C5C691975B2C9 /* Debug.xcconfig */;
+			buildSettings = {
+				COMBINE_HIDPI_IMAGES = YES;
+				DEFINES_MODULE = NO;
+				DYLIB_COMPATIBILITY_VERSION = 1;
+				DYLIB_CURRENT_VERSION = 1;
+				DYLIB_INSTALL_NAME_BASE = "@rpath";
+				HEADER_SEARCH_PATHS = (
+					"$(SRCROOT)/Source/ODataKit/include",
+					"$(SRCROOT)/Source/ODataIncrementalStore/include",
+					"$(SRCROOT)/Source/ODataService/include",
+					"$(SRCROOT)/Source/ODataKit/include/ODataKit",
+					"$(SRCROOT)/Source/ODataIncrementalStore/include/ODataIncrementalStore",
+					"$(SRCROOT)/Source/ODataService/include/ODataService",
+				);
+				INFOPLIST_KEY_NSHumanReadableCopyright = "Copyright (C) 2026 OIS contributors. LGPL-2.1-or-later.";
+				INSTALL_PATH = "$(LOCAL_LIBRARY_DIR)/Frameworks";
+				LD_RUNPATH_SEARCH_PATHS = (
+					"@executable_path/../Frameworks",
+					"@loader_path/Frameworks",
+					"@loader_path/..",
+				);
+				MODULEMAP_FILE = "";
+				PRODUCT_BUNDLE_IDENTIFIER = io.github.ashalkhakov.ODataIncrementalStore;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SKIP_INSTALL = YES;
+			};
+			name = Debug;
+		};
+/* End XCBuildConfiguration section */
+
+/* Begin XCConfigurationList section */
+		B623C5FAA458910B803C135E /* Build configuration list for PBXNativeTarget "ODataIncrementalStore" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				BFC6D2932F1DE542427C718C /* Debug */,
+				B6ECA4911FC07188ACB8FD89 /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
+		B743FEC53CBBF4A9A753463D /* Build configuration list for PBXNativeTarget "ODataKit" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				B00AB47783580CD055190065 /* Debug */,
+				BAF4FB8609EFD63875DC6E2E /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
+		B812314D856B639773231C92 /* Build configuration list for PBXProject "ODataKit" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				B08A8D745E6D2F7503EE67BD /* Debug */,
+				B44D3323D9E0FBC44342D5AD /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
+		B888F567E35547B17DD86E60 /* Build configuration list for PBXNativeTarget "ODataService" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				B51F4AC1A3CEF06AEEA72A6C /* Debug */,
+				BA19BBA2482BE7C75E214397 /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
+		BDB3DCDF048728377DCE1639 /* Build configuration list for PBXNativeTarget "ODataKitTests" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				B48BD636EDA6C5306DACF860 /* Debug */,
+				B9C6516F7827B446C82736F9 /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
+/* End XCConfigurationList section */
+	};
+	rootObject = AA0000000000000000000001 /* Project object */;
+}

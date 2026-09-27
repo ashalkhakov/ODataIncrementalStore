@@ -8,6 +8,20 @@
       <BuildActionEntries>
          <BuildActionEntry
             buildForTesting = "YES"
+            buildForRunning = "NO"
+            buildForProfiling = "NO"
+            buildForArchiving = "NO"
+            buildForAnalyzing = "YES">
+            <BuildableReference
+               BuildableIdentifier = "primary"
+               BlueprintIdentifier = "AA0000000000000000000004"
+               BuildableName = "ODataKitTests.xctest"
+               BlueprintName = "ODataKitTests"
+               ReferencedContainer = "container:ODataKit.xcodeproj">
+            </BuildableReference>
+         </BuildActionEntry>
+         <BuildActionEntry
+            buildForTesting = "YES"
             buildForRunning = "YES"
             buildForProfiling = "YES"
             buildForArchiving = "YES"
@@ -17,21 +31,7 @@
                BlueprintIdentifier = "AA0000000000000000000002"
                BuildableName = "ODataIncrementalStore.framework"
                BlueprintName = "ODataIncrementalStore"
-               ReferencedContainer = "container:ODataIncrementalStore.xcodeproj">
-            </BuildableReference>
-         </BuildActionEntry>
-         <BuildActionEntry
-            buildForTesting = "YES"
-            buildForRunning = "NO"
-            buildForProfiling = "NO"
-            buildForArchiving = "NO"
-            buildForAnalyzing = "YES">
-            <BuildableReference
-               BuildableIdentifier = "primary"
-               BlueprintIdentifier = "AA0000000000000000000004"
-               BuildableName = "ODataIncrementalStoreTests.xctest"
-               BlueprintName = "ODataIncrementalStoreTests"
-               ReferencedContainer = "container:ODataIncrementalStore.xcodeproj">
+               ReferencedContainer = "container:ODataKit.xcodeproj">
             </BuildableReference>
          </BuildActionEntry>
       </BuildActionEntries>
@@ -43,17 +43,6 @@
       shouldUseLaunchSchemeArgsEnv = "YES"
       shouldAutocreateTestPlan = "NO">
       <Testables>
-         <TestableReference
-            skipped = "NO"
-            parallelizable = "YES">
-            <BuildableReference
-               BuildableIdentifier = "primary"
-               BlueprintIdentifier = "AA0000000000000000000004"
-               BuildableName = "ODataIncrementalStoreTests.xctest"
-               BlueprintName = "ODataIncrementalStoreTests"
-               ReferencedContainer = "container:ODataIncrementalStore.xcodeproj">
-            </BuildableReference>
-         </TestableReference>
       </Testables>
    </TestAction>
    <LaunchAction
@@ -69,10 +58,10 @@
       <MacroExpansion>
             <BuildableReference
                BuildableIdentifier = "primary"
-               BlueprintIdentifier = "AA0000000000000000000004"
-               BuildableName = "ODataIncrementalStoreTests.xctest"
-               BlueprintName = "ODataIncrementalStoreTests"
-               ReferencedContainer = "container:ODataIncrementalStore.xcodeproj">
+               BlueprintIdentifier = "AA0000000000000000000002"
+               BuildableName = "ODataIncrementalStore.framework"
+               BlueprintName = "ODataIncrementalStore"
+               ReferencedContainer = "container:ODataKit.xcodeproj">
             </BuildableReference>
          </MacroExpansion>
    </LaunchAction>

@@ -36,8 +36,8 @@
 // it again.
 
 #pragma once
-#import "OISCoreData.h"
-#import "ODataSchema.h"
+#import <ODataKit/OISCoreData.h>
+#import <ODataKit/ODataSchema.h>
 
 NS_ASSUME_NONNULL_BEGIN
 

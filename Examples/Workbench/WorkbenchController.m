@@ -3,12 +3,7 @@
 
 #import "WorkbenchController.h"
 #import "WorkbenchEngine.h"
-#if __has_include(<ODataIncrementalStore/ODataIncrementalStore.h>)
 #import <ODataIncrementalStore/ODataIncrementalStore.h>
-#else
-#import "ODataIncrementalStore.h"
-#import "ODataQueryBuilder.h"
-#endif
 
 // The services the popup offers, in its order.
 typedef NS_ENUM(NSInteger, WBService) {

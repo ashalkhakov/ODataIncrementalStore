@@ -570,16 +570,23 @@ gnustep-patches stack.
 
 ## Layout
 
-For now the core is part of the one library, next to the client
-(`Source/ODataService.m`, `ODataPredicateBuilder.m`,
-`ODataMetadataWriter.m`); it needs nothing the client does not. The HTTP
-adapter is a library of its own in `Server/`, with `ois-serve` and the
-loopback check, so neither the client nor the core links the listener.
+The repository is ODataKit, and it builds three libraries, one directory
+each under `Source/`, public headers in `include/<Library>/`:
 
-The split into shared, client and server libraries is still open, and so
-is its companion question: the repository and framework are named for the
-client, and renaming them, or adding an umbrella name, is worth deciding
-before the split rather than after.
+| Library | Holds | Links |
+|---|---|---|
+| `ODataKit` | Schema, values, property mapping, the `$filter` lexer and parser, `$batch`, errors, the transport protocol and HTTP transports | Core Data |
+| `ODataIncrementalStore` | The client: the store, configuration, query building and predicate translation, the model builder and class writer, history, operation calls | `ODataKit` |
+| `ODataService` | The core of the server: `ODataService`, `$batch`, the predicate builder, the metadata writer, operations, authentication and JWT signatures | `ODataKit` |
+
+The client and the server share only `ODataKit`, so an app that consumes a
+service does not carry the server and one that serves does not carry the
+store. Class names keep their `OData` prefix; only the headers moved, so
+an import is `<ODataKit/ODataSchema.h>`, `<ODataIncrementalStore/…>` or
+`<ODataService/…>`.
+
+The HTTP adapter is a library of its own in `Server/`, with `ois-serve` and
+the loopback check, so neither the client nor the core links the listener.
 
 ## Milestones
 

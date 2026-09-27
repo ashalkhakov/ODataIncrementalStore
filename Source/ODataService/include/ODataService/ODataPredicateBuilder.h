@@ -17,9 +17,9 @@
 // as ODataServiceErrorDomain errors (ODataError.h).
 
 #pragma once
-#import "OISCoreData.h"
-#import "ODataExpression.h"
-#import "ODataPropertyMapper.h"
+#import <ODataKit/OISCoreData.h>
+#import <ODataKit/ODataExpression.h>
+#import <ODataKit/ODataPropertyMapper.h>
 
 NS_ASSUME_NONNULL_BEGIN
 

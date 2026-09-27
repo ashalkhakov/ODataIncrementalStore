@@ -7,15 +7,9 @@
 
 #pragma once
 
-#import "OISRuntime.h"
-#import "OISCoreData.h"
-#import "ODataError.h"
+#import <ODataKit/ODataKit.h>
 #import "ODataConfiguration.h"
 #import "ODataClient.h"
-#import "ODataPropertyMapper.h"
-#import "ODataValue.h"
-#import "ODataBatch.h"
-#import "ODataSchema.h"
 #import "ODataModelBuilder.h"
 #import "ODataClassWriter.h"
 #import "ODataResourceIdentifier.h"
@@ -24,11 +18,6 @@
 #import "ODataOperationCall.h"
 #import "ODataFunctionExpression.h"
 #import "ODataHistory.h"
-#import "ODataExpression.h"
-#import "ODataPredicateBuilder.h"
-#import "ODataMetadataWriter.h"
-#import "ODataService.h"
-#import "ODataAuthentication.h"
 
 NS_ASSUME_NONNULL_BEGIN
 

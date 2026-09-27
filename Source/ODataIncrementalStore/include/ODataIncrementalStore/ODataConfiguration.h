@@ -2,7 +2,8 @@
 // SPDX-License-Identifier: LGPL-2.1-or-later
 
 #pragma once
-#import "OISRuntime.h"
+#import <ODataKit/OISRuntime.h>
+#import <ODataKit/ODataPropertyMapper.h>
 
 NS_ASSUME_NONNULL_BEGIN
 
@@ -68,11 +69,6 @@ FOUNDATION_EXPORT NSString * const ODataIncrementalStoreCredentialProviderOption
 // A key, for ApiKey.
 - (nullable NSString *)APIKeyForAuthorization:(nullable ODataSchemaAuthorization *)authorization;
 @end
-
-typedef NS_ENUM(NSInteger, ODataPropertyNaming) {
-  ODataPropertyNamingAsIs = 0,
-  ODataPropertyNamingPascalCase = 1
-};
 
 @interface ODataConfiguration : NSObject
 @property (nonatomic, copy) NSURL *serviceRoot;

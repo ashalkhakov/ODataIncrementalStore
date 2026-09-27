@@ -11,12 +11,12 @@ model as Catalog.app and Workbench.app. There is no programmatic
 the test bundle; GNUstep / FreeCoreData reads the XML package.
 
 ```
-make                 # build the library
+make                 # build the libraries
 make -C Tests run-tests
 ```
 
 Requires FreeCoreData on GNUstep, or Apple Core Data via the Xcode
-scheme **ODataIncrementalStoreTests** (⌘U).
+scheme **ODataKitTests** (⌘U).
 
 | Class | What it pins |
 |---|---|

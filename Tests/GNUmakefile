@@ -39,10 +39,10 @@ ODataIncrementalStoreTests_OBJC_FILES = \
 	ODataPredicatePairTests.m
 
 ODataIncrementalStoreTests_RESOURCE_FILES = Snapshots
-ODataIncrementalStoreTests_INCLUDE_DIRS = -I../Source/include -I.
+ODataIncrementalStoreTests_INCLUDE_DIRS = -I../Source/ODataKit/include -I../Source/ODataIncrementalStore/include -I../Source/ODataService/include -I../Source/ODataKit/include/ODataKit -I../Source/ODataIncrementalStore/include/ODataIncrementalStore -I../Source/ODataService/include/ODataService -I.
 # gnustep-make builds the library into ../obj; `make -f Makefile` into ..
 ODataIncrementalStoreTests_LIB_DIRS = -L../obj -L..
-ODataIncrementalStoreTests_OBJC_LIBS += -lODataIncrementalStore -lXCTest -lCoreData
+ODataIncrementalStoreTests_OBJC_LIBS += -lODataService -lODataIncrementalStore -lODataKit -lXCTest -lCoreData
 
 ADDITIONAL_OBJCFLAGS += -fobjc-arc -fblocks -fobjc-runtime=gnustep-2.0 \
 	-fconstant-string-class=NSConstantString -fobjc-exceptions \

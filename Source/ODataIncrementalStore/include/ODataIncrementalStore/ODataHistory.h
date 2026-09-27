@@ -15,7 +15,7 @@
 // one has recorded.
 
 #pragma once
-#import "OISCoreData.h"
+#import <ODataKit/OISCoreData.h>
 
 NS_ASSUME_NONNULL_BEGIN
 

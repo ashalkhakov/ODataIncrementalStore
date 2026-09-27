@@ -28,10 +28,10 @@
 // protocols (below), and answers through an ODataReply.
 
 #pragma once
-#import "OISCoreData.h"
-#import "ODataClient.h"
-#import "ODataExpression.h"
-#import "ODataPropertyMapper.h"
+#import <ODataKit/OISCoreData.h>
+#import <ODataKit/ODataTransport.h>
+#import <ODataKit/ODataExpression.h>
+#import <ODataKit/ODataPropertyMapper.h>
 
 NS_ASSUME_NONNULL_BEGIN
 
@@ -267,3 +267,8 @@ FOUNDATION_EXPORT NSString * const ODataUserInfoETag;  // @"OData.etag"
 @end
 
 NS_ASSUME_NONNULL_END
+
+// The rest of the server library, for those who import it by this name.
+#import "ODataAuthentication.h"
+#import "ODataPredicateBuilder.h"
+#import "ODataMetadataWriter.h"

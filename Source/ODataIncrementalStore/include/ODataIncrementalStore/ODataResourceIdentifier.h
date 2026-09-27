@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: LGPL-2.1-or-later
 
 #pragma once
-#import "OISRuntime.h"
+#import <ODataKit/OISRuntime.h>
 
 NS_ASSUME_NONNULL_BEGIN
 

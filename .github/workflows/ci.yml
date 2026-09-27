@@ -49,11 +49,11 @@ jobs:
 
       - name: Unit tests (against Apple's CoreData)
         run: |
-          xcodebuild -workspace ODataIncrementalStore.xcworkspace \
-            -scheme ODataIncrementalStoreTests \
+          xcodebuild -workspace ODataKit.xcworkspace \
+            -scheme ODataKitTests \
             -destination 'platform=macOS' -configuration Debug \
             -derivedDataPath "$RUNNER_TEMP/DerivedData" \
-            -resultBundlePath "$RUNNER_TEMP/ODataIncrementalStoreTests.xcresult" test
+            -resultBundlePath "$RUNNER_TEMP/ODataKitTests.xcresult" test
 
       # The server's HTTP adapter over a real loopback socket: the vendored
       # GCDWebServer's own smoke test, then ODataHTTPServer and the service
@@ -67,7 +67,7 @@ jobs:
       - name: Build the example apps
         run: |
           for scheme in Catalog Workbench; do
-            xcodebuild -workspace ODataIncrementalStore.xcworkspace -scheme "$scheme" \
+            xcodebuild -workspace ODataKit.xcworkspace -scheme "$scheme" \
               -destination 'platform=macOS' -configuration Debug \
               -derivedDataPath "$RUNNER_TEMP/DerivedData" build
           done
@@ -79,14 +79,17 @@ jobs:
       - name: Live service checks (Northwind, TripPin, generated models and classes)
         continue-on-error: true
         run: |
+          # The client and the core it sits on, compiled straight in.
+          inc="-ISource/ODataKit/include -ISource/ODataKit/include/ODataKit -ISource/ODataIncrementalStore/include -ISource/ODataIncrementalStore/include/ODataIncrementalStore"
+          client="Source/ODataKit/*.m Source/ODataIncrementalStore/*.m"
           xcrun momc Examples/Catalog/Catalog.xcdatamodeld "$RUNNER_TEMP/Catalog.momd"
           xcrun momc Tests/Live/TripPin.xcdatamodeld "$RUNNER_TEMP/TripPin.momd"
           xcrun momc Tests/Live/Northwind.xcdatamodeld "$RUNNER_TEMP/Northwind.momd"
-          clang -fobjc-arc -fmodules -ISource/include Source/*.m Tools/ois-model.m \
+          clang -fobjc-arc -fmodules $inc $client Tools/ois-model.m \
             -framework Foundation -framework CoreData -o "$RUNNER_TEMP/ois-model"
           "$RUNNER_TEMP/ois-model" https://services.odata.org/V4/Northwind/Northwind.svc/ "$RUNNER_TEMP/NorthwindGenerated.xcdatamodeld"
           xcrun momc "$RUNNER_TEMP/NorthwindGenerated.xcdatamodeld" "$RUNNER_TEMP/NorthwindGenerated.momd"
-          clang -fobjc-arc -fmodules -ISource/include Source/*.m Tests/Live/ois-live.m \
+          clang -fobjc-arc -fmodules $inc $client Tests/Live/ois-live.m \
             -framework Foundation -framework CoreData -o "$RUNNER_TEMP/ois-live"
           "$RUNNER_TEMP/ois-live" "$RUNNER_TEMP"
           # TripPin's classes, generated and compiled into a client that
@@ -94,9 +97,8 @@ jobs:
           "$RUNNER_TEMP/ois-model" --classes "$RUNNER_TEMP/TripPinClasses" \
             https://services.odata.org/V4/TripPinServiceRW/ "$RUNNER_TEMP/Generated/TripPin.xcdatamodeld"
           xcrun momc "$RUNNER_TEMP/Generated/TripPin.xcdatamodeld" "$RUNNER_TEMP/TripPinGenerated.momd"
-          mkdir -p "$RUNNER_TEMP/include" && ln -s "$PWD/Source/include" "$RUNNER_TEMP/include/ODataIncrementalStore"
-          clang -fobjc-arc -fmodules -I"$RUNNER_TEMP/include" -ISource/include -I"$RUNNER_TEMP/TripPinClasses" \
-            Source/*.m "$RUNNER_TEMP"/TripPinClasses/*.m Tests/Live/ois-classes.m \
+          clang -fobjc-arc -fmodules $inc -I"$RUNNER_TEMP/TripPinClasses" \
+            $client "$RUNNER_TEMP"/TripPinClasses/*.m Tests/Live/ois-classes.m \
             -framework Foundation -framework CoreData -o "$RUNNER_TEMP/ois-classes"
           "$RUNNER_TEMP/ois-classes" "$RUNNER_TEMP/TripPinGenerated.momd"
 
@@ -108,7 +110,7 @@ jobs:
           "$RUNNER_TEMP/DerivedData/Build/Products/Debug/Workbench.app/Contents/MacOS/Workbench" --self-test
 
       # The Workbench as an app to hand someone: Release, universal (arm64
-      # and x86_64), the framework embedded, signed ad hoc -- there is no
+      # and x86_64), the frameworks embedded, signed ad hoc -- there is no
       # Developer ID here, so a downloaded copy is opened with right-click,
       # Open (or xattr -dr com.apple.quarantine Workbench.app). It has to
       # start and pass the offline self-test before it is uploaded. A v* tag
@@ -117,13 +119,15 @@ jobs:
         run: |
           version="${GITHUB_REF_NAME#v}"
           [ "$GITHUB_REF_TYPE" = tag ] || version="0.0.0-$GITHUB_RUN_NUMBER"
-          xcodebuild -workspace ODataIncrementalStore.xcworkspace -scheme Workbench \
+          xcodebuild -workspace ODataKit.xcworkspace -scheme Workbench \
             -destination 'generic/platform=macOS' -configuration Release \
             -derivedDataPath "$RUNNER_TEMP/Release" \
             MARKETING_VERSION="${version%%-*}" CURRENT_PROJECT_VERSION="$GITHUB_RUN_NUMBER" build
           app="$RUNNER_TEMP/Release/Build/Products/Release/Workbench.app"
-          test -d "$app/Contents/Frameworks/ODataIncrementalStore.framework" \
-            || { echo "::error::Workbench.app does not embed ODataIncrementalStore.framework"; exit 1; }
+          for fw in ODataKit ODataIncrementalStore ODataService; do
+            test -d "$app/Contents/Frameworks/$fw.framework" \
+              || { echo "::error::Workbench.app does not embed $fw.framework"; exit 1; }
+          done
           lipo "$app/Contents/MacOS/Workbench" -verify_arch arm64 x86_64
           codesign --verify --deep --strict "$app"
           "$app/Contents/MacOS/Workbench" --self-test builtin
@@ -276,7 +280,7 @@ jobs:
 
       # Built first and on its own, so a compile error in the library is
       # reported as that rather than as a test failure.
-      - name: Build ODataIncrementalStore
+      - name: Build the libraries
         run: |
           . $PREFIX/System/Library/Makefiles/GNUstep.sh
           make -j"$(nproc)"
