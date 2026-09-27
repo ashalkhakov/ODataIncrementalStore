@@ -56,8 +56,8 @@ NS_ASSUME_NONNULL_BEGIN
 - (nullable OISServedOperation *)importNamed:(NSString *)name;
 
 // CSDL: the operations for the schema, the imports for the container.
-@property (nonatomic, readonly) NSString *schemaXML;
-@property (nonatomic, readonly) NSString *containerXML;
+@property (nonatomic, readonly) NSArray<NSXMLElement *> *schemaElements;
+@property (nonatomic, readonly) NSArray<NSXMLElement *> *containerElements;
 
 @end
 

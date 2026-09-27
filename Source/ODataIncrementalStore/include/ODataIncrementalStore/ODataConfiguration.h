@@ -45,6 +45,9 @@ FOUNDATION_EXPORT NSString * const ODataIncrementalStoreKeyAsSegmentOption;
 // NSArray of entity names: the entities -fetchRemoteChanges: tracks.
 // Unset, every entity with an entity set of its own.
 FOUNDATION_EXPORT NSString * const ODataIncrementalStoreTrackedEntitiesOption;
+// NSURL of a directory: where downloaded streams are kept (ODataStreamTransfer).
+// Unset, a directory of the store's own under NSTemporaryDirectory().
+FOUNDATION_EXPORT NSString * const ODataIncrementalStoreStreamDirectoryOption;
 FOUNDATION_EXPORT NSString * const ODataIncrementalStoreType;
 // NSString: an API key, sent as the service's Authorization.ApiKey says
 // (its KeyName, in a header, the query or a cookie).

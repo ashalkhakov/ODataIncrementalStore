@@ -38,6 +38,7 @@ NS_ASSUME_NONNULL_BEGIN
 @property (nonatomic, copy) NSString *qualifiedName;
 @property (nonatomic, copy, nullable) NSString *baseType;  // qualified
 @property (nonatomic) BOOL isAbstract;
+@property (nonatomic) BOOL hasStream;  // HasStream="true": a media entity
 @property (nonatomic, copy) NSArray<NSString *> *declaredKey;  // empty on a derived type
 @property (nonatomic, copy) NSDictionary<NSString *, ODataSchemaProperty *> *declaredProperties;
 @property (nonatomic, copy) NSDictionary<NSString *, ODataSchemaNavigationProperty *> *declaredNavigationProperties;
@@ -176,6 +177,10 @@ FOUNDATION_EXPORT NSString *ODataSchemaSpelling(NSString *name, id<NSFastEnumera
 - (nullable ODataSchemaProperty *)property:(NSString *)name ofEntityType:(ODataSchemaEntityType *)type;
 - (nullable ODataSchemaNavigationProperty *)navigationProperty:(NSString *)name ofEntityType:(ODataSchemaEntityType *)type;
 - (BOOL)entityType:(ODataSchemaEntityType *)type isOrDerivesFrom:(ODataSchemaEntityType *)ancestor;
+// A media entity's type, or one derived from it (Part 1 section 11.1.2).
+- (BOOL)entityTypeHasStream:(ODataSchemaEntityType *)type;
+// Its Edm.Stream properties, its base types' too, by name.
+- (NSArray<NSString *> *)streamPropertiesOfEntityType:(ODataSchemaEntityType *)type;
 - (nullable ODataSchemaProperty *)property:(NSString *)name ofComplexType:(ODataSchemaComplexType *)type;
 // Its properties and its base types', by name.
 - (NSDictionary<NSString *, ODataSchemaProperty *> *)propertiesOfComplexType:(ODataSchemaComplexType *)type;

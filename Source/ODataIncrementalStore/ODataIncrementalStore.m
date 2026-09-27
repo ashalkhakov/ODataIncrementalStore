@@ -65,6 +65,8 @@ typedef NS_ENUM(NSInteger, OISWriteMode) {
   NSMutableDictionary *_deferred;   // object ID -> relationship names to write after insert
   NSMutableDictionary *_editLinks;  // object ID -> @odata.editLink, where the service gave one
   NSMutableDictionary *_members;    // object ID -> to-many name -> member IDs, from an $expand
+  NSMutableDictionary *_streams;    // object ID -> stream name (@"" media) -> what its row said of it
+  NSMutableDictionary *_streamFiles; // object ID -> stream name -> @{ file, etag, type } downloaded
   BOOL _batchRefused;               // the service answered $batch itself with an error
   NSLock *_lock;
   ODataHistoryLog *_history;        // with NSPersistentHistoryTrackingKey
@@ -127,6 +129,8 @@ typedef NS_ENUM(NSInteger, OISWriteMode) {
   if (!self) return nil;
   _nodeCache = [NSMutableDictionary dictionary];
   _members = [NSMutableDictionary dictionary];
+  _streams = [NSMutableDictionary dictionary];
+  _streamFiles = [NSMutableDictionary dictionary];
   _etags = [NSMutableDictionary dictionary];
   _versions = [NSMutableDictionary dictionary];
   _deferred = [NSMutableDictionary dictionary];
@@ -1545,6 +1549,7 @@ static BOOL OISKeyIsSet(id value)
     }
   }
   [self rememberETag:payload[@"@odata.etag"] forObjectID:objectID];
+  [self rememberStreamsIn:payload objectID:objectID];
   uint64_t version = [self versionForObjectID:objectID];
   NSIncrementalStoreNode *node = [[NSIncrementalStoreNode alloc] initWithObjectID:objectID withValues:values version:version];
   [_lock lock];
@@ -1564,6 +1569,226 @@ static BOOL OISKeyIsSet(id value)
     if (![keys containsObject:attr.name] && payload[[_mapper propertyForAttribute:attr]]) return YES;
   }
   return NO;
+}
+
+#pragma mark - Streams
+
+// Its media resource (@"") if it is a media entity, and its stream
+// properties, as the schema has them; @"" alone without one.
+- (NSArray<NSString *> *)streamNamesOfEntity:(NSEntityDescription *)entity
+{
+  ODataSchemaEntityType *type = [_mapper entityTypeForEntity:entity];
+  if (!type) return @[ @"" ];
+  NSMutableArray *names = [NSMutableArray array];
+  if ([_schema entityTypeHasStream:type]) [names addObject:@""];
+  [names addObjectsFromArray:[_schema streamPropertiesOfEntityType:type]];
+  return names;
+}
+
+// What a row says of its streams (JSON Format sections 4.5.10-13): each
+// one's links, media ETag and content type. A stream the row says nothing
+// of is at its conventional URL, and has no ETag to trust.
+- (void)rememberStreamsIn:(NSDictionary *)payload objectID:(NSManagedObjectID *)objectID
+{
+  NSMutableDictionary *found = [NSMutableDictionary dictionary];
+  for (NSString *name in [self streamNamesOfEntity:objectID.entity]) {
+    NSMutableDictionary *info = [NSMutableDictionary dictionary];
+    for (NSString *what in @[ @"mediaReadLink", @"mediaEditLink", @"mediaEtag", @"mediaContentType" ]) {
+      id value = payload[[NSString stringWithFormat:@"%@@odata.%@", name, what]];
+      if ([value isKindOfClass:[NSString class]]) info[what] = value;
+    }
+    if (info.count) found[name] = info;
+  }
+  [_lock lock];
+  if (found.count) _streams[objectID] = found;
+  else [_streams removeObjectForKey:objectID];
+  [_lock unlock];
+}
+
+- (NSString *)streamNamed:(NSString *)name objectID:(NSManagedObjectID *)objectID error:(NSError **)error
+{
+  NSArray *names = [self streamNamesOfEntity:objectID.entity];
+  NSString *spelled = name.length ? ODataSchemaSpelling(name, names) : @"";
+  // Without $metadata any name is taken on trust.
+  if ([names containsObject:spelled] || ![_mapper entityTypeForEntity:objectID.entity]) return spelled;
+  if (error) *error = OISError(ODataIncrementalStoreErrorNoStream, name.length
+      ? [NSString stringWithFormat:@"%@ has no stream property %@", objectID.entity.name, name]
+      : [NSString stringWithFormat:@"%@ is not a media entity", objectID.entity.name]);
+  return nil;
+}
+
+- (NSDictionary *)streamInfo:(NSString *)name objectID:(NSManagedObjectID *)objectID
+{
+  [_lock lock];
+  NSDictionary *info = [_streams[objectID][name] copy];
+  [_lock unlock];
+  return info ?: @{};
+}
+
+// A link from a row, or the stream's conventional URL: the entity's, then
+// /$value or /Name.
+- (NSURL *)streamURL:(NSString *)name objectID:(NSManagedObjectID *)objectID link:(NSString *)link error:(NSError **)error
+{
+  if (link.length) {
+    NSURL *resolved = [NSURL URLWithString:link relativeToURL:_client.configuration.serviceRoot].absoluteURL;
+    if (resolved) return [self serviceURLForLink:resolved];
+  }
+  NSURL *entity = [self editURLForObjectID:objectID error:error];
+  if (!entity) return nil;
+  return [NSURL URLWithString:[NSString stringWithFormat:@"%@/%@", entity.absoluteString, name.length ? name : @"$value"]];
+}
+
+- (NSURL *)streamDirectory
+{
+  NSURL *given = self.options[ODataIncrementalStoreStreamDirectoryOption];
+  if ([given isKindOfClass:[NSURL class]]) return given;
+  NSString *path = [[NSTemporaryDirectory() stringByAppendingPathComponent:@"ODataIncrementalStore"] stringByAppendingPathComponent:self.identifier ?: @"store"];
+  return [NSURL fileURLWithPath:path isDirectory:YES];
+}
+
+// A file name for the stream: its path at the service, made safe.
+- (NSString *)fileNameForStream:(NSString *)name objectID:(NSManagedObjectID *)objectID
+{
+  ODataResourceIdentifier *identifier = [self identifierFromObjectID:objectID error:NULL];
+  NSString *path = [NSString stringWithFormat:@"%@-%@", identifier.path ?: objectID.URIRepresentation.lastPathComponent, name.length ? name : @"value"];
+  NSMutableString *safe = [NSMutableString string];
+  NSCharacterSet *allowed = [NSCharacterSet alphanumericCharacterSet];
+  for (NSUInteger i = 0; i < path.length; i++) {
+    unichar c = [path characterAtIndex:i];
+    [safe appendString:[allowed characterIsMember:c] || c == '-' || c == '.' ? [NSString stringWithCharacters:&c length:1] : @"_"];
+  }
+  return [NSString stringWithFormat:@"%@-%08lx", safe, (unsigned long)(path.hash & 0xffffffff)];
+}
+
+- (NSURL *)fileForStream:(NSString *)name objectID:(NSManagedObjectID *)objectID contentType:(NSString **)contentType error:(NSError **)error
+{
+  NSDictionary *info = [self streamInfo:name objectID:objectID];
+  [_lock lock];
+  NSDictionary *kept = [_streamFiles[objectID][name] copy];
+  [_lock unlock];
+  NSFileManager *files = [NSFileManager defaultManager];
+  BOOL there = kept && [files fileExistsAtPath:[kept[@"file"] path]];
+  // Current: the ETag the row gives is the one the file was downloaded at.
+  if (there && info[@"mediaEtag"] && [info[@"mediaEtag"] isEqualToString:kept[@"etag"]]) {
+    if (contentType) *contentType = kept[@"type"];
+    return kept[@"file"];
+  }
+  NSURL *url = [self streamURL:name objectID:objectID link:info[@"mediaReadLink"] error:error];
+  if (!url) return nil;
+  NSMutableURLRequest *request = [NSMutableURLRequest requestWithURL:url];
+  [request setValue:@"*/*" forHTTPHeaderField:@"Accept"];
+  if (there && kept[@"etag"]) [request setValue:kept[@"etag"] forHTTPHeaderField:@"If-None-Match"];
+  NSError *failure = nil;
+  ODataHTTPResponse *response = [_client sendRequest:request error:&failure];
+  if (!response && there && [failure.userInfo[ODataErrorHTTPStatusKey] integerValue] == 304) {
+    if (contentType) *contentType = kept[@"type"];
+    return kept[@"file"];
+  }
+  if (!response) {
+    if (error) *error = failure;
+    return nil;
+  }
+  if (response.status == 304 && there) {
+    if (contentType) *contentType = kept[@"type"];
+    return kept[@"file"];
+  }
+  if (response.status == 204) {
+    if (error) *error = OISError(ODataIncrementalStoreErrorNoStream, [NSString stringWithFormat:@"Nothing is in %@", url]);
+    return nil;
+  }
+  NSURL *directory = [self streamDirectory];
+  if (![files createDirectoryAtURL:directory withIntermediateDirectories:YES attributes:nil error:error]) return nil;
+  NSURL *file = [directory URLByAppendingPathComponent:[self fileNameForStream:name objectID:objectID]];
+  if (![response.data ?: [NSData data] writeToURL:file options:NSDataWritingAtomic error:error]) return nil;
+  NSString *type = [response valueForHeader:@"Content-Type"] ?: info[@"mediaContentType"] ?: @"application/octet-stream";
+  NSString *etag = response.etag ?: info[@"mediaEtag"];
+  [self keepStreamFile:file name:name objectID:objectID etag:etag type:type];
+  if (contentType) *contentType = type;
+  return file;
+}
+
+- (void)keepStreamFile:(NSURL *)file name:(NSString *)name objectID:(NSManagedObjectID *)objectID etag:(NSString *)etag type:(NSString *)type
+{
+  NSMutableDictionary *entry = [NSMutableDictionary dictionaryWithObject:file forKey:@"file"];
+  if (etag) entry[@"etag"] = etag;
+  if (type) entry[@"type"] = type;
+  [_lock lock];
+  if (!_streamFiles[objectID]) _streamFiles[objectID] = [NSMutableDictionary dictionary];
+  _streamFiles[objectID][name] = entry;
+  // What is known of the stream now is what was just read or written.
+  NSMutableDictionary *streams = [_streams[objectID] mutableCopy] ?: [NSMutableDictionary dictionary];
+  NSMutableDictionary *info = [streams[name] mutableCopy] ?: [NSMutableDictionary dictionary];
+  if (etag) info[@"mediaEtag"] = etag;
+  else [info removeObjectForKey:@"mediaEtag"];
+  if (type) info[@"mediaContentType"] = type;
+  streams[name] = info;
+  _streams[objectID] = streams;
+  [_lock unlock];
+}
+
+- (BOOL)putStream:(NSString *)name objectID:(NSManagedObjectID *)objectID data:(NSData *)data
+      contentType:(NSString *)contentType error:(NSError **)error
+{
+  NSDictionary *info = [self streamInfo:name objectID:objectID];
+  NSURL *url = [self streamURL:name objectID:objectID link:info[@"mediaEditLink"] error:error];
+  if (!url) return NO;
+  NSMutableURLRequest *request = [NSMutableURLRequest requestWithURL:url];
+  request.HTTPMethod = data ? @"PUT" : @"DELETE";
+  if (data) {
+    request.HTTPBody = data;
+    [request setValue:contentType.length ? contentType : @"application/octet-stream" forHTTPHeaderField:@"Content-Type"];
+  }
+  if (info[@"mediaEtag"]) [request setValue:info[@"mediaEtag"] forHTTPHeaderField:@"If-Match"];
+  ODataHTTPResponse *response = [_client sendRequest:request error:error];
+  if (!response) return NO;
+  // The entity may have changed with it (its version, say): read again.
+  [self discardCachedRowsForObjectIDs:@[ objectID ]];
+  if (!data) {
+    [_lock lock];
+    [_streamFiles[objectID] removeObjectForKey:name];
+    NSMutableDictionary *streams = [_streams[objectID] mutableCopy];
+    [streams removeObjectForKey:name];
+    if (streams) _streams[objectID] = streams;
+    [_lock unlock];
+    return YES;
+  }
+  // What was put is what is there: kept as downloaded, at the new ETag.
+  NSURL *directory = [self streamDirectory];
+  NSURL *file = [directory URLByAppendingPathComponent:[self fileNameForStream:name objectID:objectID]];
+  if ([[NSFileManager defaultManager] createDirectoryAtURL:directory withIntermediateDirectories:YES attributes:nil error:NULL] &&
+      response.etag && [data writeToURL:file options:NSDataWritingAtomic error:NULL]) {
+    [self keepStreamFile:file name:name objectID:objectID etag:response.etag type:contentType];
+  } else {
+    [_lock lock];
+    [_streamFiles[objectID] removeObjectForKey:name];
+    [_lock unlock];
+  }
+  return YES;
+}
+
+- (NSManagedObjectID *)postMediaEntity:(NSEntityDescription *)entity data:(NSData *)data
+                           contentType:(NSString *)contentType error:(NSError **)error
+{
+  NSString *root = _client.configuration.serviceRoot.absoluteString ?: @"";
+  if (![root hasSuffix:@"/"]) root = [root stringByAppendingString:@"/"];
+  NSURL *url = [NSURL URLWithString:[root stringByAppendingString:[_mapper collectionPathForEntity:entity]]];
+  NSMutableURLRequest *request = [NSMutableURLRequest requestWithURL:url];
+  request.HTTPMethod = @"POST";
+  request.HTTPBody = data;
+  [request setValue:contentType.length ? contentType : @"application/octet-stream" forHTTPHeaderField:@"Content-Type"];
+  [request setValue:@"return=representation" forHTTPHeaderField:@"Prefer"];
+  ODataHTTPResponse *response = [_client sendRequest:request error:error];
+  if (!response) return nil;
+  id json = [response JSONWithError:error];
+  if (!json) return nil;
+  if (![json isKindOfClass:[NSDictionary class]]) {
+    if (error) *error = OISError(ODataIncrementalStoreErrorDecoding, @"A new media entity came back without its row");
+    return nil;
+  }
+  NSManagedObjectID *objectID = [self objectIDFromPayload:json entity:entity error:error];
+  if (!objectID) return nil;
+  [self cacheNodeForObjectID:objectID entity:objectID.entity payload:json error:NULL];
+  return objectID;
 }
 
 #pragma mark - ETags
@@ -1615,6 +1840,8 @@ static BOOL OISKeyIsSet(id value)
   [_lock lock];
   [_nodeCache removeObjectForKey:objectID];
   [_members removeObjectForKey:objectID];
+  [_streams removeObjectForKey:objectID];
+  [_streamFiles removeObjectForKey:objectID];
   [_etags removeObjectForKey:objectID];
   [_versions removeObjectForKey:objectID];
   [_deferred removeObjectForKey:objectID];

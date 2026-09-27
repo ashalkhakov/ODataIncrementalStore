@@ -17,6 +17,7 @@ NSString * const ODataMessagesKey = @"ODataMessages";
 NSString * const ODataMessagesURLKey = @"ODataMessagesURL";
 NSString * const ODataMessagesObjectIDKey = @"ODataMessagesObjectID";
 NSString * const ODataIncrementalStoreTrackedEntitiesOption = @"ODataIncrementalStoreTrackedEntities";
+NSString * const ODataIncrementalStoreStreamDirectoryOption = @"ODataIncrementalStoreStreamDirectory";
 NSString * const ODataIncrementalStoreKeyAsSegmentOption = @"ODataIncrementalStoreKeyAsSegment";
 NSString * const ODataIncrementalStoreMaxVersionOption = @"ODataIncrementalStoreMaxVersion";
 NSString * const ODataIncrementalStoreIEEE754CompatibleOption = @"ODataIncrementalStoreIEEE754Compatible";

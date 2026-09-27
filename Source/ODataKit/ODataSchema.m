@@ -298,6 +298,7 @@ static NSString *OISLocalName(NSString *name)
     _entityType.qualifiedName = [self qualify:_entityType.name];
     _entityType.baseType = attributes[@"BaseType"];
     _entityType.isAbstract = [attributes[@"Abstract"] isEqualToString:@"true"];
+    _entityType.hasStream = [attributes[@"HasStream"] isEqualToString:@"true"];
     _key = [NSMutableArray array];
     _properties = [NSMutableDictionary dictionary];
     _navigation = [NSMutableDictionary dictionary];
@@ -688,6 +689,25 @@ NSString *ODataSchemaSpelling(NSString *name, id<NSFastEnumeration> _Nullable na
 {
   if (!name) return nil;
   return self.enumTypes[ODataSchemaSpelling([self qualifiedName:name], self.enumTypes)];
+}
+
+- (BOOL)entityTypeHasStream:(ODataSchemaEntityType *)type
+{
+  for (ODataSchemaEntityType *t = type; t; t = t.baseType ? [self entityTypeNamed:t.baseType] : nil) {
+    if (t.hasStream) return YES;
+  }
+  return NO;
+}
+
+- (NSArray<NSString *> *)streamPropertiesOfEntityType:(ODataSchemaEntityType *)type
+{
+  NSMutableArray *names = [NSMutableArray array];
+  for (ODataSchemaEntityType *t = type; t; t = t.baseType ? [self entityTypeNamed:t.baseType] : nil) {
+    for (NSString *name in t.declaredProperties) {
+      if ([t.declaredProperties[name].type isEqualToString:@"Edm.Stream"]) [names addObject:name];
+    }
+  }
+  return [names sortedArrayUsingSelector:@selector(compare:)];
 }
 
 - (ODataSchemaEntityType *)entityTypeWithSimpleName:(NSString *)name

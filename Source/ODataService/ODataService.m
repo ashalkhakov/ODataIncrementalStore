@@ -335,7 +335,8 @@ typedef NS_ENUM(NSInteger, OISTargetKind) {
   OISTargetValue,
   OISTargetCount,
   OISTargetOperation,
-  OISTargetReference
+  OISTargetReference,
+  OISTargetStream   // a media resource (Entity/$value) or stream property: `attribute` holds it
 };
 
 #pragma mark - One call
@@ -676,7 +677,7 @@ typedef NS_ENUM(NSInteger, OISTargetKind) {
       [self fail:406 message:[NSString stringWithFormat:@"$format=%@ is not a format this resource has", format]];
       return NO;
     }
-  } else if (accept.length && !metadata && self.kind != OISTargetCount && self.kind != OISTargetValue) {
+  } else if (accept.length && !metadata && self.kind != OISTargetCount && self.kind != OISTargetValue && self.kind != OISTargetStream) {
     BOOL acceptable = NO;
     for (NSString *range in [lower componentsSeparatedByString:@","]) {
       NSString *type = [[range componentsSeparatedByString:@";"][0] stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceCharacterSet]];
@@ -901,7 +902,19 @@ typedef NS_ENUM(NSInteger, OISTargetKind) {
             continue;
           }
         }
-        if ([name isEqualToString:@"$ref"] || [name isEqualToString:@"$value"] || [name rangeOfString:@"."].location != NSNotFound) {
+        if ([name isEqualToString:@"$value"]) {
+          // A media entity's media resource (Part 1 section 11.1.2).
+          NSAttributeDescription *media = [self.service.writer mediaAttributeOfEntity:self.object.entity];
+          if (!media) {
+            [self fail:400 message:[NSString stringWithFormat:@"%@ is not a media entity", self.object.entity.name]];
+            return;
+          }
+          self.attribute = media;
+          self.kind = OISTargetStream;
+          self.index++;
+          continue;
+        }
+        if ([name isEqualToString:@"$ref"] || [name rangeOfString:@"."].location != NSNotFound) {
           [self fail:501 message:[NSString stringWithFormat:@"%@ is not supported", name]];
           return;
         }
@@ -916,8 +929,13 @@ typedef NS_ENUM(NSInteger, OISTargetKind) {
             return;
           }
           self.attribute = (NSAttributeDescription *)property;
-          self.kind = OISTargetProperty;
+          if (![self.service.writer typeNameForAttribute:self.attribute]) {
+            [self fail:404 message:[NSString stringWithFormat:@"%@ has no property %@", self.object.entity.name, name]];
+            return;
+          }
+          self.kind = [self.service.writer isStreamAttribute:self.attribute] ? OISTargetStream : OISTargetProperty;
           self.index++;
+          if (self.kind == OISTargetStream) continue;
           if (self.index < segments.count && [segments[self.index].name isEqualToString:@"$value"]) {
             self.kind = OISTargetValue;
             self.index++;
@@ -1103,6 +1121,15 @@ typedef NS_ENUM(NSInteger, OISTargetKind) {
       else if ([@[ @"PUT", @"PATCH", @"DELETE" ] containsObject:method]) [self writeProperty];
       else [self methodNotAllowed:@[ @"GET", @"PUT", @"PATCH", @"DELETE" ]];
       return;
+    case OISTargetStream: {
+      // A stream property can be emptied; a media entity is deleted whole.
+      BOOL property = [self.service.writer isStreamAttribute:self.attribute];
+      if ([method isEqualToString:@"GET"]) [self readStream];
+      else if ([method isEqualToString:@"PUT"]) [self writeStream];
+      else if (property && [method isEqualToString:@"DELETE"]) [self writeStream];
+      else [self methodNotAllowed:property ? @[ @"GET", @"PUT", @"DELETE" ] : @[ @"GET", @"PUT" ]];
+      return;
+    }
     case OISTargetReference:
       if ([method isEqualToString:@"GET"]) [self readReference];
       else if ([@[ @"PUT", @"POST", @"DELETE" ] containsObject:method]) [self writeReference];
@@ -1166,6 +1193,8 @@ typedef NS_ENUM(NSInteger, OISTargetKind) {
   for (NSString *name in names) {
     NSAttributeDescription *attribute = object.entity.attributesByName[name];
     if (attribute.isTransient) continue;
+    // Streams have ETags of their own.
+    if (![self.service.writer typeNameForAttribute:attribute] || [self.service.writer isStreamAttribute:attribute]) continue;
     id json = [self.coder JSONForCoreDataValue:[object valueForKey:name] attribute:attribute];
     NSString *text = [NSString stringWithFormat:@"%@=%@;", name, json];
     NSData *bytes = [text dataUsingEncoding:NSUTF8StringEncoding];
@@ -1192,6 +1221,135 @@ typedef NS_ENUM(NSInteger, OISTargetKind) {
 }
 
 #pragma mark Serialising
+
+#pragma mark Streams
+
+// A stream's ETag: a hash of its bytes.
+- (NSString *)mediaEtagOf:(NSData *)data
+{
+  uint64_t hash = 14695981039346656037ULL;
+  const uint8_t *p = data.bytes;
+  for (NSUInteger i = 0; i < data.length; i++) {
+    hash ^= p[i];
+    hash *= 1099511628211ULL;
+  }
+  return [NSString stringWithFormat:@"W/\"%016llx-%lx\"", (unsigned long long)hash, (unsigned long)data.length];
+}
+
+- (NSString *)contentTypeOfStream:(NSAttributeDescription *)stream of:(NSManagedObject *)object
+{
+  NSAttributeDescription *where = [self.service.writer contentTypeAttributeOfStream:stream];
+  NSString *type = where ? [object valueForKey:where.name] : nil;
+  return type.length ? type : @"application/octet-stream";
+}
+
+// Its control information (JSON Format section 4.5.10-13): the media ETag
+// and content type of a stream there is, and at metadata=full its links.
+// prefix: the stream property's name, or @"" for the media resource.
+- (void)describeStream:(NSAttributeDescription *)stream of:(NSManagedObject *)object prefix:(NSString *)prefix
+                  full:(BOOL)full into:(NSMutableDictionary *)json
+{
+  NSData *data = [object valueForKey:stream.name];
+  if (full) {
+    NSString *link = [NSString stringWithFormat:@"%@/%@", [self canonicalPathOf:object], prefix.length ? prefix : @"$value"];
+    json[[prefix stringByAppendingString:@"@odata.mediaReadLink"]] = link;
+    json[[prefix stringByAppendingString:@"@odata.mediaEditLink"]] = link;
+  }
+  if (!data) return;
+  json[[prefix stringByAppendingString:@"@odata.mediaEtag"]] = [self mediaEtagOf:data];
+  json[[prefix stringByAppendingString:@"@odata.mediaContentType"]] = [self contentTypeOfStream:stream of:object];
+}
+
+// GET a stream: its bytes as they were put, with their content type and
+// media ETag; none (204) for a stream property without one.
+- (void)readStream
+{
+  NSData *data = [self.object valueForKey:self.attribute.name];
+  if (!data) {
+    [self respondStatus:204 headers:@{} body:nil];
+    return;
+  }
+  NSString *etag = [self mediaEtagOf:data];
+  NSString *unless = [self.request valueForHeader:@"If-None-Match"];
+  for (NSString *tag in [unless componentsSeparatedByString:@","]) {
+    NSString *t = [tag stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceCharacterSet]];
+    if ([t isEqualToString:etag] || [t isEqualToString:@"*"]) {
+      [self respondStatus:304 headers:@{ @"ETag": etag } body:nil];
+      return;
+    }
+  }
+  [self respondStatus:200 headers:@{ @"Content-Type": [self contentTypeOfStream:self.attribute of:self.object], @"ETag": etag } body:data];
+}
+
+// PUT a stream: the body, as it comes, with its Content-Type; DELETE a
+// stream property: none. If-Match is against the media ETag (Part 1
+// section 11.4.7).
+- (void)writeStream
+{
+  if (!self.handler.allowsUpdate) {
+    [self methodNotAllowed:@[ @"GET" ]];
+    return;
+  }
+  NSData *current = [self.object valueForKey:self.attribute.name];
+  NSString *condition = [self.request valueForHeader:@"If-Match"];
+  if (condition.length) {
+    NSString *etag = current ? [self mediaEtagOf:current] : nil;
+    BOOL allowed = NO;
+    for (NSString *tag in [condition componentsSeparatedByString:@","]) {
+      NSString *t = [tag stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceCharacterSet]];
+      if (([t isEqualToString:@"*"] && current) || [t isEqualToString:etag]) allowed = YES;
+    }
+    if (!allowed) {
+      [self fail:412 message:@"The stream has changed since that ETag"];
+      return;
+    }
+  }
+  BOOL delete = [self.request.method isEqualToString:@"DELETE"];
+  NSMutableDictionary *values = [NSMutableDictionary dictionary];
+  values[self.attribute.name] = delete ? [NSNull null] : (self.exchange.request.HTTPBody ?: [NSData data]);
+  NSAttributeDescription *type = [self.service.writer contentTypeAttributeOfStream:self.attribute];
+  NSString *given = [self.request valueForHeader:@"Content-Type"];
+  if (type) values[type.name] = delete || !given.length ? [NSNull null] : given;
+  NSAttributeDescription *version = [self.service versionAttributeOfEntity:self.object.entity];
+  if (version) values[version.name] = @([[self.object valueForKey:version.name] longLongValue] + 1);
+  ODataReply *reply = [self replyWithAction:@selector(didWriteStream:)];
+  [reply returned:[self.handler updateObject:self.object values:values request:self.request reply:reply]];
+}
+
+- (void)didWriteStream:(ODataReply *)reply
+{
+  NSManagedObject *object = reply.result;
+  if (reply.error || !object) {
+    [self.request.context rollback];
+    [self respondError:reply.error ?: ODataServiceError(500, @"The stream was not written")];
+    return;
+  }
+  if (![self save]) return;
+  NSData *data = [object valueForKey:self.attribute.name];
+  [self respondStatus:204 headers:data ? @{ @"ETag": [self mediaEtagOf:data] } : @{} body:nil];
+}
+
+// POST a media resource to a set of media entities (Part 1 section
+// 11.4.2.1): a new entity, its stream the body; its other properties are
+// set after, by PATCH.
+- (void)insertMedia:(NSEntityDescription *)entity media:(NSAttributeDescription *)media
+{
+  NSMutableDictionary *values = [NSMutableDictionary dictionary];
+  values[media.name] = self.exchange.request.HTTPBody ?: [NSData data];
+  NSAttributeDescription *type = [self.service.writer contentTypeAttributeOfStream:media];
+  NSString *given = [self.request valueForHeader:@"Content-Type"];
+  if (type && given.length) values[type.name] = given;
+  if (![self fillKeys:values entity:entity]) return;
+  if (self.parent && self.navigation.inverseRelationship) {
+    NSRelationshipDescription *inverse = self.navigation.inverseRelationship;
+    values[inverse.name] = inverse.isToMany ? [NSSet setWithObject:self.parent] : self.parent;
+  }
+  NSAttributeDescription *version = [self.service versionAttributeOfEntity:entity];
+  if (version) values[version.name] = @1;
+  self.request.entity = entity;
+  ODataReply *reply = [self replyWithAction:@selector(didInsert:)];
+  [reply returned:[self.handler insertObjectWithValues:values request:self.request reply:reply]];
+}
 
 - (NSArray<NSAttributeDescription *> *)servedAttributesOf:(NSEntityDescription *)entity
 {
@@ -1252,8 +1410,15 @@ typedef NS_ENUM(NSInteger, OISTargetKind) {
     }
     if (property) [selected addObject:property.name];
   }
+  NSAttributeDescription *media = [self.service.writer mediaAttributeOfEntity:object.entity];
+  if (media && !none) [self describeStream:media of:object prefix:@"" full:full into:json];
   for (NSAttributeDescription *attribute in attributes) {
     if (!star && ![selected containsObject:attribute.name]) continue;
+    if ([self.service.writer isStreamAttribute:attribute]) {
+      // A stream is not in the payload, only what is known of it.
+      if (!none) [self describeStream:attribute of:object prefix:[self.mapper propertyForAttribute:attribute] full:full into:json];
+      continue;
+    }
     json[[self.mapper propertyForAttribute:attribute]] = [self.coder JSONForCoreDataValue:[object valueForKey:attribute.name] attribute:attribute];
   }
   for (ODataExpandItem *item in options.expand) {
@@ -2354,6 +2519,14 @@ static NSNumber *OISScalarReturnValue(NSInvocation *invocation, char type)
         return nil;
       }
       NSAttributeDescription *attribute = (NSAttributeDescription *)property;
+      if (![self.service.writer typeNameForAttribute:attribute]) {
+        [self fail:400 message:[NSString stringWithFormat:@"%@ has no property %@", entity.name, name]];
+        return nil;
+      }
+      if ([self.service.writer isStreamAttribute:attribute]) {
+        [self fail:400 message:[NSString stringWithFormat:@"%@ is a stream: PUT it at its own URL", name]];
+        return nil;
+      }
       // Core.Computed, or read only: the service's to set, whatever a body
       // says.
       if ([self.service isComputedAttribute:attribute]) continue;
@@ -2758,6 +2931,12 @@ static NSNumber *OISScalarReturnValue(NSInvocation *invocation, char type)
     [self methodNotAllowed:@[ @"GET" ]];
     return;
   }
+  NSAttributeDescription *media = [self.service.writer mediaAttributeOfEntity:self.entity];
+  NSString *given = [self.request valueForHeader:@"Content-Type"].lowercaseString;
+  if (media && given.length && ![given hasPrefix:@"application/json"]) {
+    [self insertMedia:self.entity media:media];
+    return;
+  }
   NSDictionary *body = [self bodyJSON];
   if (!body) return;
   NSEntityDescription *entity = self.entity;
@@ -2865,6 +3044,7 @@ static NSNumber *OISScalarReturnValue(NSInvocation *invocation, char type)
     NSArray *key = [self.mapper keyAttributesForEntity:OISRootEntity(object.entity)];
     for (NSAttributeDescription *attribute in [self servedAttributesOf:object.entity]) {
       if ([key containsObject:attribute] || attribute == version || values[attribute.name]) continue;
+      if ([self.service.writer isStreamAttribute:attribute]) continue;  // not in a body, so not left out of one
       if ([self.service isComputedAttribute:attribute] || [self.service isImmutableAttribute:attribute]) continue;
       values[attribute.name] = attribute.defaultValue ?: [NSNull null];
     }
@@ -2990,8 +3170,8 @@ static NSNumber *OISScalarReturnValue(NSInvocation *invocation, char type)
                                                                        mapper:self.mapper
                                                                        writer:writer
                                                             serviceOperations:self.serviceOperations];
-    writer.additionalSchemaXML = catalog.schemaXML;
-    writer.additionalContainerXML = catalog.containerXML;
+    writer.additionalSchemaElements = catalog.schemaElements;
+    writer.additionalContainerElements = catalog.containerElements;
     self.catalog = catalog;
     NSString *xml = [writer XMLStringForVersion:@"4.01"];
     ODataSchema *schema = [ODataSchema schemaWithData:[xml dataUsingEncoding:NSUTF8StringEncoding] error:NULL];

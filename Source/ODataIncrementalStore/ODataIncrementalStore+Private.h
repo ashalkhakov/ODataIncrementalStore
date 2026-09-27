@@ -28,6 +28,27 @@ NS_ASSUME_NONNULL_BEGIN
 - (nullable NSURL *)editURLForObjectID:(NSManagedObjectID *)objectID error:(NSError **)error;
 // Its canonical URL, for a reference to it (@odata.id).
 - (nullable NSURL *)canonicalURLForObjectID:(NSManagedObjectID *)objectID error:(NSError **)error;
+
+// Streams, for ODataStreamTransfer. A stream is named as $metadata names
+// it; @"" is a media entity's media resource.
+// The name as the object's type has it, or nil with an error.
+- (nullable NSString *)streamNamed:(nullable NSString *)name objectID:(NSManagedObjectID *)objectID error:(NSError **)error;
+// What the object's last row said of it: mediaReadLink, mediaEditLink,
+// mediaEtag, mediaContentType, as far as it said.
+- (NSDictionary<NSString *, NSString *> *)streamInfo:(NSString *)name objectID:(NSManagedObjectID *)objectID;
+// Downloaded into the stream directory, or the file already there while
+// its media ETag is current; nil with ODataIncrementalStoreErrorNoStream
+// when there is nothing in it.
+- (nullable NSURL *)fileForStream:(NSString *)name objectID:(NSManagedObjectID *)objectID
+                      contentType:(NSString * _Nullable * _Nullable)contentType
+                            error:(NSError **)error;
+// PUT (data) or DELETE (nil), with If-Match when its media ETag is known.
+- (BOOL)putStream:(NSString *)name objectID:(NSManagedObjectID *)objectID data:(nullable NSData *)data
+      contentType:(nullable NSString *)contentType error:(NSError **)error;
+// POST a new media entity of the entity's set: its object ID, the row the
+// service answered with kept.
+- (nullable NSManagedObjectID *)postMediaEntity:(NSEntityDescription *)entity data:(NSData *)data
+                                    contentType:(NSString *)contentType error:(NSError **)error;
 @end
 
 NS_ASSUME_NONNULL_END

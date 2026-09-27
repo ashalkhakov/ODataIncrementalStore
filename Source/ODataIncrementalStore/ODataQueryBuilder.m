@@ -136,6 +136,14 @@ static NSString *OISPercentEncode(NSString *value)
     if (![self.mapper.schema property:wire ofEntityType:type]) continue;
     [own addObject:cast ? [NSString stringWithFormat:@"%@/%@", cast, wire] : wire];
   }
+  // Stream properties too: not in the model, but their media ETags and
+  // links come only with them.
+  ODataSchemaEntityType *base = cast && entity.superentity ? [self.mapper entityTypeForEntity:entity.superentity] : nil;
+  NSArray *inherited = base ? [self.mapper.schema streamPropertiesOfEntityType:base] : @[];
+  for (NSString *stream in [self.mapper.schema streamPropertiesOfEntityType:type]) {
+    if ([inherited containsObject:stream]) continue;
+    [own addObject:cast ? [NSString stringWithFormat:@"%@/%@", cast, stream] : stream];
+  }
   [names addObjectsFromArray:[own sortedArrayUsingSelector:@selector(compare:)]];
   NSArray *subentities = [entity.subentities sortedArrayUsingDescriptors:@[ [NSSortDescriptor sortDescriptorWithKey:@"name" ascending:YES] ]];
   for (NSEntityDescription *subentity in subentities) {

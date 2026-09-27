@@ -16,6 +16,7 @@
 #import "ODataPredicateTranslator.h"
 #import "ODataQueryBuilder.h"
 #import "ODataOperationCall.h"
+#import "ODataStreamTransfer.h"
 #import "ODataFunctionExpression.h"
 #import "ODataHistory.h"
 

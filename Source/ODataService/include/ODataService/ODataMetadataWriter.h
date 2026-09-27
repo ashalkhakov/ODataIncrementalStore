@@ -23,6 +23,18 @@ NS_ASSUME_NONNULL_BEGIN
 
 // The userInfo it writes as annotations: see ODataPropertyMapper.h.
 
+// Streams (Part 1 section 11.1.2), kept in Binary attributes. userInfo on
+// a Binary attribute: an Edm.Stream property, read and written at its own
+// URL (Entity(1)/Photo), never in a body.
+FOUNDATION_EXPORT NSString * const ODataUserInfoStream;       // @"OData.stream", YES
+// userInfo on an entity: the Binary attribute that is its media resource
+// (HasStream="true", at Entity(1)/$value).
+FOUNDATION_EXPORT NSString * const ODataUserInfoMediaStream;  // @"OData.mediaStream"
+// userInfo on either stream attribute: the String attribute its content
+// type is kept in; without one, a stream is application/octet-stream. The
+// media and content-type attributes are the stream's, not properties.
+FOUNDATION_EXPORT NSString * const ODataUserInfoContentType;  // @"OData.contentType"
+
 @interface ODataMetadataWriter : NSObject
 
 - (instancetype)initWithModel:(NSManagedObjectModel *)model mapper:(ODataPropertyMapper *)mapper NS_DESIGNATED_INITIALIZER;
@@ -45,15 +57,15 @@ NS_ASSUME_NONNULL_BEGIN
 // and Delete, written as Org.OData.Capabilities.V1 restrictions.
 @property (nonatomic, copy, nullable) NSDictionary<NSString *, NSSet<NSString *> *> *restrictions;
 
-// More elements for the schema of namespaceName (Function, Action) and for
-// the entity container (FunctionImport, ActionImport), as CSDL XML.
 // Annotations of each entity set, by set name, by term.
 @property (nonatomic, copy, nullable) NSDictionary<NSString *, NSDictionary<NSString *, id> *> *entitySetAnnotations;
 // Annotations of the entity container, by term (Core.Description, or
 // qualified), valued as JSON CSDL has them: the service's Authorization.
 @property (nonatomic, copy, nullable) NSDictionary<NSString *, id> *containerAnnotations;
-@property (nonatomic, copy, nullable) NSString *additionalSchemaXML;
-@property (nonatomic, copy, nullable) NSString *additionalContainerXML;
+// More elements for the schema of namespaceName (Function, Action) and for
+// the entity container (FunctionImport, ActionImport); copied in.
+@property (nonatomic, copy, nullable) NSArray<NSXMLElement *> *additionalSchemaElements;
+@property (nonatomic, copy, nullable) NSArray<NSXMLElement *> *additionalContainerElements;
 
 // The document, in the CSDL of this OData-Version: 4.0 or 4.01.
 - (NSString *)XMLStringForVersion:(NSString *)version;
@@ -63,6 +75,11 @@ NS_ASSUME_NONNULL_BEGIN
 - (nullable NSString *)typeNameForAttribute:(NSAttributeDescription *)attribute;
 // An entity's qualified entity type name.
 - (NSString *)typeNameForEntity:(NSEntityDescription *)entity;
+// The entity's media resource, its own or a base's; nil for none.
+- (nullable NSAttributeDescription *)mediaAttributeOfEntity:(NSEntityDescription *)entity;
+- (BOOL)isStreamAttribute:(NSAttributeDescription *)attribute;
+// Where a stream's content type is kept; nil for none.
+- (nullable NSAttributeDescription *)contentTypeAttributeOfStream:(NSAttributeDescription *)stream;
 // The entities the document has an entity type for: every entity with a key
 // (or with a super-entity that has one).
 @property (nonatomic, readonly) NSArray<NSEntityDescription *> *entities;

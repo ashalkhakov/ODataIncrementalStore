@@ -55,7 +55,7 @@ calling the client conformant.
 |---|---|---|---|
 | 1 | Understand `metadata=minimal`, or request `none` / `full` | ✅ | Requests `minimal`. Reads `@odata.etag`, `@odata.nextLink`, `@odata.type` and `@odata.editLink` (writes go to the edit link where one is given). `@odata.id` is not needed: the key is in the row. |
 | 2 | Consume `metadata=full` responses | ✅ | Extra control information is ignored. |
-| 3 | Receive every data type (§7.1) | ⚠️ **live** | Every primitive type, enumerations, complex values and collections (of primitive, enumeration or complex values); see sections 4.3 and 5. Spatial types are left out for now, and streams are not in a row; see section 8. |
+| 3 | Receive every data type (§7.1) | ⚠️ **live** | Every primitive type, enumerations, complex values and collections (of primitive, enumeration or complex values); see sections 4.3 and 5. Spatial types are left out for now; streams are not in a row but read and written apart, see section 8. |
 | 4 | Interpret control information per the payload's `OData-Version` | ✅ | A 4.01 payload may leave out the `odata.` prefix (`@etag`, `@nextLink`, `@type`, `Orders@count`); the client gives such names their prefix when it parses a response, so the store reads one spelling. A payload that says it is 4.0 is taken as it is; one without `OData-Version` (a part of a `$batch` response, say) is read as 4.01. Decimals written with an exponent (`1.5E3`) are read. |
 | 5 | Accept unknown annotations and control information | ✅ | Ignored. |
 | 6 | Not require `streaming=true` | ✅ | |
@@ -89,7 +89,8 @@ calling the client conformant.
 | Deep insert | §11.4.2.2 | — | Not needed: a save that inserts related objects is one `$batch` change set, with binds, which is as atomic. |
 | Actions and functions | §11.5 | ✅ **live** | `ODataOperationCall`; see section 8. |
 | Delta | §11.3 | ✅ **live** | As persistent history; see section 8. |
-| Async, streams | | — | No Core Data equivalent in a fetch or save; planned in section 8. |
+| Async | | — | No Core Data equivalent in a fetch or save; planned in section 8. |
+| Streams | §11.1.2, §11.4.7–8 | ✅ | Outside Core Data, with `ODataStreamTransfer`; see section 8. |
 
 ## 4. Core Data mapping
 
@@ -183,7 +184,7 @@ calling the client conformant.
 | `TimeOfDay`, `Duration` | String / Double with `OData.type` | ✅ | `TimeOfDay` stays a string (`13:20:00`) with an unquoted literal; `Duration` is seconds in a Double (`P1DT2H3M4.5S` is 93784.5), written `PT93784.5S`, with the literal `duration'…'`. |
 | `Guid` | UUID, or String with `OData.type` `Edm.Guid` | ✅ | Unquoted in literals and in key paths. |
 | `Binary` | Binary Data | ✅ **live** | Written as base64url, the spec's form; both base64url and plain base64 read, since Northwind sends plain base64. Literal `binary'…'`. |
-| `Stream`, media entities | | — | Not in a row; see section 8. |
+| `Stream`, media entities | | ✅ | Not in a row: a row keeps each stream's links, media ETag and content type; see section 8. |
 | Geography, geometry | | — | Left out for now: listed under `OData.unmapped` in a generated model. |
 | Enumerations | String or Integer | ✅ **live** | See 4.3. |
 
@@ -366,11 +367,27 @@ its callers notice. Low priority.
 (`HasStream="true"`, TripPin's `Photo`) has its content at
 `Entity(key)/$value`, a *stream property* (`Edm.Stream`) at
 `Entity(key)/Property`, each with its own read and edit links, content
-type and ETag. They stay outside Core Data, as files: the store downloads
-a stream into a file cache on request, keyed by the object and the
-stream's name and kept while its media ETag is current, and uploads one
-from a file (`PUT` with `If-Match`). Rows keep only the stream's links,
-content type and ETag.
+type and ETag. ✅, outside Core Data, with `ODataStreamTransfer`:
+
+- A row keeps what the service says of each stream
+  (`@odata.mediaReadLink`, `mediaEditLink`, `mediaEtag`,
+  `mediaContentType`, and `Photo@odata.…` for a property); a fetch's
+  `$select` names the stream properties so that it is sent. A stream the
+  row says nothing of is at its conventional URL. Generated models leave
+  `Edm.Stream` properties out.
+- `-download:` reads a stream into the store's stream directory
+  (`ODataIncrementalStoreStreamDirectoryOption`) and keeps the file while
+  the row's media ETag is the one it was read at; without one it asks with
+  `If-None-Match` and takes `304`. Nothing in it is
+  `ODataIncrementalStoreErrorNoStream`.
+- `-uploadFile:contentType:` is a `PUT` to the edit link with `If-Match`
+  when the media ETag is known; the file then stands as downloaded, at
+  the ETag the service answered with. `-remove:` empties a stream property.
+- A transfer made with an entity instead of an object `POST`s its first
+  upload to the entity set: a new media entity, whose other properties
+  are then set on the object and saved as any change is.
+- Each waits, or with a target and action does not, as operation calls
+  do. Streams are not written inside a `$batch`.
 
 ## 9. Vocabularies
 

@@ -17,15 +17,6 @@ const char *_protocol_getMethodTypeEncoding(Protocol *protocol, SEL selector, BO
 + (NSDictionary *)ODataOperationNames;
 @end
 
-static NSString *OISXMLEscaped(NSString *text)
-{
-  NSMutableString *s = [text mutableCopy];
-  [s replaceOccurrencesOfString:@"&" withString:@"&amp;" options:0 range:NSMakeRange(0, s.length)];
-  [s replaceOccurrencesOfString:@"<" withString:@"&lt;" options:0 range:NSMakeRange(0, s.length)];
-  [s replaceOccurrencesOfString:@"\"" withString:@"&quot;" options:0 range:NSMakeRange(0, s.length)];
-  return s;
-}
-
 // A method's types, one token each: the return type, self, _cmd, then the
 // arguments; the offsets between them dropped.
 static NSArray<NSString *> *OISTypeTokens(const char *encoding)
@@ -387,60 +378,71 @@ static BOOL OISEntityIsOrInherits(NSEntityDescription *entity, NSEntityDescripti
 
 #pragma mark CSDL
 
-- (NSString *)parameterXML:(NSString *)name type:(NSString *)type scalar:(BOOL)scalar
+static void OISSet(NSXMLElement *element, NSString *name, NSString *value)
 {
-  NSMutableString *xml = [NSMutableString stringWithFormat:@"<Parameter Name=\"%@\" Type=\"%@\"", OISXMLEscaped(name), OISXMLEscaped(type)];
-  if (scalar) [xml appendString:@" Nullable=\"false\""];
-  if ([type hasSuffix:@"Edm.Decimal"] || [type hasSuffix:@"Edm.Decimal)"]) [xml appendString:@" Scale=\"variable\""];
-  [xml appendString:@"/>"];
-  return xml;
+  [element addAttribute:[NSXMLNode attributeWithName:name stringValue:value]];
 }
 
-- (NSString *)schemaXML
+static BOOL OISIsDecimal(NSString *type)
 {
-  NSMutableString *xml = [NSMutableString string];
+  return [type hasSuffix:@"Edm.Decimal"] || [type hasSuffix:@"Edm.Decimal)"];
+}
+
+- (NSXMLElement *)parameterNamed:(NSString *)name type:(NSString *)type scalar:(BOOL)scalar
+{
+  NSXMLElement *parameter = [[NSXMLElement alloc] initWithName:@"Parameter"];
+  OISSet(parameter, @"Name", name);
+  OISSet(parameter, @"Type", type);
+  if (scalar) OISSet(parameter, @"Nullable", @"false");
+  if (OISIsDecimal(type)) OISSet(parameter, @"Scale", @"variable");
+  return parameter;
+}
+
+- (NSArray<NSXMLElement *> *)schemaElements
+{
+  NSMutableArray *elements = [NSMutableArray array];
   for (OISServedOperation *operation in _operations) {
-    NSString *element = operation.isAction ? @"Action" : @"Function";
-    [xml appendFormat:@"<%@ Name=\"%@\"", element, OISXMLEscaped(operation.name)];
-    if (operation.boundEntity) [xml appendString:@" IsBound=\"true\""];
+    NSXMLElement *element = [[NSXMLElement alloc] initWithName:operation.isAction ? @"Action" : @"Function"];
+    OISSet(element, @"Name", operation.name);
+    if (operation.boundEntity) OISSet(element, @"IsBound", @"true");
     // A function's result can be read on from: the service composes on it.
-    if (!operation.isAction) [xml appendString:@" IsComposable=\"true\""];
-    [xml appendString:@">"];
+    if (!operation.isAction) OISSet(element, @"IsComposable", @"true");
     if (operation.boundEntity) {
       NSString *type = [_writer typeNameForEntity:operation.boundEntity];
       if (operation.boundToCollection) type = [NSString stringWithFormat:@"Collection(%@)", type];
-      [xml appendFormat:@"<Parameter Name=\"bindingParameter\" Type=\"%@\" Nullable=\"false\"/>", OISXMLEscaped(type)];
+      [element addChild:[self parameterNamed:@"bindingParameter" type:type scalar:YES]];
     }
     for (OISServedParameter *parameter in operation.parameters) {
-      [xml appendString:[self parameterXML:parameter.name type:parameter.type scalar:parameter.scalar != 0]];
+      [element addChild:[self parameterNamed:parameter.name type:parameter.type scalar:parameter.scalar != 0]];
     }
     if (operation.returns) {
-      [xml appendFormat:@"<ReturnType Type=\"%@\"", OISXMLEscaped(operation.returns.type)];
-      if (operation.returns.scalar) [xml appendString:@" Nullable=\"false\""];
-      if ([operation.returns.type hasSuffix:@"Edm.Decimal"] || [operation.returns.type hasSuffix:@"Edm.Decimal)"]) [xml appendString:@" Scale=\"variable\""];
-      [xml appendString:@"/>"];
+      NSXMLElement *returns = [[NSXMLElement alloc] initWithName:@"ReturnType"];
+      OISSet(returns, @"Type", operation.returns.type);
+      if (operation.returns.scalar) OISSet(returns, @"Nullable", @"false");
+      if (OISIsDecimal(operation.returns.type)) OISSet(returns, @"Scale", @"variable");
+      [element addChild:returns];
     }
-    [xml appendFormat:@"</%@>", element];
+    [elements addObject:element];
   }
-  return xml;
+  return elements;
 }
 
-- (NSString *)containerXML
+- (NSArray<NSXMLElement *> *)containerElements
 {
-  NSMutableString *xml = [NSMutableString string];
+  NSMutableArray *elements = [NSMutableArray array];
   for (OISServedOperation *operation in _operations) {
     if (operation.boundEntity) continue;
-    NSString *element = operation.isAction ? @"ActionImport" : @"FunctionImport";
-    NSString *attribute = operation.isAction ? @"Action" : @"Function";
-    [xml appendFormat:@"<%@ Name=\"%@\" %@=\"%@\"", element, OISXMLEscaped(operation.name), attribute, OISXMLEscaped(operation.qualifiedName)];
+    NSXMLElement *element = [[NSXMLElement alloc] initWithName:operation.isAction ? @"ActionImport" : @"FunctionImport"];
+    OISSet(element, @"Name", operation.name);
+    OISSet(element, operation.isAction ? @"Action" : @"Function", operation.qualifiedName);
     NSEntityDescription *returned = operation.returns.entity;
     if (returned) {
       while (returned.superentity) returned = returned.superentity;
-      [xml appendFormat:@" EntitySet=\"%@\"", OISXMLEscaped([_mapper entitySetForEntity:returned])];
+      OISSet(element, @"EntitySet", [_mapper entitySetForEntity:returned]);
     }
-    [xml appendString:@"/>"];
+    [elements addObject:element];
   }
-  return xml;
+  return elements;
 }
 
 @end

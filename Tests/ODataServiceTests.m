@@ -459,6 +459,7 @@
   ODataService *_service;
   dispatch_semaphore_t _finished;
   NSMutableArray<NSURL *> *_storeFiles;
+  ODataStreamTransfer *_finishedTransfer;
 }
 
 - (void)setUp
@@ -612,7 +613,7 @@
   OISServiceResponse *old = [self send:@"GET" path:@"$metadata" headers:@{ @"OData-MaxVersion": @"4.0" } body:nil];
   XCTAssertEqualObjects([old header:@"OData-Version"], @"4.0");
   NSString *oldXML = [[NSString alloc] initWithData:old.data encoding:NSUTF8StringEncoding];
-  XCTAssertTrue([oldXML containsString:@"<edmx:Edmx Version=\"4.0\""], @"4.0 CSDL for a 4.0 client");
+  XCTAssertTrue([oldXML containsString:@" Version=\"4.0\">"], @"4.0 CSDL for a 4.0 client: %@", oldXML);
   XCTAssertEqualObjects([ODataSchema schemaWithData:old.data error:NULL].version, @"4.01",
                         @"and it says the service speaks 4.01 too (Part 1 section 13.3, item 16)");
 }
@@ -1281,6 +1282,201 @@
   [request setValue:type forHTTPHeaderField:@"Content-Type"];
   request.HTTPBody = [text dataUsingEncoding:NSUTF8StringEncoding];
   return [self exchange:request];
+}
+
+- (OISServiceResponse *)send:(NSString *)method path:(NSString *)path headers:(NSDictionary *)headers data:(NSData *)data
+{
+  NSMutableURLRequest *request = [NSMutableURLRequest requestWithURL:[NSURL URLWithString:[@"http://example.test/odata/" stringByAppendingString:path]]];
+  request.HTTPMethod = method;
+  for (NSString *name in headers) [request setValue:headers[name] forHTTPHeaderField:name];
+  request.HTTPBody = data;
+  return [self exchange:request];
+}
+
+// Photos: a media entity (its content, and the content type it was put
+// with) with a stream property, Thumbnail, of its own.
+- (NSManagedObjectModel *)albumModel
+{
+  NSEntityDescription *photo = [[NSEntityDescription alloc] init];
+  photo.name = @"Photo";
+  photo.managedObjectClassName = @"NSManagedObject";
+  photo.userInfo = @{ @"OData.entitySet": @"Photos", @"OData.mediaStream": @"content" };
+  NSAttributeDescription *identifier = OISSwatchAttribute(@"id", NSInteger32AttributeType, nil);
+  identifier.userInfo = @{ @"OData.key": @"YES" };
+  NSAttributeDescription *content = OISSwatchAttribute(@"content", NSBinaryDataAttributeType, nil);
+  content.userInfo = @{ @"OData.contentType": @"contentType" };
+  NSAttributeDescription *thumbnail = OISSwatchAttribute(@"thumbnail", NSBinaryDataAttributeType, nil);
+  thumbnail.userInfo = @{ @"OData.stream": @"YES", @"OData.contentType": @"thumbnailType" };
+  photo.properties = @[ identifier, OISSwatchAttribute(@"name", NSStringAttributeType, nil), content,
+                        OISSwatchAttribute(@"contentType", NSStringAttributeType, nil), thumbnail,
+                        OISSwatchAttribute(@"thumbnailType", NSStringAttributeType, nil) ];
+  NSManagedObjectModel *model = [[NSManagedObjectModel alloc] init];
+  model.entities = @[ photo ];
+  return model;
+}
+
+- (void)serveAlbumInStoreOfType:(NSString *)storeType
+{
+  _coordinator = [[NSPersistentStoreCoordinator alloc] initWithManagedObjectModel:[self albumModel]];
+  NSURL *url = nil;
+  if (![storeType isEqualToString:NSInMemoryStoreType]) {
+    url = [NSURL fileURLWithPath:[NSTemporaryDirectory() stringByAppendingPathComponent:[[NSProcessInfo processInfo] globallyUniqueString]]];
+    [_storeFiles addObject:url];
+  }
+  NSError *error = nil;
+  XCTAssertNotNil([_coordinator addPersistentStoreWithType:storeType configuration:nil URL:url options:nil error:&error], @"%@", error);
+  _service = [[ODataService alloc] initWithPersistentStoreCoordinator:_coordinator serviceRoot:[NSURL URLWithString:@"http://example.test/odata/"]];
+}
+
+// Media entities and stream properties (Part 1 sections 11.1.2, 11.4.7).
+- (void)testStreams
+{
+  for (NSString *storeType in @[ NSInMemoryStoreType, NSSQLiteStoreType ]) {
+    [self serveAlbumInStoreOfType:storeType];
+    NSString *metadata = [self get:@"$metadata"].text;
+    XCTAssertTrue([metadata containsString:@"<EntityType Name=\"Photo\" HasStream=\"true\">"], @"%@", metadata);
+    XCTAssertTrue([metadata containsString:@"<Property Name=\"Thumbnail\" Type=\"Edm.Stream\""], @"%@", metadata);
+    XCTAssertFalse([metadata containsString:@"\"ContentType\""], @"the stream's, not a property");
+    XCTAssertFalse([metadata containsString:@"\"Content\""]);
+
+    // A new media entity, its stream the body.
+    const uint8_t bytes[] = { 0x89, 'P', 'N', 'G', 0x0d, 0x0a, 0x1a, 0x0a, 0x00, 0xff };
+    NSData *png = [NSData dataWithBytes:bytes length:sizeof bytes];
+    OISServiceResponse *created = [self send:@"POST" path:@"Photos" headers:@{ @"Content-Type": @"image/png" } data:png];
+    XCTAssertEqual(created.status, 201, @"%@: %@", storeType, created.text);
+    XCTAssertEqualObjects(created.json[@"Id"], @1);
+    XCTAssertEqualObjects(created.json[@"@odata.mediaContentType"], @"image/png");
+    NSString *etag = created.json[@"@odata.mediaEtag"];
+    XCTAssertNotNil(etag);
+    XCTAssertNil(created.json[@"Content"]);
+    XCTAssertNil(created.json[@"Thumbnail@odata.mediaEtag"], @"no thumbnail yet");
+
+    OISServiceResponse *media = [self get:@"Photos(1)/$value"];
+    XCTAssertEqual(media.status, 200);
+    XCTAssertEqualObjects(media.data, png);
+    XCTAssertEqualObjects([media header:@"Content-Type"], @"image/png");
+    XCTAssertEqualObjects([media header:@"ETag"], etag);
+    XCTAssertEqual(([self send:@"GET" path:@"Photos(1)/$value" headers:@{ @"If-None-Match": etag } data:nil].status), 304);
+
+    // The other properties, by PATCH.
+    XCTAssertEqual(([self send:@"PATCH" path:@"Photos(1)" headers:nil body:@{ @"Name": @"Sunset" }].status), 204);
+    XCTAssertEqual(([self send:@"PATCH" path:@"Photos(1)" headers:nil body:@{ @"Thumbnail": @"AAAA" }].status), 400, @"a stream is not in a body");
+    XCTAssertEqual(([self send:@"PATCH" path:@"Photos(1)" headers:nil body:@{ @"ContentType": @"text/plain" }].status), 400);
+
+    // Replaced, with the media ETag.
+    NSData *jpeg = [@"JFIF pretend" dataUsingEncoding:NSUTF8StringEncoding];
+    XCTAssertEqual(([self send:@"PUT" path:@"Photos(1)/$value" headers:@{ @"Content-Type": @"image/jpeg", @"If-Match": @"W/\"stale\"" } data:jpeg].status), 412);
+    OISServiceResponse *put = [self send:@"PUT" path:@"Photos(1)/$value" headers:@{ @"Content-Type": @"image/jpeg", @"If-Match": etag } data:jpeg];
+    XCTAssertEqual(put.status, 204, @"%@: %@", storeType, put.text);
+    XCTAssertNotEqualObjects([put header:@"ETag"], etag);
+    XCTAssertEqualObjects([self get:@"Photos(1)/$value"].data, jpeg);
+    XCTAssertEqualObjects([self get:@"Photos(1)"].json[@"@odata.mediaContentType"], @"image/jpeg");
+    XCTAssertEqualObjects([self get:@"Photos(1)"].json[@"Name"], @"Sunset", @"the rest as it was");
+
+    // A stream property.
+    XCTAssertEqual([self get:@"Photos(1)/Thumbnail"].status, 204, @"none yet");
+    XCTAssertEqual(([self send:@"PUT" path:@"Photos(1)/Thumbnail" headers:@{ @"Content-Type": @"image/gif" } data:png].status), 204);
+    OISServiceResponse *thumbnail = [self get:@"Photos(1)/Thumbnail"];
+    XCTAssertEqualObjects(thumbnail.data, png);
+    XCTAssertEqualObjects([thumbnail header:@"Content-Type"], @"image/gif");
+    NSDictionary *row = [self get:@"Photos(1)"].json;
+    XCTAssertEqualObjects(row[@"Thumbnail@odata.mediaEtag"], [thumbnail header:@"ETag"]);
+    XCTAssertEqualObjects(row[@"Thumbnail@odata.mediaContentType"], @"image/gif");
+    XCTAssertNil(row[@"Thumbnail"]);
+    NSDictionary *full = [self send:@"GET" path:@"Photos(1)" headers:@{ @"Accept": @"application/json;odata.metadata=full" } data:nil].json;
+    XCTAssertEqualObjects(full[@"Thumbnail@odata.mediaReadLink"], @"Photos(1)/Thumbnail");
+    XCTAssertEqualObjects(full[@"@odata.mediaEditLink"], @"Photos(1)/$value");
+    XCTAssertEqual(([self send:@"DELETE" path:@"Photos(1)/Thumbnail" headers:nil data:nil].status), 204);
+    XCTAssertEqual([self get:@"Photos(1)/Thumbnail"].status, 204);
+    XCTAssertEqual(([self send:@"DELETE" path:@"Photos(1)/$value" headers:nil data:nil].status), 405, @"a media entity is deleted whole");
+    XCTAssertEqual([self get:@"Photos(1)/Content"].status, 404);
+    XCTAssertEqual(([self send:@"DELETE" path:@"Photos(1)" headers:nil data:nil].status), 204);
+  }
+}
+
+// Answers a stream transfer's action.
+- (void)transferDidFinish:(ODataStreamTransfer *)transfer
+{
+  _finishedTransfer = transfer;
+}
+
+// The client's streams, over the service: a media entity made from a file,
+// its stream downloaded and kept, a stream property put and emptied.
+- (void)testStreamsThroughTheStore
+{
+  [self serveAlbumInStoreOfType:NSInMemoryStoreType];
+  ODataSchema *schema = [ODataSchema schemaWithData:[self get:@"$metadata"].data error:NULL];
+  NSManagedObjectModel *model = [ODataModelBuilder modelWithSchema:schema];
+  NSEntityDescription *photoEntity = model.entitiesByName[@"Photo"];
+  XCTAssertNil(photoEntity.attributesByName[@"thumbnail"], @"a stream is not an attribute");
+  [ODataIncrementalStore registerStore];
+  OISRecordingTransport *transport = [[OISRecordingTransport alloc] init];
+  transport.next = _service;
+  NSURL *directory = [NSURL fileURLWithPath:[NSTemporaryDirectory() stringByAppendingPathComponent:[[NSProcessInfo processInfo] globallyUniqueString]]];
+  [_storeFiles addObject:directory];
+  NSPersistentStoreCoordinator *client = [[NSPersistentStoreCoordinator alloc] initWithManagedObjectModel:model];
+  NSError *error = nil;
+  XCTAssertNotNil([client addPersistentStoreWithType:[ODataIncrementalStore storeType] configuration:nil
+                                                 URL:[NSURL URLWithString:@"http://example.test/odata/"]
+                                             options:(@{ ODataIncrementalStoreTransportOption: transport,
+                                                         ODataIncrementalStoreStreamDirectoryOption: directory }) error:&error], @"%@", error);
+  NSManagedObjectContext *context = [[NSManagedObjectContext alloc] init];
+  context.persistentStoreCoordinator = client;
+
+  NSData *png = [@"PNG pretend" dataUsingEncoding:NSUTF8StringEncoding];
+  NSURL *file = [directory URLByAppendingPathComponent:@"upload.png"];
+  [[NSFileManager defaultManager] createDirectoryAtURL:directory withIntermediateDirectories:YES attributes:nil error:NULL];
+  XCTAssertTrue([png writeToURL:file atomically:YES]);
+
+  // A new media entity, made by its stream; the rest saved after.
+  ODataStreamTransfer *create = [[ODataStreamTransfer alloc] initWithEntityName:@"Photo" context:context];
+  XCTAssertTrue([create uploadFile:file contentType:@"image/png" error:&error], @"%@", error);
+  NSManagedObject *photo = create.object;
+  XCTAssertEqualObjects([photo valueForKey:@"id"], @1);
+  XCTAssertEqualObjects(create.contentType, @"image/png");
+  XCTAssertNotNil(create.mediaETag);
+  [photo setValue:@"Sunset" forKey:@"name"];
+  XCTAssertTrue([context save:&error], @"%@", error);
+  XCTAssertEqualObjects([self get:@"Photos(1)/Name"].json[@"value"], @"Sunset");
+
+  // Downloaded once, then kept while its media ETag is current.
+  ODataStreamTransfer *media = [[ODataStreamTransfer alloc] initWithObject:photo stream:nil];
+  NSURL *downloaded = [media download:&error];
+  XCTAssertNotNil(downloaded, @"%@", error);
+  XCTAssertEqualObjects([NSData dataWithContentsOfURL:downloaded], png);
+  NSUInteger before = transport.requests.count;
+  XCTAssertEqualObjects([[[ODataStreamTransfer alloc] initWithObject:photo stream:nil] download:&error], downloaded);
+  XCTAssertEqual(transport.requests.count, before, @"not asked again");
+
+  // A stream property, by its name in $metadata (in any case).
+  NSData *gif = [@"GIF pretend" dataUsingEncoding:NSUTF8StringEncoding];
+  NSURL *small = [directory URLByAppendingPathComponent:@"small.gif"];
+  XCTAssertTrue([gif writeToURL:small atomically:YES]);
+  ODataStreamTransfer *thumbnail = [[ODataStreamTransfer alloc] initWithObject:photo stream:@"thumbnail"];
+  XCTAssertTrue([thumbnail uploadFile:small contentType:@"image/gif" error:&error], @"%@", error);
+  XCTAssertEqualObjects([self get:@"Photos(1)/Thumbnail"].data, gif);
+  XCTAssertEqualObjects(thumbnail.mediaETag, [[self get:@"Photos(1)/Thumbnail"] header:@"ETag"]);
+
+  // Not waiting: the action comes with the file.
+  [context refreshObject:photo mergeChanges:NO];
+  ODataStreamTransfer *later = [[ODataStreamTransfer alloc] initWithObject:photo stream:@"Thumbnail"];
+  _finishedTransfer = nil;
+  [later downloadWithTarget:self action:@selector(transferDidFinish:)];
+  NSDate *deadline = [NSDate dateWithTimeIntervalSinceNow:5];
+  while (!_finishedTransfer && [deadline timeIntervalSinceNow] > 0) {
+    [[NSRunLoop currentRunLoop] runMode:NSDefaultRunLoopMode beforeDate:[NSDate dateWithTimeIntervalSinceNow:0.01]];
+  }
+  XCTAssertEqual(_finishedTransfer, later);
+  XCTAssertNil(later.error);
+  XCTAssertEqualObjects([NSData dataWithContentsOfURL:later.fileURL], gif);
+  XCTAssertEqualObjects(later.contentType, @"image/gif");
+
+  XCTAssertTrue([thumbnail remove:&error], @"%@", error);
+  XCTAssertNil([[[ODataStreamTransfer alloc] initWithObject:photo stream:@"Thumbnail"] download:&error]);
+  XCTAssertEqual(error.code, ODataIncrementalStoreErrorNoStream);
+  XCTAssertFalse([[[ODataStreamTransfer alloc] initWithObject:photo stream:nil] remove:&error]);
+  XCTAssertFalse([[[ODataStreamTransfer alloc] initWithObject:photo stream:@"Nothing"] download:&error]);
+  XCTAssertEqual(error.code, ODataIncrementalStoreErrorNoStream);
 }
 
 - (void)testWritingOneProperty
@@ -2242,7 +2438,7 @@ static NSComparisonPredicate *OISValidation(NSString *keyPath, NSPredicateOperat
   NSArray *schemes = [schema annotation:@"Authorization.SecuritySchemes" forTarget:@"Default.Container"];
   XCTAssertEqualObjects(schemes, (@[ @{ @"Authorization": @"OpenIDConnect", @"RequiredScopes": @[ @"odata.read" ] } ]));
   for (NSString *vocabulary in @[ @"Core", @"Validation", @"Authorization" ]) {
-    NSString *include = [NSString stringWithFormat:@"<edmx:Include Namespace=\"Org.OData.%@.V1\" Alias=\"%@\"/>", vocabulary, vocabulary];
+    NSString *include = [NSString stringWithFormat:@"Namespace=\"Org.OData.%@.V1\" Alias=\"%@\"/>", vocabulary, vocabulary];
     XCTAssertTrue([metadata.text rangeOfString:include].location != NSNotFound, @"references %@", vocabulary);
   }
   XCTAssertEqualObjects(_service.metadataProblems, @[]);
@@ -2562,6 +2758,22 @@ static NSComparisonPredicate *OISValidation(NSString *keyPath, NSPredicateOperat
   before = transport.requests.count;
   XCTAssertTrue([[[categories[1] valueForKey:@"products"] valueForKey:@"name"] containsObject:@"Chai"]);
   XCTAssertGreaterThan(transport.requests.count, before, @"asked again after the save");
+}
+
+// $metadata is written with NSXML: whatever a name or an annotation holds
+// is escaped, and reads back as it was.
+- (void)testMetadataIsWellFormedWhateverItHolds
+{
+  NSString *tricky = @"Fish & chips <\"best\"> ]]> 'quoted' é";
+  _service.containerAnnotations = @{ @"Core.Description": tricky, @"Core.LongDescription": @[ @"a<b", @{ @"$Path": @"x&y" } ] };
+  OISServiceResponse *metadata = [self get:@"$metadata"];
+  NSError *error = nil;
+  XCTAssertNotNil([[NSXMLDocument alloc] initWithData:metadata.data options:0 error:&error], @"%@\n%@", error, metadata.text);
+  ODataSchema *schema = [ODataSchema schemaWithData:metadata.data error:&error];
+  XCTAssertNotNil(schema, @"%@", error);
+  XCTAssertEqualObjects([schema annotation:@"Core.Description" forTarget:schema.containerName], tricky);
+  XCTAssertEqualObjects([schema annotation:@"Core.LongDescription" forTarget:schema.containerName], (@[ @"a<b", @{ @"$Path": @"x&y" } ]));
+  XCTAssertEqualObjects(schema.entitySets[@"Products"], @"Default.Product", @"the rest as before");
 }
 
 // Capabilities.FilterFunctions: a function it leaves out is not tried

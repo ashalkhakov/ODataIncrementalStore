@@ -435,100 +435,104 @@ static void OISApplyVocabularies(NSDictionary<NSString *, id> *annotations, ODat
 
 #pragma mark - Writing a model
 
-static NSString *OISEscape(NSString *s)
+// An element with these attributes, in this order: name, value, ...
+static NSXMLElement *OISModelElement(NSString *name, NSArray *attributes)
 {
-  NSMutableString *out = [s mutableCopy];
-  [out replaceOccurrencesOfString:@"&" withString:@"&amp;" options:0 range:NSMakeRange(0, out.length)];
-  [out replaceOccurrencesOfString:@"<" withString:@"&lt;" options:0 range:NSMakeRange(0, out.length)];
-  [out replaceOccurrencesOfString:@">" withString:@"&gt;" options:0 range:NSMakeRange(0, out.length)];
-  [out replaceOccurrencesOfString:@"\"" withString:@"&quot;" options:0 range:NSMakeRange(0, out.length)];
-  return out;
+  NSXMLElement *element = [[NSXMLElement alloc] initWithName:name];
+  for (NSUInteger i = 0; i + 1 < attributes.count; i += 2) {
+    [element addAttribute:[NSXMLNode attributeWithName:attributes[i] stringValue:[attributes[i + 1] description]]];
+  }
+  return element;
 }
 
-static void OISAppendUserInfo(NSMutableString *xml, NSDictionary *info, NSString *indent)
+static void OISAddUserInfo(NSXMLElement *parent, NSDictionary *info)
 {
   if (!info.count) return;
-  [xml appendFormat:@"%@<userInfo>\n", indent];
+  NSXMLElement *userInfo = OISModelElement(@"userInfo", nil);
   for (NSString *key in [info.allKeys sortedArrayUsingSelector:@selector(compare:)]) {
-    [xml appendFormat:@"%@    <entry key=\"%@\" value=\"%@\"/>\n", indent, OISEscape(key), OISEscape([info[key] description])];
+    [userInfo addChild:OISModelElement(@"entry", @[ @"key", key, @"value", [info[key] description] ])];
   }
-  [xml appendFormat:@"%@</userInfo>\n", indent];
+  [parent addChild:userInfo];
 }
 
 + (NSData *)modelDocumentForModel:(NSManagedObjectModel *)model
 {
   NSString *version = [self versionIdentifierOfModel:model];
-  NSMutableString *xml = [NSMutableString stringWithString:@"<?xml version=\"1.0\" encoding=\"UTF-8\" standalone=\"yes\"?>\n"];
-  [xml appendFormat:@"<model type=\"com.apple.IDECoreDataModeler.DataModel\" documentVersion=\"1.0\" lastSavedToolsVersion=\"1\" "
-                    @"systemVersion=\"1\" minimumToolsVersion=\"Automatic\" sourceLanguage=\"Objective-C\" "
-                    @"userDefinedModelVersionIdentifier=\"%@\">\n", OISEscape(version ?: @"")];
+  NSXMLElement *root = OISModelElement(@"model", @[
+    @"type", @"com.apple.IDECoreDataModeler.DataModel", @"documentVersion", @"1.0", @"lastSavedToolsVersion", @"1",
+    @"systemVersion", @"1", @"minimumToolsVersion", @"Automatic", @"sourceLanguage", @"Objective-C",
+    @"userDefinedModelVersionIdentifier", version ?: @"" ]);
   NSArray *entities = [model.entities sortedArrayUsingComparator:^NSComparisonResult(id a, id b) {
     return [[a name] compare:[b name]];
   }];
   for (NSEntityDescription *entity in entities) {
-    [xml appendFormat:@"    <entity name=\"%@\"", OISEscape(entity.name)];
+    NSXMLElement *element = OISModelElement(@"entity", @[ @"name", entity.name ]);
     NSString *cls = entity.managedObjectClassName;
-    if (cls.length && ![cls isEqualToString:@"NSManagedObject"]) [xml appendFormat:@" representedClassName=\"%@\"", OISEscape(cls)];
-    if (entity.superentity) [xml appendFormat:@" parentEntity=\"%@\"", OISEscape(entity.superentity.name)];
-    if (entity.isAbstract) [xml appendString:@" isAbstract=\"YES\""];
-    [xml appendString:@" syncable=\"YES\">\n"];
+    if (cls.length && ![cls isEqualToString:@"NSManagedObject"]) [element addAttribute:[NSXMLNode attributeWithName:@"representedClassName" stringValue:cls]];
+    if (entity.superentity) [element addAttribute:[NSXMLNode attributeWithName:@"parentEntity" stringValue:entity.superentity.name]];
+    if (entity.isAbstract) [element addAttribute:[NSXMLNode attributeWithName:@"isAbstract" stringValue:@"YES"]];
+    [element addAttribute:[NSXMLNode attributeWithName:@"syncable" stringValue:@"YES"]];
     NSDictionary *inherited = entity.superentity.propertiesByName ?: @{};
     NSArray *names = [entity.propertiesByName.allKeys sortedArrayUsingSelector:@selector(compare:)];
     for (NSString *name in names) {
       if (inherited[name]) continue;
       NSPropertyDescription *property = entity.propertiesByName[name];
+      NSXMLElement *child;
       if ([property isKindOfClass:[NSAttributeDescription class]]) {
         NSAttributeDescription *attr = (NSAttributeDescription *)property;
-        [xml appendFormat:@"        <attribute name=\"%@\" optional=\"%@\" attributeType=\"%@\"", OISEscape(name),
-                          attr.isOptional ? @"YES" : @"NO", OISAttributeTypeName(attr.attributeType)];
-        if (attr.valueTransformerName.length) [xml appendFormat:@" valueTransformerName=\"%@\"", OISEscape(attr.valueTransformerName)];
-        if (attr.attributeValueClassName.length) [xml appendFormat:@" customClassName=\"%@\"", OISEscape(attr.attributeValueClassName)];
+        NSMutableArray *attributes = [@[ @"name", name, @"optional", attr.isOptional ? @"YES" : @"NO",
+                                         @"attributeType", OISAttributeTypeName(attr.attributeType) ] mutableCopy];
+        if (attr.valueTransformerName.length) [attributes addObjectsFromArray:@[ @"valueTransformerName", attr.valueTransformerName ]];
+        if (attr.attributeValueClassName.length) [attributes addObjectsFromArray:@[ @"customClassName", attr.attributeValueClassName ]];
         if (attr.attributeType == NSInteger16AttributeType || attr.attributeType == NSInteger32AttributeType ||
             attr.attributeType == NSInteger64AttributeType || attr.attributeType == NSDoubleAttributeType ||
             attr.attributeType == NSFloatAttributeType || attr.attributeType == NSBooleanAttributeType ||
             attr.attributeType == NSDateAttributeType) {
-          [xml appendString:@" usesScalarValueType=\"NO\""];
+          [attributes addObjectsFromArray:@[ @"usesScalarValueType", @"NO" ]];
         }
+        child = OISModelElement(@"attribute", attributes);
       } else if ([property isKindOfClass:[NSRelationshipDescription class]]) {
         NSRelationshipDescription *rel = (NSRelationshipDescription *)property;
-        [xml appendFormat:@"        <relationship name=\"%@\" optional=\"YES\"", OISEscape(name)];
-        if (rel.isToMany) [xml appendString:@" toMany=\"YES\""];
-        else [xml appendString:@" maxCount=\"1\""];
-        [xml appendFormat:@" deletionRule=\"Nullify\" destinationEntity=\"%@\"", OISEscape(rel.destinationEntity.name ?: @"")];
+        NSMutableArray *attributes = [@[ @"name", name, @"optional", @"YES" ] mutableCopy];
+        [attributes addObjectsFromArray:rel.isToMany ? @[ @"toMany", @"YES" ] : @[ @"maxCount", @"1" ]];
+        [attributes addObjectsFromArray:@[ @"deletionRule", @"Nullify", @"destinationEntity", rel.destinationEntity.name ?: @"" ]];
         if (rel.inverseRelationship) {
-          [xml appendFormat:@" inverseName=\"%@\" inverseEntity=\"%@\"", OISEscape(rel.inverseRelationship.name),
-                            OISEscape(rel.inverseRelationship.entity.name ?: @"")];
+          [attributes addObjectsFromArray:@[ @"inverseName", rel.inverseRelationship.name,
+                                             @"inverseEntity", rel.inverseRelationship.entity.name ?: @"" ]];
         }
+        child = OISModelElement(@"relationship", attributes);
       } else {
         continue;
       }
-      if (property.userInfo.count) {
-        [xml appendString:@">\n"];
-        OISAppendUserInfo(xml, property.userInfo, @"            ");
-        [xml appendString:[property isKindOfClass:[NSAttributeDescription class]] ? @"        </attribute>\n" : @"        </relationship>\n"];
-      } else {
-        [xml appendString:@"/>\n"];
-      }
+      OISAddUserInfo(child, property.userInfo);
+      [element addChild:child];
     }
-    OISAppendUserInfo(xml, entity.userInfo, @"        ");
-    [xml appendString:@"    </entity>\n"];
+    OISAddUserInfo(element, entity.userInfo);
+    [root addChild:element];
   }
-  [xml appendString:@"</model>\n"];
-  return [xml dataUsingEncoding:NSUTF8StringEncoding];
+  NSXMLDocument *document = [[NSXMLDocument alloc] initWithRootElement:root];
+  document.version = @"1.0";
+  document.characterEncoding = @"UTF-8";
+  document.standalone = YES;
+  return [document XMLDataWithOptions:NSXMLNodePrettyPrint | NSXMLNodeCompactEmptyElement];
 }
 
 // The userDefinedModelVersionIdentifier of a model document, or of the
 // first entity's OData.modelVersion entry.
 static NSString *OISDocumentVersion(NSData *document)
 {
-  NSString *xml = [[NSString alloc] initWithData:document encoding:NSUTF8StringEncoding];
-  for (NSString *marker in @[ @"userDefinedModelVersionIdentifier=\"", @"key=\"OData.modelVersion\" value=\"" ]) {
-    NSRange start = [xml rangeOfString:marker];
-    if (start.location == NSNotFound) continue;
-    NSUInteger from = NSMaxRange(start);
-    NSRange end = [xml rangeOfString:@"\"" options:0 range:NSMakeRange(from, xml.length - from)];
-    NSString *value = end.location == NSNotFound ? nil : [xml substringWithRange:NSMakeRange(from, end.location - from)];
-    if (value.length) return value;
+  NSXMLElement *root = document.length ? [[NSXMLDocument alloc] initWithData:document options:0 error:NULL].rootElement : nil;
+  NSString *version = [root attributeForName:@"userDefinedModelVersionIdentifier"].stringValue;
+  if (version.length) return version;
+  for (NSXMLElement *entity in [root elementsForName:@"entity"]) {
+    for (NSXMLElement *userInfo in [entity elementsForName:@"userInfo"]) {
+      for (NSXMLElement *entry in [userInfo elementsForName:@"entry"]) {
+        if ([[entry attributeForName:@"key"].stringValue isEqualToString:@"OData.modelVersion"]) {
+          NSString *value = [entry attributeForName:@"value"].stringValue;
+          if (value.length) return value;
+        }
+      }
+    }
   }
   return nil;
 }

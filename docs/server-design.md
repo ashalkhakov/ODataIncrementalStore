@@ -45,8 +45,8 @@ FreeCoreData) and on Cocoa, with no platform-specific code in its core.
 
 ## Non-goals, at first
 
-- `$apply`, `$search`, delta links, async requests, streams and media
-  entities. (`$batch` was one; it is done.)
+- `$apply`, `$search`, delta links, async requests. (`$batch`, streams
+  and media entities were ones; they are done.)
 - XML (Atom) payloads. JSON only, as the client speaks.
 - Being a general-purpose web framework.
 
@@ -375,6 +375,27 @@ block in another block, which libobjc2 leaked until
 blocks itself, so it does not depend on the fix. And gnustep-base leaves
 fast enumeration to `NSDictionary`'s subclasses, so the port's header
 dictionary implements it.
+
+### Streams
+
+Streams are kept in Binary attributes, and marked in `userInfo`:
+
+- `OData.stream = YES` on a Binary attribute makes it an `Edm.Stream`
+  property, read and written at its own URL (`Photos(1)/Thumbnail`) and
+  never in a body.
+- `OData.mediaStream` on an entity names the Binary attribute that is its
+  media resource: the type is `HasStream="true"`, and the resource is at
+  `Photos(1)/$value`. `POST` of anything but JSON to its set creates one
+  from the body; its other properties are set after, by `PATCH`.
+- `OData.contentType` on either names the String attribute a stream's
+  content type is kept in (from the `Content-Type` it was put with);
+  without one it is `application/octet-stream`.
+
+The media and content-type attributes are the stream's, not properties.
+A stream's ETag is a hash of its bytes, apart from the entity's: `GET`
+answers `304` to `If-None-Match` with it, `PUT` takes `If-Match` against
+it. A payload says only what is known of a stream, its media ETag and
+content type, and at `metadata=full` its links.
 
 ## Mapping Core Data to OData
 
