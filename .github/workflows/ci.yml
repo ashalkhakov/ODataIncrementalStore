@@ -179,7 +179,7 @@ jobs:
       # Both pinned to commits, not branches. The patches ref decides the
       # recipe hash the stack is cached under, so a moving branch would keep
       # serving a prefix built from patches that have since changed.
-      GNUSTEP_PATCHES_REF: 9281b87c93f973d17893f387302c27ae05227712
+      GNUSTEP_PATCHES_REF: ab8bef120a3ae837ebbd417a88866a6bff7b1d6b
       # FreeCoreData after #43: models can be copied (#43); managed objects
       # and object IDs in predicates match on every store, and count (#41);
       # its momc keeps a model version's Identifier, which models generated
