@@ -30,6 +30,10 @@ NS_ASSUME_NONNULL_BEGIN
         authenticated:(BOOL)authenticated principal:(nullable ODataPrincipal *)principal;
 @end
 
+// Whether JSON nests no deeper than depth (0: any), counted without
+// parsing it.
+FOUNDATION_EXPORT BOOL ODataJSONNestedWithin(NSData *data, NSUInteger depth);
+
 @interface OISBatchCall : NSObject
 // The batch's requests are principal's: the batch was authenticated as a
 // whole, and headers inside it do not change who is asking.

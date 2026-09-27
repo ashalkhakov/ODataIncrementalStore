@@ -485,6 +485,19 @@
 }
 @end
 
+// Fails every fetch as a store would, with a message not for clients.
+@interface OISFailingStoreHandler : ODataEntitySetHandler
+@end
+
+@implementation OISFailingStoreHandler
+- (NSArray *)objectsForFetchRequest:(NSFetchRequest *)fetchRequest request:(ODataRequest *)request reply:(ODataReply *)reply
+{
+  [reply failWithError:[NSError errorWithDomain:NSCocoaErrorDomain code:134060
+                                       userInfo:@{ NSLocalizedDescriptionKey: @"SQLite error at /var/db/secret.sqlite" }]];
+  return nil;
+}
+@end
+
 // Counts the writes a temporal action asks of it, and refuses a budget
 // over 5000.
 @interface OISBudgetGuard : ODataEntitySetHandler
@@ -3093,6 +3106,126 @@ static NSString *OISHTTPDate(NSDate *date)
   XCTAssertEqual([self get:@"Products?$apply=nest(groupby((Category/CategoryName)) as Grouped)"].status, 501);
   XCTAssertEqual([self get:@"Products?$apply=concat(identity)"].status, 400);
   XCTAssertEqual([self get:@"Products?$apply=top(two)"].status, 400);
+}
+
+// $filter's string functions, as patterns a store evaluates.
+- (void)testStringFunctions
+{
+  NSArray *(^names)(NSString *) = ^NSArray *(NSString *filter) {
+    OISServiceResponse *r = [self get:[NSString stringWithFormat:@"Products?$filter=%@&$orderby=ProductID", filter]];
+    XCTAssertEqual(r.status, 200, @"%@: %@", filter, r.text);
+    return [r.json[@"value"] valueForKey:@"ProductName"];
+  };
+  XCTAssertEqualObjects(names(@"substring(ProductName,1) eq 'hai'"), @[ @"Chai" ]);
+  XCTAssertEqual(names(@"substring(ProductName,0,4) eq 'Chef'").count, 2u);
+  XCTAssertEqual(names(@"substring(ProductName,0,4) ne 'Chef'").count, 3u);
+  XCTAssertEqualObjects(names(@"trim(ProductName) eq 'Chai'"), @[ @"Chai" ]);
+  XCTAssertEqual(names(@"indexof(ProductName,'Anton') eq 5").count, 2u);
+  XCTAssertEqual(names(@"indexof(ProductName,'z') eq -1").count, 5u);
+  XCTAssertEqualObjects(names(@"indexof(ProductName,'a') ge 0"), (@[ @"Chai", @"Chang", @"Chef Anton's Cajun Seasoning" ]));
+  XCTAssertEqualObjects(names(@"indexof(ProductName,'a') lt 3"), (@[ @"Chai", @"Chang", @"Aniseed Syrup", @"Chef Anton's Gumbo Mix" ]), @"-1 is less");
+  XCTAssertEqualObjects(names(@"concat(ProductName,' tea') eq 'Chai tea'"), @[ @"Chai" ]);
+  XCTAssertEqualObjects(names(@"concat('The ',ProductName) eq 'The Chang'"), @[ @"Chang" ]);
+  XCTAssertTrue([[self get:@"$metadata"].text containsString:@"<String>substring</String>"]);
+  XCTAssertEqual([self get:@"Products?$filter=substring(ProductName,1) gt 'a'"].status, 501);
+  XCTAssertEqual([self get:@"Products?$filter=concat(ProductName,QuantityPerUnit) eq 'x'"].status, 501);
+}
+
+// Grouping what is grouped; $select and $expand after $apply;
+// $schemaversion.
+- (void)testApplyMore
+{
+  OISServiceResponse *r = [self get:@"Products?$apply=groupby((Category/CategoryName,Discontinued),aggregate(UnitPrice with sum as Total))"
+                                     @"/groupby((Category/CategoryName),aggregate(Total with sum as All))&$orderby=Category/CategoryName"];
+  XCTAssertEqual(r.status, 200, @"%@", r.text);
+  XCTAssertEqualWithAccuracy([[r.json[@"value"] lastObject][@"All"] doubleValue], 53.35, 0.001, @"%@", r.text);
+  r = [self get:@"Products?$apply=groupby((Category/CategoryName),aggregate(UnitPrice with sum as Total))/aggregate(Total with max as Most)"];
+  XCTAssertEqualWithAccuracy([[r.json[@"value"] firstObject][@"Most"] doubleValue], 53.35, 0.001, @"%@", r.text);
+
+  r = [self get:@"Products?$apply=topcount(1,UnitPrice)&$select=ProductName&$expand=Category"];
+  XCTAssertEqual(r.status, 200, @"%@", r.text);
+  NSDictionary *top = [r.json[@"value"] firstObject];
+  XCTAssertEqualObjects(top[@"ProductName"], @"Chef Anton's Cajun Seasoning");
+  XCTAssertNil(top[@"UnitPrice"], @"only what $select names");
+  XCTAssertEqualObjects(top[@"Category"][@"CategoryName"], @"Condiments");
+  r = [self get:@"Products?$apply=groupby((Category/CategoryName),aggregate(UnitPrice with sum as Total,$count as N))&$select=Total"];
+  XCTAssertEqual(r.status, 200, @"%@", r.text);
+  XCTAssertNotNil([r.json[@"value"] firstObject][@"Total"]);
+  XCTAssertNil([r.json[@"value"] firstObject][@"N"]);
+  XCTAssertEqual([self get:@"Products?$apply=groupby((Category/CategoryName))&$expand=Category"].status, 400);
+
+  XCTAssertEqual([self get:@"Products?$schemaversion=*"].status, 200);
+  XCTAssertEqual([self get:@"Products?$schemaversion=2"].status, 404);
+}
+
+#pragma mark Limits
+
+// What one request may ask of the service, and what a failure tells.
+- (void)testLimits
+{
+  NSMutableString *longFilter = [NSMutableString stringWithString:@"Products?$filter=ProductID eq 1"];
+  while (longFilter.length < 9000) [longFilter appendString:@" or ProductID eq 1"];
+  XCTAssertEqual([self get:longFilter].status, 414);
+
+  NSString *(^repeat)(NSString *, NSUInteger) = ^NSString *(NSString *text, NSUInteger times) {
+    return [@"" stringByPaddingToLength:text.length * times withString:text startingAtIndex:0];
+  };
+  OISServiceResponse *r = [self get:[NSString stringWithFormat:@"Products?$filter=%@true%@", repeat(@"(", 200), repeat(@")", 200)]];
+  XCTAssertEqual(r.status, 400, @"parentheses: %@", r.text);
+  NSString *nots = [NSString stringWithFormat:@"Products?$filter=%@true", repeat(@"not ", 300)];
+  NSString *search = [NSString stringWithFormat:@"Products?$search=%@tea%@", repeat(@"(", 200), repeat(@")", 200)];
+  NSString *reasonable = [NSString stringWithFormat:@"Products?$filter=%@true%@", repeat(@"(", 20), repeat(@")", 20)];
+  XCTAssertEqual([self get:nots].status, 400, @"not");
+  XCTAssertEqual([self get:search].status, 400, @"$search");
+  XCTAssertEqual([self get:reasonable].status, 200, @"what is reasonable");
+
+  _service.maxExpandDepth = 2;
+  XCTAssertEqual([self get:@"Categories?$expand=Products($expand=Suppliers)"].status, 200);
+  XCTAssertEqual([self get:@"Categories?$expand=Products($expand=Suppliers($expand=Products))"].status, 400);
+  XCTAssertEqual([self get:@"Categories?$expand=Products($levels=3)"].status, 400);
+
+  NSMutableString *deep = [NSMutableString stringWithString:@"{\"CategoryName\":\"Deep\",\"Note\":"];
+  [deep appendString:repeat(@"[", 100)];
+  [deep appendString:repeat(@"]", 100)];
+  [deep appendString:@"}"];
+  NSURL *url = [NSURL URLWithString:@"http://example.test/odata/Categories"];
+  NSMutableURLRequest *request = [NSMutableURLRequest requestWithURL:url];
+  request.HTTPMethod = @"POST";
+  request.HTTPBody = [deep dataUsingEncoding:NSUTF8StringEncoding];
+  [request setValue:@"application/json" forHTTPHeaderField:@"Content-Type"];
+  r = [self exchange:request];
+  XCTAssertEqual(r.status, 400, @"%@", r.text);
+  XCTAssertTrue([r.text containsString:@"nested deeper"], @"%@", r.text);
+
+  _service.maxBatchRequests = 2;
+  NSDictionary *get = @{ @"id": @"1", @"method": @"GET", @"url": @"Categories" };
+  r = [self send:@"POST" path:@"$batch" headers:nil body:@{ @"requests": @[ get, [get mutableCopy], [get mutableCopy] ] }];
+  XCTAssertEqual(r.status, 400, @"%@", r.text);
+
+  // Work done in memory, over no more rows than the service takes.
+  _service.maxRowsInMemory = 3;
+  XCTAssertEqual([self get:@"Products?$apply=aggregate(UnitPrice with sum as Total)"].status, 400);
+  XCTAssertEqual([self get:@"Products?$apply=filter(UnitPrice gt 20)/aggregate(UnitPrice with sum as Total)"].status, 200);
+  XCTAssertEqual([self get:@"Products?$compute=UnitPrice mul 2 as Twice&$orderby=Twice"].status, 400);
+  XCTAssertEqual([self get:@"Products?$orderby=UnitPrice"].status, 200, @"the store sorts that");
+
+  // A store's failure: a 500 that does not say what the store said.
+  [_service setHandler:[[OISFailingStoreHandler alloc] initWithEntity:OISCatalogEntity(@"Category")] forEntitySet:@"Categories"];
+  r = [self get:@"Categories"];
+  XCTAssertEqual(r.status, 500);
+  XCTAssertFalse([r.text containsString:@"secret"], @"%@", r.text);
+}
+
+// More asynchronous requests than the service keeps are answered at once.
+- (void)testAsyncRequestsAreBounded
+{
+  _service.maxAsyncRequests = 1;
+  [_service setHandler:[[OISLaterProducts alloc] initWithEntity:OISCatalogEntity(@"Product")] forEntitySet:@"Products"];
+  NSDictionary *async = @{ @"Prefer": @"respond-async" };
+  XCTAssertEqual([self send:@"GET" path:@"Products" headers:async body:nil].status, 202);
+  OISServiceResponse *second = [self send:@"GET" path:@"Products" headers:async body:nil];
+  XCTAssertEqual(second.status, 200, @"%@", second.text);
+  XCTAssertEqual([second.json[@"value"] count], 4u);
 }
 
 #pragma mark Application time

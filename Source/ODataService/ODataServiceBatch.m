@@ -121,6 +121,10 @@ static void OISAppendText(NSMutableData *data, NSString *text)
     return;
   }
   if (!items) return;
+  if (_service.maxBatchRequests && items.count > _service.maxBatchRequests) {
+    [self fail:400 message:[NSString stringWithFormat:@"The $batch has more requests than the service takes (%lu)", (unsigned long)_service.maxBatchRequests]];
+    return;
+  }
   _items = items;
   [self next];
 }
@@ -153,6 +157,10 @@ static void OISAppendText(NSMutableData *data, NSString *text)
 
 - (NSArray *)itemsFromJSON:(NSData *)body
 {
+  if (!ODataJSONNestedWithin(body, _service.maxJSONDepth)) {
+    [self fail:400 message:@"The $batch body is nested deeper than the service takes"];
+    return nil;
+  }
   id json = body.length ? [NSJSONSerialization JSONObjectWithData:body options:0 error:NULL] : nil;
   NSArray *requests = [json isKindOfClass:[NSDictionary class]] ? json[@"requests"] : nil;
   if (![requests isKindOfClass:[NSArray class]]) {

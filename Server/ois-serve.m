@@ -132,6 +132,16 @@ int main(int argc, const char *argv[])
     if (settings[@"Container"]) service.containerName = settings[@"Container"];
     if (settings[@"MaxVersion"]) service.maxVersion = settings[@"MaxVersion"];
     if (settings[@"MaxPageSize"]) service.maxPageSize = (NSUInteger)[settings[@"MaxPageSize"] integerValue];
+    // What one request may ask (ODataService.h): each a number, 0 for none.
+    if (settings[@"MaxURLLength"]) service.maxURLLength = (NSUInteger)[settings[@"MaxURLLength"] integerValue];
+    if (settings[@"MaxExpandDepth"]) service.maxExpandDepth = (NSUInteger)[settings[@"MaxExpandDepth"] integerValue];
+    if (settings[@"MaxBatchRequests"]) service.maxBatchRequests = (NSUInteger)[settings[@"MaxBatchRequests"] integerValue];
+    if (settings[@"MaxRowsInMemory"]) service.maxRowsInMemory = (NSUInteger)[settings[@"MaxRowsInMemory"] integerValue];
+    if (settings[@"MaxJSONDepth"]) service.maxJSONDepth = (NSUInteger)[settings[@"MaxJSONDepth"] integerValue];
+    if (settings[@"MaxAsyncRequests"]) service.maxAsyncRequests = (NSUInteger)[settings[@"MaxAsyncRequests"] integerValue];
+    if (settings[@"ReplyTimeout"]) service.replyTimeout = [settings[@"ReplyTimeout"] doubleValue];
+    if (settings[@"AsyncResultDuration"]) service.asyncResultDuration = [settings[@"AsyncResultDuration"] doubleValue];
+    if (settings[@"RepeatabilityDuration"]) service.repeatabilityDuration = [settings[@"RepeatabilityDuration"] doubleValue];
     NSString *userHeader = settings[@"TrustedUserHeader"];
     NSString *secretHeader = settings[@"ProxySecretHeader"];
     if (userHeader.length) {
@@ -193,6 +203,7 @@ int main(int argc, const char *argv[])
     ODataHTTPServer *server = [[ODataHTTPServer alloc] initWithService:service];
     id localhost = settings[@"Localhost"];
     server.bindToLocalhost = localhost ? [localhost boolValue] : YES;
+    if (settings[@"MaxBodySize"]) server.maxBodySize = (NSUInteger)[settings[@"MaxBodySize"] integerValue];
     if (userHeader.length && !server.bindToLocalhost && !secretHeader.length) {
       fprintf(stderr, "ois-serve: warning: anyone who reaches port %lu can send %s; set -ProxySecretHeader, or listen on loopback\n",
               (unsigned long)port, userHeader.UTF8String);

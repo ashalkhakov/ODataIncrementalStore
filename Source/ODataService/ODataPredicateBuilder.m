@@ -27,6 +27,9 @@ typedef NS_ENUM(NSInteger, OISTermKind) {
 // year, date, floor, ceiling or round around `inner`: compared with a
 // literal, a range of `inner`.
 @property (nonatomic, copy, nullable) NSString *stepFunction;
+// A string step's literals: substring's start and length, indexof's
+// needle, concat's prefix and suffix (NSNull where the property is).
+@property (nonatomic, copy, nullable) NSArray *stepArguments;
 @property (nonatomic, strong, nullable) OISTerm *inner;
 // What a type cast on the way asks of an object's entity: the term has a
 // value only where it holds, and is null elsewhere.
@@ -667,6 +670,7 @@ static BOOL OISWidens(NSString *from, NSString *to)
   if ([@[ @"fractionalseconds", @"time", @"totaloffsetminutes", @"totalseconds" ] containsObject:e.name]) {
     return [self unsupported:[NSString stringWithFormat:@"The function %@ (year, month, day, hour, minute, second and date are)", e.name]];
   }
+  if ([@[ @"substring", @"trim", @"indexof", @"concat" ] containsObject:e.name]) return [self stringStepTerm:e];
   if ([e.name isEqualToString:@"length"]) {
     if (args.count != 1) return [self fail:400 message:@"length takes one argument"];
     OISTerm *inner = [self term:args[0]];
@@ -812,7 +816,7 @@ static NSString *OISConstantString(OISTerm *t)
   BOOL againstNull = r.kind == OISTermLiteral && (!r.literal.value || r.literal.value == [NSNull null]);
   if (l.stepFunction && r.kind == OISTermLiteral) {
     NSPredicate *step = [self step:l type:type literal:r.literal];
-    if (!againstNull && ![l.stepFunction isEqualToString:@"length"]) {
+    if (!againstNull && ![@[ @"length", @"substring", @"trim", @"indexof", @"concat" ] containsObject:l.stepFunction]) {
       // A range already says what nil is (ne includes it).
       step = type == NSNotEqualToPredicateOperatorType ? step : [self nullSafe:step terms:@[ l ] type:type];
     } else if (!againstNull) {
@@ -857,6 +861,146 @@ static NSString *OISConstantString(OISTerm *t)
   return negate ? [NSCompoundPredicate notPredicateWithSubpredicate:p] : p;
 }
 
+#pragma mark String steps
+
+// substring(s, i[, n]), trim(s), indexof(s, 'x') and concat(s, 'x') or
+// concat('x', s), of a string property s: compared with a literal they are
+// a pattern s matches, or an equality, which a store can evaluate.
+- (OISTerm *)stringStepTerm:(ODataExpression *)e
+{
+  NSArray<ODataExpression *> *args = e.arguments ?: @[];
+  NSString *name = e.name;
+  NSUInteger wanted = [name isEqualToString:@"trim"] ? 1 : [name isEqualToString:@"substring"] ? 2 : 2;
+  if (args.count != wanted && !([name isEqualToString:@"substring"] && args.count == 3)) {
+    return [self fail:400 message:[NSString stringWithFormat:@"%@ takes %@", name,
+                                   [name isEqualToString:@"substring"] ? @"a string, a start and a length" : [name isEqualToString:@"trim"] ? @"a string" : @"two strings"]];
+  }
+  NSMutableArray *terms = [NSMutableArray array];
+  for (ODataExpression *arg in args) {
+    OISTerm *t = [self term:arg];
+    if (!t) return nil;
+    [terms addObject:t];
+  }
+  OISTerm *(^property)(OISTerm *) = ^OISTerm *(OISTerm *t) {
+    return t.kind == OISTermValue && !t.expression && !t.caseFunction && !t.stepFunction && t.keyPath &&
+           t.attribute.attributeType == NSStringAttributeType ? t : nil;
+  };
+  id (^literal)(OISTerm *, Class) = ^id(OISTerm *t, Class cls) {
+    return t.kind == OISTermLiteral && [t.literal.value isKindOfClass:cls] && ![t.literal.literalType isEqualToString:@"Edm.Boolean"] ? t.literal.value : nil;
+  };
+  OISTerm *inner = nil;
+  NSMutableArray *arguments = [NSMutableArray array];
+  if ([name isEqualToString:@"concat"]) {
+    NSString *first = literal(terms[0], [NSString class]), *second = literal(terms[1], [NSString class]);
+    if (first && second) {
+      // Two literals: the literal they make.
+      OISTerm *t = [[OISTerm alloc] init];
+      t.kind = OISTermValue;
+      t.expression = [NSExpression expressionForConstantValue:[first stringByAppendingString:second]];
+      return t;
+    }
+    inner = property(first ? terms[1] : terms[0]);
+    [arguments addObject:first ?: [NSNull null]];
+    [arguments addObject:second ?: [NSNull null]];
+    if (!inner || (!first && !second)) return [self unsupported:@"concat of anything but a string property and a literal"];
+  } else {
+    inner = property(terms[0]);
+    if (!inner) return [self unsupported:[NSString stringWithFormat:@"%@ of anything but a string property", name]];
+    for (NSUInteger i = 1; i < terms.count; i++) {
+      id value = [name isEqualToString:@"indexof"] ? literal(terms[i], [NSString class]) : literal(terms[i], [NSNumber class]);
+      if (!value || ([value isKindOfClass:[NSNumber class]] && ([value doubleValue] < 0 || [value doubleValue] != floor([value doubleValue]) ||
+                                                                [value doubleValue] > 100000))) {
+        return [self unsupported:[NSString stringWithFormat:@"%@ with anything but %@", name,
+                                  [name isEqualToString:@"indexof"] ? @"a literal to look for" : @"whole numbers"]];
+      }
+      [arguments addObject:value];
+    }
+  }
+  OISTerm *t = [[OISTerm alloc] init];
+  t.kind = OISTermValue;
+  t.stepFunction = name;
+  t.stepArguments = arguments;
+  t.inner = inner;
+  t.guard = inner.guard;
+  t.nullables = inner.nullables;
+  return t;
+}
+
+- (NSPredicate *)stringStep:(OISTerm *)t of:(NSExpression *)x type:(NSPredicateOperatorType)type literal:(ODataExpression *)literal
+{
+  NSString *f = t.stepFunction;
+  NSPredicate *(^matches)(NSString *) = ^NSPredicate *(NSString *pattern) {
+    return OISCompare(x, NSMatchesPredicateOperatorType, [NSExpression expressionForConstantValue:pattern], 0);
+  };
+  NSPredicate *(^not)(NSPredicate *) = ^NSPredicate *(NSPredicate *p) { return [NSCompoundPredicate notPredicateWithSubpredicate:p]; };
+  NSPredicate *no = [NSPredicate predicateWithValue:NO];
+  if ([f isEqualToString:@"indexof"]) {
+    id value = literal.value;
+    if (![value isKindOfClass:[NSNumber class]] || [value doubleValue] != floor([value doubleValue])) {
+      return [self fail:400 message:[NSString stringWithFormat:@"indexof() is compared with a whole number, not %@", literal]];
+    }
+    NSString *needle = [NSRegularExpression escapedPatternForString:t.stepArguments[0]];
+    long long k = [value longLongValue];
+    // Found first at k; found at k or later; found before k.
+    NSPredicate *(^at)(long long) = ^NSPredicate *(long long i) {
+      return i < 0 ? not(matches([NSString stringWithFormat:@"(?s).*%@.*", needle]))
+                   : matches([NSString stringWithFormat:@"(?s)(?:(?!%@).){%lld}%@.*", needle, i, needle]);
+    };
+    NSPredicate *(^from)(long long) = ^NSPredicate *(long long i) {
+      return matches([NSString stringWithFormat:@"(?s)(?:(?!%@).){%lld}.*%@.*", needle, MAX(i, 0), needle]);
+    };
+    NSPredicate *(^before)(long long) = ^NSPredicate *(long long i) {
+      return i <= 0 ? not(matches([NSString stringWithFormat:@"(?s).*%@.*", needle]))
+                    : [NSCompoundPredicate orPredicateWithSubpredicates:@[ not(matches([NSString stringWithFormat:@"(?s).*%@.*", needle])),
+                                                                          matches([NSString stringWithFormat:@"(?s).{0,%lld}%@.*", i - 1, needle]) ]];
+    };
+    switch (type) {
+      case NSEqualToPredicateOperatorType: return at(k);
+      case NSNotEqualToPredicateOperatorType: return not(at(k));
+      case NSGreaterThanOrEqualToPredicateOperatorType: return k < 0 ? [NSPredicate predicateWithValue:YES] : from(k);
+      case NSGreaterThanPredicateOperatorType: return k < -1 ? [NSPredicate predicateWithValue:YES] : from(k + 1);
+      case NSLessThanPredicateOperatorType: return before(k);
+      case NSLessThanOrEqualToPredicateOperatorType: return before(k + 1);
+      default: return [self unsupported:@"indexof() with that operator"];
+    }
+  }
+  NSString *v = [literal.value isKindOfClass:[NSString class]] ? literal.value : nil;
+  if (!v) return [self fail:400 message:[NSString stringWithFormat:@"%@() is compared with a string, not %@", f, literal]];
+  if (type != NSEqualToPredicateOperatorType && type != NSNotEqualToPredicateOperatorType) {
+    return [self unsupported:[NSString stringWithFormat:@"%@() with anything but eq and ne", f]];
+  }
+  NSPredicate *match;
+  if ([f isEqualToString:@"substring"]) {
+    long long start = [t.stepArguments[0] longLongValue];
+    BOOL counted = t.stepArguments.count > 1;
+    long long length = counted ? [t.stepArguments[1] longLongValue] : 0;
+    if (!v.length) {
+      match = counted && length == 0 ? [NSPredicate predicateWithValue:YES] : matches([NSString stringWithFormat:@"(?s).{0,%lld}", start]);
+    } else if (counted && (long long)v.length > length) {
+      match = no;
+    } else {
+      // Shorter than asked for: the string ends there.
+      NSString *rest = counted && (long long)v.length == length ? @".*" : @"";
+      match = matches([NSString stringWithFormat:@"(?s).{%lld}%@%@", start, [NSRegularExpression escapedPatternForString:v], rest]);
+    }
+  } else if ([f isEqualToString:@"trim"]) {
+    NSString *trimmed = [v stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceAndNewlineCharacterSet]];
+    match = ![trimmed isEqualToString:v] ? no : matches([NSString stringWithFormat:@"(?s)\\s*%@\\s*", [NSRegularExpression escapedPatternForString:v]]);
+  } else {
+    // concat: what is left of the literal once the other part is taken off.
+    NSString *prefix = t.stepArguments[0] == [NSNull null] ? @"" : t.stepArguments[0];
+    NSString *suffix = t.stepArguments[1] == [NSNull null] ? @"" : t.stepArguments[1];
+    // (hasPrefix: of an empty string is NO.)
+    if (v.length < prefix.length + suffix.length || (prefix.length && ![v hasPrefix:prefix]) || (suffix.length && ![v hasSuffix:suffix])) {
+      match = no;
+    } else {
+      NSString *rest = [v substringWithRange:NSMakeRange(prefix.length, v.length - prefix.length - suffix.length)];
+      match = OISCompare(x, NSEqualToPredicateOperatorType, [NSExpression expressionForConstantValue:rest], 0);
+    }
+  }
+  return type == NSEqualToPredicateOperatorType ? match : not(match);
+}
+
 // f(x) op literal, as a range of x: year(d) eq 2025 is 2025-01-01 <= d <
 // 2026-01-01 (in UTC, as dates are written), floor(p) le 18 is p < 19,
 // round(p) eq 5 is 4.5 <= p < 5.5 (half away from zero). A store can use
@@ -867,6 +1011,7 @@ static NSString *OISConstantString(OISTerm *t)
   NSExpression *x = [self valueExpression:t.inner typedBy:nil];
   if (!x) return nil;
   if ([f isEqualToString:@"length"]) return [self length:x type:type literal:literal];
+  if ([@[ @"substring", @"trim", @"indexof", @"concat" ] containsObject:f]) return [self stringStep:t of:x type:type literal:literal];
   id value = literal.value;
   if (!value || value == [NSNull null]) {
     if (type != NSEqualToPredicateOperatorType && type != NSNotEqualToPredicateOperatorType) return [NSPredicate predicateWithValue:NO];

@@ -348,6 +348,32 @@ NSString * const ODataUserInfoETag = @"OData.etag";
 - (NSString *)statusMonitorOf:(OISAsyncJob *)job;
 @end
 
+// Whether JSON nests no deeper than depth (0: any), counted without
+// parsing it, since a parser recurses: arrays and objects, outside strings.
+BOOL ODataJSONNestedWithin(NSData *data, NSUInteger depth)
+{
+  if (!depth) return YES;
+  const unsigned char *bytes = data.bytes;
+  NSUInteger level = 0;
+  BOOL inString = NO, escaped = NO;
+  for (NSUInteger i = 0; i < data.length; i++) {
+    unsigned char c = bytes[i];
+    if (inString) {
+      if (escaped) escaped = NO;
+      else if (c == '\\') escaped = YES;
+      else if (c == '"') inString = NO;
+      continue;
+    }
+    if (c == '"') inString = YES;
+    else if (c == '[' || c == '{') {
+      if (++level > depth) return NO;
+    } else if ((c == ']' || c == '}') && level) {
+      level--;
+    }
+  }
+  return YES;
+}
+
 static NSEntityDescription *OISRootEntity(NSEntityDescription *entity)
 {
   while (entity.superentity) entity = entity.superentity;
@@ -615,6 +641,11 @@ typedef NS_ENUM(NSInteger, OISTargetKind) {
     status = 409;  // NSManagedObjectMergeError, NSManagedObjectConstraintMergeError
   } else if (!error) {
     error = ODataServiceError(500, @"The request failed");
+  } else {
+    // The store's own failure: logged, and not shown, since it may say
+    // more of the service than a client should know.
+    NSLog(@"ODataService: %@ %@ failed: %@", self.request.method, self.exchange.request.URL, error);
+    error = ODataServiceError(500, @"The service could not answer the request");
   }
   NSMutableDictionary *body = [NSMutableDictionary dictionary];
   body[@"code"] = error.userInfo[ODataErrorCodeKey] ?: [NSString stringWithFormat:@"%ld", (long)status];
@@ -650,6 +681,18 @@ typedef NS_ENUM(NSInteger, OISTargetKind) {
 
 // The resource path after the service root, and the query options, both
 // decoded.
+// How deep $expand nests: 0 for none. $levels=max counts one level: the
+// service bounds it itself.
+static NSUInteger OISExpandDepth(ODataQueryOptions *options)
+{
+  NSUInteger deepest = 0;
+  for (ODataExpandItem *item in options.expand) {
+    NSUInteger levels = item.options.levels && item.options.levels.integerValue > 0 ? item.options.levels.unsignedIntegerValue : 1;
+    deepest = MAX(deepest, levels + OISExpandDepth(item.options));
+  }
+  return deepest;
+}
+
 - (BOOL)readURL
 {
   NSURL *url = self.exchange.request.URL;
@@ -708,7 +751,12 @@ typedef NS_ENUM(NSInteger, OISTargetKind) {
   self.JSONAliases = JSONAliases;
   self.deltaToken = query[@"$deltatoken"];
   for (NSString *key in query) {
-    if ([@[ @"$index", @"$schemaversion" ] containsObject:key]) {
+    // One schema, the model's: any version (*) is it, another is none.
+    if ([key isEqualToString:@"$schemaversion"] && ![query[key] isEqualToString:@"*"]) {
+      [self fail:404 message:[NSString stringWithFormat:@"The service has no schema version %@", query[key]]];
+      return NO;
+    }
+    if ([@[ @"$index" ] containsObject:key]) {
       [self fail:501 message:[NSString stringWithFormat:@"%@ is not supported", key]];
       return NO;
     }
@@ -720,8 +768,14 @@ typedef NS_ENUM(NSInteger, OISTargetKind) {
     return NO;
   }
   self.request.options = options;
+  NSUInteger most = self.service.maxExpandDepth;
+  if (most && OISExpandDepth(options) > most) {
+    [self fail:400 message:[NSString stringWithFormat:@"$expand goes deeper than the service takes (%lu)", (unsigned long)most]];
+    return NO;
+  }
   return YES;
 }
+
 
 - (NSString *)encodedPathOf:(NSURL *)url
 {
@@ -1937,10 +1991,6 @@ static NSPredicate *OISEquals(NSString *keyPath, id value, NSComparisonPredicate
 - (void)readApplied
 {
   ODataQueryOptions *options = self.request.options;
-  if (options.expand.count || options.select.count) {
-    [self fail:501 message:@"$apply with $expand or $select is not supported"];
-    return;
-  }
   NSError *error = nil;
   NSPredicate *base = [self collectionPredicateWithFilter:NO error:&error];
   if (!base) {
@@ -1966,6 +2016,8 @@ static NSPredicate *OISEquals(NSString *keyPath, id value, NSComparisonPredicate
   self.applied = [options.apply subarrayWithRange:NSMakeRange(first, options.apply.count - first)];
   NSFetchRequest *fetch = [NSFetchRequest fetchRequestWithEntityName:self.entity.name];
   fetch.predicate = [NSCompoundPredicate andPredicateWithSubpredicates:parts];
+  // One more than the service works on in memory, to know it is too many.
+  if (self.service.maxRowsInMemory) fetch.fetchLimit = self.service.maxRowsInMemory + 1;
   self.fetch = fetch;
   ODataReply *reply = [self replyWithAction:@selector(didFetchForApply:)];
   [reply returned:[self.handler objectsForFetchRequest:fetch request:self.request reply:reply]];
@@ -2081,10 +2133,14 @@ static void OISSetAtPath(NSMutableDictionary *row, NSArray<NSString *> *path, id
 {
   ODataQueryOptions *options = self.request.options;
   NSError *error = nil;
-  // What expand asked for, as $expand would.
+  // What expand asked for, with the query's own $expand and $select.
   ODataQueryOptions *written = options;
   if (expansions.count) {
-    written = [ODataQueryOptions optionsWithQuery:@{ @"$expand": [expansions componentsJoinedByString:@","] } error:&error];
+    NSMutableArray *all = [expansions mutableCopy];
+    for (ODataExpandItem *item in options.expand) [all addObject:item.description];
+    NSMutableDictionary *query = [NSMutableDictionary dictionaryWithObject:[all componentsJoinedByString:@","] forKey:@"$expand"];
+    if (options.select.count) query[@"$select"] = [[options.select valueForKey:@"description"] componentsJoinedByString:@","];
+    written = [ODataQueryOptions optionsWithQuery:query error:&error];
     if (!written) {
       [self respondError:ODataServiceError(400, error.localizedDescription)];
       return;
@@ -2129,6 +2185,26 @@ static void OISSetAtPath(NSMutableDictionary *row, NSArray<NSString *> *path, id
   if (count) body[@"@odata.count"] = count;
   body[@"value"] = values;
   [self respondJSON:body status:200 headers:nil];
+}
+
+// A grouping of grouped rows: their paths are the key paths, and their
+// values are JSON already.
+- (NSArray *)rowsOfGroupingRows:(ODataApplyTransformation *)t over:(NSArray *)rows
+{
+  NSMutableArray *keyPaths = [NSMutableArray array];
+  for (NSArray *path in t.groupPaths) [keyPaths addObject:[path componentsJoinedByString:@"."]];
+  NSArray *raw = [ODataAggregation groupObjects:rows byKeyPaths:keyPaths aggregates:t.aggregates];
+  NSMutableArray *out = [NSMutableArray array];
+  for (NSDictionary *group in raw) {
+    NSMutableDictionary *row = [NSMutableDictionary dictionaryWithObject:[NSNull null] forKey:@"@odata.id"];
+    for (NSUInteger i = 0; i < keyPaths.count; i++) {
+      id value = group[keyPaths[i]];
+      OISSetAtPath(row, t.groupPaths[i], value == [NSNull null] ? nil : value);
+    }
+    for (ODataAggregate *aggregate in t.aggregates) row[aggregate.alias] = group[aggregate.alias];
+    [out addObject:row];
+  }
+  return out;
 }
 
 // For a context URL: Category(CategoryName),Total.
@@ -2320,8 +2396,11 @@ static NSString *OISSelectListOfPaths(NSArray<NSArray<NSString *> *> *paths)
         break;
     }
     if (shape) {
-      [self fail:501 message:@"$apply: grouping what is grouped already is not supported"];
-      return NO;
+      // Grouped again: by the paths of the rows as they are.
+      rows = [self rowsOfGroupingRows:t over:rows];
+      shape = [t.groupPaths mutableCopy];
+      for (ODataAggregate *aggregate in t.aggregates) [shape addObject:@[ aggregate.alias ]];
+      continue;
     }
     rows = [self rowsOfGrouping:t over:rows computed:computed error:&error];
     if (!rows) {
@@ -2344,6 +2423,7 @@ static NSString *OISSelectListOfPaths(NSArray<NSArray<NSString *> *> *paths)
   }
   ODataQueryOptions *options = self.request.options;
   NSArray *rows = reply.result ?: @[];
+  if (![self withinRowsInMemory:rows.count]) return;
   NSMutableArray *shape = nil;  // the paths of the rows' properties, once grouped
   NSMutableDictionary *computed = [NSMutableDictionary dictionary];  // compute's names, before grouping
   NSError *error = nil;
@@ -2371,6 +2451,30 @@ static NSString *OISSelectListOfPaths(NSArray<NSArray<NSString *> *> *paths)
   NSUInteger skip = MIN(options.skip.unsignedIntegerValue, rows.count);
   rows = [rows subarrayWithRange:NSMakeRange(skip, rows.count - skip)];
   if (options.top && options.top.unsignedIntegerValue < rows.count) rows = [rows subarrayWithRange:NSMakeRange(0, options.top.unsignedIntegerValue)];
+  // Grouped rows have no navigation to expand; $select keeps what it names.
+  if (options.expand.count) {
+    [self fail:400 message:@"The rows of a grouping have no navigation properties to $expand"];
+    return;
+  }
+  if (options.select.count) {
+    NSMutableSet *kept = [NSMutableSet set];
+    NSMutableArray *selectedShape = [NSMutableArray array];
+    for (ODataSelectItem *item in options.select) {
+      if (item.isStar) continue;
+      [kept addObject:item.path.firstObject];
+    }
+    if (kept.count) {
+      NSMutableArray *projected = [NSMutableArray array];
+      for (NSDictionary *row in rows) {
+        NSMutableDictionary *only = [NSMutableDictionary dictionary];
+        for (NSString *key in row) if ([kept containsObject:key] || [key hasPrefix:@"@"]) only[key] = row[key];
+        [projected addObject:only];
+      }
+      rows = projected;
+      for (NSArray *path in shape) if ([kept containsObject:path.firstObject]) [selectedShape addObject:path];
+      shape = selectedShape;
+    }
+  }
   NSMutableDictionary *body = [NSMutableDictionary dictionary];
   if (![self.metadataLevel isEqualToString:@"none"]) {
     body[@"@odata.context"] = [NSString stringWithFormat:@"%@#%@(%@)", [self contextBase], [self setName], OISSelectListOfPaths(shape)];
@@ -2467,7 +2571,7 @@ static NSString *OISSelectListOfPaths(NSArray<NSArray<NSString *> *> *paths)
     self.memoryOffset = fetch.fetchOffset;
     self.memoryLimit = fetch.fetchLimit;
     fetch.fetchOffset = 0;
-    fetch.fetchLimit = 0;
+    fetch.fetchLimit = self.service.maxRowsInMemory ? self.service.maxRowsInMemory + 1 : 0;
   }
 
   [self prefetchExpansionsIn:fetch];
@@ -2484,6 +2588,7 @@ static NSString *OISSelectListOfPaths(NSArray<NSArray<NSString *> *> *paths)
     return;
   }
   NSArray *objects = reply.result ?: @[];
+  if (self.memorySort && ![self withinRowsInMemory:objects.count]) return;
   if (self.memorySort) {
     objects = [objects sortedArrayUsingDescriptors:self.memorySort];
     NSUInteger start = MIN(self.memoryOffset, objects.count);
@@ -2604,6 +2709,18 @@ static NSString *OISSelectListOfPaths(NSArray<NSArray<NSString *> *> *paths)
   [self respondJSON:body status:200 headers:headers];
 }
 
+#pragma mark Limits
+
+// Rows fetched for work done in memory: no more than the service takes.
+- (BOOL)withinRowsInMemory:(NSUInteger)count
+{
+  NSUInteger most = self.service.maxRowsInMemory;
+  if (!most || count <= most) return YES;
+  [self fail:400 message:[NSString stringWithFormat:@"This reads more than the %lu rows the service works on in memory: narrow it with $filter",
+                                                    (unsigned long)most]];
+  return NO;
+}
+
 #pragma mark Application time
 
 // $at, or $from with $to or $toInclusive (OData-Temporal section 4.2.3),
@@ -2675,8 +2792,10 @@ static NSString *OISSelectListOfPaths(NSArray<NSArray<NSString *> *> *paths)
   // The slices the caller may see.
   NSFetchRequest *fetch = [NSFetchRequest fetchRequestWithEntityName:self.entity.name];
   fetch.predicate = [self.handler predicateForVisibleObjectsInRequest:self.request];
+  if (self.service.maxRowsInMemory) fetch.fetchLimit = self.service.maxRowsInMemory + 1;
   NSError *error = nil;
   NSArray *candidates = [self.request.context executeFetchRequest:fetch error:&error];
+  if (candidates && ![self withinRowsInMemory:candidates.count]) return;
   self.temporalTouched = [NSMutableSet set];
   NSArray *results = candidates ? [timeline perform:action deltas:values candidates:candidates writer:self error:&error] : nil;
   if (results && self.saves && ![self.request.context save:&error]) results = nil;
@@ -3623,6 +3742,10 @@ static NSNumber *OISScalarReturnValue(NSInvocation *invocation, char type)
     return nil;
   }
   NSData *data = self.exchange.request.HTTPBody;
+  if (!ODataJSONNestedWithin(data, self.service.maxJSONDepth)) {
+    [self fail:400 message:[NSString stringWithFormat:@"The body is nested deeper than the service takes (%lu)", (unsigned long)self.service.maxJSONDepth]];
+    return nil;
+  }
   id json = data.length ? [NSJSONSerialization JSONObjectWithData:data options:0 error:NULL] : nil;
   if (![json isKindOfClass:[NSDictionary class]]) {
     [self fail:400 message:@"The body must be a JSON object"];
@@ -4386,6 +4509,12 @@ static NSNumber *OISScalarReturnValue(NSInvocation *invocation, char type)
   _replyTimeout = 60;
   _repeatabilityDuration = 3600;
   _asyncResultDuration = 600;
+  _maxAsyncRequests = 1000;
+  _maxURLLength = 8192;
+  _maxExpandDepth = 8;
+  _maxBatchRequests = 100;
+  _maxRowsInMemory = 10000;
+  _maxJSONDepth = 64;
   _jobs = [NSMutableDictionary dictionary];
   _jobsLock = [[NSLock alloc] init];
   _remembered = [NSMutableDictionary dictionary];
@@ -4533,7 +4662,7 @@ static NSNumber *OISScalarReturnValue(NSInvocation *invocation, char type)
   annotations[[capabilities stringByAppendingString:@"DeepInsertSupport"]] = @{ @"Supported": @YES, @"ContentIDSupported": @YES };
   annotations[[capabilities stringByAppendingString:@"DeepUpdateSupport"]] = @{ @"Supported": @YES, @"ContentIDSupported": @YES };
   annotations[[capabilities stringByAppendingString:@"FilterFunctions"]] = @[ @"contains", @"startswith", @"endswith", @"tolower", @"toupper",
-                                                                                @"length", @"year", @"month", @"day", @"hour", @"minute", @"second", @"date", @"floor", @"ceiling", @"round",
+                                                                                @"length", @"substring", @"indexof", @"trim", @"concat", @"year", @"month", @"day", @"hour", @"minute", @"second", @"date", @"floor", @"ceiling", @"round",
                                                                                 @"now", @"cast", @"isof", @"matchesPattern" ];
   // Repeatable requests, remembered repeatabilityDuration.
   if (self.repeatabilityDuration > 0) annotations[@"Org.OData.Repeatability.V1.Supported"] = @YES;
@@ -4661,8 +4790,15 @@ static NSNumber *OISScalarReturnValue(NSInvocation *invocation, char type)
 
 - (void)startExchange:(ODataExchange *)exchange
 {
+  if (self.maxURLLength && exchange.request.URL.absoluteString.length > self.maxURLLength) {
+    NSDictionary *error = @{ @"error": @{ @"code": @"414", @"message": [NSString stringWithFormat:@"The URL is longer than the service takes (%lu characters)",
+                                                                                                   (unsigned long)self.maxURLLength] } };
+    [self answer:exchange status:414 headers:@{ @"Content-Type": @"application/json;charset=utf-8", @"OData-Version": @"4.01" }
+            body:[NSJSONSerialization dataWithJSONObject:error options:0 error:NULL]];
+    return;
+  }
   NSTimeInterval wait = 0;
-  if (self.asyncResultDuration > 0 && OISPrefersRespondAsync(exchange.request, &wait)) {
+  if (self.asyncResultDuration > 0 && OISPrefersRespondAsync(exchange.request, &wait) && [self asyncRequestCount] < self.maxAsyncRequests) {
     [self startAsynchronously:exchange wait:wait];
     return;
   }
@@ -4703,6 +4839,14 @@ static BOOL OISPrefersRespondAsync(NSURLRequest *request, NSTimeInterval *wait)
   } else {
     [job accept];
   }
+}
+
+- (NSUInteger)asyncRequestCount
+{
+  [_jobsLock lock];
+  NSUInteger count = _jobs.count;
+  [_jobsLock unlock];
+  return count;
 }
 
 - (NSString *)statusMonitorOf:(OISAsyncJob *)job
@@ -4842,6 +4986,13 @@ static NSDateFormatter *OISHTTPDateFormatter(void)
   // A failure of the service's own is not the answer: the request may be tried again.
   if (status >= 500) [_remembered removeObjectForKey:key];
   else _remembered[key] = @{ @"date": [NSDate date], @"signature": signature ?: @"", @"status": @(status), @"headers": headers, @"body": body };
+  // Not without end: past 10000 answers, the oldest are let go.
+  if (_remembered.count > 10000) {
+    NSArray *oldest = [_remembered keysSortedByValueUsingComparator:^NSComparisonResult(NSDictionary *a, NSDictionary *b) {
+      return [a[@"date"] compare:b[@"date"]];
+    }];
+    [_remembered removeObjectsForKeys:[oldest subarrayWithRange:NSMakeRange(0, _remembered.count - 10000)]];
+  }
   [_rememberedLock unlock];
 }
 

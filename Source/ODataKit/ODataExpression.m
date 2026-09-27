@@ -326,7 +326,12 @@ static NSArray *OISComputeItems(NSString *text, NSError **error)
   OISToken *_token;
   OISToken *_ahead;
   NSMutableArray *_variables;  // lambda variables in scope
+  NSInteger _depth;            // how deep in parentheses, not and minus, and $expand
 }
+
+// Deeper than any real request goes, and shallow enough that parsing it,
+// and walking what it parses to, does not run out of stack.
+static const NSInteger OISMaxNesting = 100;
 
 - (instancetype)initWithString:(NSString *)string
 {
@@ -444,6 +449,17 @@ static NSArray *OISComputeItems(NSString *text, NSError **error)
 }
 
 - (ODataExpression *)parseUnary
+{
+  if (++_depth > OISMaxNesting) {
+    _depth--;
+    return [self fail:@"nested too deep"];
+  }
+  ODataExpression *e = [self parseUnaryUnchecked];
+  _depth--;
+  return e;
+}
+
+- (ODataExpression *)parseUnaryUnchecked
 {
   if ([self isName:@"not"]) {
     [self advance];
@@ -705,6 +721,17 @@ static NSArray *OISComputeItems(NSString *text, NSError **error)
 }
 
 - (NSArray *)parseExpand
+{
+  if (++_depth > OISMaxNesting) {
+    _depth--;
+    return [self fail:@"$expand nested too deep"];
+  }
+  NSArray *items = [self parseExpandUnchecked];
+  _depth--;
+  return items;
+}
+
+- (NSArray *)parseExpandUnchecked
 {
   NSMutableArray *items = [NSMutableArray array];
   while (YES) {
@@ -1043,6 +1070,7 @@ static NSArray *OISComputeItems(NSString *text, NSError **error)
   NSString *_text;
   NSUInteger _at;
   NSError *_error;
+  NSInteger _depth;
 }
 @end
 
@@ -1116,6 +1144,17 @@ static NSArray *OISComputeItems(NSString *text, NSError **error)
 }
 
 - (ODataSearchExpression *)parseUnary
+{
+  if (++_depth > OISMaxNesting) {
+    _depth--;
+    return [self fail:@"nested too deep"];
+  }
+  ODataSearchExpression *e = [self parseUnaryUnchecked];
+  _depth--;
+  return e;
+}
+
+- (ODataSearchExpression *)parseUnaryUnchecked
 {
   if ([self atKeyword:@"NOT"]) {
     ODataSearchExpression *operand = [self parseUnary];

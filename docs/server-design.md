@@ -304,7 +304,10 @@ list `-Config` names, and any of them from the command line, which wins
 type a backend registers, such as `CDPostgreSQLStore`), `StoreURL`,
 `StoreOptions`, `ServiceRoot` (the public URL, which `@odata.context` and
 next links begin with), `Port`, `Localhost`, `MaxPageSize`, `MaxVersion`,
-`Namespace`, `Container`, and `Bundles`. A bundle's principal class that
+`Namespace`, `Container`, and `Bundles`; and the limits below
+(`MaxBodySize`, `MaxURLLength`, `MaxExpandDepth`, `MaxBatchRequests`,
+`MaxRowsInMemory`, `MaxJSONDepth`, `MaxAsyncRequests`, `ReplyTimeout`,
+`AsyncResultDuration`, `RepeatabilityDuration`). A bundle's principal class that
 conforms to `ODataServiceConfiguring` is sent `+configureService:` before
 the first request: that is where an application registers its handlers.
 `-PrintMetadata YES` prints `$metadata` and exits.
@@ -314,6 +317,35 @@ An application that would rather link the library runs the same
 `ODataHTTPServer` from its own `main`. `Server/Examples/` has a
 configuration for the Catalog model, a systemd unit, a launchd job, and
 nginx and Caddy configurations.
+
+### Limits
+
+No request, careless or hostile, should take more than its share. Each
+limit is answered with an error that says what it was, and each is a
+property of the service (0: none), so an in-process service has them as
+`ois-serve` does:
+
+| What | Default | Answer |
+|---|---|---|
+| Body size (the HTTP adapter's `maxBodySize`) | 64 MiB | 413 |
+| URL length (`maxURLLength`) | 8192 characters | 414 |
+| `$expand` depth, `$levels` counted (`maxExpandDepth`); `$levels=max` is bounded by the service | 8 | 400 |
+| Requests in a `$batch` (`maxBatchRequests`) | 100 | 400 |
+| Rows worked on in memory: `$apply` beyond filters, `$orderby` by a computed value, a temporal action (`maxRowsInMemory`) | 10000 | 400: narrow it with `$filter` |
+| JSON body nesting, counted before it is parsed (`maxJSONDepth`) | 64 | 400 |
+| Nesting in `$filter`, `$search` and `$expand`: parentheses, `not`, minus | 100 | 400 |
+| Asynchronous requests kept (`maxAsyncRequests`) | 1000 | answered at once |
+| A deferred reply (`replyTimeout`) | 60 s | 504 |
+| Repeatable requests remembered | 10000, and `repeatabilityDuration` | the oldest forgotten |
+
+A failure of the store itself (anything but an OData error or a
+validation error) is answered 500 with "The service could not answer the
+request", and logged: its own message may name files or say more of the
+service than a client should know.
+
+`$schemaversion=*` is the service's one schema; another version is
+`404`. `$index` (a position in an ordered collection) is `501`: Core
+Data's to-many relationships here are not ordered.
 
 ### The HTTP adapter
 
@@ -416,7 +448,10 @@ in ODataKit: `filter(…)`, `groupby((paths),aggregate(…))` and
 `(n,value)`; `concat(sequence,sequence,…)`, each sequence on the same
 input and their rows one after the other (entities, or grouped rows, not
 both); and `expand(Nav)` or `expand(Nav,filter(…))`, which the entities
-are written with, as `$expand=Nav($filter=…)`. The rest (`nest`, the
+are written with, as `$expand=Nav($filter=…)`. A `groupby` or
+`aggregate` of grouped rows groups them again, by their paths. After
+`$apply`, `$select` and `$expand` work on entities as ever; on grouped
+rows `$select` keeps what it names, and `$expand` is `400`. The rest (`nest`, the
 hierarchy transformations, rollup, custom methods, `from`) is `501`.
 
 Each works in order on what the one before left: before a grouping on
@@ -636,7 +671,12 @@ comparisons, `in`, `and`/`or`/`not`, arithmetic, `contains`,
 aliases, type casts and `isof`, casts to a primitive type that holds
 every value of the property's own, `year`, `month`, `day`, `hour`,
 `minute`, `second`, `date`, `floor`, `ceiling` and `round` compared with
-a literal, and `has` (all below). Narrowing casts and casts to and from
+a literal, `substring`, `trim` and `indexof` of a string property and
+`concat` of one with a literal, compared with a literal (each a pattern
+the property matches: `substring(Name,1) eq 'hai'` is `name MATCHES
+'(?s).{1}hai'`, `indexof(Name,'a') eq 2` is `name MATCHES
+'(?s)(?:(?!a).){2}a.*'`; `concat(Name,' tea') eq 'Chai tea'` is `name ==
+'Chai'`), and `has` (all below). Narrowing casts and casts to and from
 strings, `time`, `totaloffsetminutes` and the rest, and a service's own
 functions answer `501`. Literals are typed by the attribute they meet.
 `tolower(Name) eq 'abc'` becomes `name ==[c] 'abc'`, which a SQL store can

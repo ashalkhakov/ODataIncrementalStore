@@ -261,6 +261,26 @@ FOUNDATION_EXPORT NSString * const ODataUserInfoETag;  // @"OData.etag"
 // may ask. An answer is kept this long after it is ready. 0: respond-async
 // is not applied. Default: 600 seconds.
 @property (nonatomic) NSTimeInterval asyncResultDuration;
+// At most this many asynchronous requests at a time, answered or not; more
+// are answered as though they had not asked. Default: 1000.
+@property (nonatomic) NSUInteger maxAsyncRequests;
+
+// Limits on what one request may ask of the service, so that no request,
+// careless or hostile, takes more than its share. Each is answered with an
+// error saying so; 0 is no limit.
+// A URL longer than this many characters: 414. Default: 8192.
+@property (nonatomic) NSUInteger maxURLLength;
+// $expand nested deeper than this, or $levels beyond it: 400. Default: 8.
+@property (nonatomic) NSUInteger maxExpandDepth;
+// More requests than this in one $batch: 400. Default: 100.
+@property (nonatomic) NSUInteger maxBatchRequests;
+// Work the store cannot do and the service does in memory ($apply's
+// grouping and the rest, $orderby by a computed value, a temporal
+// action) over more rows than this: 400, to be narrowed with $filter.
+// Default: 10000.
+@property (nonatomic) NSUInteger maxRowsInMemory;
+// A JSON body nested deeper than this: 400. Default: 64.
+@property (nonatomic) NSUInteger maxJSONDepth;
 // Who each request is from (ODataAuthentication.h). A request that names
 // no one is answered 401, unless allowsAnonymousRequests; without an
 // authenticator (the default) every request is anonymous and answered.
