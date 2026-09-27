@@ -410,9 +410,19 @@ is `Edm.String`.
 `$apply` (OData Data Aggregation 4.0) is read by `ODataApplyTransformation`
 in ODataKit: `filter(…)`, `groupby((paths),aggregate(…))` and
 `aggregate(…)`, of paths `with sum`, `min`, `max`, `average` or
-`countdistinct`, and `$count`, each `as` an alias. The rest (`compute`,
-`topcount` and its kin, `concat`, `expand`, `search`, rollup, custom
-methods, `from`) is `501`. Filters alone join `$filter`, and the answer is
+`countdistinct`, and `$count`, each `as` an alias; `identity`,
+`search(…)`, `compute(… as …)`, `orderby(…)`, `top(n)`, `skip(n)`, and
+`topcount`, `topsum`, `toppercent` and their `bottom` kin, each
+`(n,value)`. The rest (`concat`, `expand`, `nest`, the hierarchy
+transformations, rollup, custom methods, `from`) is `501`.
+
+Each works in order on what the one before left: before a grouping on
+the entities (`compute` gives each object values by name, which later
+filters, orderings, groupings and aggregates use), after one on its
+rows (`compute` and the top and bottom kin over their paths, with `add`,
+`sub`, `mul` and `div`). Without a grouping the answer is entities, each
+with what `compute` gave it, and the query's `$filter`, `$orderby`,
+`$count`, `$skip` and `$top` then apply to them. Filters alone join `$filter`, and the answer is
 entities. Otherwise the handler fetches the rows the caller may see, with
 the leading filters in the fetch; `ODataAggregation` groups and aggregates
 them here (null left out; an empty sum is null, as section 3.1.3.1 has
@@ -434,8 +444,43 @@ date as `Edm.DateTimeOffset`; a null operand makes it null. Without
 `$select` the computed values come with the rest. A store cannot sort by
 an expression, so ordering by a computed value reads every matching row,
 sorts them here, and pages after; ordering by properties stays with the
-store. `$compute` inside `$expand` is not read. `SelectSupport` says
-`ComputeSupported`.
+store. Inside `$expand`, an expansion's own `$compute` works the same for
+its members. `SelectSupport` says `ComputeSupported`.
+
+### Application time
+
+An entity whose `userInfo` names its period (`OData.periodStart`,
+`OData.periodEnd`: Date attributes; `OData.objectKey`: the attributes
+that say which object a slice is of; `OData.closedClosedPeriods` for
+dates whose end is the period's last day) is a timeline entity set
+(OData-Temporal, `Temporal.TimelineVisible`): each row a time slice.
+`$metadata` says so with `Temporal.ApplicationTimeSupport` (the unit of
+time from the start attribute's type, the three actions below).
+
+`$at`, or `$from` with `$to` (closed-open) or `$toInclusive`
+(closed-closed), or `$from` alone, is a filter over the period ANDed with
+`$filter` and `$search`, in `/$count` too: a slice that begins before the
+interval ends and ends after it begins (or has no end: none, or
+9999-12-31). The values are literals; another combination is `400`. They
+do nothing on a set without application time, and are not read inside
+`$expand`.
+
+`Temporal.Update`, `Temporal.Upsert` and `Temporal.Delete`, bound to the
+set (`Departments/Temporal.Update`, or the full namespace), take
+`deltaTimeslices`, each a `Timeslice` with its period in it (the
+timeline is visible), and follow section 4.3.2 as SQL's `FOR PORTION OF`
+does: a slice partly inside a delta's period is split at its edges, the
+part inside changed (Update), and the rest kept; Upsert also fills the
+gaps in the period, from the slice just before a gap or, for an object
+with none there, from the delta alone; Delete takes the period away,
+trimming or splitting what it overlaps. An object key the delta leaves
+out matches every object. They work on the slices the caller may see,
+with the store's context directly (a handler's `insert`, `update` and
+`delete` are not called, but what it allows is checked), all or nothing,
+and answer the slices made or changed (for Delete, the periods taken
+away) as `Collection(Temporal.TimesliceWithPeriod)`, or `204` with
+`return=minimal`. A new slice's key is assigned as an insert's is, and a
+changed slice's version moves on.
 
 ### `$search`
 

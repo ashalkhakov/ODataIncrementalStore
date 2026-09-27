@@ -15,6 +15,10 @@ NSString * const ODataUserInfoUnit = @"OData.unit";
 NSString * const ODataUserInfoISOCurrency = @"OData.isoCurrency";
 NSString * const ODataUserInfoScale = @"OData.scale";
 NSString * const ODataUserInfoAnnotations = @"OData.annotations";
+NSString * const ODataUserInfoPeriodStart = @"OData.periodStart";
+NSString * const ODataUserInfoPeriodEnd = @"OData.periodEnd";
+NSString * const ODataUserInfoObjectKey = @"OData.objectKey";
+NSString * const ODataUserInfoClosedClosedPeriods = @"OData.closedClosedPeriods";
 
 @implementation ODataPropertyMapper
 

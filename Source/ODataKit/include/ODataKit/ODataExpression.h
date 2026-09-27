@@ -140,6 +140,13 @@ typedef NS_ENUM(NSInteger, ODataSearchKind) {
 // $apply (OData Data Aggregation): its transformations (ODataApply.h).
 @property (nonatomic, readonly, copy, nullable) NSArray *apply;
 @property (nonatomic, readonly, copy) NSArray<ODataComputeItem *> *compute;
+// Application time (OData-Temporal section 4.2): a point ($at), or an
+// interval ($from with $to, closed-open, or $toInclusive, closed-closed),
+// each a literal.
+@property (nonatomic, readonly, strong, nullable) ODataExpression *temporalAt;
+@property (nonatomic, readonly, strong, nullable) ODataExpression *temporalFrom;
+@property (nonatomic, readonly, strong, nullable) ODataExpression *temporalTo;
+@property (nonatomic, readonly, strong, nullable) ODataExpression *temporalToInclusive;
 @property (nonatomic, readonly, copy) NSDictionary<NSString *, ODataExpression *> *aliases;  // @p -> value
 // Taken as written: $format (json, or a media type with parameters), and
 // $skiptoken, which only the service that wrote it can read.

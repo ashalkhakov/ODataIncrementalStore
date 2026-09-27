@@ -87,6 +87,7 @@ ODataIncrementalStore_OBJC_FILES = \
 	Source/ODataIncrementalStore/ODataOperationCall.m \
 	Source/ODataIncrementalStore/ODataStreamTransfer.m \
 	Source/ODataIncrementalStore/ODataSearchPredicate.m \
+	Source/ODataIncrementalStore/ODataTemporalPredicate.m \
 	Source/ODataIncrementalStore/ODataPredicateTranslator.m \
 	Source/ODataIncrementalStore/ODataQueryBuilder.m \
 	Source/ODataIncrementalStore/ODataResourceIdentifier.m
@@ -102,6 +103,7 @@ ODataIncrementalStore_HEADER_FILES = \
 	ODataOperationCall.h \
 	ODataStreamTransfer.h \
 	ODataSearchPredicate.h \
+	ODataTemporalPredicate.h \
 	ODataPredicateTranslator.h \
 	ODataQueryBuilder.h \
 	ODataResourceIdentifier.h
@@ -122,6 +124,7 @@ ODataService_OBJC_FILES = \
 	Source/ODataService/ODataPredicateBuilder.m \
 	Source/ODataService/ODataService.m \
 	Source/ODataService/ODataServiceBatch.m \
+	Source/ODataService/ODataTimeline.m \
 	Source/ODataService/OISSignature.m
 
 ODataService_HEADER_FILES = \

@@ -3015,6 +3015,258 @@ static NSString *OISHTTPDate(NSDate *date)
   XCTAssertEqualObjects([self get:@"Categories/$count"].text, @"6", @"off: each made");
 }
 
+// Data Aggregation's other transformations, before a grouping and after.
+- (void)testApplyTransformations
+{
+  NSArray *(^names)(NSString *) = ^NSArray *(NSString *query) {
+    OISServiceResponse *r = [self get:query];
+    XCTAssertEqual(r.status, 200, @"%@: %@", query, r.text);
+    return [r.json[@"value"] valueForKey:@"ProductName"];
+  };
+  OISServiceResponse *r = [self get:@"Products?$apply=compute(UnitPrice mul 2 as Twice)/filter(Twice gt 40)&$orderby=Twice desc"];
+  XCTAssertEqual(r.status, 200, @"%@", r.text);
+  XCTAssertEqualObjects([r.json[@"value"] valueForKey:@"ProductName"], (@[ @"Chef Anton's Cajun Seasoning", @"Chef Anton's Gumbo Mix" ]));
+  XCTAssertEqualWithAccuracy([[r.json[@"value"] firstObject][@"Twice"] doubleValue], 44.0, 0.001);
+  XCTAssertEqualObjects(r.json[@"@odata.context"], @"http://example.test/odata/$metadata#Products");
+
+  r = [self get:@"Products?$apply=compute(UnitPrice mul 2 as Twice)/groupby((Category/CategoryName),aggregate(Twice with sum as Total))&$orderby=Category/CategoryName"];
+  XCTAssertEqual(r.status, 200, @"%@", r.text);
+  XCTAssertEqualWithAccuracy([[r.json[@"value"] firstObject][@"Total"] doubleValue], 74.0, 0.001, @"%@", r.text);
+  XCTAssertEqualWithAccuracy([[r.json[@"value"] lastObject][@"Total"] doubleValue], 106.7, 0.001);
+
+  XCTAssertEqualObjects(names(@"Products?$apply=topcount(2,UnitPrice)"), (@[ @"Chef Anton's Cajun Seasoning", @"Chef Anton's Gumbo Mix" ]));
+  XCTAssertEqualObjects(names(@"Products?$apply=bottomsum(28,UnitPrice)"), (@[ @"Aniseed Syrup", @"Chai" ]));
+  XCTAssertEqualObjects(names(@"Products?$apply=toppercent(50,UnitPrice)"), (@[ @"Chef Anton's Cajun Seasoning", @"Chef Anton's Gumbo Mix", @"Chang" ]));
+  XCTAssertEqualObjects(names(@"Products?$apply=orderby(UnitPrice desc)/skip(1)/top(2)"), (@[ @"Chef Anton's Gumbo Mix", @"Chang" ]));
+  XCTAssertEqualObjects(names(@"Products?$apply=search(Chai)"), @[ @"Chai" ]);
+  XCTAssertEqual(names(@"Products?$apply=identity").count, 5u);
+
+  // After a grouping: its rows.
+  r = [self get:@"Products?$apply=groupby((Category/CategoryName),aggregate(UnitPrice with sum as Total))/topcount(1,Total)/compute(Total mul 2 as Double)"];
+  XCTAssertEqual(r.status, 200, @"%@", r.text);
+  NSDictionary *row = [r.json[@"value"] firstObject];
+  XCTAssertEqualObjects(row[@"Category"][@"CategoryName"], @"Condiments", @"%@", r.text);
+  XCTAssertEqualWithAccuracy([row[@"Double"] doubleValue], 106.7, 0.001);
+  XCTAssertEqual([r.json[@"value"] count], 1u);
+
+  XCTAssertEqual([self get:@"Products?$apply=concat(identity,identity)"].status, 501);
+  XCTAssertEqual([self get:@"Products?$apply=top(two)"].status, 400);
+}
+
+#pragma mark Application time
+
+// OData-Temporal's example departments (section 2.3): each row a time
+// slice of a department, valid from From to To (closed-open dates).
+- (void)serveDepartmentHistory
+{
+  NSEntityDescription *department = [[NSEntityDescription alloc] init];
+  department.name = @"Department";
+  department.managedObjectClassName = @"NSManagedObject";
+  department.userInfo = @{ @"OData.entitySet": @"Departments", @"OData.periodStart": @"from", @"OData.periodEnd": @"to",
+                           @"OData.objectKey": @"department" };
+  NSAttributeDescription *slice = OISSwatchAttribute(@"tsid", NSInteger64AttributeType, nil);
+  slice.userInfo = @{ @"OData.key": @"YES" };
+  NSAttributeDescription *from = OISSwatchAttribute(@"from", NSDateAttributeType, nil);
+  from.userInfo = @{ @"OData.type": @"Edm.Date" };
+  NSAttributeDescription *to = OISSwatchAttribute(@"to", NSDateAttributeType, nil);
+  to.userInfo = @{ @"OData.type": @"Edm.Date" };
+  to.optional = YES;
+  department.properties = @[ slice, OISSwatchAttribute(@"department", NSStringAttributeType, nil), from, to,
+                             OISSwatchAttribute(@"name", NSStringAttributeType, nil), OISSwatchAttribute(@"budget", NSInteger32AttributeType, nil) ];
+  NSManagedObjectModel *model = [[NSManagedObjectModel alloc] init];
+  model.entities = @[ department ];
+  _coordinator = [[NSPersistentStoreCoordinator alloc] initWithManagedObjectModel:model];
+  NSError *error = nil;
+  XCTAssertNotNil([_coordinator addPersistentStoreWithType:NSInMemoryStoreType configuration:nil URL:nil options:nil error:&error], @"%@", error);
+  _service = [[ODataService alloc] initWithPersistentStoreCoordinator:_coordinator serviceRoot:[NSURL URLWithString:@"http://example.test/odata/"]];
+  NSArray *rows = @[ @[ @"D08", @"2010-01-01", @"2012-01-01", @"Support", @1000 ],
+                     @[ @"D08", @"2012-01-01", @"2012-06-01", @"Support", @1250 ],
+                     @[ @"D08", @"2012-06-01", @"2014-01-01", @"1st Level Support", @1250 ],
+                     @[ @"D08", @"2014-01-01", [NSNull null], @"1st Level Support", @1400 ],
+                     @[ @"D15", @"2010-01-01", @"2011-01-01", @"Services", @1100 ],
+                     @[ @"D15", @"2011-01-01", [NSNull null], @"Services", @1170 ] ];
+  for (NSArray *row in rows) {
+    NSMutableDictionary *body = [@{ @"Department": row[0], @"From": row[1], @"Name": row[3], @"Budget": row[4] } mutableCopy];
+    if (row[2] != [NSNull null]) body[@"To"] = row[2];
+    XCTAssertEqual([self send:@"POST" path:@"Departments" headers:nil body:body].status, 201);
+  }
+}
+
+// A department's slices, in order: [From, To, Name, Budget].
+- (NSArray *)historyOf:(NSString *)department
+{
+  NSString *path = [NSString stringWithFormat:@"Departments?$filter=Department eq '%@'&$orderby=From", department];
+  NSMutableArray *slices = [NSMutableArray array];
+  for (NSDictionary *row in [self get:path].json[@"value"]) [slices addObject:@[ row[@"From"], row[@"To"], row[@"Name"], row[@"Budget"] ]];
+  return slices;
+}
+
+// OData-Temporal section 4.2: $at, $from with $to or $toInclusive.
+- (void)testApplicationTimeQueries
+{
+  [self serveDepartmentHistory];
+  NSString *metadata = [self get:@"$metadata"].text;
+  XCTAssertTrue([metadata containsString:@"Term=\"Org.OData.Temporal.V1.ApplicationTimeSupport\""], @"%@", metadata);
+  XCTAssertTrue([metadata containsString:@"<Record Type=\"Org.OData.Temporal.V1.TimelineVisible\">"], @"%@", metadata);
+  XCTAssertTrue([metadata containsString:@"<PropertyValue Property=\"PeriodStart\"><PropertyPath>From</PropertyPath></PropertyValue>"], @"%@", metadata);
+  XCTAssertTrue([metadata containsString:@"Org.OData.Temporal.V1.xml"]);
+
+  NSArray *rows = [self get:@"Departments?$at=2012-03-01&$filter=Department eq 'D08'"].json[@"value"];
+  XCTAssertEqualObjects([rows valueForKey:@"Budget"], @[ @1250 ], @"%@", rows);
+  rows = [self get:@"Departments?$at=2020-01-01&$orderby=Department"].json[@"value"];
+  XCTAssertEqualObjects([rows valueForKey:@"Budget"], (@[ @1400, @1170 ]), @"no end: still valid");
+  rows = [self get:@"Departments?$from=2012-03-01&$to=2014-01-01&$filter=Department eq 'D08'&$orderby=From"].json[@"value"];
+  XCTAssertEqualObjects([rows valueForKey:@"From"], (@[ @"2012-01-01", @"2012-06-01" ]), @"closed-open");
+  rows = [self get:@"Departments?$from=2012-03-01&$toInclusive=2014-01-01&$filter=Department eq 'D08'&$orderby=From"].json[@"value"];
+  XCTAssertEqualObjects([rows valueForKey:@"From"], (@[ @"2012-01-01", @"2012-06-01", @"2014-01-01" ]), @"closed-closed");
+  rows = [self get:@"Departments?$from=2013-01-01&$filter=Department eq 'D08'&$orderby=From"].json[@"value"];
+  XCTAssertEqualObjects([rows valueForKey:@"From"], (@[ @"2012-06-01", @"2014-01-01" ]), @"from on");
+  XCTAssertEqualObjects([self get:@"Departments/$count?$at=2010-06-01"].text, @"2");
+  XCTAssertEqual([self get:@"Departments?$at=2012-01-01&$from=2012-01-01"].status, 400);
+  XCTAssertEqual([self get:@"Departments?$to=2012-01-01"].status, 400);
+  XCTAssertEqual([self get:@"Departments?$at=Budget"].status, 501, @"a literal");
+}
+
+// OData-Temporal section 4.3.2, with its own example 18: Update splits the
+// slices at the period's edges and changes those inside it.
+- (void)testApplicationTimeUpdate
+{
+  [self serveDepartmentHistory];
+  OISServiceResponse *r = [self send:@"POST" path:@"Departments/Temporal.Update" headers:nil body:@{
+    @"deltaTimeslices": @[ @{ @"Timeslice": @{ @"Department": @"D08", @"From": @"2012-04-01", @"To": @"2014-07-01", @"Budget": @1320 } } ] }];
+  XCTAssertEqual(r.status, 200, @"%@", r.text);
+  XCTAssertEqualObjects(r.json[@"@odata.context"], @"http://example.test/odata/$metadata#Collection(Org.OData.Temporal.V1.TimesliceWithPeriod)");
+  NSArray *returned = [r.json[@"value"] valueForKey:@"Timeslice"];
+  XCTAssertEqualObjects([returned valueForKey:@"From"], (@[ @"2012-01-01", @"2012-04-01", @"2012-06-01", @"2014-01-01", @"2014-07-01" ]), @"%@", r.text);
+  XCTAssertEqualObjects([returned valueForKey:@"Budget"], (@[ @1250, @1320, @1320, @1320, @1400 ]));
+  NSArray *expected = @[ @[ @"2010-01-01", @"2012-01-01", @"Support", @1000 ],
+                         @[ @"2012-01-01", @"2012-04-01", @"Support", @1250 ],
+                         @[ @"2012-04-01", @"2012-06-01", @"Support", @1320 ],
+                         @[ @"2012-06-01", @"2014-01-01", @"1st Level Support", @1320 ],
+                         @[ @"2014-01-01", @"2014-07-01", @"1st Level Support", @1320 ],
+                         @[ @"2014-07-01", [NSNull null], @"1st Level Support", @1400 ] ];
+  XCTAssertEqualObjects([self historyOf:@"D08"], expected, @"as the specification's table after");
+  XCTAssertEqual([self historyOf:@"D15"].count, 2u, @"another object untouched");
+
+  // An update outside every slice changes nothing; a period that ends
+  // before it starts, or none at all, is refused.
+  r = [self send:@"POST" path:@"Departments/Temporal.Update" headers:nil body:@{
+    @"deltaTimeslices": @[ @{ @"Timeslice": @{ @"Department": @"D15", @"From": @"2000-01-01", @"To": @"2001-01-01", @"Budget": @1 } } ] }];
+  XCTAssertEqualObjects(r.json[@"value"], @[]);
+  XCTAssertEqual(([self send:@"POST" path:@"Departments/Temporal.Update" headers:nil body:@{
+    @"deltaTimeslices": @[ @{ @"Timeslice": @{ @"From": @"2012-01-01", @"To": @"2011-01-01", @"Budget": @1 } } ] }].status), 400);
+  XCTAssertEqual(([self send:@"POST" path:@"Departments/Temporal.Update" headers:nil body:@{
+    @"deltaTimeslices": @[ @{ @"Timeslice": @{ @"Budget": @1 } } ] }].status), 400);
+  XCTAssertEqual(([self send:@"POST" path:@"Departments/Temporal.Update" headers:nil body:@{
+    @"deltaTimeslices": @[ @{ @"PeriodStart": @"2012-01-01", @"Timeslice": @{ @"Budget": @1 } } ] }].status), 400, @"a visible timeline");
+}
+
+// Delete takes a period away, splitting a slice around it; Upsert fills a
+// gap from the slice before it, and makes an object's first slice.
+- (void)testApplicationTimeDeleteAndUpsert
+{
+  [self serveDepartmentHistory];
+  OISServiceResponse *r = [self send:@"POST" path:@"Departments/Org.OData.Temporal.V1.Delete" headers:nil body:@{
+    @"deltaTimeslices": @[ @{ @"Timeslice": @{ @"Department": @"D08", @"From": @"2011-01-01", @"To": @"2011-06-01" } } ] }];
+  XCTAssertEqual(r.status, 200, @"%@", r.text);
+  NSDictionary *gone = [r.json[@"value"] firstObject][@"Timeslice"];
+  XCTAssertEqualObjects((@[ gone[@"From"], gone[@"To"], gone[@"Budget"] ]), (@[ @"2011-01-01", @"2011-06-01", @1000 ]), @"%@", r.text);
+  NSArray *history = [self historyOf:@"D08"];
+  XCTAssertEqualObjects(history[0], (@[ @"2010-01-01", @"2011-01-01", @"Support", @1000 ]));
+  XCTAssertEqualObjects(history[1], (@[ @"2011-06-01", @"2012-01-01", @"Support", @1000 ]));
+  XCTAssertEqual(history.count, 5u);
+
+  // The gap, filled from the slice before it, with the new budget.
+  r = [self send:@"POST" path:@"Departments/Temporal.Upsert" headers:nil body:@{
+    @"deltaTimeslices": @[ @{ @"Timeslice": @{ @"Department": @"D08", @"From": @"2010-06-01", @"To": @"2011-06-01", @"Budget": @1111 } } ] }];
+  XCTAssertEqual(r.status, 200, @"%@", r.text);
+  history = [self historyOf:@"D08"];
+  XCTAssertEqualObjects([history subarrayWithRange:NSMakeRange(0, 4)], (@[ @[ @"2010-01-01", @"2010-06-01", @"Support", @1000 ],
+                                                                          @[ @"2010-06-01", @"2011-01-01", @"Support", @1111 ],
+                                                                          @[ @"2011-01-01", @"2011-06-01", @"Support", @1111 ],
+                                                                          @[ @"2011-06-01", @"2012-01-01", @"Support", @1000 ] ]), @"%@", history);
+
+  // A department that has no slices yet: its first, from the delta.
+  r = [self send:@"POST" path:@"Departments/Temporal.Upsert" headers:nil body:@{
+    @"deltaTimeslices": @[ @{ @"Timeslice": @{ @"Department": @"D20", @"From": @"2020-01-01", @"Name": @"New", @"Budget": @10 } } ] }];
+  XCTAssertEqual(r.status, 200, @"%@", r.text);
+  XCTAssertEqualObjects([self historyOf:@"D20"], (@[ @[ @"2020-01-01", [NSNull null], @"New", @10 ] ]));
+  // No object key matches every object; where none has a slice there, a
+  // new one would need its key.
+  XCTAssertEqual(([self send:@"POST" path:@"Departments/Temporal.Upsert" headers:nil body:@{
+    @"deltaTimeslices": @[ @{ @"Timeslice": @{ @"From": @"1900-01-01", @"To": @"1901-01-01", @"Budget": @10 } } ] }].status), 400, @"a new object needs its key");
+
+  // return=minimal; and a set without application time has no such actions.
+  XCTAssertEqual(([self send:@"POST" path:@"Departments/Temporal.Delete" headers:@{ @"Prefer": @"return=minimal" } body:@{
+    @"deltaTimeslices": @[ @{ @"Timeslice": @{ @"Department": @"D20", @"From": @"2020-01-01" } } ] }].status), 204);
+  XCTAssertEqualObjects([self historyOf:@"D20"], @[]);
+  [self serveModel:OISCatalogModel()];
+  XCTAssertEqual(([self send:@"POST" path:@"Products/Temporal.Update" headers:nil body:@{ @"deltaTimeslices": @[] }].status), 404);
+}
+
+static NSDate *OISDay(NSString *day)
+{
+  NSDateFormatter *formatter = [[NSDateFormatter alloc] init];
+  formatter.locale = [NSLocale localeWithLocaleIdentifier:@"en_US_POSIX"];
+  formatter.timeZone = [NSTimeZone timeZoneForSecondsFromGMT:0];
+  formatter.dateFormat = @"yyyy-MM-dd";
+  return [formatter dateFromString:day];
+}
+
+// The client: a model from $metadata knows the period; a fetch asks for a
+// point or an interval of application time; the actions change it.
+- (void)testIncrementalStoreApplicationTime
+{
+  [self serveDepartmentHistory];
+  ODataSchema *schema = [ODataSchema schemaWithData:[self get:@"$metadata"].data error:NULL];
+  NSManagedObjectModel *model = [ODataModelBuilder modelWithSchema:schema];
+  NSEntityDescription *entity = model.entitiesByName[@"Department"];
+  XCTAssertEqualObjects(entity.userInfo[ODataUserInfoPeriodStart], @"from");
+  XCTAssertEqualObjects(entity.userInfo[ODataUserInfoPeriodEnd], @"to");
+  XCTAssertEqualObjects(entity.userInfo[ODataUserInfoObjectKey], @"department");
+  [ODataIncrementalStore registerStore];
+  OISRecordingTransport *transport = [[OISRecordingTransport alloc] init];
+  transport.next = _service;
+  NSPersistentStoreCoordinator *client = [[NSPersistentStoreCoordinator alloc] initWithManagedObjectModel:model];
+  NSError *error = nil;
+  ODataIncrementalStore *store = (ODataIncrementalStore *)[client addPersistentStoreWithType:[ODataIncrementalStore storeType] configuration:nil
+      URL:[NSURL URLWithString:@"http://example.test/odata/"] options:@{ ODataIncrementalStoreTransportOption: transport } error:&error];
+  XCTAssertNotNil(store, @"%@", error);
+  NSManagedObjectContext *context = [[NSManagedObjectContext alloc] init];
+  context.persistentStoreCoordinator = client;
+
+  NSFetchRequest *fetch = [NSFetchRequest fetchRequestWithEntityName:@"Department"];
+  fetch.predicate = [NSCompoundPredicate andPredicateWithSubpredicates:@[
+    [ODataTemporalPredicate predicateAt:OISDay(@"2012-03-01")], [NSPredicate predicateWithFormat:@"department == 'D08'"] ]];
+  NSArray *slices = [context executeFetchRequest:fetch error:&error];
+  XCTAssertEqualObjects([slices valueForKey:@"budget"], @[ @1250 ], @"%@", error);
+  NSString *sent = [[transport.requests.lastObject URL].absoluteString stringByRemovingPercentEncoding];
+  XCTAssertTrue([sent containsString:@"$at=2012-03-01"], @"%@", sent);
+  XCTAssertTrue([fetch.predicate evaluateWithObject:slices.firstObject], @"in memory too");
+
+  fetch.predicate = [NSCompoundPredicate andPredicateWithSubpredicates:@[
+    [ODataTemporalPredicate predicateFrom:OISDay(@"2012-03-01") to:OISDay(@"2014-01-01")], [NSPredicate predicateWithFormat:@"department == 'D08'"] ]];
+  fetch.sortDescriptors = @[ [NSSortDescriptor sortDescriptorWithKey:@"from" ascending:YES] ];
+  slices = [context executeFetchRequest:fetch error:&error];
+  XCTAssertEqual(slices.count, 2u, @"%@", error);
+  ODataTemporalPredicate *later = [ODataTemporalPredicate predicateFrom:OISDay(@"2014-01-01") toInclusive:OISDay(@"2014-01-01")];
+  XCTAssertFalse([later evaluateWithObject:slices.lastObject], @"ends the day before, closed-open");
+  ODataTemporalPredicate *before = [ODataTemporalPredicate predicateFrom:OISDay(@"2013-12-31") toInclusive:OISDay(@"2013-12-31")];
+  XCTAssertTrue([before evaluateWithObject:slices.lastObject]);
+  XCTAssertFalse([before evaluateWithObject:slices.firstObject]);
+
+  // Example 18 again, from the client.
+  NSArray *changed = [store performTemporalAction:@"Update" onEntityNamed:@"Department" deltaTimeslices:@[
+    @{ @"department": @"D08", @"from": OISDay(@"2012-04-01"), @"to": OISDay(@"2014-07-01"), @"budget": @1320 } ] context:context error:&error];
+  XCTAssertEqual(changed.count, 5u, @"%@", error);
+  XCTAssertEqualObjects([changed valueForKey:@"budget"], (@[ @1250, @1320, @1320, @1320, @1400 ]));
+  fetch.predicate = [NSPredicate predicateWithFormat:@"department == 'D08'"];
+  XCTAssertEqualObjects([[context executeFetchRequest:fetch error:&error] valueForKey:@"budget"], (@[ @1000, @1250, @1320, @1320, @1320, @1400 ]));
+  XCTAssertNil([store performTemporalAction:@"Update" onEntityNamed:@"Department" deltaTimeslices:@[ @{ @"budget": @1 } ] context:context error:&error],
+               @"no period");
+  XCTAssertEqual([error.userInfo[ODataErrorHTTPStatusKey] integerValue], 400);
+}
+
 #pragma mark $compute
 
 // Part 2 section 5.1.3: computed values, by name in $select, $filter and
@@ -3048,6 +3300,13 @@ static NSString *OISHTTPDate(NSDate *date)
   XCTAssertEqualObjects(names, (@[ @"Chef Anton's Cajun Seasoning", @"Chef Anton's Gumbo Mix", @"Chang", @"Chai", @"Aniseed Syrup" ]));
 
   XCTAssertEqualObjects([self get:@"Products/$count?$compute=UnitPrice mul 2 as Twice&$filter=Twice lt 30"].text, @"1");
+
+  // Inside $expand, for its members.
+  r = [self get:@"Categories(1)?$expand=Products($compute=UnitPrice mul 2 as Twice;$select=ProductName,Twice;$filter=Twice gt 30;$orderby=Twice desc)"];
+  XCTAssertEqual(r.status, 200, @"%@", r.text);
+  NSArray *members = r.json[@"Products"];
+  XCTAssertEqualObjects([members valueForKey:@"ProductName"], (@[ @"Chang", @"Chai" ]), @"%@", r.text);
+  XCTAssertEqualWithAccuracy([members.firstObject[@"Twice"] doubleValue], 38.0, 0.001);
   XCTAssertEqual([self get:@"Products?$compute=UnitPrice mul 2"].status, 400, @"a name for it");
   XCTAssertEqual([self get:@"Products?$compute=Category as Whole"].status, 400, @"not a value");
 }
@@ -3070,22 +3329,47 @@ static NSString *OISHTTPDate(NSDate *date)
     NSManagedObjectContext *client = [self clientOver:transport options:nil error:&error];
     NSFetchRequest *fetch = [NSFetchRequest fetchRequestWithEntityName:@"Product"];
     fetch.resultType = NSDictionaryResultType;
-    // Here, from the objects, a path through a to-one relationship too (the
-    // service does not $select one).
-    BOOL here = [version isEqualToString:@"4.0"];
-    fetch.propertiesToFetch = here ? @[ @"name", @"category.name", twice ] : @[ @"name", twice ];
+    fetch.propertiesToFetch = @[ @"name", @"category.name", twice ];
     fetch.predicate = [NSPredicate predicateWithFormat:@"id <= 2"];
     fetch.sortDescriptors = @[ [NSSortDescriptor sortDescriptorWithKey:@"id" ascending:YES] ];
     NSArray *rows = [client executeFetchRequest:fetch error:&error];
     XCTAssertEqual(rows.count, 2u, @"%@: %@", version, error);
     XCTAssertEqualObjects([rows valueForKey:@"name"], (@[ @"Chai", @"Chang" ]), @"%@", version);
-    if (here) XCTAssertEqualObjects(rows.firstObject[@"category.name"], @"Beverages", @"%@: %@", version, rows);
+    XCTAssertEqualObjects(rows.firstObject[@"category.name"], @"Beverages", @"%@: %@", version, rows);
     XCTAssertEqualWithAccuracy([rows.firstObject[@"twice"] doubleValue], 36.0, 0.001, @"%@: %@", version, rows);
     XCTAssertEqualWithAccuracy([rows.lastObject[@"twice"] doubleValue], 38.0, 0.001, @"%@: %@", version, rows);
     NSString *sent = [[transport.requests.lastObject URL].absoluteString stringByRemovingPercentEncoding];
     BOOL computed = [sent containsString:@"$compute=(UnitPrice mul 2) as twice"];
     XCTAssertEqual(computed, [version isEqualToString:@"4.01"], @"%@: %@", version, sent);
   }
+}
+
+// A dictionary's key paths through to-one relationships: each an $expand
+// with its $select (a $select cannot follow a navigation property), and
+// the values read from the expanded rows.
+- (void)testDictionariesThroughRelationships
+{
+  OISRecordingTransport *transport = [[OISRecordingTransport alloc] init];
+  transport.next = _service;
+  NSError *error = nil;
+  NSManagedObjectContext *client = [self clientOver:transport options:nil error:&error];
+  NSFetchRequest *fetch = [NSFetchRequest fetchRequestWithEntityName:@"Stock"];
+  fetch.resultType = NSDictionaryResultType;
+  fetch.propertiesToFetch = @[ @"quantity", @"product.name", @"product.category.name", @"location.city" ];
+  fetch.relationshipKeyPathsForPrefetching = @[ @"location" ];
+  NSArray *rows = [client executeFetchRequest:fetch error:&error];
+  XCTAssertEqual(rows.count, 1u, @"%@", error);
+  XCTAssertEqualObjects(rows.firstObject, (@{ @"quantity": @40, @"product.name": @"Chai", @"product.category.name": @"Beverages", @"location.city": @"Leeds" }));
+  NSString *sent = [[transport.requests.lastObject URL].absoluteString stringByRemovingPercentEncoding];
+  XCTAssertTrue([sent containsString:@"$select=Quantity&$expand=Location($select=City),Product($select=ProductName;$expand=Category($select=CategoryName))"], @"%@", sent);
+
+  // Only related values: the row's key, not all of it.
+  fetch.propertiesToFetch = @[ @"product.name" ];
+  fetch.relationshipKeyPathsForPrefetching = nil;
+  rows = [client executeFetchRequest:fetch error:&error];
+  XCTAssertEqualObjects(rows, (@[ @{ @"product.name": @"Chai" } ]), @"%@", error);
+  sent = [[transport.requests.lastObject URL].absoluteString stringByRemovingPercentEncoding];
+  XCTAssertTrue([sent containsString:@"$select=StockID&$expand=Product($select=ProductName)"], @"%@", sent);
 }
 
 #pragma mark JSON $batch
@@ -3637,7 +3921,7 @@ static NSString *OISHTTPDate(NSDate *date)
   XCTAssertEqualObjects([[self applied:@"$apply=filter(UnitPrice gt 20)&$orderby=ProductID"] valueForKey:@"ProductID"], (@[ @4, @5 ]),
                         @"filter alone: entities");
 
-  XCTAssertEqual([self get:@"Products?$apply=topcount(2,UnitPrice)"].status, 501);
+  XCTAssertEqual([self get:@"Products?$apply=expand(Category)"].status, 501);
   XCTAssertEqual([self get:@"Products?$apply=aggregate(UnitPrice with Custom.concat as X)"].status, 501);
   XCTAssertEqual([self get:@"Products?$apply=aggregate(UnitPrice sum)"].status, 400);
   XCTAssertEqual([self get:@"Products?$apply=groupby((Nothing))"].status, 400);

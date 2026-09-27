@@ -116,6 +116,18 @@ static void northwind(NSString *models)
       check(some.count > 0 && some.count == someCount, @"filter and sort ($filter, $orderby)",
             [NSString stringWithFormat:@"%@, count says %lu", describe(some, e), (unsigned long)someCount]);
 
+      // A dictionary's key path through a to-one relationship: an $expand
+      // with its $select (Northwind answers 400 to Category/CategoryName in
+      // a $select).
+      e = nil;
+      NSFetchRequest *withCategory = [NSFetchRequest fetchRequestWithEntityName:@"Product"];
+      withCategory.resultType = NSDictionaryResultType;
+      withCategory.propertiesToFetch = @[ @"name", @"category.name" ];
+      withCategory.predicate = [NSPredicate predicateWithFormat:@"name == 'Chai'"];
+      NSDictionary *chai = [[moc executeFetchRequest:withCategory error:&e] firstObject];
+      check([chai[@"category.name"] isEqual:@"Beverages"], @"a dictionary through a to-one relationship ($expand=Category($select=CategoryName))",
+            e ? reason(e) : [chai description]);
+
       NSManagedObject *product = some.firstObject;
       NSManagedObject *category = [product valueForKey:@"category"];
       NSString *categoryName = [category valueForKey:@"name"];

@@ -18,6 +18,7 @@
 #import "ODataOperationCall.h"
 #import "ODataStreamTransfer.h"
 #import "ODataSearchPredicate.h"
+#import "ODataTemporalPredicate.h"
 #import "ODataFunctionExpression.h"
 #import "ODataHistory.h"
 
@@ -67,6 +68,21 @@ NS_ASSUME_NONNULL_BEGIN
 // refreshObject:mergeChanges:] alone turns an object back into a fault,
 // which this store then fills from what it kept.
 - (void)discardCachedRowsForObjectIDs:(nullable NSArray<NSManagedObjectID *> *)objectIDs;
+
+// Temporal.Update, Upsert or Delete (OData-Temporal section 4.3.2) on the
+// set of an entity with application time (ODataTemporalPredicate.h),
+// which the service does all or nothing. Each delta time slice is
+// attribute values by Core Data name, its period included; a missing end
+// is no end, and a missing object key attribute matches every object.
+// Returns the slices the service made or changed (for Delete, the periods
+// it took away) as attribute values. The rows kept of the entity are
+// dropped, and the context's objects of it refreshed, so they and the
+// next fetch show the timeline as it is now. Call on the context's queue.
+- (nullable NSArray<NSDictionary<NSString *, id> *> *)performTemporalAction:(NSString *)action
+                                                              onEntityNamed:(NSString *)entityName
+                                                            deltaTimeslices:(NSArray<NSDictionary<NSString *, id> *> *)deltas
+                                                                    context:(nullable NSManagedObjectContext *)context
+                                                                      error:(NSError **)error;
 
 // What changed at the service since the store last looked (Part 1 section
 // 11.3, delta), for the entities in ODataIncrementalStoreTrackedEntitiesOption,

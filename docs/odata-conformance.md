@@ -42,7 +42,7 @@ calling the client conformant.
 | 8 | MUST use the `$` prefix on system query options | ✅ | |
 | 9 | MUST use case-sensitive options, operators, functions | ✅ | |
 | 10 | SHOULD support Basic authentication over HTTPS | ✅ | Also Bearer tokens. |
-| 11–15 | MAY: entity references, delta, async, `metadata=minimal`, streaming | ⚠️ | Optional. The client asks for `metadata=minimal` (see 2.1), and follows delta links and status monitors (section 8). |
+| 11–15 | MAY: entity references, delta, async, `metadata=minimal`, streaming | ⚠️ | Optional. The client asks for `metadata=minimal` (see 2.1), and follows delta links and status monitors (section 8). Entity references: it writes relationships with `$ref` requests (section 4.2) and reads a delta's entries named only by `@odata.id`; Core Data has no use for reading a collection of references itself, so it does not ask for one. It does not ask for streaming responses. |
 | 16 | 4.01: MUST send 4.0 payloads to a service that does not advertise 4.01 in `Core.ODataVersions` | ✅ | The container's `Core.ODataVersions` decides, its highest version listed; without it, `<edmx:Edmx Version>` does, since only a 4.01 service writes 4.01 CSDL. `ODataService` advertises `4.0 4.01`. |
 | 17 | 4.01: MUST spell identifiers in payloads and URLs as `$metadata` does | ✅ | Property, navigation property, entity set, type and enumeration member names are given `$metadata`'s spelling where the model's differs only in case (`Id` for `ID`, `Staff` for `staff`), names from `userInfo` included. |
 | 18 | 4.01: MUST be prepared for any valid 4.01 CSDL | ✅ | Tested with `Edm.Untyped` and abstract property types, `Scale` variable and floating, `SRID`, key aliases, a nullable singleton, `IncludeInServiceDocument`, `Edm.Int64` enumerations, `ContainsTarget` with `OnDelete`, action overloads with `EntitySetPath`, terms of its own, `IncludeAnnotations`, and `UrlRef`, `LabeledElement` and `Apply` annotations: parsed, and a model built from it. CSDL JSON is read too (`ODataCSDL` turns it into the XML it says the same as), and so is the specification's own example. |
@@ -104,7 +104,7 @@ calling the client conformant.
 | `sortDescriptors` | `$orderby` | ✅ **live** | Paths through relationships use `/` (`Category/CategoryName`); the key is appended as a tiebreaker. |
 | `fetchLimit`, `fetchOffset` | `$top`, `$skip` | ✅ **live** | |
 | `countForFetchRequest:` | `/$count` | ✅ **live** | |
-| `propertiesToFetch` (dictionary results) | `$select` | ✅ | Those properties. |
+| `propertiesToFetch` (dictionary results) | `$select`, `$expand` | ✅ **live** | Those properties. A key path through to-one relationships (`category.name`) is an `$expand` with its own `$select`, nested as deep as the path (`Product($select=ProductName;$expand=Category($select=CategoryName))`), since `$select` cannot follow a navigation property (Northwind and TripPin answer 400); the value is read from the expanded row. With only such paths, the row's own `$select` is its key. |
 | `NSExpressionDescription`s computed from each row (`unitPrice * 2`), dictionary results | `$compute` | ✅ | `$compute=(UnitPrice mul 2) as twice`, with the name in `$select`, where the service speaks 4.01 and `Capabilities.SelectSupport` does not say `ComputeSupported` false; elsewhere the rows are read as objects and each value computed here, key paths through to-one relationships too. Typed as the description's `expressionResultType` says. |
 | Rows read as objects | `$select` | ✅ | A fetch of objects or object IDs, a fault and a relationship read ask for the model's attributes that the service's type has, and a subentity's own behind its cast (`Zoo.Lion/MaxRoar`); an expanded entity's options do the same. Nothing is trimmed without `$metadata`, when a subentity names no type, or where `Capabilities.SelectSupport` says the set has none. |
 | `relationshipKeyPathsForPrefetching` | `$expand` | ✅ | Inline entities are cached, a to-one's object ID goes in the row, and a to-many's members are kept, so reading the relationship asks nothing, unless the collection came in pages (`Nav@odata.nextLink`). Each expanded entity names its own to-ones (`Products($expand=Category($select=CategoryID))`). Kept members are dropped with their object's row and at every save, which may move them. |
@@ -554,8 +554,25 @@ done on both sides; the rest is ❌ unless marked otherwise.
   `rejected`. Deleting remembered requests
   (`DeleteWith…IDSupported`) is not offered.
 - ✅ **Aggregation**: `ApplySupported`, with `$apply` (section 4.1).
-- — **Temporal**, and geographic types: left out, unless a clean and
-  simple mapping to Core Data turns up.
+- ✅ **Temporal** (OData-Temporal), for application time with a visible
+  timeline: each row a time slice, its period two Date attributes named in
+  the entity's `userInfo` (`OData.periodStart`, `OData.periodEnd`, and
+  `OData.objectKey` for which object a slice belongs to; periods
+  closed-open, or closed-closed for dates with
+  `OData.closedClosedPeriods`; no end, or 9999-12-31, for none). A model
+  built from `$metadata` sets these from `Temporal.ApplicationTimeSupport`.
+  `ODataTemporalPredicate` asks for a point (`$at`) or an interval
+  (`$from` with `$to` or `$toInclusive`), ANDed with the rest of the
+  predicate, and evaluates the same in memory;
+  `-performTemporalAction:onEntityNamed:deltaTimeslices:context:error:`
+  calls `Temporal.Update`, `Upsert` and `Delete`, and refreshes the
+  context's objects of the entity. `ODataService` serves both (see
+  `docs/server-design.md`). A snapshot timeline, where slices hide behind
+  an object's key, is not done: Core Data has one row per key. This is
+  application time, not the system time Core Data's persistent history
+  records, which delta links use.
+- — Geographic types: left out, unless a clean and simple mapping to Core
+  Data turns up.
 
 The work common to all of them:
 

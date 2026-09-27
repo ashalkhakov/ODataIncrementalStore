@@ -324,7 +324,7 @@ static void OISAddChildren(NSXMLElement *parent, NSArray<NSXMLElement *> *childr
   for (NSString *part in parts) {
     NSRange dot = [part rangeOfString:@"."];
     NSString *head = dot.location == NSNotFound ? nil : [part substringToIndex:dot.location];
-    BOOL standard = head && [@[ @"Core", @"Validation", @"Capabilities", @"Authorization", @"Measures", @"Aggregation", @"JSON", @"Repeatability" ] containsObject:head] &&
+    BOOL standard = head && [@[ @"Core", @"Validation", @"Capabilities", @"Authorization", @"Measures", @"Aggregation", @"JSON", @"Repeatability", @"Temporal" ] containsObject:head] &&
                     [[part substringFromIndex:dot.location + 1] rangeOfString:@"."].location == NSNotFound;
     [full addObject:standard ? [NSString stringWithFormat:@"Org.OData.%@.V1%@", head, [part substringFromIndex:dot.location]] : part];
   }

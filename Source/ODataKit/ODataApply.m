@@ -60,6 +60,20 @@
       return [NSString stringWithFormat:@"filter(%@)", self.filter];
     case ODataApplyAggregate:
       return [NSString stringWithFormat:@"aggregate(%@)", [[self.aggregates valueForKey:@"description"] componentsJoinedByString:@","]];
+    case ODataApplyIdentity:
+      return @"identity";
+    case ODataApplySearch:
+      return [NSString stringWithFormat:@"search(%@)", self.search];
+    case ODataApplyCompute:
+      return [NSString stringWithFormat:@"compute(%@)", [[self.compute valueForKey:@"description"] componentsJoinedByString:@","]];
+    case ODataApplyOrderBy:
+      return [NSString stringWithFormat:@"orderby(%@)", [[self.orderBy valueForKey:@"description"] componentsJoinedByString:@","]];
+    case ODataApplyTop:
+      return [NSString stringWithFormat:@"top(%@)", self.number];
+    case ODataApplySkip:
+      return [NSString stringWithFormat:@"skip(%@)", self.number];
+    case ODataApplyTopBottom:
+      return [NSString stringWithFormat:@"%@(%@,%@)", self.method, self.number, self.expression];
     case ODataApplyGroupBy: {
       NSMutableArray *paths = [NSMutableArray array];
       for (NSArray *path in self.groupPaths) [paths addObject:[path componentsJoinedByString:@"/"]];
@@ -156,6 +170,52 @@ static NSArray<NSString *> *OISPath(NSString *text)
   return aggregates;
 }
 
+// search, compute, orderby, top, skip, and the top and bottom kin.
++ (instancetype)readOther:(NSString *)name inside:(NSString *)inside text:(NSString *)text error:(NSError **)error
+{
+  ODataApplyTransformation *t = [[self alloc] init];
+  t->_groupPaths = @[];
+  t->_aggregates = @[];
+  NSString *trimmed = [inside stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceCharacterSet]];
+  NSNumber *(^number)(NSString *) = ^NSNumber *(NSString *value) {
+    NSScanner *scanner = [NSScanner scannerWithString:[value stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceCharacterSet]]];
+    double d;
+    return [scanner scanDouble:&d] && scanner.isAtEnd && d >= 0 ? @(d) : nil;
+  };
+  if ([name isEqualToString:@"search"]) {
+    t->_kind = ODataApplySearch;
+    t->_search = [ODataSearchExpression searchWithString:trimmed error:error];
+    return t->_search ? t : nil;
+  }
+  if ([name isEqualToString:@"compute"] || [name isEqualToString:@"orderby"]) {
+    ODataQueryOptions *options = [ODataQueryOptions optionsWithQuery:@{ [@"$" stringByAppendingString:name]: trimmed } error:error];
+    if (!options) return nil;
+    t->_kind = [name isEqualToString:@"compute"] ? ODataApplyCompute : ODataApplyOrderBy;
+    t->_compute = options.compute;
+    t->_orderBy = options.orderBy;
+    return t;
+  }
+  if ([name isEqualToString:@"top"] || [name isEqualToString:@"skip"]) {
+    t->_kind = [name isEqualToString:@"top"] ? ODataApplyTop : ODataApplySkip;
+    t->_number = number(trimmed);
+    if (!t->_number || t->_number.doubleValue != floor(t->_number.doubleValue)) {
+      if (error) *error = OISApplyError(ODataIncrementalStoreErrorSyntax, [NSString stringWithFormat:@"%@ takes a count", name], text);
+      return nil;
+    }
+    return t;
+  }
+  NSArray *arguments = OISSplitTop(trimmed, ',');
+  t->_kind = ODataApplyTopBottom;
+  t->_method = name;
+  t->_number = arguments.count == 2 ? number(arguments[0]) : nil;
+  t->_expression = t->_number ? [ODataExpression expressionWithString:arguments[1] error:error] : nil;
+  if (!t->_expression) {
+    if (error && !*error) *error = OISApplyError(ODataIncrementalStoreErrorSyntax, [NSString stringWithFormat:@"%@ takes a number and a value", name], text);
+    return nil;
+  }
+  return t;
+}
+
 + (NSArray *)transformationsWithString:(NSString *)text error:(NSError **)error
 {
   NSMutableArray *transformations = [NSMutableArray array];
@@ -166,6 +226,14 @@ static NSArray<NSString *> *OISPath(NSString *text)
   }
   for (NSString *part in OISSplitTop(trimmed, '/')) {
     NSString *name = nil;
+    if ([[part stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceCharacterSet]] isEqualToString:@"identity"]) {
+      ODataApplyTransformation *t = [[self alloc] init];
+      t->_kind = ODataApplyIdentity;
+      t->_groupPaths = @[];
+      t->_aggregates = @[];
+      [transformations addObject:t];
+      continue;
+    }
     NSString *inside = OISCall(part, &name);
     if (!inside) {
       if (error) *error = OISApplyError(ODataIncrementalStoreErrorSyntax, [NSString stringWithFormat:@"\"%@\" is not a transformation", part], text);
@@ -211,8 +279,12 @@ static NSArray<NSString *> *OISPath(NSString *text)
         if (!aggregates) return nil;
       }
       [transformations addObject:[self groupByPaths:paths aggregates:aggregates]];
-    } else if ([@[ @"compute", @"topcount", @"topsum", @"toppercent", @"bottomcount", @"bottomsum", @"bottompercent",
-                   @"identity", @"concat", @"expand", @"search", @"orderby", @"top", @"skip" ] containsObject:name]) {
+    } else if ([@[ @"search", @"compute", @"orderby", @"top", @"skip", @"topcount", @"topsum", @"toppercent",
+                   @"bottomcount", @"bottomsum", @"bottompercent" ] containsObject:name]) {
+      ODataApplyTransformation *t = [self readOther:name inside:inside text:text error:error];
+      if (!t) return nil;
+      [transformations addObject:t];
+    } else if ([@[ @"concat", @"expand", @"nest", @"ancestors", @"descendants", @"traverse" ] containsObject:name]) {
       if (error) *error = OISApplyError(ODataIncrementalStoreErrorUnsupportedExpression, [NSString stringWithFormat:@"%@ is not supported", name], text);
       return nil;
     } else {
@@ -329,6 +401,71 @@ static NSExpression *OISRowOperand(ODataExpression *e, NSError **error)
   }
   if (error) *error = OISError(ODataIncrementalStoreErrorUnsupportedExpression, [NSString stringWithFormat:@"%@ over aggregated rows", e]);
   return nil;
+}
+
++ (id)valueOfExpression:(ODataExpression *)e inRow:(id)row error:(NSError **)error
+{
+  if (e.kind == ODataExpressionLiteral) return e.value;
+  NSArray *path = e.memberPath;
+  if (e.kind == ODataExpressionMember && path.count) {
+    id value = row;
+    for (NSString *segment in path) value = [value isKindOfClass:[NSDictionary class]] ? value[segment] : [value valueForKey:segment];
+    return value ?: [NSNull null];
+  }
+  BOOL negate = e.kind == ODataExpressionUnary && [e.name isEqualToString:@"-"];
+  BOOL arithmetic = e.kind == ODataExpressionBinary && [@[ @"add", @"sub", @"mul", @"div", @"divby" ] containsObject:e.name];
+  if (negate || arithmetic) {
+    id l = [self valueOfExpression:negate ? e.operand : e.left inRow:row error:error];
+    id r = negate ? @-1 : (l ? [self valueOfExpression:e.right inRow:row error:error] : nil);
+    if (!l || !r) return nil;
+    if (![l isKindOfClass:[NSNumber class]] || ![r isKindOfClass:[NSNumber class]]) return [NSNull null];
+    // Decimals stay decimal; anything else is a double.
+    if ([l isKindOfClass:[NSDecimalNumber class]] || [r isKindOfClass:[NSDecimalNumber class]]) {
+      NSDecimalNumber *a = [l isKindOfClass:[NSDecimalNumber class]] ? l : [NSDecimalNumber decimalNumberWithDecimal:[l decimalValue]];
+      NSDecimalNumber *b = [r isKindOfClass:[NSDecimalNumber class]] ? r : [NSDecimalNumber decimalNumberWithDecimal:[r decimalValue]];
+      NSString *op = negate ? @"mul" : e.name;
+      if ([op isEqualToString:@"add"]) return [a decimalNumberByAdding:b];
+      if ([op isEqualToString:@"sub"]) return [a decimalNumberBySubtracting:b];
+      if ([op isEqualToString:@"mul"]) return [a decimalNumberByMultiplyingBy:b];
+      return [b isEqual:[NSDecimalNumber zero]] ? [NSNull null] : [a decimalNumberByDividingBy:b];
+    }
+    double a = [l doubleValue], b = [r doubleValue];
+    NSString *op = negate ? @"mul" : e.name;
+    if ([op isEqualToString:@"add"]) return @(a + b);
+    if ([op isEqualToString:@"sub"]) return @(a - b);
+    if ([op isEqualToString:@"mul"]) return @(a * b);
+    return b == 0 ? [NSNull null] : @(a / b);
+  }
+  if (error) *error = OISError(ODataIncrementalStoreErrorUnsupportedExpression, [NSString stringWithFormat:@"%@ over aggregated rows", e]);
+  return nil;
+}
+
++ (NSArray *)rows:(NSArray *)rows values:(NSArray *)values method:(NSString *)method number:(double)number
+{
+  BOOL top = [method hasPrefix:@"top"];
+  NSMutableArray *indexes = [NSMutableArray array];
+  for (NSUInteger i = 0; i < rows.count; i++) {
+    if ([values[i] isKindOfClass:[NSNumber class]]) [indexes addObject:@(i)];  // a null is none of them
+  }
+  [indexes sortUsingComparator:^NSComparisonResult(NSNumber *a, NSNumber *b) {
+    NSComparisonResult order = [values[a.unsignedIntegerValue] compare:values[b.unsignedIntegerValue]];
+    return top ? -order : order;
+  }];
+  double whole = 0;
+  for (NSNumber *i in indexes) whole += [values[i.unsignedIntegerValue] doubleValue];
+  double goal = [method hasSuffix:@"percent"] ? whole * number / 100.0 : number;
+  NSMutableArray *out = [NSMutableArray array];
+  double sum = 0;
+  for (NSNumber *i in indexes) {
+    if ([method hasSuffix:@"count"]) {
+      if (out.count >= (NSUInteger)number) break;
+    } else if (sum >= goal) {
+      break;
+    }
+    [out addObject:rows[i.unsignedIntegerValue]];
+    sum += [values[i.unsignedIntegerValue] doubleValue];
+  }
+  return out;
 }
 
 + (NSPredicate *)predicateForExpression:(ODataExpression *)e error:(NSError **)error

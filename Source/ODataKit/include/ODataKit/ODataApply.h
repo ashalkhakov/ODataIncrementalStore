@@ -9,8 +9,9 @@
 //
 // These are read and written: filter, groupby (of property paths, with an
 // aggregate), and aggregate, of property paths with sum, min, max,
-// average or countdistinct, and of $count. The others (compute, topcount,
-// concat, expand, search, rollup, custom methods) are
+// average or countdistinct, and of $count; identity, search, compute,
+// orderby, top, skip, and topcount, topsum, toppercent and their bottom
+// kin. The others (concat, expand, nest, rollup, custom methods) are
 // ODataIncrementalStoreErrorUnsupportedExpression; what is not $apply at
 // all is ODataIncrementalStoreErrorSyntax.
 
@@ -23,7 +24,14 @@ NS_ASSUME_NONNULL_BEGIN
 typedef NS_ENUM(NSInteger, ODataApplyKind) {
   ODataApplyFilter,     // filter
   ODataApplyGroupBy,    // groupPaths, aggregates (may be empty)
-  ODataApplyAggregate   // aggregates
+  ODataApplyAggregate,  // aggregates
+  ODataApplyIdentity,   // identity: the input as it is
+  ODataApplySearch,     // search
+  ODataApplyCompute,    // compute
+  ODataApplyOrderBy,    // orderBy
+  ODataApplyTop,        // number
+  ODataApplySkip,       // number
+  ODataApplyTopBottom   // method (topcount, bottomsum, ...), number, expression
 };
 
 // Path with method as alias, or $count as alias (path nil).
@@ -47,6 +55,12 @@ typedef NS_ENUM(NSInteger, ODataApplyKind) {
 @property (nonatomic, readonly, strong, nullable) ODataExpression *filter;
 @property (nonatomic, readonly, copy) NSArray<NSArray<NSString *> *> *groupPaths;
 @property (nonatomic, readonly, copy) NSArray<ODataAggregate *> *aggregates;
+@property (nonatomic, readonly, strong, nullable) ODataSearchExpression *search;
+@property (nonatomic, readonly, copy, nullable) NSArray<ODataComputeItem *> *compute;
+@property (nonatomic, readonly, copy, nullable) NSArray<ODataOrderItem *> *orderBy;
+@property (nonatomic, readonly, copy, nullable) NSString *method;
+@property (nonatomic, readonly, strong, nullable) NSNumber *number;
+@property (nonatomic, readonly, strong, nullable) ODataExpression *expression;
 @end
 
 @interface ODataAggregation : NSObject
@@ -68,6 +82,15 @@ typedef NS_ENUM(NSInteger, ODataApplyKind) {
 // comparisons with literals, and, or, not. nil with
 // ODataIncrementalStoreErrorUnsupportedExpression for anything more.
 + (nullable NSPredicate *)predicateForExpression:(ODataExpression *)expression error:(NSError **)error;
+// An expression's value with a grouped row (nested dictionaries): a
+// literal, a path in the row, and add, sub, mul, div and minus of those.
+// nil, with the reason, for anything else.
++ (nullable id)valueOfExpression:(ODataExpression *)expression inRow:(id)row error:(NSError **)error;
+// topcount, topsum, toppercent, bottomcount, bottomsum, bottompercent
+// (section 3.2): the rows with the largest (smallest) values, as many as
+// the count, or as make up the sum or the percent of the whole sum;
+// values given in the order of the rows.
++ (NSArray *)rows:(NSArray *)rows values:(NSArray *)values method:(NSString *)method number:(double)number;
 @end
 
 NS_ASSUME_NONNULL_END

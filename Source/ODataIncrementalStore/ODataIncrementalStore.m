@@ -1885,6 +1885,12 @@ static BOOL OISKeyIsSet(id value)
     }
     NSString *name = [prop isKindOfClass:[NSPropertyDescription class]] ? [prop name] : prop;
     NSString *attributeName = [prop isKindOfClass:[NSExpressionDescription class]] ? OISKeyPathOf(prop) : name;
+    if (attributeName && [attributeName rangeOfString:@"."].location != NSNotFound) {
+      // Through to-one relationships: in the expanded rows.
+      id value = [self valueAtKeyPath:attributeName inPayload:payload entity:entity];
+      if (value) out[name] = value;
+      continue;
+    }
     NSAttributeDescription *attr = attributeName ? entity.attributesByName[attributeName] : nil;
     if (!attr) continue;
     id raw = payload[[_mapper propertyForAttribute:attr]];
@@ -1892,6 +1898,24 @@ static BOOL OISKeyIsSet(id value)
     if (value) out[name] = value;
   }
   return out;
+}
+
+// A key path through to-one relationships, read from a row and the rows
+// expanded into it.
+- (id)valueAtKeyPath:(NSString *)keyPath inPayload:(NSDictionary *)payload entity:(NSEntityDescription *)entity
+{
+  NSArray *parts = [keyPath componentsSeparatedByString:@"."];
+  id json = payload;
+  NSEntityDescription *at = entity;
+  for (NSUInteger i = 0; i + 1 < parts.count; i++) {
+    NSRelationshipDescription *relationship = at.relationshipsByName[parts[i]];
+    if (!relationship || relationship.isToMany || ![json isKindOfClass:[NSDictionary class]]) return nil;
+    json = json[[_mapper propertyForRelationship:relationship]];
+    at = relationship.destinationEntity;
+  }
+  NSAttributeDescription *attribute = at.attributesByName[parts.lastObject];
+  id raw = [json isKindOfClass:[NSDictionary class]] && attribute ? json[[_mapper propertyForAttribute:attribute]] : nil;
+  return raw && raw != [NSNull null] ? [_mapper.values coreDataValueForJSON:raw attribute:attribute] : nil;
 }
 
 - (NSManagedObjectID *)objectIDFromPayload:(NSDictionary *)payload
@@ -2292,6 +2316,59 @@ static BOOL OISKeyIsSet(id value)
   if (objectIDs) [_members removeObjectsForKeys:objectIDs];
   else [_members removeAllObjects];
   [_lock unlock];
+}
+
+- (NSArray *)performTemporalAction:(NSString *)action onEntityNamed:(NSString *)entityName
+                   deltaTimeslices:(NSArray *)deltas context:(NSManagedObjectContext *)context error:(NSError **)error
+{
+  NSEntityDescription *entity = self.persistentStoreCoordinator.managedObjectModel.entitiesByName[entityName];
+  if (![@[ @"Update", @"Upsert", @"Delete" ] containsObject:action] || !entity) {
+    if (error) *error = OISError(ODataIncrementalStoreErrorUnsupportedRequest,
+                                 [NSString stringWithFormat:@"Temporal.%@ on %@: Update, Upsert or Delete, on an entity of the model", action, entityName]);
+    return nil;
+  }
+  NSMutableArray *slices = [NSMutableArray array];
+  for (NSDictionary *delta in deltas) {
+    NSMutableDictionary *json = [NSMutableDictionary dictionary];
+    for (NSString *name in delta) {
+      NSAttributeDescription *attribute = entity.attributesByName[name];
+      if (!attribute) {
+        if (error) *error = OISError(ODataIncrementalStoreErrorUnsupportedRequest,
+                                     [NSString stringWithFormat:@"%@ is not an attribute of %@: a delta time slice has attribute values", name, entityName]);
+        return nil;
+      }
+      id value = delta[name];
+      json[[_mapper propertyForAttribute:attribute]] = value == [NSNull null] ? value : [_mapper.values JSONForCoreDataValue:value attribute:attribute];
+    }
+    [slices addObject:@{ @"Timeslice": json }];
+  }
+  NSEntityDescription *root = entity;
+  while (root.superentity) root = root.superentity;
+  NSString *base = _client.configuration.serviceRoot.absoluteString ?: @"";
+  if (![base hasSuffix:@"/"]) base = [base stringByAppendingString:@"/"];
+  NSURL *url = [NSURL URLWithString:[NSString stringWithFormat:@"%@%@/Org.OData.Temporal.V1.%@", base, [_mapper collectionPathForEntity:root], action]];
+  ODataHTTPResponse *response = [_client sendJSONMethod:@"POST" URL:url body:@{ @"deltaTimeslices": slices } etag:nil error:error];
+  if (!response) return nil;
+  id body = response.status == 204 ? @{} : [response JSONWithError:error];
+  if (![body isKindOfClass:[NSDictionary class]]) return nil;
+  NSMutableArray *out = [NSMutableArray array];
+  for (NSDictionary *item in [body[@"value"] isKindOfClass:[NSArray class]] ? body[@"value"] : @[]) {
+    NSDictionary *slice = [item isKindOfClass:[NSDictionary class]] ? item[@"Timeslice"] : nil;
+    if ([slice isKindOfClass:[NSDictionary class]]) [out addObject:[self dictionaryFromPayload:slice entity:entity properties:nil]];
+  }
+  // The timeline has changed: its rows are read again.
+  [_lock lock];
+  for (NSManagedObjectID *oid in _nodeCache.allKeys) {
+    if ([oid.entity isKindOfEntity:root]) {
+      [_nodeCache removeObjectForKey:oid];
+      [_members removeObjectForKey:oid];
+    }
+  }
+  [_lock unlock];
+  for (NSManagedObject *object in context.registeredObjects.allObjects) {
+    if ([object.entity isKindOfEntity:root] && !object.hasChanges) [context refreshObject:object mergeChanges:NO];
+  }
+  return out;
 }
 
 - (void)forgetObjectID:(NSManagedObjectID *)objectID

@@ -410,6 +410,36 @@ static void OISApplyVocabularies(NSDictionary<NSString *, id> *annotations, ODat
     properties[qualified] = own;
   }
 
+  // Application time: a timeline set's period and object key
+  // (Temporal.ApplicationTimeSupport), in the userInfo the server reads.
+  for (NSString *qualified in ordered) {
+    NSEntityDescription *entity = entities[qualified];
+    NSString *set = entity.userInfo[ODataUserInfoEntitySet];
+    NSDictionary *support = set ? [schema capability:@"Temporal.ApplicationTimeSupport" forEntitySet:set] : nil;
+    NSDictionary *timeline = [support isKindOfClass:[NSDictionary class]] ? support[@"Timeline"] : nil;
+    if (![timeline isKindOfClass:[NSDictionary class]] || ![timeline[@"@type"] hasSuffix:@"TimelineVisible"]) continue;
+    NSMutableDictionary *byWire = [NSMutableDictionary dictionary];
+    for (id property in properties[qualified]) {
+      if ([property isKindOfClass:[NSAttributeDescription class]]) byWire[[property userInfo][ODataUserInfoProperty]] = [property name];
+    }
+    NSString *(^path)(id) = ^NSString *(id value) {
+      return [value isKindOfClass:[NSDictionary class]] ? byWire[value[@"$PropertyPath"]] : nil;
+    };
+    NSString *start = path(timeline[@"PeriodStart"]), *end = path(timeline[@"PeriodEnd"]);
+    if (!start || !end) continue;
+    NSMutableDictionary *info = [entity.userInfo mutableCopy];
+    info[ODataUserInfoPeriodStart] = start;
+    info[ODataUserInfoPeriodEnd] = end;
+    NSMutableArray *objectKey = [NSMutableArray array];
+    for (id item in [timeline[@"ObjectKey"] isKindOfClass:[NSArray class]] ? timeline[@"ObjectKey"] : @[]) {
+      if (path(item)) [objectKey addObject:path(item)];
+    }
+    if (objectKey.count) info[ODataUserInfoObjectKey] = [objectKey componentsJoinedByString:@","];
+    NSDictionary *unit = support[@"UnitOfTime"];
+    if ([unit isKindOfClass:[NSDictionary class]] && [unit[@"ClosedClosedPeriods"] boolValue]) info[ODataUserInfoClosedClosedPeriods] = @"YES";
+    entity.userInfo = info;
+  }
+
   // Partners are inverses.
   for (NSString *qualified in ordered) {
     ODataSchemaEntityType *type = schema.entityTypes[qualified];

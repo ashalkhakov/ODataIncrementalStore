@@ -194,6 +194,10 @@ static NSString *OISQuoted(NSString *text)
 @property (nonatomic, strong, nullable) ODataSearchExpression *searchExpression;
 @property (nonatomic, copy, nullable) NSArray *apply;
 @property (nonatomic, copy) NSArray *compute;
+@property (nonatomic, strong, nullable) ODataExpression *temporalAt;
+@property (nonatomic, strong, nullable) ODataExpression *temporalFrom;
+@property (nonatomic, strong, nullable) ODataExpression *temporalTo;
+@property (nonatomic, strong, nullable) ODataExpression *temporalToInclusive;
 @property (nonatomic, copy) NSDictionary *aliases;
 @property (nonatomic, copy, nullable) NSString *format;
 @property (nonatomic, copy, nullable) NSString *skipToken;
@@ -799,6 +803,24 @@ static NSArray *OISComputeItems(NSString *text, NSError **error)
     options.levels = [self parseInteger];
     return options.levels != nil;
   }
+  if ([option isEqualToString:@"$compute"]) {
+    // Items as the top level reads them, up to the end of the option.
+    NSUInteger start = _token.range.location;
+    NSInteger depth = 0;
+    while (_token.kind != OISTokenEnd && !(depth == 0 && (_token.kind == OISTokenSemicolon || _token.kind == OISTokenRParen))) {
+      if (_token.kind == OISTokenLParen) depth++;
+      if (_token.kind == OISTokenRParen) depth--;
+      [self advance];
+    }
+    NSUInteger end = _token.kind == OISTokenEnd ? _lexer.string.length : _token.range.location;
+    NSError *error = nil;
+    options.compute = OISComputeItems([_lexer.string substringWithRange:NSMakeRange(start, end - start)], &error);
+    if (!options.compute) {
+      if (!self.error) self.error = error;
+      return NO;
+    }
+    return YES;
+  }
   if ([option isEqualToString:@"$search"]) {
     // Its own grammar; kept as written, up to the end of the option.
     NSUInteger start = _token.range.location;
@@ -917,6 +939,19 @@ static NSArray *OISComputeItems(NSString *text, NSError **error)
       }
       if ([key isEqualToString:@"$skiptoken"]) {
         options.skipToken = value;
+        continue;
+      }
+      NSArray *temporal = @[ @"$at", @"$from", @"$to", @"$toInclusive" ];
+      if ([temporal containsObject:key]) {
+        ODataExpression *e = [parser parseCommon];
+        if (!e || ![parser atEnd]) {
+          if (error) *error = parser.error ?: OISError(ODataIncrementalStoreErrorSyntax, [NSString stringWithFormat:@"%@=%@", key, value]);
+          return nil;
+        }
+        if ([key isEqualToString:@"$at"]) options.temporalAt = e;
+        else if ([key isEqualToString:@"$from"]) options.temporalFrom = e;
+        else if ([key isEqualToString:@"$to"]) options.temporalTo = e;
+        else options.temporalToInclusive = e;
         continue;
       }
       if ([key isEqualToString:@"$compute"]) {

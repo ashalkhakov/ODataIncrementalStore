@@ -28,12 +28,14 @@
 		B393644308DD23BC62AFC5FA /* ODataLexer.m in Sources */ = {isa = PBXBuildFile; fileRef = BC40C0C255657A288601624F /* ODataLexer.m */; };
 		B3996675A59FAFEA536215B9 /* OISRuntime.h in Headers */ = {isa = PBXBuildFile; fileRef = B1063AFB2AEDE67A44BCE921 /* OISRuntime.h */; settings = {ATTRIBUTES = (Public, ); }; };
 		B3B9DFDCD065F6A0B2F9B3CD /* ODataStreamTransfer.m in Sources */ = {isa = PBXBuildFile; fileRef = B9638EAAD959A481CABF9459 /* ODataStreamTransfer.m */; };
+		B45126151E429E5B2034DC37 /* ODataTemporalPredicate.h in Headers */ = {isa = PBXBuildFile; fileRef = B6F795326DFCBB43B938E6D9 /* ODataTemporalPredicate.h */; settings = {ATTRIBUTES = (Public, ); }; };
 		B4929E6C576494718DC7799D /* CoreData.framework in FrameworksODataIncrementalStore */ = {isa = PBXBuildFile; fileRef = B34C6BA09D1A851E774BD249 /* CoreData.framework */; };
 		B495F2F31718763EDE6FF61A /* ODataTransport.h in Headers */ = {isa = PBXBuildFile; fileRef = BA496A27A63D29266C0986D0 /* ODataTransport.h */; settings = {ATTRIBUTES = (Public, ); }; };
 		B4A603B55B3DDDC2F0227E90 /* ODataBatch.m in Sources */ = {isa = PBXBuildFile; fileRef = BE5990D4C84E1EC229CA5056 /* ODataBatch.m */; };
 		B4D03138626C152A624D8872 /* ODataError.h in Headers */ = {isa = PBXBuildFile; fileRef = B70B76AA54D43A93B2D925E3 /* ODataError.h */; settings = {ATTRIBUTES = (Public, ); }; };
 		B4D68D31BCB0D7D0AA9A8296 /* ODataSnapshotTransport.m in Sources */ = {isa = PBXBuildFile; fileRef = B191A67677A52F0F4E768076 /* ODataSnapshotTransport.m */; };
 		B50211572C769AD4F93E4B02 /* ODataKit.framework in FrameworksODataService */ = {isa = PBXBuildFile; fileRef = AA0000000000000000000007 /* ODataKit.framework */; };
+		B50B5458D6BAD80153377672 /* ODataTimeline.m in Sources */ = {isa = PBXBuildFile; fileRef = BBF1AE089209C214D9E6D32B /* ODataTimeline.m */; };
 		B52F12E9A99E56EB29276C06 /* Security.framework in FrameworksODataService */ = {isa = PBXBuildFile; fileRef = B2D17EDD20D3E3D1D2E1BB14 /* Security.framework */; };
 		B5A27492DCFD33E47FFFEEF6 /* CoreData.framework in FrameworksODataService */ = {isa = PBXBuildFile; fileRef = B34C6BA09D1A851E774BD249 /* CoreData.framework */; };
 		B5B54B64009D89755AB6335D /* ODataModelBuilder.m in Sources */ = {isa = PBXBuildFile; fileRef = BE18B9CC76197344359F5B12 /* ODataModelBuilder.m */; };
@@ -70,6 +72,7 @@
 		BA47E2E5231C4AE98C3569DD /* ODataSchemaTests.m in Sources */ = {isa = PBXBuildFile; fileRef = B1CA5073147126022D056B88 /* ODataSchemaTests.m */; };
 		BA4A0899B0CF8FC6175304FD /* ODataPredicateBuilder.h in Headers */ = {isa = PBXBuildFile; fileRef = B0AA8F4082DCB7C43D0890C0 /* ODataPredicateBuilder.h */; settings = {ATTRIBUTES = (Public, ); }; };
 		BAAB8B5037876849D9045CBB /* ODataService.framework in Frameworkstests */ = {isa = PBXBuildFile; fileRef = AA000000000000000000000B /* ODataService.framework */; };
+		BAC884DF0EB7E0911EE40666 /* ODataTemporalPredicate.m in Sources */ = {isa = PBXBuildFile; fileRef = BAC3CFBBB772F56F99BFF08C /* ODataTemporalPredicate.m */; };
 		BAC96729ECDF8821F156F529 /* ODataResourceIdentifier.h in Headers */ = {isa = PBXBuildFile; fileRef = B0FAE061A6730BA02D7A5F65 /* ODataResourceIdentifier.h */; settings = {ATTRIBUTES = (Public, ); }; };
 		BB0673E2BF66A188434D8600 /* ODataClient.h in Headers */ = {isa = PBXBuildFile; fileRef = BC113BE91BB65A75F9436F4D /* ODataClient.h */; settings = {ATTRIBUTES = (Public, ); }; };
 		BB1B8B4AFFD0690481907376 /* ODataFunctionExpression.m in Sources */ = {isa = PBXBuildFile; fileRef = BB52ADA75DDA9EBD42F14062 /* ODataFunctionExpression.m */; };
@@ -183,6 +186,7 @@
 		B60D518BAB79759508EDA91D /* ODataClassWriter.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = ODataClassWriter.h; sourceTree = "<group>"; };
 		B6EA5FCF47CD332114D2DC1E /* Foundation.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = Foundation.framework; path = System/Library/Frameworks/Foundation.framework; sourceTree = SDKROOT; };
 		B6F2AF149AE64F17992A9EE4 /* OISSignature.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = OISSignature.h; sourceTree = "<group>"; };
+		B6F795326DFCBB43B938E6D9 /* ODataTemporalPredicate.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = ODataTemporalPredicate.h; sourceTree = "<group>"; };
 		B70B76AA54D43A93B2D925E3 /* ODataError.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = ODataError.h; sourceTree = "<group>"; };
 		B72EE4C94B64568C5EBDC220 /* ODataApply.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = ODataApply.h; sourceTree = "<group>"; };
 		B79B75970DACDB3F20CB0BAB /* ODataPropertyMapper.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = ODataPropertyMapper.h; sourceTree = "<group>"; };
@@ -198,9 +202,11 @@
 		BA2792ADA103C2385AECA5E2 /* ODataSearchPredicate.m */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.objc; path = ODataSearchPredicate.m; sourceTree = "<group>"; };
 		BA2EB602AA25995D34810903 /* ODataOperationCatalog.m */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.objc; path = ODataOperationCatalog.m; sourceTree = "<group>"; };
 		BA496A27A63D29266C0986D0 /* ODataTransport.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = ODataTransport.h; sourceTree = "<group>"; };
+		BA4C05565AE3BD461E4984E5 /* ODataTimeline.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = ODataTimeline.h; sourceTree = "<group>"; };
 		BA6CD829A19DB17DC392EA5D /* ODataSnapshotTransport.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = ODataSnapshotTransport.h; sourceTree = "<group>"; };
 		BA934D5DCEE0B9BFF6B72C76 /* README.md */ = {isa = PBXFileReference; lastKnownFileType = net.daringfireball.markdown; path = README.md; sourceTree = "<group>"; };
 		BAB24C12D8392296AA12EE21 /* ODataResourceIdentifierTests.m */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.objc; path = ODataResourceIdentifierTests.m; sourceTree = "<group>"; };
+		BAC3CFBBB772F56F99BFF08C /* ODataTemporalPredicate.m */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.objc; path = ODataTemporalPredicate.m; sourceTree = "<group>"; };
 		BAE259C1DAC5A4D95D1DD9A2 /* OISCoreData.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = OISCoreData.h; sourceTree = "<group>"; };
 		BB52ADA75DDA9EBD42F14062 /* ODataFunctionExpression.m */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.objc; path = ODataFunctionExpression.m; sourceTree = "<group>"; };
 		BB577E5CF4CE2F6A616D6346 /* ODataOperationTests.m */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.objc; path = ODataOperationTests.m; sourceTree = "<group>"; };
@@ -208,6 +214,7 @@
 		BB6F30CF82E3EDEBC90F595F /* ODataModelBuilder.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = ODataModelBuilder.h; sourceTree = "<group>"; };
 		BB9F29FEB793BAA8B5C0BEBA /* ODataHistory.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = ODataHistory.h; sourceTree = "<group>"; };
 		BBE8BFCE7F326F9C9CC749E6 /* ODataClient.m */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.objc; path = ODataClient.m; sourceTree = "<group>"; };
+		BBF1AE089209C214D9E6D32B /* ODataTimeline.m */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.objc; path = ODataTimeline.m; sourceTree = "<group>"; };
 		BC113BE91BB65A75F9436F4D /* ODataClient.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = ODataClient.h; sourceTree = "<group>"; };
 		BC12C590BE6848DD3A5ED165 /* Release.xcconfig */ = {isa = PBXFileReference; lastKnownFileType = text.xcconfig; path = Release.xcconfig; sourceTree = "<group>"; };
 		BC2A4D85AAF3941E049BB375 /* ODataValue.m */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.objc; path = ODataValue.m; sourceTree = "<group>"; };
@@ -414,6 +421,7 @@
 				B0FAE061A6730BA02D7A5F65 /* ODataResourceIdentifier.h */,
 				B2510B4BE1C68848C8DDF5FE /* ODataSearchPredicate.h */,
 				B86D9A0F8AD51A4702CA0A5F /* ODataStreamTransfer.h */,
+				B6F795326DFCBB43B938E6D9 /* ODataTemporalPredicate.h */,
 			);
 			path = include/ODataIncrementalStore;
 			sourceTree = "<group>";
@@ -428,9 +436,11 @@
 				B5181AA8755FAB53B3668708 /* ODataPredicateBuilder.m */,
 				B50F95B0017EBAF55BEFC746 /* ODataService.m */,
 				BCFA68AC1F779AD086BBF30F /* ODataServiceBatch.m */,
+				BBF1AE089209C214D9E6D32B /* ODataTimeline.m */,
 				BC713C43C4F5EBCCD1BC7B99 /* OISSignature.m */,
 				B6017AF3F8161EB1084CAC48 /* ODataOperationCatalog.h */,
 				B47363F11C69287493103F3C /* ODataServiceBatch.h */,
+				BA4C05565AE3BD461E4984E5 /* ODataTimeline.h */,
 				B6F2AF149AE64F17992A9EE4 /* OISSignature.h */,
 			);
 			path = ODataService;
@@ -453,6 +463,7 @@
 				BDCB268D2AE52459E3231048 /* ODataResourceIdentifier.m */,
 				BA2792ADA103C2385AECA5E2 /* ODataSearchPredicate.m */,
 				B9638EAAD959A481CABF9459 /* ODataStreamTransfer.m */,
+				BAC3CFBBB772F56F99BFF08C /* ODataTemporalPredicate.m */,
 				B96F500CA192B767B41628E0 /* ODataIncrementalStore+Private.h */,
 			);
 			path = ODataIncrementalStore;
@@ -507,6 +518,7 @@
 				BAC96729ECDF8821F156F529 /* ODataResourceIdentifier.h in Headers */,
 				B21D7A0F0D71672D38EE5A31 /* ODataSearchPredicate.h in Headers */,
 				BE6A3BC7A96EB9D8B20D035C /* ODataStreamTransfer.h in Headers */,
+				B45126151E429E5B2034DC37 /* ODataTemporalPredicate.h in Headers */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -717,6 +729,7 @@
 				BE091186569B520087CF38E1 /* ODataResourceIdentifier.m in Sources */,
 				B7BE0A78974222F4F2DA073F /* ODataSearchPredicate.m in Sources */,
 				B3B9DFDCD065F6A0B2F9B3CD /* ODataStreamTransfer.m in Sources */,
+				BAC884DF0EB7E0911EE40666 /* ODataTemporalPredicate.m in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -730,6 +743,7 @@
 				B246A689DF785A799BAAA7F7 /* ODataPredicateBuilder.m in Sources */,
 				BE9903CE28D7A94C675A726A /* ODataService.m in Sources */,
 				B28C550E4A1FC5534F7C90C5 /* ODataServiceBatch.m in Sources */,
+				B50B5458D6BAD80153377672 /* ODataTimeline.m in Sources */,
 				B196C8762DFD4DD1590E7E42 /* OISSignature.m in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;

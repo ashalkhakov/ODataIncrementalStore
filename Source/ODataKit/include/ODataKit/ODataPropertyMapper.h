@@ -38,6 +38,17 @@ FOUNDATION_EXPORT NSString * const ODataUserInfoAnnotations;
 FOUNDATION_EXPORT NSString * const ODataUserInfoUnit;
 FOUNDATION_EXPORT NSString * const ODataUserInfoISOCurrency;
 FOUNDATION_EXPORT NSString * const ODataUserInfoScale;
+// Application time (the Temporal vocabulary), userInfo on an entity whose
+// rows are time slices, each valid for a period (Temporal.TimelineVisible):
+// OData.periodStart and OData.periodEnd name its Date attributes, the
+// period's start and end (none or 9999-12-31: no end); OData.objectKey the
+// attributes, comma-separated, that say which object a slice belongs to
+// (none: one object); OData.closedClosedPeriods YES when the end is the
+// last day of the period rather than the first after it (Edm.Date only).
+FOUNDATION_EXPORT NSString * const ODataUserInfoPeriodStart;
+FOUNDATION_EXPORT NSString * const ODataUserInfoPeriodEnd;
+FOUNDATION_EXPORT NSString * const ODataUserInfoObjectKey;
+FOUNDATION_EXPORT NSString * const ODataUserInfoClosedClosedPeriods;
 
 @interface ODataPropertyMapper : NSObject
 @property (nonatomic) ODataPropertyNaming naming;
