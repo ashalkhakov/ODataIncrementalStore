@@ -168,10 +168,7 @@ it on the store.
 
 | Step | Where | How |
 |---|---|---|
-| `$filter` comparisons, `and`/`or`/`not`, `in`, `any`/`all`, `isof`, `$count` of navigation | **Store** | An `NSPredicate` |
-| `startswith`, `endswith`, `contains`, `tolower`/`toupper` | **Store** | `BEGINSWITH`, `ENDSWITH`, `CONTAINS`, `[c]` |
-| `year()`, `date()` and the other date parts, compared with literals | **Store** | Date ranges: `year(d) eq 2025` → `d >= 2025-01-01 AND d < 2026-01-01`. `month()` and smaller give one range per period the request spans |
-| `length()`, `substring`, `trim`, `indexof`, `concat`, `matchesPattern`, compared with literals | **Store** | `MATCHES` regular expressions, or equality |
+| `$filter` | **Store** | An `NSPredicate` ([below](#filter-as-nspredicate)) |
 | `$orderby` on key paths | **Store** | Sort descriptors |
 | `$top`, `$skip`, server paging, `$count` | **Store** | `fetchLimit`/`fetchOffset`, `countForFetchRequest:` |
 | `$search` | **Store** | `CONTAINS[cd]` over the string properties, per word |
@@ -184,6 +181,66 @@ it on the store.
 | First-level `$expand` | **Store** | `relationshipKeyPathsForPrefetching` on the fetch |
 | `$expand` of to-many with its own `$filter`/`$orderby`/`$top` | Memory | The related set is filtered and sorted per parent row |
 | Temporal actions (split and trim) | Memory, then store | Computed over the affected slices, and written through the handler |
+
+### `$filter` as `NSPredicate`
+
+`ODataPredicateBuilder` writes every `$filter` as a predicate that the store
+evaluates, so no filtering happens in the service's memory. A function the
+store has no equivalent for works only when it is compared with a literal:
+the comparison is then rewritten into something the store does have.
+
+**Comparisons and logic**
+
+| `$filter` | `NSPredicate` |
+|---|---|
+| `Price gt 20` | `price > 20` (and `eq`, `ne`, `lt`, `le`, `ge`) |
+| `a and b`, `a or b`, `not a` | `AND`, `OR`, `NOT` |
+| `Name eq null` | `name == nil` |
+| `Category/Name eq 'x'` | `category.name == 'x'` |
+| `ID in (1, 2)` | `id IN {1, 2}` |
+| `Style has NS.Style'Bold'` | `style IN {…}`: every flag value that includes Bold |
+| `Price add 5 gt 20` | `price + 5 > 20` (and `sub`, `mul`, `div`, `mod`) |
+| `Hired lt now()` | `hired < <the request's time>` |
+
+**Navigation and types**
+
+| `$filter` | `NSPredicate` |
+|---|---|
+| `Products/any(p:p/Price gt 20)` | `SUBQUERY(products, $p, $p.price > 20).@count > 0` |
+| `Products/all(p:p/Price gt 20)` | `SUBQUERY(products, $p, NOT $p.price > 20).@count == 0` |
+| `Products/any()` | `products.@count > 0` |
+| `Products/$count gt 2` | `products.@count > 2` |
+| `isof(NS.Manager)` | `entity IN {Manager, and its sub-entities}` |
+| `cast(Boss, NS.Manager)/Budget gt 5` | Holds only for objects of that entity |
+
+**Strings**
+
+| `$filter` | `NSPredicate` |
+|---|---|
+| `startswith(Name, 'Ch')` | `name BEGINSWITH 'Ch'` |
+| `endswith(Name, 'ai')` | `name ENDSWITH 'ai'` |
+| `contains(Name, 'ha')` | `name CONTAINS 'ha'` |
+| `tolower(Name) eq 'chai'` | `name ==[c] 'chai'` (and `toupper`) |
+| `length(Name) gt 3` | `name MATCHES '.{4,}'` |
+| `substring(Name, 1, 2) eq 'ha'` | `name MATCHES '.ha.*'` |
+| `indexof(Name, 'a') eq 2` | a `MATCHES` expression: no `a` before position 2, then `a` |
+| `trim(Name) eq 'Chai'` | `name MATCHES '\s*Chai\s*'` |
+| `concat(First, 'x') eq 'Annx'` | `first == 'Ann'` |
+| `matchesPattern(Name, '^C')` | `name MATCHES '^C.*'` (ECMAScript's search, made a whole-string match) |
+
+The regular expressions above are sketches; the builder escapes the literals
+and anchors the patterns. `substring`, `trim` and `concat` are compared with
+`eq` and `ne` only.
+
+**Dates**
+
+| `$filter` | `NSPredicate` |
+|---|---|
+| `year(Hired) eq 2025` | `hired >= 2025-01-01 AND hired < 2026-01-01` |
+| `year(Hired) gt 2025` | `hired >= 2026-01-01` |
+| `date(Hired) eq 2025-03-01` | `hired >= 2025-03-01 AND hired < 2025-03-02` |
+| `month(Hired) eq 3` | One March range for each year from the earliest to the latest `hired` in the store, ORed |
+| `day()`, `hour()`, `minute()`, `second()` | Likewise, one range for each month, day, hour or minute; more than 200 ranges is 501 |
 
 ### Candidates to move down
 
