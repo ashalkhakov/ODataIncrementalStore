@@ -413,8 +413,11 @@ in ODataKit: `filter(…)`, `groupby((paths),aggregate(…))` and
 `countdistinct`, and `$count`, each `as` an alias; `identity`,
 `search(…)`, `compute(… as …)`, `orderby(…)`, `top(n)`, `skip(n)`, and
 `topcount`, `topsum`, `toppercent` and their `bottom` kin, each
-`(n,value)`. The rest (`concat`, `expand`, `nest`, the hierarchy
-transformations, rollup, custom methods, `from`) is `501`.
+`(n,value)`; `concat(sequence,sequence,…)`, each sequence on the same
+input and their rows one after the other (entities, or grouped rows, not
+both); and `expand(Nav)` or `expand(Nav,filter(…))`, which the entities
+are written with, as `$expand=Nav($filter=…)`. The rest (`nest`, the
+hierarchy transformations, rollup, custom methods, `from`) is `501`.
 
 Each works in order on what the one before left: before a grouping on
 the entities (`compute` gives each object values by name, which later
@@ -462,8 +465,9 @@ time from the start attribute's type, the three actions below).
 `$filter` and `$search`, in `/$count` too: a slice that begins before the
 interval ends and ends after it begins (or has no end: none, or
 9999-12-31). The values are literals; another combination is `400`. They
-do nothing on a set without application time, and are not read inside
-`$expand`.
+do nothing on a set without application time. Inside `$expand` they apply
+to the members of a timeline reached by navigation
+(`Divisions(1)?$expand=Departments($at=2012-03-01)`, section 4.2.1).
 
 `Temporal.Update`, `Temporal.Upsert` and `Temporal.Delete`, bound to the
 set (`Departments/Temporal.Update`, or the full namespace), take
@@ -475,9 +479,11 @@ gaps in the period, from the slice just before a gap or, for an object
 with none there, from the delta alone; Delete takes the period away,
 trimming or splitting what it overlaps. An object key the delta leaves
 out matches every object. They work on the slices the caller may see,
-with the store's context directly (a handler's `insert`, `update` and
-`delete` are not called, but what it allows is checked), all or nothing,
-and answer the slices made or changed (for Delete, the periods taken
+through the set's handler: each slice made, changed or taken away is its
+`insert`, `update` or `delete`, which can refuse it (and then nothing of
+the action is done). The action is all or nothing inside the request, so
+a handler that defers its answer cannot take part: `501`. It answers
+with the slices made or changed (for Delete, the periods taken
 away) as `Collection(Temporal.TimesliceWithPeriod)`, or `204` with
 `return=minimal`. A new slice's key is assigned as an insert's is, and a
 changed slice's version moves on.

@@ -24,10 +24,13 @@ NS_ASSUME_NONNULL_BEGIN
 @property (nonatomic, copy, nullable) NSDictionary<NSString *, id> *values;
 @end
 
-// How an action writes: its new slices, and the ones it changes.
+// How an action writes: every slice it makes, changes (values by Core
+// Data name, NSNull for none) and takes away. NO, or nil, with the error,
+// when it cannot.
 @protocol OISTimelineWriting <NSObject>
-- (nullable NSManagedObject *)timelineInsertValues:(NSDictionary<NSString *, id> *)values entity:(NSEntityDescription *)entity;
-- (void)timelineWillChange:(NSManagedObject *)object;
+- (nullable NSManagedObject *)timelineInsertValues:(NSDictionary<NSString *, id> *)values entity:(NSEntityDescription *)entity error:(NSError **)error;
+- (BOOL)timelineUpdate:(NSManagedObject *)slice values:(NSDictionary<NSString *, id> *)values error:(NSError **)error;
+- (BOOL)timelineDelete:(NSManagedObject *)slice error:(NSError **)error;
 @end
 
 @interface OISTimeline : NSObject

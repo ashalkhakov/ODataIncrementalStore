@@ -78,6 +78,9 @@
 
 @protocol WorkbenchCatalogFunctions <ODataFunctions>
 - (int32_t)countProductsInCategoryWithName:(NSString *)name reply:(ODataReply *)reply;
+// The products, after a wait: a request that takes its time, for
+// Prefer: respond-async.
+- (int32_t)countProductsSlowlyInSeconds:(double)seconds reply:(ODataReply *)reply;
 @end
 
 @interface WorkbenchCatalogOperations : NSObject <WorkbenchCatalogFunctions>
@@ -87,7 +90,19 @@
 
 + (NSDictionary *)ODataOperationNames
 {
-  return @{ @"countProductsInCategoryWithName:reply:": @"CountProductsInCategoryNamed" };
+  return @{ @"countProductsInCategoryWithName:reply:": @"CountProductsInCategoryNamed",
+            @"countProductsSlowlyInSeconds:reply:": @"CountProductsSlowly" };
+}
+
+- (int32_t)countProductsSlowlyInSeconds:(double)seconds reply:(ODataReply *)reply
+{
+  NSUInteger count = [reply.request.context countForFetchRequest:[NSFetchRequest fetchRequestWithEntityName:@"Product"] error:NULL];
+  [reply defer];
+  dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(MAX(0, MIN(seconds, 30)) * NSEC_PER_SEC)),
+                 dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0), ^{
+    [reply finishWithResult:@(count == NSNotFound ? 0 : count)];
+  });
+  return 0;
 }
 
 - (int32_t)countProductsInCategoryWithName:(NSString *)name reply:(ODataReply *)reply
@@ -104,11 +119,83 @@
 
 @end
 
+#pragma mark - The model
+
+static NSAttributeDescription *WBAttribute(NSString *name, NSAttributeType type, NSString *wire, BOOL optional, NSDictionary *more)
+{
+  NSAttributeDescription *attribute = [[NSAttributeDescription alloc] init];
+  attribute.name = name;
+  attribute.attributeType = type;
+  attribute.optional = optional;
+  NSMutableDictionary *info = [NSMutableDictionary dictionaryWithObject:wire forKey:@"OData.property"];
+  [info addEntriesFromDictionary:more ?: @{}];
+  attribute.userInfo = info;
+  return attribute;
+}
+
+static NSEntityDescription *WBEntity(NSString *name, NSString *set, NSDictionary *more, NSArray *properties)
+{
+  NSEntityDescription *entity = [[NSEntityDescription alloc] init];
+  entity.name = name;
+  entity.managedObjectClassName = @"NSManagedObject";
+  NSMutableDictionary *info = [NSMutableDictionary dictionaryWithObject:set forKey:@"OData.entitySet"];
+  [info addEntriesFromDictionary:more ?: @{}];
+  entity.userInfo = info;
+  entity.properties = properties;
+  return entity;
+}
+
+NSManagedObjectModel *WorkbenchBuiltInModel(NSURL *catalogURL)
+{
+  NSManagedObjectModel *model = [[[NSManagedObjectModel alloc] initWithContentsOfURL:catalogURL] copy];
+  NSEntityDescription *product = model.entitiesByName[@"Product"];
+  if (!product) return nil;
+  NSAttributeDescription *version = WBAttribute(@"version", NSInteger64AttributeType, @"Version", YES, @{ @"OData.etag": @"YES" });
+  product.properties = [product.properties arrayByAddingObject:version];
+  NSEntityDescription *budget = WBEntity(@"Budget", @"Budgets", @{ @"OData.periodStart": @"from", @"OData.periodEnd": @"to", @"OData.objectKey": @"category" }, @[
+    WBAttribute(@"id", NSInteger64AttributeType, @"BudgetID", NO, @{ @"OData.key": @"YES" }),
+    WBAttribute(@"category", NSStringAttributeType, @"CategoryName", NO, nil),
+    WBAttribute(@"from", NSDateAttributeType, @"ValidFrom", NO, @{ @"OData.type": @"Edm.Date" }),
+    WBAttribute(@"to", NSDateAttributeType, @"ValidTo", YES, @{ @"OData.type": @"Edm.Date" }),
+    WBAttribute(@"amount", NSDecimalAttributeType, @"Amount", YES, nil) ]);
+  NSEntityDescription *picture = WBEntity(@"Picture", @"Pictures", @{ @"OData.mediaStream": @"content" }, @[
+    WBAttribute(@"id", NSInteger32AttributeType, @"PictureID", NO, @{ @"OData.key": @"YES" }),
+    WBAttribute(@"name", NSStringAttributeType, @"Name", YES, nil),
+    WBAttribute(@"content", NSBinaryDataAttributeType, @"Content", YES, @{ @"OData.contentType": @"contentType" }),
+    WBAttribute(@"contentType", NSStringAttributeType, @"ContentType", YES, nil) ]);
+  model.entities = [model.entities arrayByAddingObjectsFromArray:@[ budget, picture ]];
+  // A deleted row's key stays in its tombstone: delta links can name it.
+  for (NSEntityDescription *entity in model.entities) {
+    for (NSAttributeDescription *attribute in entity.attributesByName.allValues) {
+      id key = attribute.userInfo[@"OData.key"];
+      if ([key isEqual:@"YES"] || [key isEqual:@YES]) attribute.preservesValueInHistoryOnDeletion = YES;
+    }
+  }
+  return model;
+}
+
+// A picture to download: 4x4 pixels, a PNG.
+static NSData *WBPicturePNG(void)
+{
+  static const char *base64 = "iVBORw0KGgoAAAANSUhEUgAAAAQAAAAECAIAAAAmkwkpAAAANUlEQVR4nA3H0QAAQAhEwcAeRBBBLEQQQSxEEMHczd/EJSduuCWcWHjwTycteuifSkrUUMsDbtIWgbAlENEAAAAASUVORK5CYII=";
+  return [[NSData alloc] initWithBase64EncodedString:@(base64) options:0];
+}
+
+static NSDate *WBDay(NSString *day)
+{
+  NSDateFormatter *formatter = [[NSDateFormatter alloc] init];
+  formatter.locale = [NSLocale localeWithLocaleIdentifier:@"en_US_POSIX"];
+  formatter.timeZone = [NSTimeZone timeZoneForSecondsFromGMT:0];
+  formatter.dateFormat = @"yyyy-MM-dd";
+  return [formatter dateFromString:day];
+}
+
 #pragma mark - The engine
 
 @implementation WorkbenchEngine {
   NSURL *_modelURL;
   NSMutableArray *_log;
+  NSURL *_storeURL;
 }
 
 - (instancetype)initWithServiceRoot:(NSURL *)serviceRoot modelURL:(NSURL *)modelURL
@@ -133,19 +220,61 @@
   [self startService];
 }
 
+- (void)forgetStore
+{
+  if (!_storeURL) return;
+  for (NSString *suffix in @[ @"", @"-wal", @"-shm" ]) {
+    [[NSFileManager defaultManager] removeItemAtPath:[_storeURL.path stringByAppendingString:suffix] error:NULL];
+  }
+  _storeURL = nil;
+}
+
+- (void)dealloc
+{
+  [self forgetStore];
+}
+
+- (NSString *)changeAtTheService
+{
+  NSManagedObjectContext *context = [[NSManagedObjectContext alloc] initWithConcurrencyType:NSPrivateQueueConcurrencyType];
+  context.persistentStoreCoordinator = self.service.coordinator;
+  __block NSString *what = @"Nothing to change.";
+  [context performBlockAndWait:^{
+    NSFetchRequest *fetch = [NSFetchRequest fetchRequestWithEntityName:@"Product"];
+    fetch.sortDescriptors = @[ [NSSortDescriptor sortDescriptorWithKey:@"id" ascending:YES] ];
+    fetch.fetchLimit = 1;
+    NSManagedObject *product = [[context executeFetchRequest:fetch error:NULL] firstObject];
+    if (!product) return;
+    NSDecimalNumber *price = [product valueForKey:@"unitPrice"] ?: [NSDecimalNumber zero];
+    NSDecimalNumber *raised = [price decimalNumberByAdding:[NSDecimalNumber one]];
+    [product setValue:raised forKey:@"unitPrice"];
+    [product setValue:@([[product valueForKey:@"version"] longLongValue] + 1) forKey:@"version"];
+    NSError *error = nil;
+    what = [context save:&error] ? [NSString stringWithFormat:@"At the service, %@ now costs %@ (version %@).",
+                                                              [product valueForKey:@"name"], raised, [product valueForKey:@"version"]]
+                                 : [NSString stringWithFormat:@"The change failed: %@", error.localizedDescription];
+  }];
+  return what;
+}
+
 // A model of the service's own, whose products are WorkbenchProducts: the
 // client's model is the same file, with plain managed objects. A copy,
 // since a model loaded again may be the one the client already uses, which
 // can no longer change.
 - (BOOL)startService
 {
-  NSManagedObjectModel *model = [[[NSManagedObjectModel alloc] initWithContentsOfURL:_modelURL] copy];
+  NSManagedObjectModel *model = WorkbenchBuiltInModel(_modelURL);
   if (!model.entities.count) return NO;
   NSEntityDescription *product = model.entitiesByName[@"Product"];
   product.managedObjectClassName = NSStringFromClass([WorkbenchProduct class]);
   NSPersistentStoreCoordinator *coordinator = [[NSPersistentStoreCoordinator alloc] initWithManagedObjectModel:model];
   NSError *error = nil;
-  if (![coordinator addPersistentStoreWithType:NSInMemoryStoreType configuration:nil URL:nil options:nil error:&error]) {
+  // SQLite, which keeps persistent history: the service's delta links.
+  [self forgetStore];
+  _storeURL = [NSURL fileURLWithPath:[NSTemporaryDirectory() stringByAppendingPathComponent:
+                                         [NSString stringWithFormat:@"Workbench-%@.sqlite", [NSProcessInfo processInfo].globallyUniqueString]]];
+  if (![coordinator addPersistentStoreWithType:NSSQLiteStoreType configuration:nil URL:_storeURL
+                                       options:@{ NSPersistentHistoryTrackingKey: @YES } error:&error]) {
     NSLog(@"Workbench: the built-in service's store does not open: %@", error);
     return NO;
   }
@@ -212,7 +341,7 @@ static NSManagedObject *WBInsert(NSManagedObjectContext *context, NSString *enti
       NSManagedObject *product = WBInsert(context, @"Product", @{
         @"id": row[0], @"name": row[1], @"quantityPerUnit": row[2],
         @"unitPrice": [NSDecimalNumber decimalNumberWithString:row[3]], @"discontinued": row[4],
-        @"category": categories[row[5]] });
+        @"category": categories[row[5]], @"version": @1 });
       NSMutableSet *supplied = [product mutableSetValueForKey:@"suppliers"];
       for (NSNumber *supplier in row[6]) [supplied addObject:suppliers[supplier]];
       products[row[0]] = product;
@@ -223,6 +352,16 @@ static NSManagedObject *WBInsert(NSManagedObjectContext *context, NSString *enti
     for (NSArray *row in stockRows) {
       WBInsert(context, @"Stock", @{ @"id": row[0], @"product": products[row[1]], @"location": locations[row[2]], @"quantity": row[3] });
     }
+    // A category's budget over time: [category, from, to, amount].
+    NSArray *budgetRows = @[ @[ @"Beverages", @"2024-01-01", @"2025-01-01", @"1000" ], @[ @"Beverages", @"2025-01-01", [NSNull null], @"1200" ],
+                             @[ @"Seafood", @"2024-01-01", @"2024-07-01", @"800" ], @[ @"Seafood", @"2024-07-01", [NSNull null], @"950" ] ];
+    long long budgetID = 1;
+    for (NSArray *row in budgetRows) {
+      NSManagedObject *budget = WBInsert(context, @"Budget", @{ @"id": @(budgetID++), @"category": row[0], @"from": WBDay(row[1]),
+                                                                @"amount": [NSDecimalNumber decimalNumberWithString:row[3]] });
+      if (row[2] != [NSNull null]) [budget setValue:WBDay(row[2]) forKey:@"to"];
+    }
+    WBInsert(context, @"Picture", @{ @"id": @1, @"name": @"Swatch", @"content": WBPicturePNG(), @"contentType": @"image/png" });
     NSError *error = nil;
     if (![context save:&error]) NSLog(@"Workbench: seeding the built-in service failed: %@", error);
   }];

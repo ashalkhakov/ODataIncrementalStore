@@ -5,15 +5,23 @@
 //
 // Both implement <ODataTransport> and report every exchange as a
 // WorkbenchLogEntry. WorkbenchEngine never opens a socket: it is the
-// library's own server, an ODataService over the Catalog model in an
-// in-memory Core Data store, seeded with a few of Northwind's rows, with a
-// few operations of its own.
+// library's own server, an ODataService over the built-in model (below)
+// in a SQLite store of its own that keeps persistent history, seeded with a
+// few of Northwind's rows, with a few operations of its own.
 
 #pragma once
 #import <ODataIncrementalStore/ODataIncrementalStore.h>
 #import <ODataService/ODataService.h>
 
 NS_ASSUME_NONNULL_BEGIN
+
+// The built-in service's model, the client's as well: the Catalog, and
+// what it does not show. Products have a version (ETags, and so
+// conflicts); Budgets have application time (a category's budget over
+// time: $at, $from and $to, Temporal.Update and the rest); Pictures are
+// media entities (Download, Upload). Keys are kept in a deletion's
+// tombstone, so its sets' changes can be followed by delta links.
+FOUNDATION_EXPORT NSManagedObjectModel * _Nullable WorkbenchBuiltInModel(NSURL *catalogURL);
 
 // One exchange, as it went over the wire: nothing shortened.
 @interface WorkbenchLogEntry : NSObject
@@ -44,6 +52,9 @@ NS_ASSUME_NONNULL_BEGIN
 - (instancetype)init NS_UNAVAILABLE;
 // The seed rows again, and an empty log.
 - (void)reset;
+// As another client would: a product's price raised at the service (its
+// version moves on). What changed, in words.
+- (NSString *)changeAtTheService;
 @end
 
 // A real service: every exchange goes to ODataDefaultTransport(), and is

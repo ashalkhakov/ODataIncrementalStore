@@ -147,6 +147,8 @@ typedef NS_ENUM(NSInteger, ODataSearchKind) {
 @property (nonatomic, readonly, strong, nullable) ODataExpression *temporalFrom;
 @property (nonatomic, readonly, strong, nullable) ODataExpression *temporalTo;
 @property (nonatomic, readonly, strong, nullable) ODataExpression *temporalToInclusive;
+// The same as written ($at -> 2024-10-01), for a filter made of them.
+@property (nonatomic, readonly, copy) NSDictionary<NSString *, NSString *> *temporalText;
 @property (nonatomic, readonly, copy) NSDictionary<NSString *, ODataExpression *> *aliases;  // @p -> value
 // Taken as written: $format (json, or a media type with parameters), and
 // $skiptoken, which only the service that wrote it can read.

@@ -52,6 +52,14 @@ static NSDictionary *WBPreset(NSString *label, NSString *entity, NSString *predi
             @"expand": expand ?: @"", @"type": type ?: @"objects", @"limit": limit ?: @"" };
 }
 
+// The same, with more of what the query panel says (compute, time).
+static NSDictionary *WBPresetMore(NSDictionary *preset, NSDictionary *more)
+{
+  NSMutableDictionary *all = [preset mutableCopy];
+  [all addEntriesFromDictionary:more];
+  return all;
+}
+
 // The same, with $search, or grouped: key paths and aggregates.
 static NSDictionary *WBPresetWith(NSDictionary *preset, NSString *search, NSString *group, NSString *aggregate)
 {
@@ -84,6 +92,14 @@ static NSArray *WorkbenchPresets(WBService service)
                      @"jars OR cote", nil, nil),
         WBPresetWith(WBPreset(@"Grouped by category: count, total, dearest", @"Product", nil, @"category.name", YES, nil, @"dictionary", nil),
                      nil, @"category.name", @"count:(id) as products, sum:(unitPrice) as total, max:(unitPrice) as dearest"),
+        WBPresetMore(WBPreset(@"Computed: price with tax ($compute)", @"Product", nil, @"name", YES, nil, @"dictionary", nil),
+                     @{ @"compute": @"unitPrice * 1.2 as withTax" }),
+        WBPresetMore(WBPreset(@"Budgets on 2024-10-01 (application time, $at)", @"Budget", nil, @"category", YES, nil, nil, nil),
+                     @{ @"time": @"2024-10-01" }),
+        WBPresetMore(WBPreset(@"Budgets during 2024 ($from, $to)", @"Budget", nil, @"category, from", YES, nil, nil, nil),
+                     @{ @"time": @"2024-01-01..2025-01-01" }),
+        WBPreset(@"Budgets over time (Temporal actions)", @"Budget", nil, @"category, from", YES, nil, nil, nil),
+        WBPreset(@"Pictures (a media entity: Download, Upload)", @"Picture", nil, @"id", YES, nil, nil, nil),
       ];
     case WBServiceNorthwind:
       return @[
@@ -148,6 +164,23 @@ static id WBCellValue(id value)
     return [NSString stringWithFormat:@"{%@}", [parts componentsJoinedByString:@", "]];
   }
   if (value == [NSNull null]) return @"null";
+  if ([value isKindOfClass:[NSDate class]]) {
+    // A day as a day; a moment in UTC.
+    static NSDateFormatter *day, *moment;
+    static dispatch_once_t once;
+    dispatch_once(&once, ^{
+      day = [[NSDateFormatter alloc] init];
+      day.locale = [NSLocale localeWithLocaleIdentifier:@"en_US_POSIX"];
+      day.timeZone = [NSTimeZone timeZoneForSecondsFromGMT:0];
+      day.dateFormat = @"yyyy-MM-dd";
+      moment = [[NSDateFormatter alloc] init];
+      moment.locale = day.locale;
+      moment.timeZone = day.timeZone;
+      moment.dateFormat = @"yyyy-MM-dd'T'HH:mm:ss'Z'";
+    });
+    NSTimeInterval seconds = [value timeIntervalSince1970];
+    return fmod(seconds, 86400) == 0 ? [day stringFromDate:value] : [moment stringFromDate:value];
+  }
   return value;
 }
 
@@ -187,6 +220,15 @@ static id WBCellValue(id value)
   BOOL _keepingLogSelection;  // the log's row chosen again after a reload: not shown again
   // The transport in use, which counts the exchanges it starts.
   id _wire;
+  // $compute for dictionary results, and application time.
+  NSTextField *_computeField;
+  NSTextField *_timeField;
+  // The Store menu: what to do on a conflict (0 fail, 1 my changes win,
+  // 2 the service's win), and how the store talks to the service.
+  NSInteger _mergePolicy;
+  BOOL _respondAsync;
+  BOOL _JSONBatch;
+  NSMenu *_storeMenu;
   NSTextView *_requestView;
   NSTextView *_responseView;
 }
@@ -197,6 +239,7 @@ static id WBCellValue(id value)
   if (!self) return nil;
   _rows = @[];
   _service = WBServiceBuiltIn;
+  _JSONBatch = YES;
   [ODataIncrementalStore registerStore];
   if (!WorkbenchLoadNib(@"WorkbenchWindow", self)) {
     NSLog(@"Workbench: failed to load WorkbenchWindow.xib");
@@ -207,6 +250,7 @@ static id WBCellValue(id value)
 - (void)awakeFromNib
 {
   if (self.mainMenu) [NSApp setMainMenu:self.mainMenu];
+  [self buildStoreMenu];
   self.tableView.dataSource = self;
   self.tableView.delegate = self;
   self.limitField.delegate = (id)self;
@@ -324,7 +368,15 @@ static id WBCellValue(id value)
 {
   _serviceRoot = [NSURL URLWithString:WBBuiltInRoot];
   NSURL *modelURL = WorkbenchModelURL();
-  NSManagedObjectModel *model = modelURL ? [[NSManagedObjectModel alloc] initWithContentsOfURL:modelURL] : nil;
+  NSManagedObjectModel *model = modelURL ? WorkbenchBuiltInModel(modelURL) : nil;
+  // A picture's content and its type are its media resource's, not
+  // properties: the client reads them as a stream.
+  NSEntityDescription *picture = model.entitiesByName[@"Picture"];
+  NSMutableArray *kept = [NSMutableArray array];
+  for (NSPropertyDescription *property in picture.properties) {
+    if (![@[ @"content", @"contentType" ] containsObject:property.name]) [kept addObject:property];
+  }
+  picture.properties = kept;
   if (!model) {
     self.statusField.stringValue = @"Catalog.xcdatamodeld not found.";
     return;
@@ -341,7 +393,7 @@ static id WBCellValue(id value)
   _wire = _engine;
   NSPersistentStoreCoordinator *psc = [[NSPersistentStoreCoordinator alloc] initWithManagedObjectModel:model];
   NSError *error = nil;
-  NSDictionary *options = @{ ODataIncrementalStoreTransportOption: _engine, NSPersistentHistoryTrackingKey: @YES };
+  NSDictionary *options = [self storeOptionsWithTransport:_engine];
   ODataIncrementalStore *store = (ODataIncrementalStore *)[psc addPersistentStoreWithType:[ODataIncrementalStore storeType]
                                                                              configuration:nil URL:_serviceRoot options:options error:&error];
   [self useModel:model coordinator:psc store:store error:error];
@@ -368,7 +420,7 @@ static id WBCellValue(id value)
 {
   @autoreleasepool {
     NSURL *url = job[@"url"];
-    NSDictionary *options = @{ ODataIncrementalStoreTransportOption: job[@"transport"], NSPersistentHistoryTrackingKey: @YES };
+    NSDictionary *options = [self storeOptionsWithTransport:job[@"transport"]];
     NSError *error = nil;
     NSMutableDictionary *result = [NSMutableDictionary dictionaryWithObject:url forKey:@"url"];
     NSManagedObjectModel *model = [ODataIncrementalStore modelForServiceAtURL:url options:options error:&error];
@@ -408,6 +460,8 @@ static id WBCellValue(id value)
   _context = [[NSManagedObjectContext alloc] initWithConcurrencyType:NSMainQueueConcurrencyType];
   _context.persistentStoreCoordinator = psc;
   _context.transactionAuthor = @"Workbench";
+  [self applyMergePolicy];
+  [self updateStoreMenu];
 
   [self.entityPopup removeAllItems];
   [self.entityPopup addItemsWithTitles:[self entityNames]];
@@ -430,7 +484,7 @@ static id WBCellValue(id value)
   NSUInteger operations = 0;
   for (NSArray *overloads in store.schema.operations.allValues) operations += overloads.count;
   NSMutableString *status = [NSMutableString stringWithFormat:@"%@: %lu entities, %lu operations, OData %@.",
-                             _service == WBServiceBuiltIn ? @"Built-in in-memory service" : _serviceRoot.absoluteString,
+                             _service == WBServiceBuiltIn ? @"Built-in service" : _serviceRoot.absoluteString,
                              (unsigned long)_model.entities.count, (unsigned long)operations, store.schema.version ?: @"4.0"];
   if (_service == WBServiceTripPin) [status appendString:@" A session of its own: write freely."];
   if (_service == WBServiceNorthwind) [status appendString:@" Read-only."];
@@ -504,7 +558,9 @@ static BOOL WBIsKey(NSAttributeDescription *attr)
 {
   if (_service == WBServiceBuiltIn) {
     NSString *name = entity.name;
-    if ([name isEqualToString:@"Product"]) return @[ @"id", @"name", @"unitPrice", @"discontinued" ];
+    if ([name isEqualToString:@"Product"]) return @[ @"id", @"name", @"unitPrice", @"discontinued", @"version" ];
+    if ([name isEqualToString:@"Budget"]) return @[ @"id", @"category", @"from", @"to", @"amount" ];
+    if ([name isEqualToString:@"Picture"]) return @[ @"id", @"name" ];
     if ([name isEqualToString:@"Supplier"]) return @[ @"id", @"companyName", @"city", @"country" ];
     if ([name isEqualToString:@"Location"]) return @[ @"id", @"name", @"city", @"country" ];
     if ([name isEqualToString:@"Stock"]) return @[ @"id", @"quantity" ];
@@ -539,6 +595,11 @@ static BOOL WBIsKey(NSAttributeDescription *attr)
 
 - (NSArray *)columnNames
 {
+  NSArray *computed = [self currentResultType] == NSDictionaryResultType ? [self computedDescriptionsError:NULL] : nil;
+  if (computed.count && ![self groupPaths].count && ![self aggregateTexts].count) {
+    NSArray *base = _select.count ? [_select.allObjects sortedArrayUsingSelector:@selector(compare:)] : [self columnNamesFor:[self currentEntity]];
+    return [base arrayByAddingObjectsFromArray:[computed valueForKey:@"name"]];
+  }
   if ([self currentResultType] == NSDictionaryResultType && ([self groupPaths].count || [self aggregateTexts].count)) {
     NSMutableArray *names = [[self groupPaths] mutableCopy];
     for (NSExpressionDescription *description in [self aggregateDescriptionsError:NULL] ?: @[]) [names addObject:description.name];
@@ -601,8 +662,10 @@ static BOOL WBIsKey(NSAttributeDescription *attr)
   [_select removeAllObjects];
   [_pathItems removeAllObjects];
   _searchField.stringValue = @"";
+  _computeField.stringValue = @"";
   _groupField.stringValue = @"";
   _aggregateField.stringValue = @"";
+  _timeField.stringValue = @"";
   [self reloadQueryPanel];
 }
 
@@ -658,6 +721,14 @@ static BOOL WBIsKey(NSAttributeDescription *attr)
       return nil;
     }
   }
+  // Application time: a day ($at), or from..to ($from and $to), ..= to
+  // include the end.
+  NSString *time = [_timeField.stringValue stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceCharacterSet]];
+  if (time.length) {
+    NSPredicate *period = [self applicationTimePredicate:time error:error];
+    if (!period) return nil;
+    request.predicate = request.predicate ? [NSCompoundPredicate andPredicateWithSubpredicates:@[ period, request.predicate ]] : period;
+  }
   // $search: the service's own, ANDed with the predicate.
   NSString *search = [_searchField.stringValue stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceCharacterSet]];
   if (search.length) {
@@ -694,15 +765,118 @@ static BOOL WBIsKey(NSAttributeDescription *attr)
         return nil;
       }
     }
+    NSArray *computed = [self computedDescriptionsError:error];
+    if (!computed) return nil;
+    if ((groups.count || aggregates.count) && computed.count) {
+      if (error) *error = [NSError errorWithDomain:@"Workbench" code:6 userInfo:@{ NSLocalizedDescriptionKey:
+          @"compute is for rows, group by and aggregate for groups: one or the other" }];
+      return nil;
+    }
     if (groups.count || aggregates.count) {
       // Grouped ($apply=groupby((...),aggregate(...))): the groups' values and the aggregates.
       if (groups.count) request.propertiesToGroupBy = groups;
       request.propertiesToFetch = [groups arrayByAddingObjectsFromArray:aggregates];
+    } else if (computed.count) {
+      // Computed from each row ($compute, where the service has it).
+      NSArray *base = _select.count ? [_select.allObjects sortedArrayUsingSelector:@selector(compare:)] : [self columnNamesFor:[self currentEntity]];
+      request.propertiesToFetch = [base arrayByAddingObjectsFromArray:computed];
     } else {
       request.propertiesToFetch = [self columnNames];
     }
   }
   return request;
+}
+
+// compute: NSExpression formats, each with its name: unitPrice * 2 as twice.
+- (NSArray *)computedDescriptionsError:(NSError **)error
+{
+  NSMutableArray *descriptions = [NSMutableArray array];
+  NSString *text = _computeField.stringValue ?: @"";
+  NSMutableArray *items = [NSMutableArray array];
+  NSInteger depth = 0, start = 0;
+  for (NSUInteger i = 0; i < text.length; i++) {
+    unichar c = [text characterAtIndex:i];
+    if (c == '(') depth++;
+    if (c == ')') depth--;
+    if (c == ',' && depth == 0) {
+      [items addObject:[text substringWithRange:NSMakeRange((NSUInteger)start, i - (NSUInteger)start)]];
+      start = (NSInteger)i + 1;
+    }
+  }
+  [items addObject:[text substringFromIndex:(NSUInteger)start]];
+  NSRegularExpression *form = [NSRegularExpression regularExpressionWithPattern:@"^(.*\\S)\\s+as\\s+([A-Za-z_]\\w*)$" options:0 error:NULL];
+  for (NSString *item in items) {
+    NSString *trimmed = [item stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceCharacterSet]];
+    if (!trimmed.length) continue;
+    NSTextCheckingResult *match = [form firstMatchInString:trimmed options:0 range:NSMakeRange(0, trimmed.length)];
+    NSExpression *expression = nil;
+    @try {
+      expression = match ? [NSExpression expressionWithFormat:[trimmed substringWithRange:[match rangeAtIndex:1]]] : nil;
+    } @catch (NSException *exception) {
+      expression = nil;
+    }
+    if (!expression) {
+      if (error) *error = [NSError errorWithDomain:@"Workbench" code:7 userInfo:@{ NSLocalizedDescriptionKey:
+          [NSString stringWithFormat:@"Cannot compute \"%@\": write an expression as a name, unitPrice * 2 as twice", trimmed] }];
+      return nil;
+    }
+    NSExpressionDescription *description = [[NSExpressionDescription alloc] init];
+    description.name = [trimmed substringWithRange:[match rangeAtIndex:2]];
+    description.expression = expression;
+    // Decimal where a decimal goes into it, else a double.
+    NSAttributeType type = NSDoubleAttributeType;
+    for (NSAttributeDescription *attribute in [self currentEntity].attributesByName.allValues) {
+      if (attribute.attributeType == NSDecimalAttributeType && [trimmed rangeOfString:attribute.name].location != NSNotFound) type = NSDecimalAttributeType;
+    }
+    description.expressionResultType = type;
+    [descriptions addObject:description];
+  }
+  return descriptions;
+}
+
+static NSDate *WBDate(NSString *text)
+{
+  NSDateFormatter *formatter = [[NSDateFormatter alloc] init];
+  formatter.locale = [NSLocale localeWithLocaleIdentifier:@"en_US_POSIX"];
+  formatter.timeZone = [NSTimeZone timeZoneForSecondsFromGMT:0];
+  NSString *trimmed = [text stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceCharacterSet]];
+  for (NSString *format in @[ @"yyyy-MM-dd", @"yyyy-MM-dd'T'HH:mm:ss'Z'", @"yyyy-MM-dd'T'HH:mm:ssZZZZZ" ]) {
+    formatter.dateFormat = format;
+    NSDate *date = [formatter dateFromString:trimmed];
+    if (date) return date;
+  }
+  return nil;
+}
+
+// A day ($at), a..b ($from, $to), a..=b ($from, $toInclusive), or a..
+// ($from alone), on an entity with application time.
+- (NSPredicate *)applicationTimePredicate:(NSString *)text error:(NSError **)error
+{
+  NSEntityDescription *entity = [self currentEntity];
+  while (entity.superentity) entity = entity.superentity;
+  NSString *problem = nil;
+  NSPredicate *predicate = nil;
+  if (!entity.userInfo[ODataUserInfoPeriodStart]) {
+    problem = [NSString stringWithFormat:@"%@ has no application time", [self currentEntityName]];
+  } else if ([text rangeOfString:@".."].location == NSNotFound) {
+    NSDate *at = WBDate(text);
+    if (at) predicate = [ODataTemporalPredicate predicateAt:at];
+  } else {
+    NSRange dots = [text rangeOfString:@".."];
+    NSString *rest = [text substringFromIndex:NSMaxRange(dots)];
+    BOOL inclusive = [rest hasPrefix:@"="];
+    if (inclusive) rest = [rest substringFromIndex:1];
+    NSDate *from = WBDate([text substringToIndex:dots.location]);
+    NSDate *to = rest.length ? WBDate(rest) : nil;
+    if (from && (to || !rest.length)) {
+      predicate = inclusive ? [ODataTemporalPredicate predicateFrom:from toInclusive:to] : [ODataTemporalPredicate predicateFrom:from to:to];
+    }
+  }
+  if (!predicate && error) {
+    *error = [NSError errorWithDomain:@"Workbench" code:8 userInfo:@{ NSLocalizedDescriptionKey:
+        problem ?: [NSString stringWithFormat:@"Application time \"%@\": a day (2024-10-01), or from..to, from..=to, from..", text] }];
+  }
+  return predicate;
 }
 
 // group by: key paths, through to-one relationships (category.name).
@@ -776,7 +950,7 @@ static BOOL WBIsKey(NSAttributeDescription *attr)
 
 - (void)controlTextDidChange:(NSNotification *)n
 {
-  if (n.object == _groupField || n.object == _aggregateField) {
+  if (n.object == _groupField || n.object == _aggregateField || n.object == _computeField) {
     _rows = @[];
     [self rebuildColumns];
     [self.tableView reloadData];
@@ -784,10 +958,19 @@ static BOOL WBIsKey(NSAttributeDescription *attr)
   [self refreshTranslation];
 }
 
+// Application time, for an entity that has it.
+- (void)updateTimeField
+{
+  NSEntityDescription *entity = [self currentEntity];
+  while (entity.superentity) entity = entity.superentity;
+  _timeField.enabled = entity.userInfo[ODataUserInfoPeriodStart] != nil;
+}
+
 - (IBAction)entityChanged:(id)sender
 {
   (void)sender;
   [self resetQuery];
+  [self updateTimeField];
   [self rebuildColumns];
   _rows = @[];
   [self.tableView reloadData];
@@ -804,6 +987,7 @@ static BOOL WBIsKey(NSAttributeDescription *attr)
   NSDictionary *p = _presets[(NSUInteger)idx];
   [self.entityPopup selectItemWithTitle:p[@"entity"]];
   [self resetQuery];
+  [self updateTimeField];
   self.predicateView.string = p[@"predicate"] ?: @"";
   [_sorts removeAllObjects];
   NSCharacterSet *space = [NSCharacterSet whitespaceCharacterSet];
@@ -820,8 +1004,10 @@ static BOOL WBIsKey(NSAttributeDescription *attr)
     if (trimmed.length) [_prefetch addObject:trimmed];
   }
   _searchField.stringValue = p[@"search"] ?: @"";
+  _computeField.stringValue = p[@"compute"] ?: @"";
   _groupField.stringValue = p[@"group"] ?: @"";
   _aggregateField.stringValue = p[@"aggregate"] ?: @"";
+  _timeField.stringValue = p[@"time"] ?: @"";
   [self reloadQueryPanel];
   NSString *type = p[@"type"];
   if ([type isEqualToString:@"count"]) [self.resultTypePopup selectItemWithTitle:@"count"];
@@ -1301,12 +1487,17 @@ static NSTextField *WBLabel(NSString *text, NSRect frame)
   _selectTable = [self addList:[NSTableView class] frame:NSMakeRect(734, 576 + dy, 366, 86)
                        columns:@[ @[ @"include", @"", @24, @YES ], @[ @"property", @"property", @300, @NO ] ]];
   // Under them, what the lists cannot say.
-  [content addSubview:WBLabel(@"$search", NSMakeRect(16, 551 + dy, 60, 16))];
-  _searchField = [self addField:NSMakeRect(78, 548 + dy, 238, 22) hint:@"tea OR \"green tea\""];
-  [content addSubview:WBLabel(@"group by", NSMakeRect(362, 551 + dy, 64, 16))];
-  _groupField = [self addField:NSMakeRect(428, 548 + dy, 294, 22) hint:@"category.name"];
-  [content addSubview:WBLabel(@"aggregate", NSMakeRect(734, 551 + dy, 70, 16))];
-  _aggregateField = [self addField:NSMakeRect(806, 548 + dy, 294, 22) hint:@"sum:(unitPrice) as total, count:(id) as n"];
+  [content addSubview:WBLabel(@"$search", NSMakeRect(16, 551 + dy, 54, 16))];
+  _searchField = [self addField:NSMakeRect(70, 548 + dy, 190, 22) hint:@"tea OR \"green tea\""];
+  [content addSubview:WBLabel(@"compute", NSMakeRect(270, 551 + dy, 58, 16))];
+  _computeField = [self addField:NSMakeRect(328, 548 + dy, 230, 22) hint:@"unitPrice * 2 as twice"];
+  [content addSubview:WBLabel(@"group by", NSMakeRect(568, 551 + dy, 60, 16))];
+  _groupField = [self addField:NSMakeRect(628, 548 + dy, 170, 22) hint:@"category.name"];
+  [content addSubview:WBLabel(@"aggregate", NSMakeRect(808, 551 + dy, 66, 16))];
+  _aggregateField = [self addField:NSMakeRect(874, 548 + dy, 226, 22) hint:@"sum:(unitPrice) as total"];
+  // Application time, beside the other options: a day, or from..to.
+  [content addSubview:WBLabel(@"application time", NSMakeRect(836, 792 + dy, 120, 16))];
+  _timeField = [self addField:NSMakeRect(836, 768 + dy, 118, 22) hint:@"2024-10-01, a..b"];
   [self buildStreamControls];
 }
 
@@ -1576,6 +1767,11 @@ static NSTextField *WBLabel(NSString *text, NSRect frame)
   NSError *error = nil;
   if (![_context save:&error]) {
     // The changes stay, to be put right or reverted.
+    NSArray *conflicts = error.userInfo[NSPersistentStoreSaveConflictsErrorKey];
+    if (conflicts.count) {
+      [self showConflicts:conflicts];
+      return;
+    }
     NSArray *details = error.userInfo[NSDetailedErrorsKey];
     NSString *why = details.count ? [[details valueForKey:@"localizedDescription"] componentsJoinedByString:@"; "] : error.localizedDescription;
     self.statusField.stringValue = [NSString stringWithFormat:@"Could not save: %@", why ?: @"unknown error"];
@@ -1628,6 +1824,16 @@ static NSString *WBSignature(ODataSchemaOperation *operation)
     [items addObject:@[ [NSString stringWithFormat:@"%@ (all).%@", entity.name, WBSignature(operation)],
                         @{ @"kind": @"entity", @"name": operation.qualifiedName, @"entity": entity.name } ]];
   }
+  // The Temporal vocabulary's actions, on an entity with application time.
+  NSEntityDescription *root = entity;
+  while (root.superentity) root = root.superentity;
+  if (root.userInfo[ODataUserInfoPeriodStart]) {
+    for (NSString *action in @[ @"Update", @"Upsert", @"Delete" ]) {
+      [items addObject:@[ [NSString stringWithFormat:@"%@ (all).Temporal.%@(%@, %@, …) — a period, and values", root.name, action,
+                                                     root.userInfo[ODataUserInfoPeriodStart], root.userInfo[ODataUserInfoPeriodEnd]],
+                          @{ @"kind": @"temporal", @"name": action, @"entity": root.name } ]];
+    }
+  }
   for (NSString *name in [schema.operationImports.allKeys sortedArrayUsingSelector:@selector(compare:)]) {
     ODataSchemaOperation *operation = [schema operationNamed:name boundToEntityType:nil collection:NO parameterNames:nil];
     if (!operation) continue;
@@ -1678,6 +1884,10 @@ static NSString *WBSignature(ODataSchemaOperation *operation)
   NSDictionary *what = self.operationPopup.selectedItem.representedObject;
   if (!what || !_context) {
     self.statusField.stringValue = @"Choose an operation.";
+    return;
+  }
+  if ([what[@"kind"] isEqual:@"temporal"]) {
+    [self invokeTemporal:what[@"name"] entity:what[@"entity"]];
     return;
   }
   ODataOperationCall *call;
@@ -1855,6 +2065,167 @@ static NSString *WBContentTypeOf(NSURL *file)
   return YES;
 }
 
+#pragma mark - The Store menu
+
+- (NSDictionary *)storeOptionsWithTransport:(id)transport
+{
+  return @{ ODataIncrementalStoreTransportOption: transport, NSPersistentHistoryTrackingKey: @YES,
+            ODataIncrementalStoreRespondAsyncOption: @(_respondAsync), ODataIncrementalStoreJSONBatchOption: @(_JSONBatch) };
+}
+
+- (NSMenuItem *)addStoreItem:(NSString *)title action:(SEL)action tag:(NSInteger)tag
+{
+  NSMenuItem *item = [[NSMenuItem alloc] initWithTitle:title action:action keyEquivalent:@""];
+  item.target = self;
+  item.tag = tag;
+  [_storeMenu addItem:item];
+  return item;
+}
+
+// What the store does on a conflict, and how it talks to the service; and
+// another client's change, at the built-in service.
+- (void)buildStoreMenu
+{
+  _storeMenu = [[NSMenu alloc] initWithTitle:@"Store"];
+  [self addStoreItem:@"On a conflict: refuse the save" action:@selector(setMergePolicy:) tag:0];
+  [self addStoreItem:@"On a conflict: my changes win" action:@selector(setMergePolicy:) tag:1];
+  [self addStoreItem:@"On a conflict: the service's changes win" action:@selector(setMergePolicy:) tag:2];
+  [_storeMenu addItem:[NSMenuItem separatorItem]];
+  [self addStoreItem:@"Prefer respond-async (reconnects)" action:@selector(toggleRespondAsync:) tag:10];
+  [self addStoreItem:@"JSON $batch with a 4.01 service (reconnects)" action:@selector(toggleJSONBatch:) tag:11];
+  [_storeMenu addItem:[NSMenuItem separatorItem]];
+  [self addStoreItem:@"Change at the Service (another client)" action:@selector(changeAtTheService:) tag:20];
+  NSMenuItem *top = [[NSMenuItem alloc] initWithTitle:@"Store" action:NULL keyEquivalent:@""];
+  top.submenu = _storeMenu;
+  [self.mainMenu ?: [NSApp mainMenu] addItem:top];
+  [self updateStoreMenu];
+}
+
+- (void)updateStoreMenu
+{
+  for (NSMenuItem *item in _storeMenu.itemArray) {
+    if (item.tag <= 2 && item.action == @selector(setMergePolicy:)) item.state = item.tag == _mergePolicy ? NSOnState : NSOffState;
+    if (item.tag == 10) item.state = _respondAsync ? NSOnState : NSOffState;
+    if (item.tag == 11) item.state = _JSONBatch ? NSOnState : NSOffState;
+  }
+}
+
+- (BOOL)validateMenuItem:(NSMenuItem *)item
+{
+  if (item.action == @selector(changeAtTheService:)) return _engine != nil;
+  return YES;
+}
+
+- (void)applyMergePolicy
+{
+  _context.mergePolicy = _mergePolicy == 1 ? NSMergeByPropertyObjectTrumpMergePolicy
+                       : _mergePolicy == 2 ? NSMergeByPropertyStoreTrumpMergePolicy : NSErrorMergePolicy;
+}
+
+- (IBAction)setMergePolicy:(NSMenuItem *)sender
+{
+  _mergePolicy = sender.tag;
+  [self applyMergePolicy];
+  [self updateStoreMenu];
+  self.statusField.stringValue = [@[ @"A conflict now refuses the save: you choose, then Save again.",
+                                     @"On a conflict your changes now win, property by property.",
+                                     @"On a conflict the service's changes now win, property by property." ][(NSUInteger)_mergePolicy] copy];
+}
+
+- (IBAction)toggleRespondAsync:(id)sender
+{
+  (void)sender;
+  _respondAsync = !_respondAsync;
+  [self updateStoreMenu];
+  [self connect:nil];
+}
+
+- (IBAction)toggleJSONBatch:(id)sender
+{
+  (void)sender;
+  _JSONBatch = !_JSONBatch;
+  [self updateStoreMenu];
+  [self connect:nil];
+}
+
+- (IBAction)changeAtTheService:(id)sender
+{
+  (void)sender;
+  if (!_engine) {
+    self.statusField.stringValue = @"Only the built-in service can be changed behind your back.";
+    return;
+  }
+  self.statusField.stringValue = [[_engine changeAtTheService] stringByAppendingString:@" Changes reads it; a stale Save of it conflicts."];
+}
+
+// A save the service refused because the objects changed there: each
+// conflict, what the service has now.
+- (void)showConflicts:(NSArray<NSMergeConflict *> *)conflicts
+{
+  NSMutableString *text = [NSMutableString stringWithString:@"Conflicts: changed at the service since they were read\n"];
+  for (NSMergeConflict *conflict in conflicts) {
+    NSManagedObject *object = conflict.sourceObject;
+    [text appendFormat:@"\n%@ %@ (version %lu, now %lu)\n", object.entity.name, [self titleOf:object],
+                       (unsigned long)conflict.oldVersionNumber, (unsigned long)conflict.newVersionNumber];
+    if (!conflict.persistedSnapshot) {
+      [text appendString:@"  deleted at the service\n"];
+      continue;
+    }
+    for (NSString *name in [object.changedValues.allKeys sortedArrayUsingSelector:@selector(compare:)]) {
+      [text appendFormat:@"  %@: yours %@, the service's %@\n", name, WBCellValue(object.changedValues[name]),
+                         WBCellValue(conflict.persistedSnapshot[name]) ?: @"nil"];
+    }
+  }
+  [self show:text in:self.inspectorView];
+  self.statusField.stringValue = [NSString stringWithFormat:@"Save refused: %lu conflict%@ (see the inspector). Choose in Store what wins, then Save again, or Revert.",
+                                  (unsigned long)conflicts.count, conflicts.count == 1 ? @"" : @"s"];
+}
+
+#pragma mark - Application time
+
+// Temporal.Update, Upsert or Delete: the parameters are one delta time
+// slice, attribute=value by Core Data name, its period included.
+- (void)invokeTemporal:(NSString *)action entity:(NSString *)entityName
+{
+  NSEntityDescription *entity = _model.entitiesByName[entityName];
+  NSMutableDictionary *slice = [NSMutableDictionary dictionary];
+  NSDictionary *parameters = [self parsedParameters];
+  for (NSString *name in parameters) {
+    NSAttributeDescription *attribute = entity.attributesByName[name];
+    id value = parameters[name];
+    switch (attribute.attributeType) {
+      case NSDateAttributeType: value = WBDate([value description]); break;
+      case NSDecimalAttributeType: value = [NSDecimalNumber decimalNumberWithString:[value description]]; break;
+      case NSStringAttributeType: value = [value description]; break;
+      default: break;
+    }
+    if (!attribute || !value) {
+      self.statusField.stringValue = [NSString stringWithFormat:@"Temporal.%@: %@ is not an attribute of %@ with a value of its type", action, name, entityName];
+      return;
+    }
+    slice[name] = value;
+  }
+  NSError *error = nil;
+  NSArray *slices = [_store performTemporalAction:action onEntityNamed:entityName deltaTimeslices:@[ slice ] context:_context error:&error];
+  if (!slices) {
+    self.statusField.stringValue = [NSString stringWithFormat:@"Temporal.%@: %@", action, error.localizedDescription ?: @"failed"];
+    return;
+  }
+  NSMutableString *text = [NSMutableString stringWithFormat:@"Temporal.%@ on %@: %lu time slice%@ %@\n\n", action, entityName,
+                                                            (unsigned long)slices.count, slices.count == 1 ? @"" : @"s",
+                                                            [action isEqualToString:@"Delete"] ? @"taken away" : @"made or changed"];
+  NSArray *columns = [self columnNamesFor:entity];
+  for (NSDictionary *one in slices) {
+    NSMutableArray *parts = [NSMutableArray array];
+    for (NSString *column in columns) [parts addObject:[NSString stringWithFormat:@"%@ = %@", column, WBCellValue(one[column]) ?: @"—"]];
+    [text appendFormat:@"  • %@\n", [parts componentsJoinedByString:@", "]];
+  }
+  [self runFetch:nil];
+  [self show:text in:self.inspectorView];
+  self.statusField.stringValue = [NSString stringWithFormat:@"POST %@/Temporal.%@: %lu slice%@; the timeline is read again.", entityName, action,
+                                  (unsigned long)slices.count, slices.count == 1 ? @"" : @"s"];
+}
+
 #pragma mark - Changes at the service
 
 - (IBAction)fetchRemoteChanges:(id)sender
@@ -1873,10 +2244,10 @@ static NSString *WBContentTypeOf(NSURL *file)
     return;
   }
   [_context mergeChangesFromContextDidSaveNotification:changes];
+  [self runFetch:nil];
   self.statusField.stringValue = [NSString stringWithFormat:@"Changes at the service: %lu inserted, %lu updated, %lu deleted (a history transaction).",
                                   (unsigned long)[info[NSInsertedObjectIDsKey] count], (unsigned long)[info[NSUpdatedObjectIDsKey] count],
                                   (unsigned long)[info[NSDeletedObjectIDsKey] count]];
-  [self runFetch:nil];
 }
 
 #pragma mark - Self-test
@@ -2117,6 +2488,96 @@ static void WBCheck(BOOL ok, NSString *what, NSString *detail)
   [[NSFileManager defaultManager] removeItemAtURL:copy error:NULL];
 }
 
+- (NSMenuItem *)storeItemTagged:(NSInteger)tag
+{
+  for (NSMenuItem *item in _storeMenu.itemArray) {
+    if (item.tag == tag && item.action) return item;
+  }
+  return nil;
+}
+
+- (BOOL)logHasURLContaining:(NSString *)text
+{
+  [[NSRunLoop currentRunLoop] runMode:NSDefaultRunLoopMode beforeDate:[NSDate dateWithTimeIntervalSinceNow:0.2]];
+  for (WorkbenchLogEntry *entry in _log) {
+    if ([[entry.URL stringByRemovingPercentEncoding] rangeOfString:text].location != NSNotFound) return YES;
+  }
+  return NO;
+}
+
+// What the built-in service shows beyond the Catalog: $compute,
+// application time and its actions, a media entity, delta links, a
+// conflict and the merge policies, and asynchronous requests.
+- (void)checkBuiltInFeatures
+{
+  [self runPreset:[self presetLabelled:@"Computed:"]];
+  NSString *wire = [self.wireURLField.stringValue stringByRemovingPercentEncoding];
+  WBCheck(!_lastError && [wire rangeOfString:@"$compute=(UnitPrice mul 1.2) as withTax"].location != NSNotFound &&
+          [[_rows.firstObject objectForKey:@"withTax"] doubleValue] > 0,
+          @"compute: a value from each row ($compute)", _lastError ?: [NSString stringWithFormat:@"%@ %@", wire, _rows.firstObject]);
+
+  [self runPreset:[self presetLabelled:@"Budgets on 2024-10-01"]];
+  wire = [self.wireURLField.stringValue stringByRemovingPercentEncoding];
+  NSArray *amounts = [[_rows valueForKey:@"amount"] valueForKey:@"stringValue"];
+  WBCheck(!_lastError && [wire rangeOfString:@"$at=2024-10-01"].location != NSNotFound && [amounts isEqual:(@[ @"1000", @"950" ])],
+          @"application time: a day ($at)", _lastError ?: [NSString stringWithFormat:@"%@ %@", wire, amounts]);
+  [self runPreset:[self presetLabelled:@"Budgets during 2024"]];
+  wire = [self.wireURLField.stringValue stringByRemovingPercentEncoding];
+  WBCheck(!_lastError && [wire rangeOfString:@"$from=2024-01-01&$to=2025-01-01"].location != NSNotFound && _rows.count == 3,
+          @"application time: a period ($from, $to)", _lastError ?: [NSString stringWithFormat:@"%@ %lu rows", wire, (unsigned long)_rows.count]);
+
+  [self runPreset:[self presetLabelled:@"Budgets over time"]];
+  NSUInteger before = _rows.count;
+  BOOL found = [self selectOperationContaining:@"Temporal.Update"];
+  self.operationParametersField.stringValue = @"category='Beverages', from=2025-03-01, to=2025-06-01, amount=1500";
+  if (found) [self invokeOperation:nil];
+  WBCheck(found && [self.statusField.stringValue rangeOfString:@"3 slices"].location != NSNotFound && _rows.count == before + 2 &&
+          [self.inspectorView.string rangeOfString:@"1500"].location != NSNotFound,
+          @"Temporal.Update: a period's budget, the slice split around it", found ? self.statusField.stringValue : @"not in the operations menu");
+  self.operationParametersField.stringValue = @"";
+
+  [self runPreset:[self presetLabelled:@"Pictures"]];
+  if (_rows.count) [self.tableView selectRowIndexes:[NSIndexSet indexSetWithIndex:0] byExtendingSelection:NO];
+  [self rebuildStreams];
+  [self downloadStream:nil];
+  WBCheck([self.inspectorView.string rangeOfString:@"image/png"].location != NSNotFound, @"a built-in media entity: Download",
+          self.statusField.stringValue);
+
+  // Another client's change: read by delta link; a stale save of it, a
+  // conflict, settled as the Store menu says.
+  [self runPreset:0];
+  [self fetchRemoteChanges:nil];
+  NSString *said = [_engine changeAtTheService];
+  [self fetchRemoteChanges:nil];
+  WBCheck([self.statusField.stringValue hasPrefix:@"Changes at the service: 0 inserted, 1 updated"] && [self logHasURLContaining:@"$deltatoken="],
+          @"Changes: another client's change, by the service's delta link", [NSString stringWithFormat:@"%@ | %@", said, self.statusField.stringValue]);
+  NSUInteger chai = [[_rows valueForKey:@"name"] indexOfObject:@"Chai"];
+  if (chai != NSNotFound) [self editColumn:@"unitPrice" row:chai value:@"30"];
+  [_engine changeAtTheService];
+  [self saveChanges:nil];
+  WBCheck([self.statusField.stringValue hasPrefix:@"Save refused: 1 conflict"] &&
+          [self.inspectorView.string rangeOfString:@"unitPrice: yours 30"].location != NSNotFound,
+          @"a stale save is a conflict, shown", self.statusField.stringValue);
+  [self setMergePolicy:[self storeItemTagged:1]];
+  [self saveChanges:nil];
+  chai = [[_rows valueForKey:@"name"] indexOfObject:@"Chai"];
+  WBCheck([self.statusField.stringValue hasPrefix:@"Saved"] && chai != NSNotFound && [[_rows[chai] valueForKey:@"unitPrice"] integerValue] == 30,
+          @"Store: my changes win, and the save goes through", self.statusField.stringValue);
+  [self setMergePolicy:[self storeItemTagged:0]];
+
+  // A request that takes its time, answered 202 and read from its monitor.
+  [self toggleRespondAsync:nil];
+  [self waitWhileConnecting];
+  found = [self selectOperationContaining:@"CountProductsSlowly"];
+  self.operationParametersField.stringValue = @"Seconds=1";
+  if (found) [self invokeOperation:nil];
+  WBCheck(found && [self.inspectorView.string rangeOfString:@"14"].location != NSNotFound && [self logHasURLContaining:@"$async/"],
+          @"Store: prefer respond-async (202, then the status monitor)", found ? self.statusField.stringValue : @"not in the operations menu");
+  self.operationParametersField.stringValue = @"";
+  [self toggleRespondAsync:nil];
+  [self waitWhileConnecting];
+}
+
 - (BOOL)selectOperationContaining:(NSString *)text
 {
   for (NSMenuItem *item in self.operationPopup.itemArray) {
@@ -2193,6 +2654,7 @@ static void WBCheck(BOOL ok, NSString *what, NSString *detail)
       [self checkQueryPanel];
       [self checkBuiltInOperations];
       [self checkSearchAndGrouping];
+      [self checkBuiltInFeatures];
     }
     if (service != WBServiceTripPin) continue;
 

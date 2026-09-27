@@ -136,11 +136,10 @@ static BOOL OISBefore(NSDate *a, NSDate *b)
   return self.closedClosed ? [end dateByAddingTimeInterval:-OISDay] : end;
 }
 
-- (void)setPeriodOf:(NSManagedObject *)slice start:(NSDate *)start end:(NSDate *)end
+// A slice's period as values to write.
+- (NSMutableDictionary *)periodStart:(NSDate *)start end:(NSDate *)end
 {
-  [slice setValue:start forKey:self.startAttribute.name];
-  id stored = [self storedEnd:end];
-  [slice setValue:stored == [NSNull null] ? nil : stored forKey:self.endAttribute.name];
+  return [@{ self.startAttribute.name: start, self.endAttribute.name: [self storedEnd:end] } mutableCopy];
 }
 
 // Another slice like this one, for another period: its values but its key.
@@ -164,14 +163,15 @@ static BOOL OISBefore(NSDate *a, NSDate *b)
   return values;
 }
 
-- (NSManagedObject *)copyOf:(NSManagedObject *)slice start:(NSDate *)start end:(NSDate *)end writer:(id<OISTimelineWriting>)writer
+- (NSManagedObject *)copyOf:(NSManagedObject *)slice start:(NSDate *)start end:(NSDate *)end
+                     writer:(id<OISTimelineWriting>)writer error:(NSError **)error
 {
   NSMutableDictionary *values = [self valuesOf:slice];
   values[self.startAttribute.name] = start;
   id stored = [self storedEnd:end];
   if (stored == [NSNull null]) [values removeObjectForKey:self.endAttribute.name];
   else values[self.endAttribute.name] = stored;
-  return [writer timelineInsertValues:values entity:slice.entity];
+  return [writer timelineInsertValues:values entity:slice.entity error:error];
 }
 
 #pragma mark Actions
@@ -240,20 +240,20 @@ static BOOL OISBefore(NSDate *a, NSDate *b)
         gone.values = taken;
         [results addObject:gone];
         BOOL keepsBefore = OISBefore(start, from), keepsAfter = OISBefore(to, end);
+        BOOL written;
         if (keepsBefore && keepsAfter) {
-          [slices addObject:[self copyOf:slice start:to end:end writer:writer]];
-          [writer timelineWillChange:slice];
-          [self setPeriodOf:slice start:start end:from];
+          NSManagedObject *after = [self copyOf:slice start:to end:end writer:writer error:error];
+          if (after) [slices addObject:after];
+          written = after && [writer timelineUpdate:slice values:[self periodStart:start end:from] error:error];
         } else if (keepsBefore) {
-          [writer timelineWillChange:slice];
-          [self setPeriodOf:slice start:start end:from];
+          written = [writer timelineUpdate:slice values:[self periodStart:start end:from] error:error];
         } else if (keepsAfter) {
-          [writer timelineWillChange:slice];
-          [self setPeriodOf:slice start:to end:end];
+          written = [writer timelineUpdate:slice values:[self periodStart:to end:end] error:error];
         } else {
-          [slice.managedObjectContext deleteObject:slice];
+          written = [writer timelineDelete:slice error:error];
           [slices removeObject:slice];
         }
+        if (!written) return nil;
       }
       continue;
     }
@@ -261,21 +261,23 @@ static BOOL OISBefore(NSDate *a, NSDate *b)
     NSMutableArray *changed = [NSMutableArray array];
     for (NSManagedObject *slice in selected) {
       NSDate *start = [self startOf:slice], *end = [self endOf:slice];
-      [writer timelineWillChange:slice];
       if (OISBefore(start, from)) {
-        NSManagedObject *before = [self copyOf:slice start:start end:from writer:writer];
+        NSManagedObject *before = [self copyOf:slice start:start end:from writer:writer error:error];
+        if (!before) return nil;
         [slices addObject:before];
         [changed addObject:before];
         start = from;
       }
       if (OISBefore(to, end)) {
-        NSManagedObject *after = [self copyOf:slice start:to end:end writer:writer];
+        NSManagedObject *after = [self copyOf:slice start:to end:end writer:writer error:error];
+        if (!after) return nil;
         [slices addObject:after];
         [changed addObject:after];
         end = to;
       }
-      [self setPeriodOf:slice start:start end:end];
-      [slice setValuesForKeysWithDictionary:changes];
+      NSMutableDictionary *values = [self periodStart:start end:end];
+      [values addEntriesFromDictionary:changes];
+      if (![writer timelineUpdate:slice values:values error:error]) return nil;
       [changed addObject:slice];
     }
 
@@ -328,11 +330,8 @@ static BOOL OISBefore(NSDate *a, NSDate *b)
           id stored = [self storedEnd:end];
           if (stored == [NSNull null]) [values removeObjectForKey:self.endAttribute.name];
           else values[self.endAttribute.name] = stored;
-          NSManagedObject *made = [writer timelineInsertValues:values entity:self.entity];
-          if (!made) {
-            if (error) *error = ODataServiceError(400, @"A time slice could not be made");
-            return nil;
-          }
+          NSManagedObject *made = [writer timelineInsertValues:values entity:self.entity error:error];
+          if (!made) return nil;
           [slices addObject:made];
           [changed addObject:made];
         }

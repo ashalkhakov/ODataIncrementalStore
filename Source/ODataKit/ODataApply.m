@@ -74,6 +74,13 @@
       return [NSString stringWithFormat:@"skip(%@)", self.number];
     case ODataApplyTopBottom:
       return [NSString stringWithFormat:@"%@(%@,%@)", self.method, self.number, self.expression];
+    case ODataApplyConcat: {
+      NSMutableArray *branches = [NSMutableArray array];
+      for (NSArray *branch in self.branches) [branches addObject:[ODataApplyTransformation stringForTransformations:branch]];
+      return [NSString stringWithFormat:@"concat(%@)", [branches componentsJoinedByString:@","]];
+    }
+    case ODataApplyExpand:
+      return [NSString stringWithFormat:@"expand(%@)", self.expansion];
     case ODataApplyGroupBy: {
       NSMutableArray *paths = [NSMutableArray array];
       for (NSArray *path in self.groupPaths) [paths addObject:[path componentsJoinedByString:@"/"]];
@@ -284,7 +291,42 @@ static NSArray<NSString *> *OISPath(NSString *text)
       ODataApplyTransformation *t = [self readOther:name inside:inside text:text error:error];
       if (!t) return nil;
       [transformations addObject:t];
-    } else if ([@[ @"concat", @"expand", @"nest", @"ancestors", @"descendants", @"traverse" ] containsObject:name]) {
+    } else if ([name isEqualToString:@"concat"]) {
+      // Each argument a sequence of its own, on the same input.
+      NSMutableArray *branches = [NSMutableArray array];
+      for (NSString *branch in OISSplitTop(inside, ',')) {
+        NSArray *sequence = [self transformationsWithString:branch error:error];
+        if (!sequence) return nil;
+        [branches addObject:sequence];
+      }
+      if (branches.count < 2) {
+        if (error) *error = OISApplyError(ODataIncrementalStoreErrorSyntax, @"concat takes two sequences or more", text);
+        return nil;
+      }
+      ODataApplyTransformation *t = [[self alloc] init];
+      t->_kind = ODataApplyConcat;
+      t->_groupPaths = @[];
+      t->_aggregates = @[];
+      t->_branches = branches;
+      [transformations addObject:t];
+    } else if ([name isEqualToString:@"expand"]) {
+      // expand(Nav) or expand(Nav, filter(...)): as $expand=Nav($filter=...).
+      NSArray *arguments = OISSplitTop(inside, ',');
+      NSArray *path = OISPath(arguments.firstObject ?: @"");
+      NSString *inner = nil, *filter = arguments.count == 2 ? OISCall(arguments[1], &inner) : nil;
+      if (path.count != 1 || arguments.count > 2 || (arguments.count == 2 && (!filter || ![inner isEqualToString:@"filter"]))) {
+        if (error) *error = OISApplyError(arguments.count == 2 && [inner isEqualToString:@"expand"] ? ODataIncrementalStoreErrorUnsupportedExpression
+                                                                                                   : ODataIncrementalStoreErrorSyntax,
+                                          @"expand takes a navigation property and a filter", text);
+        return nil;
+      }
+      ODataApplyTransformation *t = [[self alloc] init];
+      t->_kind = ODataApplyExpand;
+      t->_groupPaths = @[];
+      t->_aggregates = @[];
+      t->_expansion = filter ? [NSString stringWithFormat:@"%@($filter=%@)", path[0], filter] : path[0];
+      [transformations addObject:t];
+    } else if ([@[ @"nest", @"ancestors", @"descendants", @"traverse" ] containsObject:name]) {
       if (error) *error = OISApplyError(ODataIncrementalStoreErrorUnsupportedExpression, [NSString stringWithFormat:@"%@ is not supported", name], text);
       return nil;
     } else {

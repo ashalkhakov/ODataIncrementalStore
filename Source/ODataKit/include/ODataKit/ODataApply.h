@@ -10,8 +10,9 @@
 // These are read and written: filter, groupby (of property paths, with an
 // aggregate), and aggregate, of property paths with sum, min, max,
 // average or countdistinct, and of $count; identity, search, compute,
-// orderby, top, skip, and topcount, topsum, toppercent and their bottom
-// kin. The others (concat, expand, nest, rollup, custom methods) are
+// orderby, top, skip, topcount, topsum, toppercent and their bottom kin,
+// concat, and expand (of a navigation property, with a filter). The
+// others (nest, the hierarchy transformations, rollup, custom methods) are
 // ODataIncrementalStoreErrorUnsupportedExpression; what is not $apply at
 // all is ODataIncrementalStoreErrorSyntax.
 
@@ -31,7 +32,9 @@ typedef NS_ENUM(NSInteger, ODataApplyKind) {
   ODataApplyOrderBy,    // orderBy
   ODataApplyTop,        // number
   ODataApplySkip,       // number
-  ODataApplyTopBottom   // method (topcount, bottomsum, ...), number, expression
+  ODataApplyTopBottom,  // method (topcount, bottomsum, ...), number, expression
+  ODataApplyConcat,     // branches
+  ODataApplyExpand      // expansion: as $expand writes it, Category($filter=...)
 };
 
 // Path with method as alias, or $count as alias (path nil).
@@ -61,6 +64,8 @@ typedef NS_ENUM(NSInteger, ODataApplyKind) {
 @property (nonatomic, readonly, copy, nullable) NSString *method;
 @property (nonatomic, readonly, strong, nullable) NSNumber *number;
 @property (nonatomic, readonly, strong, nullable) ODataExpression *expression;
+@property (nonatomic, readonly, copy, nullable) NSArray<NSArray<ODataApplyTransformation *> *> *branches;
+@property (nonatomic, readonly, copy, nullable) NSString *expansion;
 @end
 
 @interface ODataAggregation : NSObject

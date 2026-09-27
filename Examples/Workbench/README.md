@@ -6,16 +6,21 @@ A native Cocoa / GNUstep app for trying out an OData v4 service with
 
 Pick a service at the top:
 
-- **Built-in (in memory)**: the library's own server, `ODataService`,
-  in the process, behind `ODataTransport`, with no network
+- **Built-in (this library's server)**: the library's own server,
+  `ODataService`, in the process, behind `ODataTransport`, with no network
   (`WorkbenchEngine` wraps it and logs each exchange). It serves the
   Catalog (`Examples/Catalog/Catalog.xcdatamodeld`: products, categories,
-  suppliers, stock at locations) from an in-memory Core Data store seeded
-  with a few of Northwind's rows, and a few operations of its own, declared
-  in protocols in `WorkbenchEngine.m`: `DiscountedPriceByPercent` and
-  `RaisePriceByPercent` on a product, `CheaperThanPrice` on the products,
-  `CountProductsInCategoryNamed` on the service. What the store sends is
-  answered as any `ois-serve` would answer it, `$batch` included.
+  suppliers, stock at locations), seeded with a few of Northwind's rows,
+  and what the Catalog does not show (`WorkbenchBuiltInModel`): products
+  with a version (ETags, so conflicts), budgets over time (application
+  time), and pictures (a media entity). Its store is SQLite with
+  persistent history, in a temporary file, so its sets have delta links.
+  Its operations are declared in protocols in `WorkbenchEngine.m`:
+  `DiscountedPriceByPercent` and `RaisePriceByPercent` on a product,
+  `CheaperThanPrice` on the products, `CountProductsInCategoryNamed` and
+  `CountProductsSlowly` (it takes its time: try it with respond-async) on
+  the service. What the store sends is answered as any `ois-serve` would
+  answer it, `$batch` included.
 - **Northwind (read-only)**: Microsoft's public Northwind v4.
 - **TripPin (read/write)**: Microsoft's public TripPin, in a session of its
   own, so writing is safe. Reset starts a new one.
@@ -34,10 +39,15 @@ What you can do:
   opened to nest (`$expand=Suppliers($expand=Products)`); and the
   properties of a dictionary result (`$select`). Under the lists: a
   `$search` (the service's own free-text search, ANDed with the
-  predicate), and, for a dictionary result, a grouping: key paths to
-  group by (`category.name`) and aggregates
+  predicate), and, for a dictionary result, values computed from each row
+  (`unitPrice * 1.2 as withTax`, NSExpression's syntax: `$compute` where
+  the service has it, else computed by the store), or a grouping: key
+  paths to group by (`category.name`) and aggregates
   (`count:(id) as products, sum:(unitPrice) as total`, with `sum`, `min`,
-  `max`, `average` and `count`). The GET the store will send is shown
+  `max`, `average` and `count`). For an entity with application time
+  (the built-in Budgets), the field beside Execute asks for a day
+  (`2024-10-01`, `$at`) or a period (`2024-01-01..2025-01-01`, `$from` and
+  `$to`; `..=` to include the end; `2024-01-01..` from then on). The GET the store will send is shown
   before you execute it: `$apply` where the service has it, else the read
   of the rows the store groups itself.
 - Execute. Rows are real managed objects; select one to see its attributes,
@@ -56,6 +66,19 @@ What you can do:
   until Save, which sends them as POST, PATCH and DELETE, and Revert drops
   them. A new object's key can be edited, for services that want the
   client's (TripPin's people).
+- Change a timeline: for an entity with application time, the
+  operations menu has `Temporal.Update`, `Upsert` and `Delete`, whose
+  parameters are one delta time slice, by attribute
+  (`category='Beverages', from=2025-03-01, to=2025-06-01, amount=1500`):
+  the service splits the slices around the period, and the timeline is
+  read again.
+- The Store menu: what a save does when the service has changed an object
+  since it was read (refuse, showing each conflict in the inspector; my
+  changes win; the service's win); prefer respond-async (the service may
+  answer a slow request 202, and the store polls its status monitor: the
+  log shows it); JSON `$batch` with a 4.01 service; and, at the built-in
+  service, a change another client makes, for Changes to read and a stale
+  Save to conflict with.
 - Call the service's actions and functions: the selected object's, its
   entity's, and the service's own, from the menu at the bottom right, with
   parameters as `name=value, …`. TripPin has some (`GetFavoriteAirline` on a

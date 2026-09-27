@@ -182,6 +182,7 @@ static NSString *OISQuoted(NSString *text)
 @end
 
 @interface ODataQueryOptions ()
+- (void)setTemporal:(NSString *)option expression:(ODataExpression *)e text:(NSString *)text;
 @property (nonatomic, strong, nullable) ODataExpression *filter;
 @property (nonatomic, copy) NSArray *orderBy;
 @property (nonatomic, copy) NSArray *select;
@@ -198,6 +199,7 @@ static NSString *OISQuoted(NSString *text)
 @property (nonatomic, strong, nullable) ODataExpression *temporalFrom;
 @property (nonatomic, strong, nullable) ODataExpression *temporalTo;
 @property (nonatomic, strong, nullable) ODataExpression *temporalToInclusive;
+@property (nonatomic, copy) NSDictionary *temporalText;
 @property (nonatomic, copy) NSDictionary *aliases;
 @property (nonatomic, copy, nullable) NSString *format;
 @property (nonatomic, copy, nullable) NSString *skipToken;
@@ -803,6 +805,16 @@ static NSArray *OISComputeItems(NSString *text, NSError **error)
     options.levels = [self parseInteger];
     return options.levels != nil;
   }
+  if ([@[ @"$at", @"$from", @"$to", @"$toInclusive" ] containsObject:option]) {
+    // A literal, kept as written for the filter made of it.
+    NSUInteger start = _token.range.location;
+    ODataExpression *e = [self parseCommon];
+    if (!e) return NO;
+    NSUInteger end = _token.kind == OISTokenEnd ? _lexer.string.length : _token.range.location;
+    [options setTemporal:option expression:e
+                    text:[[_lexer.string substringWithRange:NSMakeRange(start, end - start)] stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceCharacterSet]]];
+    return YES;
+  }
   if ([option isEqualToString:@"$compute"]) {
     // Items as the top level reads them, up to the end of the option.
     NSUInteger start = _token.range.location;
@@ -914,6 +926,7 @@ static NSArray *OISComputeItems(NSString *text, NSError **error)
   _select = @[];
   _expand = @[];
   _compute = @[];
+  _temporalText = @{};
   _aliases = @{};
   return self;
 }
@@ -948,10 +961,7 @@ static NSArray *OISComputeItems(NSString *text, NSError **error)
           if (error) *error = parser.error ?: OISError(ODataIncrementalStoreErrorSyntax, [NSString stringWithFormat:@"%@=%@", key, value]);
           return nil;
         }
-        if ([key isEqualToString:@"$at"]) options.temporalAt = e;
-        else if ([key isEqualToString:@"$from"]) options.temporalFrom = e;
-        else if ([key isEqualToString:@"$to"]) options.temporalTo = e;
-        else options.temporalToInclusive = e;
+        [options setTemporal:key expression:e text:[value stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceCharacterSet]]];
         continue;
       }
       if ([key isEqualToString:@"$compute"]) {
@@ -986,6 +996,17 @@ static NSArray *OISComputeItems(NSString *text, NSError **error)
   }
   options.aliases = aliases;
   return options;
+}
+
+- (void)setTemporal:(NSString *)option expression:(ODataExpression *)e text:(NSString *)text
+{
+  if ([option isEqualToString:@"$at"]) self.temporalAt = e;
+  else if ([option isEqualToString:@"$from"]) self.temporalFrom = e;
+  else if ([option isEqualToString:@"$to"]) self.temporalTo = e;
+  else self.temporalToInclusive = e;
+  NSMutableDictionary *texts = [self.temporalText mutableCopy];
+  texts[option] = text;
+  self.temporalText = texts;
 }
 
 - (NSString *)description

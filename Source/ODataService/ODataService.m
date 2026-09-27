@@ -475,8 +475,6 @@ typedef NS_ENUM(NSInteger, OISTargetKind) {
 @property (nonatomic, copy, nullable) NSArray<NSSortDescriptor *> *memorySort;
 @property (nonatomic) NSUInteger memoryOffset;
 @property (nonatomic) NSUInteger memoryLimit;
-// $at, $from, $to, $toInclusive, as the request wrote them.
-@property (nonatomic, copy, nullable) NSDictionary<NSString *, NSString *> *temporalQuery;
 // Slices a temporal action changed: their versions moved on once.
 @property (nonatomic, strong, nullable) NSMutableSet *temporalTouched;
 // $compute's values' expressions, by entity and name.
@@ -709,11 +707,6 @@ typedef NS_ENUM(NSInteger, OISTargetKind) {
   }
   self.JSONAliases = JSONAliases;
   self.deltaToken = query[@"$deltatoken"];
-  NSMutableDictionary *temporal = [NSMutableDictionary dictionary];
-  for (NSString *key in @[ @"$at", @"$from", @"$to", @"$toInclusive" ]) {
-    if (query[key]) temporal[key] = query[key];
-  }
-  self.temporalQuery = temporal;
   for (NSString *key in query) {
     if ([@[ @"$index", @"$schemaversion" ] containsObject:key]) {
       [self fail:501 message:[NSString stringWithFormat:@"%@ is not supported", key]];
@@ -1645,6 +1638,12 @@ static const NSInteger OISMaxLevels = 32;
                                                       computed:[self computedNamesOf:options] context:self.request.context error:error];
       if (!filter) return NO;
     }
+    if (options.temporalText.count) {
+      // Application time, of a timeline set's members (OData-Temporal 4.2.1).
+      id period = [self predicateForApplicationTimeOf:options entity:destination error:error];
+      if (!period) return NO;
+      if (period != [NSNull null]) filter = filter ? [NSCompoundPredicate andPredicateWithSubpredicates:@[ filter, period ]] : period;
+    }
     if (options.searchExpression) {
       NSPredicate *search = [self predicateForSearch:options.searchExpression entity:destination];
       if (!search) {
@@ -1799,8 +1798,8 @@ static const NSInteger OISMaxLevels = 32;
       [parts addObject:filter];
     }
   }
-  if (withFilter && self.temporalQuery.count) {
-    NSPredicate *period = [self predicateForApplicationTimeError:error];
+  if (withFilter && self.request.options.temporalText.count) {
+    NSPredicate *period = [self predicateForApplicationTimeOf:self.request.options entity:self.entity error:error];
     if (!period) return nil;
     if (period != (id)[NSNull null]) [parts addObject:period];
   }
@@ -2078,10 +2077,19 @@ static void OISSetAtPath(NSMutableDictionary *row, NSArray<NSString *> *path, id
 // $apply that leaves entities (no groupby or aggregate): the query's
 // $filter, $orderby, $count, $skip and $top on them, each written with the
 // values compute gave it.
-- (void)writeAppliedEntities:(NSArray *)rows computed:(NSDictionary *)computed
+- (void)writeAppliedEntities:(NSArray *)rows computed:(NSDictionary *)computed expansions:(NSArray *)expansions
 {
   ODataQueryOptions *options = self.request.options;
   NSError *error = nil;
+  // What expand asked for, as $expand would.
+  ODataQueryOptions *written = options;
+  if (expansions.count) {
+    written = [ODataQueryOptions optionsWithQuery:@{ @"$expand": [expansions componentsJoinedByString:@","] } error:&error];
+    if (!written) {
+      [self respondError:ODataServiceError(400, error.localizedDescription)];
+      return;
+    }
+  }
   if (options.filter) {
     NSPredicate *filter = [self.service.predicates predicateForExpression:options.filter entity:self.entity aliases:options.aliases
                                                                  computed:computed context:self.request.context error:&error];
@@ -2108,7 +2116,7 @@ static void OISSetAtPath(NSMutableDictionary *row, NSArray<NSString *> *path, id
   NSMutableArray *values = [NSMutableArray array];
   for (id row in rows) {
     OISComputedRow *more = [row isKindOfClass:[OISComputedRow class]] ? row : nil;
-    NSMutableDictionary *json = [self JSONForObject:more ? more.object : row options:options expected:self.entity error:&error];
+    NSMutableDictionary *json = [self JSONForObject:more ? more.object : row options:written expected:self.entity error:&error];
     if (!json) {
       [self respondError:error];
       return;
@@ -2144,18 +2152,16 @@ static NSString *OISSelectListOfPaths(NSArray<NSArray<NSString *> *> *paths)
   return [items componentsJoinedByString:@","];
 }
 
-- (void)didFetchForApply:(ODataReply *)reply
+// $apply's transformations, in order, on the rows (entities, or grouped
+// rows once shape is set); NO once answered, with the error.
+- (BOOL)applyTransformations:(NSArray<ODataApplyTransformation *> *)transformations rows:(NSArray **)rowsp shape:(NSMutableArray **)shapep
+                    computed:(NSMutableDictionary *)computed expansions:(NSMutableArray *)expansions
 {
-  if (reply.error) {
-    [self respondError:reply.error];
-    return;
-  }
   ODataQueryOptions *options = self.request.options;
-  NSArray *rows = reply.result ?: @[];
-  NSMutableArray *shape = nil;  // the paths of the rows' properties, once grouped
-  NSMutableDictionary *computed = [NSMutableDictionary dictionary];  // compute's names, before grouping
+  NSArray *rows = *rowsp;
+  NSMutableArray *shape = *shapep;
   NSError *error = nil;
-  for (ODataApplyTransformation *t in self.applied) {
+  for (ODataApplyTransformation *t in transformations) {
     switch (t.kind) {
       case ODataApplyIdentity:
         continue;
@@ -2165,7 +2171,7 @@ static NSString *OISSelectListOfPaths(NSArray<NSArray<NSString *> *> *paths)
                                                                              computed:computed context:self.request.context error:&error];
         if (!filter) {
           [self respondError:error.code == ODataIncrementalStoreErrorUnsupportedExpression ? ODataServiceError(501, error.localizedDescription) : error];
-          return;
+          return NO;
         }
         rows = [rows filteredArrayUsingPredicate:filter];
         continue;
@@ -2174,7 +2180,7 @@ static NSString *OISSelectListOfPaths(NSArray<NSArray<NSString *> *> *paths)
         NSPredicate *search = shape ? nil : [self predicateForSearch:t.search entity:self.entity];
         if (!search) {
           if (shape) [self fail:501 message:@"$apply: search of grouped rows is not supported"];
-          return;
+          return NO;
         }
         rows = [rows filteredArrayUsingPredicate:search];
         continue;
@@ -2188,7 +2194,7 @@ static NSString *OISSelectListOfPaths(NSArray<NSArray<NSString *> *> *paths)
               id value = [ODataAggregation valueOfExpression:item.expression inRow:more error:&error];
               if (!value) {
                 [self respondError:ODataServiceError(501, error.localizedDescription)];
-                return;
+                return NO;
               }
               more[item.alias] = value;
             }
@@ -2202,7 +2208,7 @@ static NSString *OISSelectListOfPaths(NSArray<NSArray<NSString *> *> *paths)
                                                                                      aliases:options.aliases computed:computed error:&error];
             if (!expression) {
               [self respondError:error];
-              return;
+              return NO;
             }
             [expressions addObject:expression];
             computed[item.alias] = item.expression;
@@ -2234,7 +2240,7 @@ static NSString *OISSelectListOfPaths(NSArray<NSArray<NSString *> *> *paths)
                                                                                  inMemory:&(BOOL){ NO } error:&error];
         if (!descriptors) {
           if (error) [self respondError:error];
-          return;
+          return NO;
         }
         rows = [rows sortedArrayUsingDescriptors:descriptors];
         continue;
@@ -2251,7 +2257,7 @@ static NSString *OISSelectListOfPaths(NSArray<NSArray<NSString *> *> *paths)
             : [self.service.predicates valueExpressionForExpression:t.expression entity:self.entity aliases:options.aliases computed:computed error:&error];
         if (!shape && !expression) {
           [self respondError:error];
-          return;
+          return NO;
         }
         for (id row in rows) {
           id value = nil;
@@ -2259,7 +2265,7 @@ static NSString *OISSelectListOfPaths(NSArray<NSArray<NSString *> *> *paths)
             value = [ODataAggregation valueOfExpression:t.expression inRow:row error:&error];
             if (!value) {
               [self respondError:ODataServiceError(501, error.localizedDescription)];
-              return;
+              return NO;
             }
           } else {
             @try {
@@ -2273,25 +2279,79 @@ static NSString *OISSelectListOfPaths(NSArray<NSArray<NSString *> *> *paths)
         rows = [ODataAggregation rows:rows values:values method:t.method number:t.number.doubleValue];
         continue;
       }
+      case ODataApplyConcat: {
+        // Each branch on the same input, the results one after the other.
+        NSMutableArray *all = [NSMutableArray array];
+        NSMutableArray *union_ = [NSMutableArray array];
+        BOOL entities = NO, grouped = NO;
+        for (NSArray *branch in t.branches) {
+          NSArray *branchRows = rows;
+          NSMutableArray *branchShape = shape ? [shape mutableCopy] : nil;
+          NSMutableDictionary *branchComputed = [computed mutableCopy];
+          NSMutableArray *branchExpansions = [expansions mutableCopy];
+          if (![self applyTransformations:branch rows:&branchRows shape:&branchShape computed:branchComputed expansions:branchExpansions]) return NO;
+          [all addObjectsFromArray:branchRows];
+          if (branchShape) {
+            grouped = YES;
+            for (NSArray *path in branchShape) if (![union_ containsObject:path]) [union_ addObject:path];
+          } else {
+            entities = YES;
+          }
+          [computed addEntriesFromDictionary:branchComputed];
+          for (NSString *expansion in branchExpansions) if (![expansions containsObject:expansion]) [expansions addObject:expansion];
+        }
+        if (entities && grouped) {
+          [self fail:501 message:@"$apply: concat of entities and grouped rows is not supported"];
+          return NO;
+        }
+        rows = all;
+        shape = grouped ? union_ : nil;
+        continue;
+      }
+      case ODataApplyExpand:
+        if (shape) {
+          [self fail:501 message:@"$apply: expand of grouped rows is not supported"];
+          return NO;
+        }
+        [expansions addObject:t.expansion];
+        continue;
       case ODataApplyGroupBy:
       case ODataApplyAggregate:
         break;
     }
     if (shape) {
       [self fail:501 message:@"$apply: grouping what is grouped already is not supported"];
-      return;
+      return NO;
     }
     rows = [self rowsOfGrouping:t over:rows computed:computed error:&error];
     if (!rows) {
       [self respondError:error];
-      return;
+      return NO;
     }
     shape = [t.groupPaths mutableCopy];
     for (ODataAggregate *aggregate in t.aggregates) [shape addObject:@[ aggregate.alias ]];
   }
+  *rowsp = rows;
+  *shapep = shape;
+  return YES;
+}
+
+- (void)didFetchForApply:(ODataReply *)reply
+{
+  if (reply.error) {
+    [self respondError:reply.error];
+    return;
+  }
+  ODataQueryOptions *options = self.request.options;
+  NSArray *rows = reply.result ?: @[];
+  NSMutableArray *shape = nil;  // the paths of the rows' properties, once grouped
+  NSMutableDictionary *computed = [NSMutableDictionary dictionary];  // compute's names, before grouping
+  NSError *error = nil;
+  NSMutableArray *expansions = [NSMutableArray array];
+  if (![self applyTransformations:self.applied rows:&rows shape:&shape computed:computed expansions:expansions]) return;
   if (!shape) {
-    // Entities still, with what compute gave them.
-    [self writeAppliedEntities:rows computed:computed];
+    // Entities still, with what compute gave them, and expand expanded.
+    [self writeAppliedEntities:rows computed:computed expansions:expansions];
     return;
   }
   if (options.filter) {
@@ -2549,17 +2609,16 @@ static NSString *OISSelectListOfPaths(NSArray<NSArray<NSString *> *> *paths)
 // $at, or $from with $to or $toInclusive (OData-Temporal section 4.2.3),
 // as a filter over a timeline set's periods; NSNull where the set has no
 // application time, which they then do not affect.
-- (id)predicateForApplicationTimeError:(NSError **)error
+- (id)predicateForApplicationTimeOf:(ODataQueryOptions *)options entity:(NSEntityDescription *)entity error:(NSError **)error
 {
-  OISTimeline *timeline = [OISTimeline timelineOfEntity:self.entity mapper:self.mapper];
+  OISTimeline *timeline = [OISTimeline timelineOfEntity:entity mapper:self.mapper];
   if (!timeline) return [NSNull null];
-  NSDictionary *q = self.temporalQuery;
+  NSDictionary *q = options.temporalText;
   BOOL at = q[@"$at"] != nil, from = q[@"$from"] != nil, to = q[@"$to"] != nil, inclusive = q[@"$toInclusive"] != nil;
   if ((at && (from || to || inclusive)) || (to && inclusive) || ((to || inclusive) && !from)) {
     if (error) *error = ODataServiceError(400, @"$at alone, or $from with $to or $toInclusive, or $from alone");
     return nil;
   }
-  ODataQueryOptions *options = self.request.options;
   for (ODataExpression *e in @[ options.temporalAt ?: [NSNull null], options.temporalFrom ?: [NSNull null],
                                 options.temporalTo ?: [NSNull null], options.temporalToInclusive ?: [NSNull null] ]) {
     if ((id)e != [NSNull null] && e.kind != ODataExpressionLiteral) {
@@ -2571,7 +2630,7 @@ static NSString *OISSelectListOfPaths(NSArray<NSArray<NSString *> *> *paths)
                       : [timeline filterFrom:q[@"$from"] to:q[@"$to"] ?: q[@"$toInclusive"] inclusive:!to];
   ODataExpression *expression = [ODataExpression expressionWithString:text error:error];
   if (!expression) return nil;
-  return [self.service.predicates predicateForExpression:expression entity:self.entity aliases:nil computed:nil
+  return [self.service.predicates predicateForExpression:expression entity:entity aliases:nil computed:nil
                                                  context:self.request.context error:error];
 }
 
@@ -2654,24 +2713,72 @@ static NSString *OISSelectListOfPaths(NSArray<NSArray<NSString *> *> *paths)
                        @"value": value } status:200 headers:nil];
 }
 
-- (NSManagedObject *)timelineInsertValues:(NSDictionary *)values entity:(NSEntityDescription *)entity
+// The handler, for a temporal action's writes: asked as it is for any
+// write, and answering at once, since the action is all or nothing inside
+// this request. One that defers its answer cannot take part (501).
+- (id)askHandler:(id (^)(ODataReply *reply))ask error:(NSError **)error
 {
-  NSMutableDictionary *all = [values mutableCopy];
-  if (![self fillKeys:all entity:entity]) return nil;
-  NSAttributeDescription *version = [self.service versionAttributeOfEntity:entity];
-  if (version) all[version.name] = @1;
-  NSManagedObject *object = [NSEntityDescription insertNewObjectForEntityForName:entity.name inManagedObjectContext:self.request.context];
-  [object setValuesForKeysWithDictionary:all];
-  return object;
+  ODataReply *reply = [[ODataReply alloc] initWithTarget:self action:@selector(handlerDidAnswerLater:) context:self.request.context];
+  reply.request = self.request;
+  id result = ask(reply);
+  [reply returned:result];
+  NSError *failure = reply.error;
+  if (reply.deferred && !reply.finished) {
+    failure = ODataServiceError(501, [NSString stringWithFormat:@"%@'s handler answers later, and a temporal action is answered at once", [self setName]]);
+  }
+  if (failure) {
+    if (error) *error = failure;
+    return nil;
+  }
+  return reply.result ?: result ?: [NSNull null];
 }
 
-- (void)timelineWillChange:(NSManagedObject *)object
+- (void)handlerDidAnswerLater:(ODataReply *)reply
 {
-  NSValue *key = [NSValue valueWithNonretainedObject:object];
-  if ([self.temporalTouched containsObject:key] || object.isInserted) return;
-  [self.temporalTouched addObject:key];
-  NSAttributeDescription *version = [self.service versionAttributeOfEntity:object.entity];
-  if (version) [object setValue:@([[object valueForKey:version.name] longLongValue] + 1) forKey:version.name];
+  // Too late for the temporal action it was asked for: nothing waits.
+}
+
+- (NSManagedObject *)timelineInsertValues:(NSDictionary *)values entity:(NSEntityDescription *)entity error:(NSError **)error
+{
+  NSMutableDictionary *all = [values mutableCopy];
+  if (![self fillKeys:all entity:entity]) {
+    if (error) *error = ODataServiceError(400, [NSString stringWithFormat:@"A new %@ has no key", entity.name]);
+    return nil;
+  }
+  NSAttributeDescription *version = [self.service versionAttributeOfEntity:entity];
+  if (version) all[version.name] = @1;
+  self.request.entity = entity;
+  id made = [self askHandler:^id(ODataReply *reply) {
+    return [self.handler insertObjectWithValues:all request:self.request reply:reply];
+  } error:error];
+  if (made && ![made isKindOfClass:[NSManagedObject class]]) {
+    if (error) *error = ODataServiceError(500, [NSString stringWithFormat:@"%@'s handler made no object", [self setName]]);
+    return nil;
+  }
+  return made;
+}
+
+- (BOOL)timelineUpdate:(NSManagedObject *)slice values:(NSDictionary *)values error:(NSError **)error
+{
+  NSMutableDictionary *all = [values mutableCopy];
+  // Its version moves on once, however often the action changes it.
+  NSAttributeDescription *version = [self.service versionAttributeOfEntity:slice.entity];
+  NSValue *key = [NSValue valueWithNonretainedObject:slice];
+  if (version && !slice.isInserted && ![self.temporalTouched containsObject:key]) {
+    [self.temporalTouched addObject:key];
+    all[version.name] = @([[slice valueForKey:version.name] longLongValue] + 1);
+  }
+  return [self askHandler:^id(ODataReply *reply) {
+    return [self.handler updateObject:slice values:all request:self.request reply:reply];
+  } error:error] != nil;
+}
+
+- (BOOL)timelineDelete:(NSManagedObject *)slice error:(NSError **)error
+{
+  return [self askHandler:^id(ODataReply *reply) {
+    [self.handler deleteObject:slice request:self.request reply:reply];
+    return nil;
+  } error:error] != nil;
 }
 
 #pragma mark $compute

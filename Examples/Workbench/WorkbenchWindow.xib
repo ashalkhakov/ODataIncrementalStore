@@ -65,10 +65,10 @@
                     <popUpButton id="SVC">
                         <rect key="frame" x="72" y="824" width="190" height="24"/>
                         <autoresizingMask key="autoresizingMask" flexibleMinY="YES"/>
-                        <popUpButtonCell key="cell" type="push" title="Built-in (in memory)" bezelStyle="rounded" alignment="left" lineBreakMode="truncatingTail" state="on" borderStyle="borderAndBezel" inset="2" selectedItem="S0" id="SVCC">
+                        <popUpButtonCell key="cell" type="push" title="Built-in (this library's server)" bezelStyle="rounded" alignment="left" lineBreakMode="truncatingTail" state="on" borderStyle="borderAndBezel" inset="2" selectedItem="S0" id="SVCC">
                             <menu key="menu" id="SVCM">
                                 <items>
-                                    <menuItem title="Built-in (in memory)" state="on" id="S0"/>
+                                    <menuItem title="Built-in (this library's server)" state="on" id="S0"/>
                                     <menuItem title="Northwind (read-only)" id="S1"/>
                                     <menuItem title="TripPin (read/write)" id="S2"/>
                                     <menuItem title="Other URL…" id="S3"/>
