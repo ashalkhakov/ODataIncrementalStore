@@ -101,7 +101,7 @@ calling the client conformant.
 | `countForFetchRequest:` | `/$count` | ✅ **live** | |
 | `propertiesToFetch` (dictionary results) | `$select` | ⚠️ | Only for `NSDictionaryResultType`. Could also trim managed-object fetches. |
 | `relationshipKeyPathsForPrefetching` | `$expand` | ⚠️ | Inline entities are cached, and a to-one's object ID goes in the row. A prefetched to-many's membership is not, so reading the relationship is still a request. |
-| `fetchBatchSize` | `Prefer: odata.maxpagesize` | ❌ | |
+| `fetchBatchSize` | `Prefer: odata.maxpagesize` | ✅ | The pages are followed to the end, each of that size. |
 | To-one fault | `GET Entity(key)/Nav` | ✅ **live** | |
 | To-many fault | `GET Entity(key)/Nav` | ✅ **live** | Every page; the rows are cached. |
 | Firing faults | | ✅ | Every fetched row is cached, and each to-one relationship is expanded to its key (`Nav($select=Key)`), because Core Data asks for every to-one as soon as a fault fires. Firing N faults used to cost N or 2N requests; it costs none. Northwind ignores the nested `$select` and sends the whole related entity, which is cached as well. |
@@ -153,10 +153,12 @@ calling the client conformant.
 | `rel == %@`, `!=`, `IN` with managed objects or object IDs | `Nav/Key eq …`, `not (…)`, `Nav/Key in (…)` | ✅ **live** | Compares keys through the to-one path; a compound key compares each part. An unsaved object is an error. |
 | `self == %@`, `self IN %@` | `Key eq …`, `Key in (…)` | ✅ | Inside a lambda, against the lambda variable. |
 | `ANY` / `ALL` on to-many | `Nav/any(x0:…)`, `Nav/all(x0:…)` | ✅ **live** | Split at the first to-many step; a further to-many step nests another lambda. `ANY` over a to-one path is the plain comparison. |
-| `SUBQUERY(…).@count` | `Nav/any(…)`, `Nav/$count` | ❌ | |
-| `rel.@count` | `Nav/$count` | ❌ | |
+| `SUBQUERY(…).@count` | `Nav/any(…)`, `not Nav/any(…)`, `Nav/all(…)` | ✅ | Counted against nought: more than none is `any`, none is `not any` (or `all` of a negated body). Any other count is an error. |
+| `rel.@count` | `Nav/$count` | ✅ | |
+| `entity == %@`, `entity IN %@` | `isof(NS.Type)`, `isof(Nav,NS.Type)` | ✅ | An exact type leaves its subentities out (`isof(A) and not isof(B)`); a subentity's property is written through a cast (`NS.Manager/Budget`). |
+| `name.length` | `length(Name)` | ✅ | |
 | `LIKE`, `MATCHES` | `matchesPattern` | ✅ | 4.01 only: an error against a 4.0 service. Anchored, since both match the whole string; `LIKE`'s `*` and `?` become `.*` and `.`, and `LIKE[c]` lowercases both sides. `MATCHES[c]` is an error, since a regular expression cannot be lowercased safely. |
-| Arithmetic (`+ - * /`, `modulus:by:`) | `add`, `sub`, `mul`, `div`, `mod` | ❌ | |
+| Arithmetic (`+ - * /`, `modulus:by:`) | `add`, `sub`, `mul`, `div`, `mod` | ✅ | As Apple and gnustep-base name the functions. A key path the model does not have is an error, not a guess. |
 | Date literals | `2024-01-01T12:00:00.5Z`, `2024-01-01` | ✅ **live** | Typed by the attribute compared with: a DateTimeOffset to the microsecond, an `Edm.Date` as the day. |
 | UUID literals | unquoted Guid | ✅ | |
 | Decimal and Int64 literals | `32.38`, `639260022539945567` | ✅ **live** | Every digit, never an exponent (gnustep-base writes `1E-10` for a small `NSDecimalNumber`; the literal is `0.0000000001`). A Boolean attribute compared with `@0` is `false`. |
