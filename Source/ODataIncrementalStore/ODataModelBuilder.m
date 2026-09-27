@@ -61,6 +61,12 @@ static NSString *OISPropertyName(NSString *wire, NSMutableSet *taken)
 static BOOL OISAttributeType(NSString *edm, ODataSchema *schema, NSAttributeType *type, NSString **marked)
 {
   *marked = nil;
+  // Any JSON value (the JSON vocabulary): Transformable, kept as it is.
+  if ([edm isEqualToString:@"Org.OData.JSON.V1.JSON"]) {
+    *type = NSTransformableAttributeType;
+    *marked = edm;
+    return YES;
+  }
   // A collection of what an attribute could hold, or a complex value:
   // Transformable, an NSArray or an NSDictionary (see ODataValue.h).
   if ([edm hasPrefix:@"Collection("] && [edm hasSuffix:@")"]) {
@@ -171,6 +177,13 @@ static void OISApplyVocabularies(NSDictionary<NSString *, id> *annotations, ODat
   if ([annotations[[core stringByAppendingString:@"Immutable"]] isEqual:@YES]) info[ODataUserInfoImmutable] = @"YES";
   id permissions = annotations[[core stringByAppendingString:@"Permissions"]];
   if ([permissions isKindOfClass:[NSString class]]) info[ODataUserInfoPermissions] = permissions;
+  NSString *measures = @"Org.OData.Measures.V1.";
+  id unit = annotations[[measures stringByAppendingString:@"Unit"]] ?: annotations[[measures stringByAppendingString:@"UNECEUnit"]];
+  if ([unit isKindOfClass:[NSString class]]) info[ODataUserInfoUnit] = unit;
+  id scale = annotations[[measures stringByAppendingString:@"Scale"]];
+  if ([scale isKindOfClass:[NSNumber class]]) info[ODataUserInfoScale] = [scale stringValue];
+  id currency = annotations[[measures stringByAppendingString:@"ISOCurrency"]];
+  if ([currency isKindOfClass:[NSString class]]) info[ODataUserInfoISOCurrency] = currency;
   if (annotations.count) {
     NSData *json = [NSJSONSerialization isValidJSONObject:annotations] ? [NSJSONSerialization dataWithJSONObject:annotations options:0 error:NULL] : nil;
     if (json) info[ODataUserInfoAnnotations] = [[NSString alloc] initWithData:json encoding:NSUTF8StringEncoding];
@@ -357,7 +370,8 @@ static void OISApplyVocabularies(NSDictionary<NSString *, id> *annotations, ODat
       attr.userInfo = info;
       if (attributeType == NSTransformableAttributeType) {
         attr.valueTransformerName = @"NSSecureUnarchiveFromData";
-        attr.attributeValueClassName = property.isCollection ? @"NSArray" : @"NSDictionary";
+        attr.attributeValueClassName = [marked isEqualToString:@"Org.OData.JSON.V1.JSON"] ? nil
+                                     : property.isCollection ? @"NSArray" : @"NSDictionary";
       }
       [own addObject:attr];
     }

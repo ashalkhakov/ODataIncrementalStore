@@ -451,6 +451,31 @@
 }
 @end
 
+// Loses the answer to the first write it carries, as a dropped connection
+// would: the service has done it, the client hears nothing.
+@interface OISLosingTransport : NSObject <ODataTransport>
+@property (nonatomic, strong) id<ODataTransport> next;
+@property (nonatomic) NSInteger lost;
+@property (atomic, strong) NSMutableArray<NSURLRequest *> *requests;
+@end
+
+@implementation OISLosingTransport
+- (void)startExchange:(ODataExchange *)exchange
+{
+  if (!self.requests) self.requests = [NSMutableArray array];
+  [self.requests addObject:exchange.request];
+  if (self.lost == 0 && ![exchange.request.HTTPMethod isEqualToString:@"GET"]) {
+    self.lost++;
+    ODataExchange *done = [[ODataExchange alloc] initWithRequest:exchange.request target:nil action:NULL];
+    [self.next startExchange:done];
+    exchange.error = [NSError errorWithDomain:NSURLErrorDomain code:NSURLErrorNetworkConnectionLost userInfo:nil];
+    [exchange finish];
+    return;
+  }
+  [self.next startExchange:exchange];
+}
+@end
+
 @interface ODataServiceTests : XCTestCase
 @end
 
@@ -794,7 +819,6 @@
   XCTAssertEqual([self get:@"Products?$filter=Colour eq 'red'"].status, 400, @"no such property");
   XCTAssertEqual([self get:@"Products?$filter=ProductName eq 1 add"].status, 400);
   XCTAssertEqual([self get:@"Products?$apply=groupby((Category))"].status, 501);
-  XCTAssertEqual([self get:@"Products?$search=chai"].status, 501);
   XCTAssertEqual([self get:@"Products?$filter=Flags has Default.Colour'Red'"].status, 400, @"no such property");
   XCTAssertEqual([self get:@"$batch"].status, 405, @"$batch takes POST");
   XCTAssertEqual([self get:@"Products?$format=xml"].status, 406);
@@ -2714,7 +2738,7 @@ static NSComparisonPredicate *OISValidation(NSString *keyPath, NSPredicateOperat
   XCTAssertEqualObjects([schema capability:@"Capabilities.BatchSupported" forEntitySet:nil], @YES);
   XCTAssertEqualObjects([[schema capability:@"Capabilities.BatchSupport" forEntitySet:nil] objectForKey:@"ContinueOnErrorSupported"], @YES);
   XCTAssertTrue([[schema capability:@"Capabilities.FilterFunctions" forEntitySet:nil] containsObject:@"year"]);
-  XCTAssertEqualObjects([schema capability:@"Capabilities.SearchRestrictions" forEntitySet:@"Categories"], @{ @"Searchable": @NO });
+  XCTAssertEqualObjects([schema capability:@"Capabilities.SearchRestrictions" forEntitySet:@"Categories"], @{ @"Searchable": @YES });
   XCTAssertEqualObjects([schema capability:@"Capabilities.FilterRestrictions" forEntitySet:@"Products"],
                         @{ @"NonFilterableProperties": @[ @{ @"$PropertyPath": @"QuantityPerUnit" } ] });
   NSArray *nonSortable = [schema capability:@"Capabilities.SortRestrictions" forEntitySet:@"Products"][@"NonSortableProperties"];
@@ -2760,6 +2784,155 @@ static NSComparisonPredicate *OISValidation(NSString *keyPath, NSPredicateOperat
   XCTAssertGreaterThan(transport.requests.count, before, @"asked again after the save");
 }
 
+// Parcels: an amount whose currency is another property, a weight in kg,
+// a JSON payload kept as it is and JSON notes kept as text.
+- (void)serveParcels
+{
+  NSEntityDescription *parcel = [[NSEntityDescription alloc] init];
+  parcel.name = @"Parcel";
+  parcel.managedObjectClassName = @"NSManagedObject";
+  parcel.userInfo = @{ @"OData.entitySet": @"Parcels" };
+  NSAttributeDescription *identifier = OISSwatchAttribute(@"id", NSInteger32AttributeType, nil);
+  identifier.userInfo = @{ @"OData.key": @"YES", @"OData.property": @"ParcelID" };
+  NSAttributeDescription *price = OISSwatchAttribute(@"price", NSDecimalAttributeType, nil);
+  price.userInfo = @{ @"OData.isoCurrency": @"currency" };
+  NSAttributeDescription *weight = OISSwatchAttribute(@"weight", NSDoubleAttributeType, nil);
+  weight.userInfo = @{ @"OData.unit": @"kg", @"OData.scale": @"2" };
+  NSAttributeDescription *payload = OISSwatchAttribute(@"payload", NSTransformableAttributeType, @"Org.OData.JSON.V1.JSON");
+  payload.valueTransformerName = @"NSSecureUnarchiveFromData";
+  NSAttributeDescription *notes = OISSwatchAttribute(@"notes", NSStringAttributeType, @"Org.OData.JSON.V1.JSON");
+  parcel.properties = @[ identifier, price, OISSwatchAttribute(@"currency", NSStringAttributeType, nil), weight, payload, notes ];
+  NSManagedObjectModel *model = [[NSManagedObjectModel alloc] init];
+  model.entities = @[ parcel ];
+  _coordinator = [[NSPersistentStoreCoordinator alloc] initWithManagedObjectModel:model];
+  NSError *error = nil;
+  XCTAssertNotNil([_coordinator addPersistentStoreWithType:NSInMemoryStoreType configuration:nil URL:nil options:nil error:&error], @"%@", error);
+  _service = [[ODataService alloc] initWithPersistentStoreCoordinator:_coordinator serviceRoot:[NSURL URLWithString:@"http://example.test/odata/"]];
+}
+
+// The Measures and JSON vocabularies, both ways.
+- (void)testMeasuresAndJSON
+{
+  [self serveParcels];
+  XCTAssertEqualObjects(_service.metadataProblems, @[]);
+  OISServiceResponse *metadata = [self get:@"$metadata"];
+  ODataSchema *schema = [ODataSchema schemaWithData:metadata.data error:NULL];
+  XCTAssertEqualObjects([schema annotation:@"Measures.ISOCurrency" forTarget:@"Default.Parcel/Price"], @{ @"$Path": @"Currency" });
+  XCTAssertEqualObjects([schema annotation:@"Measures.Unit" forTarget:@"Default.Parcel/Weight"], @"kg");
+  XCTAssertEqualObjects([schema annotation:@"Measures.Scale" forTarget:@"Default.Parcel/Weight"], @2);
+  ODataSchemaEntityType *type = [schema entityTypeNamed:@"Default.Parcel"];
+  XCTAssertEqualObjects([schema property:@"Payload" ofEntityType:type].type, @"Org.OData.JSON.V1.JSON");
+  XCTAssertTrue([metadata.text containsString:@"Org.OData.JSON.V1.xml"], @"the JSON vocabulary is referenced");
+
+  NSDictionary *payload = @{ @"a": @[ @1, @2 ], @"b": [NSNull null], @"c": @{ @"d": @"e" } };
+  OISServiceResponse *created = [self send:@"POST" path:@"Parcels" headers:nil body:@{
+    @"ParcelID": @1, @"Price": @9.5, @"Currency": @"EUR", @"Weight": @1.25, @"Payload": payload, @"Notes": @[ @"fragile", @3 ] }];
+  XCTAssertEqual(created.status, 201, @"%@", created.text);
+  NSDictionary *row = [self get:@"Parcels(1)"].json;
+  XCTAssertEqualObjects(row[@"Payload"], payload, @"JSON as it was");
+  XCTAssertEqualObjects(row[@"Notes"], (@[ @"fragile", @3 ]), @"JSON kept as text, read back as JSON");
+
+  // The client, with the model $metadata makes.
+  NSManagedObjectModel *model = [ODataModelBuilder modelWithSchema:schema];
+  NSEntityDescription *entity = model.entitiesByName[@"Parcel"];
+  XCTAssertEqual([entity.attributesByName[@"payload"] attributeType], NSTransformableAttributeType);
+  [ODataIncrementalStore registerStore];
+  NSPersistentStoreCoordinator *client = [[NSPersistentStoreCoordinator alloc] initWithManagedObjectModel:model];
+  NSError *error = nil;
+  XCTAssertNotNil([client addPersistentStoreWithType:[ODataIncrementalStore storeType] configuration:nil
+                                                 URL:[NSURL URLWithString:@"http://example.test/odata/"]
+                                             options:@{ ODataIncrementalStoreTransportOption: _service } error:&error], @"%@", error);
+  NSManagedObjectContext *context = [[NSManagedObjectContext alloc] init];
+  context.persistentStoreCoordinator = client;
+  NSManagedObject *fetched = [[context executeFetchRequest:[NSFetchRequest fetchRequestWithEntityName:@"Parcel"] error:&error] firstObject];
+  XCTAssertEqualObjects([fetched valueForKey:@"payload"], payload, @"%@", error);
+  XCTAssertEqualObjects([fetched valueForKey:@"notes"], (@[ @"fragile", @3 ]));
+  ODataPropertyMapper *mapper = [[ODataPropertyMapper alloc] init];
+  mapper.schema = schema;
+  XCTAssertEqualObjects([mapper unitOfAttribute:entity.attributesByName[@"weight"]], @"kg");
+  XCTAssertEqualObjects([mapper scaleOfAttribute:entity.attributesByName[@"weight"]], @2);
+  XCTAssertEqualObjects([mapper currencyOfAttribute:entity.attributesByName[@"price"] inObject:fetched], @"EUR");
+  XCTAssertNil([mapper unitOfAttribute:entity.attributesByName[@"price"]]);
+
+  [fetched setValue:@{ @"a": @"changed" } forKey:@"payload"];
+  XCTAssertTrue([context save:&error], @"%@", error);
+  XCTAssertEqualObjects([self get:@"Parcels(1)"].json[@"Payload"], @{ @"a": @"changed" });
+}
+
+static NSString *OISHTTPDate(NSDate *date)
+{
+  NSDateFormatter *formatter = [[NSDateFormatter alloc] init];
+  formatter.locale = [NSLocale localeWithLocaleIdentifier:@"en_US_POSIX"];
+  formatter.timeZone = [NSTimeZone timeZoneForSecondsFromGMT:0];
+  formatter.dateFormat = @"EEE, dd MMM yyyy HH:mm:ss 'GMT'";
+  return [formatter stringFromDate:date];
+}
+
+// Repeatable requests: the same request again is the same answer, not the
+// same change twice.
+- (void)testRepeatableRequests
+{
+  NSDictionary *headers = @{ @"Repeatability-Request-ID": @"3f7c", @"Repeatability-First-Sent": OISHTTPDate([NSDate date]) };
+  OISServiceResponse *first = [self send:@"POST" path:@"Categories" headers:headers body:@{ @"CategoryName": @"Seafood" }];
+  XCTAssertEqual(first.status, 201, @"%@", first.text);
+  XCTAssertEqualObjects([first header:@"Repeatability-Result"], @"accepted");
+  OISServiceResponse *again = [self send:@"POST" path:@"Categories" headers:headers body:@{ @"CategoryName": @"Seafood" }];
+  XCTAssertEqual(again.status, 201);
+  XCTAssertEqualObjects(again.json[@"CategoryID"], first.json[@"CategoryID"], @"the same answer");
+  XCTAssertEqualObjects([self get:@"Categories/$count"].text, @"3", @"made once");
+
+  XCTAssertEqualObjects([[self send:@"POST" path:@"Categories" headers:headers body:@{ @"CategoryName": @"Grains" }] header:@"Repeatability-Result"], @"rejected",
+                        @"the ID of another request");
+  NSDictionary *old = @{ @"Repeatability-Request-ID": @"9a0b", @"Repeatability-First-Sent": OISHTTPDate([NSDate dateWithTimeIntervalSinceNow:-7200]) };
+  OISServiceResponse *stale = [self send:@"POST" path:@"Categories" headers:old body:@{ @"CategoryName": @"Grains" }];
+  XCTAssertEqual(stale.status, 400);
+  XCTAssertEqualObjects([stale header:@"Repeatability-Result"], @"rejected");
+  XCTAssertEqual(([self send:@"POST" path:@"Categories" headers:@{ @"Repeatability-Request-ID": @"x" } body:@{ @"CategoryName": @"G" }].status), 400,
+                 @"no First-Sent");
+  XCTAssertNil([[self send:@"GET" path:@"Categories" headers:headers data:nil] header:@"Repeatability-Result"], @"reads are not remembered");
+  ODataSchema *schema = [ODataSchema schemaWithData:[self get:@"$metadata"].data error:NULL];
+  XCTAssertEqualObjects([schema annotation:@"Repeatability.Supported" forTarget:schema.containerName], @YES);
+
+  // The client: a write whose answer is lost is sent again, and made once.
+  OISLosingTransport *transport = [[OISLosingTransport alloc] init];
+  transport.next = _service;
+  NSError *error = nil;
+  NSManagedObjectContext *context = [self clientOver:transport options:nil error:&error];
+  XCTAssertNotNil(context, @"%@", error);
+  NSManagedObject *category = [NSEntityDescription insertNewObjectForEntityForName:@"Category" inManagedObjectContext:context];
+  [category setValue:@"Produce" forKey:@"name"];
+  XCTAssertTrue([context save:&error], @"%@", error);
+  XCTAssertEqual(transport.lost, 1);
+  NSArray *posts = [transport.requests filteredArrayUsingPredicate:[NSPredicate predicateWithFormat:@"HTTPMethod == 'POST'"]];
+  XCTAssertEqual(posts.count, 2u, @"sent twice");
+  XCTAssertEqualObjects([posts[0] valueForHTTPHeaderField:@"Repeatability-Request-ID"], [posts[1] valueForHTTPHeaderField:@"Repeatability-Request-ID"]);
+  XCTAssertEqualObjects([self get:@"Categories/$count"].text, @"4", @"and made once");
+
+  _service.repeatabilityDuration = 0;
+  headers = @{ @"Repeatability-Request-ID": @"off", @"Repeatability-First-Sent": OISHTTPDate([NSDate date]) };
+  [self send:@"POST" path:@"Categories" headers:headers body:@{ @"CategoryName": @"A" }];
+  [self send:@"POST" path:@"Categories" headers:headers body:@{ @"CategoryName": @"A" }];
+  XCTAssertEqualObjects([self get:@"Categories/$count"].text, @"6", @"off: each made");
+}
+
+// $metadata in CSDL JSON, asked for by $format or Accept.
+- (void)testMetadataInJSON
+{
+  for (OISServiceResponse *response in @[ [self get:@"$metadata?$format=json"],
+                                          [self send:@"GET" path:@"$metadata" headers:@{ @"Accept": @"application/json" } data:nil] ]) {
+    XCTAssertEqual(response.status, 200, @"%@", response.text);
+    XCTAssertTrue([[response header:@"Content-Type"] hasPrefix:@"application/json"]);
+    NSDictionary *json = response.json;
+    XCTAssertEqualObjects(json[@"$EntityContainer"], @"Default.Container");
+    XCTAssertEqualObjects(json[@"Default"][@"Product"][@"$Key"], @[ @"ProductID" ]);
+    XCTAssertEqualObjects(json[@"Default"][@"Container"][@"Products"][@"$Type"], @"Default.Product");
+    ODataSchema *schema = [ODataSchema schemaWithData:response.data error:NULL];
+    XCTAssertEqualObjects(schema.entitySets[@"Products"], @"Default.Product", @"and it reads as CSDL");
+  }
+  XCTAssertTrue([[[self send:@"GET" path:@"$metadata" headers:@{ @"Accept": @"application/xml, application/json" } data:nil] header:@"Content-Type"] hasPrefix:@"application/xml"]);
+  XCTAssertEqual([self get:@"$metadata?$format=atom"].status, 406);
+}
+
 // $metadata is written with NSXML: whatever a name or an annotation holds
 // is escaped, and reads back as it was.
 - (void)testMetadataIsWellFormedWhateverItHolds
@@ -2774,6 +2947,187 @@ static NSComparisonPredicate *OISValidation(NSString *keyPath, NSPredicateOperat
   XCTAssertEqualObjects([schema annotation:@"Core.Description" forTarget:schema.containerName], tricky);
   XCTAssertEqualObjects([schema annotation:@"Core.LongDescription" forTarget:schema.containerName], (@[ @"a<b", @{ @"$Path": @"x&y" } ]));
   XCTAssertEqualObjects(schema.entitySets[@"Products"], @"Default.Product", @"the rest as before");
+}
+
+- (NSArray *)productIDsSearching:(NSString *)search more:(NSString *)more
+{
+  NSString *path = [NSString stringWithFormat:@"Products?$search=%@&$select=ProductID&$orderby=ProductID%@", search, more ?: @""];
+  OISServiceResponse *response = [self get:path];
+  XCTAssertEqual(response.status, 200, @"%@: %@", search, response.text);
+  return [response.json[@"value"] valueForKey:@"ProductID"];
+}
+
+// $search: each word or phrase in a string property, regardless of case
+// and diacritics.
+- (void)testSearch
+{
+  // Chai, Chang, Aniseed Syrup, Chef Anton's Cajun Seasoning, Chef Anton's Gumbo Mix.
+  NSDictionary *expected = @{
+    @"chef": @[ @4, @5 ],
+    @"chef gumbo": @[ @5 ],
+    @"chef AND gumbo": @[ @5 ],
+    @"chai OR syrup": @[ @1, @3 ],
+    @"NOT chef": @[ @1, @2, @3 ],
+    @"\"anton's cajun\"": @[ @4 ],
+    @"ANISEED": @[ @3 ],
+    @"chaï": @[ @1 ],
+    @"(chai OR chang) NOT chai": @[ @2 ],
+  };
+  for (NSString *search in expected) {
+    XCTAssertEqualObjects([self productIDsSearching:search more:nil], expected[search], @"%@", search);
+  }
+  XCTAssertEqualObjects([self productIDsSearching:@"chef" more:@"&$filter=Discontinued eq false"], @[ @4 ], @"with $filter");
+  XCTAssertEqualObjects([self get:@"Products/$count?$search=chef"].text, @"2");
+  NSArray *expanded = [self get:@"Categories(2)?$expand=Products($search=chef;$select=ProductID)"].json[@"Products"];
+  XCTAssertEqualObjects([[expanded valueForKey:@"ProductID"] sortedArrayUsingSelector:@selector(compare:)], (@[ @4, @5 ]));
+  XCTAssertEqual([self get:@"Products?$search=AND"].status, 400);
+  XCTAssertEqual([self get:@"Products?$search=\"open"].status, 400);
+
+  // Only where the set says.
+  ODataEntitySetHandler *products = [[ODataEntitySetHandler alloc] initWithEntity:OISCatalogEntity(@"Product")];
+  products.searchableProperties = [NSSet setWithObject:@"QuantityPerUnit"];
+  [_service setHandler:products forEntitySet:@"Products"];
+  XCTAssertEqualObjects([self productIDsSearching:@"chai" more:nil], @[]);
+  products.searchableProperties = [NSSet set];
+  XCTAssertEqual([self get:@"Products?$search=chai"].status, 501);
+  ODataSchema *schema = [ODataSchema schemaWithData:[self get:@"$metadata"].data error:NULL];
+  XCTAssertEqualObjects([schema capability:@"Capabilities.SearchRestrictions" forEntitySet:@"Products"], @{ @"Searchable": @NO });
+}
+
+- (NSArray *)applied:(NSString *)query
+{
+  OISServiceResponse *response = [self get:[@"Products?" stringByAppendingString:query]];
+  XCTAssertEqual(response.status, 200, @"%@: %@", query, response.text);
+  return response.json[@"value"];
+}
+
+// $apply (Data Aggregation): filter, groupby and aggregate.
+- (void)testApply
+{
+  // Prices 18, 19 (Beverages); 10, 22, 21.35 (Condiments, the last discontinued).
+  NSDictionary *total = [[self applied:@"$apply=aggregate(UnitPrice with sum as Total,$count as N)"] firstObject];
+  XCTAssertEqualWithAccuracy([total[@"Total"] doubleValue], 90.35, 1e-9);
+  XCTAssertEqualObjects(total[@"N"], @5);
+  XCTAssertTrue([total objectForKey:@"@odata.id"] == [NSNull null], @"an aggregate has no id");
+
+  OISServiceResponse *grouped = [self get:@"Products?$apply=groupby((Category/CategoryName),aggregate(UnitPrice with sum as Total))&$orderby=Category/CategoryName"];
+  XCTAssertEqualObjects(grouped.json[@"@odata.context"], @"http://example.test/odata/$metadata#Products(Category(CategoryName),Total)");
+  NSArray *rows = grouped.json[@"value"];
+  XCTAssertEqualObjects([rows valueForKeyPath:@"Category.CategoryName"], (@[ @"Beverages", @"Condiments" ]));
+  XCTAssertEqualWithAccuracy([rows[0][@"Total"] doubleValue], 37.0, 1e-9);
+  XCTAssertEqualWithAccuracy([rows[1][@"Total"] doubleValue], 53.35, 1e-9);
+
+  rows = [self applied:@"$apply=filter(Discontinued eq false)/groupby((Category/CategoryName),aggregate(UnitPrice with max as Top,UnitPrice with min as Bottom))&$orderby=Top desc"];
+  XCTAssertEqualObjects([rows valueForKeyPath:@"Category.CategoryName"], (@[ @"Condiments", @"Beverages" ]));
+  XCTAssertEqualObjects([rows valueForKey:@"Top"], (@[ @22, @19 ]));
+  XCTAssertEqualObjects([rows valueForKey:@"Bottom"], (@[ @10, @18 ]));
+
+  rows = [self applied:@"$apply=groupby((Category/CategoryName),aggregate($count as N))/filter(N gt 2)"];
+  XCTAssertEqualObjects([rows valueForKeyPath:@"Category.CategoryName"], @[ @"Condiments" ], @"a filter after grouping");
+  rows = [self applied:@"$apply=groupby((Category/CategoryName),aggregate($count as N))&$filter=N lt 3&$count=true"];
+  XCTAssertEqualObjects([rows valueForKeyPath:@"Category.CategoryName"], @[ @"Beverages" ], @"$filter on the result");
+  rows = [self applied:@"$apply=groupby((Discontinued))&$orderby=Discontinued"];
+  XCTAssertEqualObjects([rows valueForKey:@"Discontinued"], (@[ @NO, @YES ]));
+  rows = [self applied:@"$apply=groupby((Category/CategoryName,Discontinued))&$orderby=Category/CategoryName,Discontinued&$top=2&$skip=1"];
+  XCTAssertEqual(rows.count, 2u);
+  XCTAssertEqualWithAccuracy([[[self applied:@"$apply=aggregate(UnitPrice with average as Mean)"] firstObject][@"Mean"] doubleValue], 18.07, 1e-9);
+  XCTAssertEqualObjects([[self applied:@"$apply=aggregate(Category/CategoryName with countdistinct as Kinds)"] firstObject][@"Kinds"], @2);
+  XCTAssertEqualObjects([[self applied:@"$apply=filter(UnitPrice gt 30)/aggregate(UnitPrice with sum as Total)"] firstObject][@"Total"], [NSNull null],
+                        @"the sum of nothing is null");
+  XCTAssertEqualObjects([[self applied:@"$apply=filter(UnitPrice gt 20)&$orderby=ProductID"] valueForKey:@"ProductID"], (@[ @4, @5 ]),
+                        @"filter alone: entities");
+
+  XCTAssertEqual([self get:@"Products?$apply=topcount(2,UnitPrice)"].status, 501);
+  XCTAssertEqual([self get:@"Products?$apply=aggregate(UnitPrice with Custom.concat as X)"].status, 501);
+  XCTAssertEqual([self get:@"Products?$apply=aggregate(UnitPrice sum)"].status, 400);
+  XCTAssertEqual([self get:@"Products?$apply=groupby((Nothing))"].status, 400);
+  ODataSchema *schema = [ODataSchema schemaWithData:[self get:@"$metadata"].data error:NULL];
+  XCTAssertNotNil([schema annotation:@"Org.OData.Aggregation.V1.ApplySupported" forTarget:schema.containerName]);
+}
+
+static NSExpressionDescription *OISAggregateOf(NSString *function, NSString *keyPath, NSString *name, NSAttributeType type)
+{
+  NSExpressionDescription *description = [[NSExpressionDescription alloc] init];
+  description.name = name;
+  description.expression = [NSExpression expressionForFunction:function arguments:@[ [NSExpression expressionForKeyPath:keyPath] ]];
+  description.expressionResultType = type;
+  return description;
+}
+
+// Grouped and aggregated dictionary fetches: by $apply where the service
+// has it, here where it does not; the same rows either way.
+- (void)testClientsGroupAndAggregate
+{
+  for (NSNumber *applies in @[ @YES, @NO ]) {
+    if (!applies.boolValue) _service.containerAnnotations = @{ @"Aggregation.ApplySupported": [NSNull null] };
+    OISRecordingTransport *transport = [[OISRecordingTransport alloc] init];
+    transport.next = _service;
+    NSError *error = nil;
+    NSManagedObjectContext *context = [self clientOver:transport options:nil error:&error];
+    XCTAssertNotNil(context, @"%@", error);
+
+    NSFetchRequest *fetch = [NSFetchRequest fetchRequestWithEntityName:@"Product"];
+    fetch.resultType = NSDictionaryResultType;
+    fetch.propertiesToGroupBy = @[ @"category.name" ];
+    fetch.propertiesToFetch = @[ @"category.name", OISAggregateOf(@"sum:", @"unitPrice", @"total", NSDecimalAttributeType),
+                                 OISAggregateOf(@"count:", @"id", @"n", NSInteger64AttributeType),
+                                 OISAggregateOf(@"max:", @"unitPrice", @"top", NSDecimalAttributeType) ];
+    fetch.sortDescriptors = @[ [NSSortDescriptor sortDescriptorWithKey:@"category.name" ascending:YES] ];
+    NSArray *rows = [context executeFetchRequest:fetch error:&error];
+    XCTAssertEqual(rows.count, 2u, @"%@: %@", applies, error);
+    XCTAssertEqualObjects([rows valueForKey:@"category.name"], (@[ @"Beverages", @"Condiments" ]), @"%@", applies);
+    XCTAssertEqualObjects([rows valueForKey:@"n"], (@[ @2, @3 ]), @"%@", applies);
+    XCTAssertEqualObjects(rows[1][@"total"], [NSDecimalNumber decimalNumberWithString:@"53.35"], @"%@", applies);
+    XCTAssertEqualObjects(rows[1][@"top"], [NSDecimalNumber decimalNumberWithString:@"22"], @"%@", applies);
+    NSString *query = [[transport.requests.lastObject URL] query] ?: @"";
+    XCTAssertEqual([query containsString:@"$apply="], applies.boolValue, @"%@: %@", applies, query);
+
+    // Filtered first, then kept or not by the having predicate.
+    fetch.predicate = [NSPredicate predicateWithFormat:@"discontinued == NO"];
+    fetch.havingPredicate = [NSPredicate predicateWithFormat:@"total > 35"];
+    rows = [context executeFetchRequest:fetch error:&error];
+    XCTAssertEqualObjects([rows valueForKey:@"category.name"], @[ @"Beverages" ], @"%@: %@", applies, error);
+
+    // No grouping: one row for them all.
+    NSFetchRequest *all = [NSFetchRequest fetchRequestWithEntityName:@"Product"];
+    all.resultType = NSDictionaryResultType;
+    all.propertiesToFetch = @[ OISAggregateOf(@"average:", @"unitPrice", @"mean", NSDoubleAttributeType) ];
+    rows = [context executeFetchRequest:all error:&error];
+    XCTAssertEqual(rows.count, 1u, @"%@", error);
+    XCTAssertEqualWithAccuracy([rows.firstObject[@"mean"] doubleValue], 18.07, 1e-9, @"%@", applies);
+
+    all.propertiesToFetch = @[ @"name", OISAggregateOf(@"sum:", @"unitPrice", @"total", NSDecimalAttributeType) ];
+    XCTAssertNil([context executeFetchRequest:all error:&error], @"what is fetched is grouped by");
+  }
+}
+
+// The client's $search: ODataSearchPredicate at the top of the predicate.
+- (void)testClientsSearch
+{
+  OISRecordingTransport *transport = [[OISRecordingTransport alloc] init];
+  transport.next = _service;
+  NSError *error = nil;
+  NSManagedObjectContext *context = [self clientOver:transport options:nil error:&error];
+  XCTAssertNotNil(context, @"%@", error);
+  NSFetchRequest *fetch = [NSFetchRequest fetchRequestWithEntityName:@"Product"];
+  fetch.predicate = [NSCompoundPredicate andPredicateWithSubpredicates:@[
+    [ODataSearchPredicate predicateWithSearch:@"chef"], [NSPredicate predicateWithFormat:@"unitPrice > 21.5"] ]];
+  NSArray *rows = [context executeFetchRequest:fetch error:&error];
+  XCTAssertEqualObjects([rows valueForKey:@"name"], @[ @"Chef Anton's Cajun Seasoning" ], @"%@", error);
+  NSString *query = [[transport.requests.lastObject URL] query];
+  XCTAssertTrue([query containsString:@"$search=chef"], @"%@", query);
+  XCTAssertTrue([query containsString:@"$filter="], @"%@", query);
+
+  fetch.predicate = [ODataSearchPredicate predicateWithSearch:@"chai OR syrup"];
+  XCTAssertEqual([context countForFetchRequest:fetch error:&error], 2u, @"%@", error);
+  XCTAssertTrue([[transport.requests.lastObject URL].path hasSuffix:@"/$count"]);
+
+  fetch.predicate = [NSCompoundPredicate orPredicateWithSubpredicates:@[
+    [ODataSearchPredicate predicateWithSearch:@"chef"], [NSPredicate predicateWithFormat:@"unitPrice > 21.5"] ]];
+  XCTAssertNil([context executeFetchRequest:fetch error:&error]);
+  XCTAssertEqual(error.code, ODataIncrementalStoreErrorUnsupportedPredicate, @"not under OR: %@", error);
+  XCTAssertTrue([[ODataSearchPredicate predicateWithSearch:@"anton NOT gumbo"] evaluateWithObject:@{ @"n": @"Chef Anton's Cajun" }]);
+  XCTAssertNil([ODataSearchPredicate predicateWithSearch:@"(" error:&error]);
 }
 
 // Capabilities.FilterFunctions: a function it leaves out is not tried

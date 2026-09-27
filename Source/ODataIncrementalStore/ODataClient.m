@@ -143,9 +143,21 @@
 - (ODataHTTPResponse *)sendRequest:(NSURLRequest *)request error:(NSError **)error
 {
   NSError *failure = nil;
+  // Its repeatability headers once, so that a repeat is the same request.
+  NSMutableURLRequest *prepared = [request mutableCopy];
+  [self.configuration applyToRequest:prepared];
+  request = prepared;
   ODataHTTPResponse *response = [self waitFor:^ODataExchange *(OISWaiter *waiter) {
     return [self sendRequest:request target:waiter action:@selector(exchangeDidFinish:)];
   } error:&failure].response;
+  // No answer at all to a repeatable request: sent again, the same.
+  for (int again = 0; again < 2 && !response && [request valueForHTTPHeaderField:@"Repeatability-Request-ID"] &&
+                      !failure.userInfo[ODataErrorHTTPStatusKey]; again++) {
+    failure = nil;
+    response = [self waitFor:^ODataExchange *(OISWaiter *waiter) {
+      return [self sendRequest:request target:waiter action:@selector(exchangeDidFinish:)];
+    } error:&failure].response;
+  }
   BOOL refused = !response && [failure.userInfo[ODataErrorHTTPStatusKey] integerValue] == 401;
   // Refused: once more, with a fresh token from the provider.
   if (refused && [self.configuration refreshCredentials]) {

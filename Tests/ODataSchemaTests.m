@@ -566,6 +566,114 @@ static NSString *const OIS401CSDL =
   XCTAssertEqualObjects([configuration versionForService:read(csdl(@"4.0", @"<Annotation Term=\"Org.OData.Core.V1.ODataVersions\" String=\"4.0 4.01\"/>")).version], @"4.01");
 }
 
+// What a schema knows, to compare two readings of one document.
+static NSDictionary *OISSchemaFacts(ODataSchema *schema)
+{
+  NSMutableDictionary *facts = [NSMutableDictionary dictionary];
+  facts[@"version"] = schema.version ?: @"";
+  facts[@"sets"] = schema.entitySets ?: @{};
+  facts[@"container"] = schema.containerName ?: @"";
+  for (NSString *name in schema.entityTypes) {
+    ODataSchemaEntityType *type = schema.entityTypes[name];
+    NSMutableDictionary *t = [NSMutableDictionary dictionary];
+    t[@"key"] = [schema keyOfEntityType:type];
+    t[@"base"] = type.baseType ?: @"";
+    t[@"abstract"] = @(type.isAbstract);
+    t[@"stream"] = @(type.hasStream);
+    for (NSString *p in type.declaredProperties) {
+      ODataSchemaProperty *property = type.declaredProperties[p];
+      t[p] = [NSString stringWithFormat:@"%@ %d %@", property.type, property.nullable, property.maxLength];
+    }
+    for (NSString *n in type.declaredNavigationProperties) {
+      ODataSchemaNavigationProperty *navigation = type.declaredNavigationProperties[n];
+      t[n] = [NSString stringWithFormat:@"%@ %d %@ %d", navigation.type, navigation.isCollection, navigation.partner, navigation.containsTarget];
+    }
+    facts[name] = t;
+  }
+  for (NSString *name in schema.enumTypes) facts[name] = schema.enumTypes[name].values;
+  for (NSString *name in schema.complexTypes) {
+    NSMutableDictionary *t = [NSMutableDictionary dictionary];
+    for (NSString *p in schema.complexTypes[name].declaredProperties) t[p] = schema.complexTypes[name].declaredProperties[p].type;
+    facts[name] = t;
+  }
+  for (NSString *name in schema.operations) {
+    NSMutableArray *overloads = [NSMutableArray array];
+    for (ODataSchemaOperation *operation in schema.operations[name]) {
+      [overloads addObject:[NSString stringWithFormat:@"%d %d %@ %@", operation.isAction, operation.isBound, operation.returnType,
+                            [[operation.parameters valueForKey:@"name"] componentsJoinedByString:@","]]];
+    }
+    facts[name] = [overloads sortedArrayUsingSelector:@selector(compare:)];
+  }
+  facts[@"imports"] = [schema.operationImports.allKeys sortedArrayUsingSelector:@selector(compare:)];
+  facts[@"annotations"] = schema.annotations ?: @{};
+  return facts;
+}
+
+// CSDL JSON (4.01): the same schema as the XML it is turned from, and back.
+- (void)testCSDLInJSON
+{
+  NSString *zoo = [[NSString alloc] initWithData:[NSData dataWithContentsOfFile:[OISSnapshotDirectory() stringByAppendingPathComponent:@"Zoo/metadata.json"]] encoding:NSUTF8StringEncoding];
+  NSString *zooXML = [NSJSONSerialization JSONObjectWithData:[zoo dataUsingEncoding:NSUTF8StringEncoding] options:0 error:NULL][@"response"][@"bodyXML"];
+  for (NSString *xml in @[ OIS401CSDL, OISAnnotatedCSDL, zooXML ]) {
+    NSData *data = [xml dataUsingEncoding:NSUTF8StringEncoding];
+    NSError *error = nil;
+    NSData *json = [ODataCSDL JSONDataForXMLData:data error:&error];
+    XCTAssertNotNil(json, @"%@", error);
+    ODataSchema *direct = [ODataSchema schemaWithData:data error:&error];
+    ODataSchema *throughJSON = [ODataSchema schemaWithData:json error:&error];
+    XCTAssertNotNil(throughJSON, @"%@\n%@", error, [[NSString alloc] initWithData:json encoding:NSUTF8StringEncoding]);
+    NSDictionary *a = OISSchemaFacts(direct), *b = OISSchemaFacts(throughJSON);
+    for (NSString *key in a) XCTAssertEqualObjects(b[key], a[key], @"%@", key);
+    XCTAssertEqualObjects([NSSet setWithArray:b.allKeys], [NSSet setWithArray:a.allKeys]);
+  }
+
+  NSDictionary *json = [NSJSONSerialization JSONObjectWithData:[ODataCSDL JSONDataForXMLData:[OIS401CSDL dataUsingEncoding:NSUTF8StringEncoding] error:NULL] options:0 error:NULL];
+  XCTAssertEqualObjects(json[@"$Version"], @"4.01");
+  XCTAssertEqualObjects(json[@"$EntityContainer"], @"Shop.Container");
+  NSDictionary *store = json[@"Shop"][@"Store"];
+  XCTAssertEqualObjects(store[@"$Kind"], @"EntityType");
+  XCTAssertEqualObjects(store[@"$Key"], (@[ @{ @"Zip": @"Address/Zip" } ]));
+  XCTAssertEqualObjects(store[@"Tags"], (@{ @"$Collection": @YES, @"$Nullable": @YES }), @"Edm.String is the default type");
+  XCTAssertEqualObjects(store[@"Address"], (@{ @"$Type": @"S.Address" }), @"not nullable: the default");
+  XCTAssertEqualObjects(store[@"Ratio"][@"$Scale"], @"floating");
+  XCTAssertEqualObjects(store[@"@S.Rating"], @5);
+  XCTAssertEqualObjects(store[@"Shelves"][@"$OnDelete"], @"Cascade");
+  XCTAssertEqual([json[@"Shop"][@"Restock"] count], 2u, @"overloads");
+  XCTAssertEqualObjects(json[@"Shop"][@"Container"][@"Hidden"][@"$IncludeInServiceDocument"], @NO);
+  XCTAssertEqualObjects(json[@"Shop"][@"Container"][@"@Core.ODataVersions"], @"4.0 4.01");
+
+  // As the specification writes it (CSDL JSON section 3).
+  NSString *spec = @"{\"$Version\":\"4.01\",\"$EntityContainer\":\"ODataDemo.DemoService\","
+    @"\"$Reference\":{\"https://oasis-tcs.github.io/odata-vocabularies/vocabularies/Org.OData.Core.V1.json\":{\"$Include\":[{\"$Namespace\":\"Org.OData.Core.V1\",\"$Alias\":\"Core\"}]}},"
+    @"\"ODataDemo\":{\"$Alias\":\"self\","
+    @"\"Product\":{\"$Kind\":\"EntityType\",\"$HasStream\":true,\"$Key\":[\"ID\"],\"ID\":{},\"Description\":{\"$Nullable\":true,\"@Core.IsLanguageDependent\":true},"
+    @"\"ReleaseDate\":{\"$Nullable\":true,\"$Type\":\"Edm.Date\"},\"Rating\":{\"$Nullable\":true,\"$Type\":\"Edm.Int32\"},\"Price\":{\"$Nullable\":true,\"$Type\":\"Edm.Decimal\",\"$Scale\":\"variable\"},"
+    @"\"Category\":{\"$Kind\":\"NavigationProperty\",\"$Type\":\"self.Category\",\"$Partner\":\"Products\"}},"
+    @"\"Category\":{\"$Kind\":\"EntityType\",\"$Key\":[\"ID\"],\"ID\":{\"$Type\":\"Edm.Int32\"},\"Name\":{\"$Nullable\":true,\"@Core.IsLanguageDependent\":true},"
+    @"\"Products\":{\"$Kind\":\"NavigationProperty\",\"$Partner\":\"Category\",\"$Collection\":true,\"$Type\":\"self.Product\",\"$OnDelete\":\"Cascade\"}},"
+    @"\"ShippingMethod\":{\"$Kind\":\"EnumType\",\"FirstClass\":0,\"TwoDay\":1,\"Overnight\":2},"
+    @"\"ProductsByRating\":[{\"$Kind\":\"Function\",\"$Parameter\":[{\"$Name\":\"Rating\",\"$Type\":\"Edm.Int32\",\"$Nullable\":true}],\"$ReturnType\":{\"$Collection\":true,\"$Type\":\"self.Product\"}}],"
+    @"\"DemoService\":{\"$Kind\":\"EntityContainer\",\"Products\":{\"$Collection\":true,\"$Type\":\"self.Product\",\"$NavigationPropertyBinding\":{\"Category\":\"Categories\"}},"
+    @"\"Categories\":{\"$Collection\":true,\"$Type\":\"self.Category\",\"$NavigationPropertyBinding\":{\"Products\":\"Products\"},\"@Core.Description\":\"Product Categories\"},"
+    @"\"ProductsByRating\":{\"$EntitySet\":\"Products\",\"$Function\":\"self.ProductsByRating\"}}}}";
+  NSError *error = nil;
+  ODataSchema *schema = [ODataSchema schemaWithData:[spec dataUsingEncoding:NSUTF8StringEncoding] error:&error];
+  XCTAssertNotNil(schema, @"%@", error);
+  ODataSchemaEntityType *product = [schema entityTypeNamed:@"ODataDemo.Product"];
+  XCTAssertTrue(product.hasStream);
+  XCTAssertEqualObjects([schema keyOfEntityType:product], @[ @"ID" ]);
+  XCTAssertEqualObjects([schema property:@"ID" ofEntityType:product].type, @"Edm.String");
+  XCTAssertFalse([schema property:@"ID" ofEntityType:product].nullable);
+  XCTAssertTrue([schema property:@"Rating" ofEntityType:product].nullable);
+  XCTAssertEqualObjects([schema navigationProperty:@"Category" ofEntityType:product].partner, @"Products");
+  XCTAssertEqualObjects(schema.entitySets[@"Categories"], @"ODataDemo.Category");
+  XCTAssertEqualObjects([schema enumTypeNamed:@"ODataDemo.ShippingMethod"].values[@"Overnight"], @2);
+  XCTAssertEqualObjects([schema annotation:@"Core.Description" forTarget:@"ODataDemo.DemoService/Categories"], @"Product Categories");
+  XCTAssertEqualObjects([schema annotation:@"Core.IsLanguageDependent" forTarget:@"ODataDemo.Category/Name"], @YES);
+  XCTAssertEqual(schema.operations[@"ODataDemo.ProductsByRating"].count, 1u);
+  XCTAssertNil([ODataSchema schemaWithData:[@"{\"nothing\":1}" dataUsingEncoding:NSUTF8StringEncoding] error:&error]);
+}
+
 - (void)testIdentifiersAreSpelledAsTheSchemaSpellsThem
 {
   ODataSchema *schema = _store.schema;

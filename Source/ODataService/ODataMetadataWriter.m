@@ -297,6 +297,9 @@ static void OISAddChildren(NSXMLElement *parent, NSArray<NSXMLElement *> *childr
   if ([permissions isKindOfClass:[NSString class]]) {
     annotations[[OISCore stringByAppendingString:@".Permissions"]] = @{ @"$EnumMember": [NSString stringWithFormat:@"Org.OData.Core.V1.Permission/%@", permissions] };
   }
+  NSString *measures = @"Org.OData.Measures.V1.";
+  if ([userInfo[ODataUserInfoUnit] isKindOfClass:[NSString class]]) annotations[[measures stringByAppendingString:@"Unit"]] = userInfo[ODataUserInfoUnit];
+  if (userInfo[ODataUserInfoScale]) annotations[[measures stringByAppendingString:@"Scale"]] = @([userInfo[ODataUserInfoScale] integerValue]);
   id more = userInfo[ODataUserInfoAnnotations];
   if ([more isKindOfClass:[NSString class]]) {
     more = [NSJSONSerialization JSONObjectWithData:[more dataUsingEncoding:NSUTF8StringEncoding] options:0 error:NULL];
@@ -321,7 +324,7 @@ static void OISAddChildren(NSXMLElement *parent, NSArray<NSXMLElement *> *childr
   for (NSString *part in parts) {
     NSRange dot = [part rangeOfString:@"."];
     NSString *head = dot.location == NSNotFound ? nil : [part substringToIndex:dot.location];
-    BOOL standard = head && [@[ @"Core", @"Validation", @"Capabilities", @"Authorization", @"Measures" ] containsObject:head] &&
+    BOOL standard = head && [@[ @"Core", @"Validation", @"Capabilities", @"Authorization", @"Measures", @"Aggregation", @"JSON", @"Repeatability" ] containsObject:head] &&
                     [[part substringFromIndex:dot.location + 1] rangeOfString:@"."].location == NSNotFound;
     [full addObject:standard ? [NSString stringWithFormat:@"Org.OData.%@.V1%@", head, [part substringFromIndex:dot.location]] : part];
   }
@@ -391,6 +394,12 @@ static void OISAddChildren(NSXMLElement *parent, NSArray<NSXMLElement *> *childr
     }
   }
   [annotations addEntriesFromDictionary:[self annotationsFromUserInfo:attribute.userInfo]];
+  // An amount's currency: a code, or the attribute that holds one, as a path.
+  id currency = attribute.userInfo[ODataUserInfoISOCurrency];
+  if ([currency isKindOfClass:[NSString class]]) {
+    NSAttributeDescription *holder = attribute.entity.attributesByName[currency];
+    annotations[@"Org.OData.Measures.V1.ISOCurrency"] = holder ? @{ @"$Path": [self.mapper propertyForAttribute:holder] } : currency;
+  }
   return annotations;
 }
 
@@ -454,7 +463,9 @@ static void OISAddChildren(NSXMLElement *parent, NSArray<NSXMLElement *> *childr
         continue;
       }
       NSString *element = OISElementTypeOf(edm);
-      if (![element hasPrefix:@"Edm."]) {
+      if ([element isEqualToString:@"Org.OData.JSON.V1.JSON"]) {
+        [self useTerm:element];  // JSON values (the JSON vocabulary), referenced
+      } else if (![element hasPrefix:@"Edm."]) {
         if (!self.mapper.schema.complexTypes[element] && !self.mapper.schema.enumTypes[element]) {
           [_problems addObject:[NSString stringWithFormat:@"%@.%@ is a %@, which no schema defines", entity.name, attr.name, element]];
           continue;

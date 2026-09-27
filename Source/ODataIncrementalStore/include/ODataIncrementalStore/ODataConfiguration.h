@@ -96,6 +96,12 @@ FOUNDATION_EXPORT NSString * const ODataIncrementalStoreCredentialProviderOption
 @property (nonatomic) BOOL postOnObtainPermanentIDs;
 @property (nonatomic) BOOL IEEE754Compatible;
 @property (nonatomic) BOOL batchSaves;
+// Requests that change something carry Repeatability-Request-ID and
+// Repeatability-First-Sent (OData Repeatable Requests), and one that gets
+// no answer at all is sent again, as it was, up to twice: the service
+// answers a repeat as it answered the first. Set from $metadata
+// (Repeatability.Supported on the container).
+@property (nonatomic) BOOL repeatable;
 @property (nonatomic, copy) NSString *maxVersion;
 // The OData-Version requests carry, and the one their URLs and bodies are
 // written in: 4.0 until the store has read $metadata.

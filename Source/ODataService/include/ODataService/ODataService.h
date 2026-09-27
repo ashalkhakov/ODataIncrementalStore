@@ -171,6 +171,12 @@ FOUNDATION_EXPORT NSString * const ODataUserInfoETag;  // @"OData.etag"
 // (Capabilities.FilterRestrictions, SortRestrictions). Empty by default.
 @property (nonatomic, copy) NSSet<NSString *> *nonFilterableProperties;
 @property (nonatomic, copy) NSSet<NSString *> *nonSortableProperties;
+// What $search looks in (Part 2 section 5.1.7): these properties (wire
+// names), each a string; a word or "phrase" matches a row where one of
+// them holds it, regardless of case and diacritics. nil, the default:
+// every string property. Empty: the set cannot be searched (501), as
+// $metadata says (Capabilities.SearchRestrictions).
+@property (nonatomic, copy, nullable) NSSet<NSString *> *searchableProperties;
 
 // The rows the caller may see at all, however they are reached: fetched,
 // by key, through navigation or $expand. nil: every row.
@@ -229,6 +235,15 @@ FOUNDATION_EXPORT NSString * const ODataUserInfoETag;  // @"OData.etag"
 // How long a deferred reply may take before the request is answered 504
 // Gateway Timeout. 0: no limit. Default: 60 seconds.
 @property (nonatomic) NSTimeInterval replyTimeout;
+// Repeatable requests (OData Repeatable Requests 1.0; the Repeatability
+// vocabulary): a request that changes something and carries
+// Repeatability-Request-ID and Repeatability-First-Sent is answered once,
+// and its answer remembered this long; the same request again is given
+// the same answer, with Repeatability-Result: accepted. One first sent
+// longer ago than that, or an ID given to another request, is answered
+// 400, Repeatability-Result: rejected. An answer 5xx is not remembered.
+// 0 turns it off. Default: 3600 seconds.
+@property (nonatomic) NSTimeInterval repeatabilityDuration;
 // Who each request is from (ODataAuthentication.h). A request that names
 // no one is answered 401, unless allowsAnonymousRequests; without an
 // authenticator (the default) every request is anonymous and answered.

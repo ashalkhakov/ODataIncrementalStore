@@ -80,6 +80,7 @@ static NSString *OISQuoted(NSString *s)
     case ODataEdmBinary: return @"NSData *";
     case ODataEdmComplex: return @"NSDictionary *";
     case ODataEdmCollection: return @"NSArray *";
+    case ODataEdmJSON:
     case ODataEdmUnknown: return @"id ";
   }
   return @"id ";

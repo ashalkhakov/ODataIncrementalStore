@@ -43,7 +43,9 @@ typedef NS_ENUM(NSInteger, ODataEdmType) {
   ODataEdmEnum,            // a schema enumeration: member names on a String
                            // attribute, member values on an integer one
   ODataEdmComplex,         // a schema complex type: an NSDictionary
-  ODataEdmCollection       // Collection(...): an NSArray
+  ODataEdmCollection,      // Collection(...): an NSArray
+  ODataEdmJSON             // Org.OData.JSON.V1.JSON: any JSON value, kept as it is
+                           // (a Transformable attribute) or as its text (a String one)
 };
 
 @interface ODataValueCoder : NSObject

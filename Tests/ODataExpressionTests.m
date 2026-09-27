@@ -160,6 +160,78 @@
   XCTAssertNil([ODataQueryOptions optionsWithQuery:@{ @"$top": @"five" } error:&error]);
 }
 
+// $search (Part 2 section 5.1.7): NOT, then AND (or nothing), then OR.
+- (void)testSearchExpressions
+{
+  NSDictionary *cases = @{
+    @"tea": @"tea",
+    @"green tea": @"(green AND tea)",
+    @"green AND tea": @"(green AND tea)",
+    @"tea OR coffee milk": @"(tea OR (coffee AND milk))",
+    @"NOT decaf tea": @"(NOT decaf AND tea)",
+    @"(tea OR coffee) NOT decaf": @"((tea OR coffee) AND NOT decaf)",
+    @"\"earl grey\" OR \"say \\\"hi\\\"\"": @"(\"earl grey\" OR \"say \\\"hi\\\"\")",
+  };
+  for (NSString *text in cases) {
+    NSError *error = nil;
+    ODataSearchExpression *search = [ODataSearchExpression searchWithString:text error:&error];
+    XCTAssertNotNil(search, @"%@: %@", text, error);
+    XCTAssertEqualObjects(search.description, cases[text], @"%@", text);
+    XCTAssertEqualObjects([ODataSearchExpression searchWithString:search.description error:NULL].description, cases[text], @"%@ reads back", text);
+  }
+  for (NSString *bad in @[ @"", @"AND tea", @"tea OR", @"(tea", @"tea)", @"\"open", @"\"\"" ]) {
+    NSError *error = nil;
+    XCTAssertNil([ODataSearchExpression searchWithString:bad error:&error], @"%@", bad);
+    XCTAssertEqual(error.code, ODataIncrementalStoreErrorSyntax, @"%@", bad);
+  }
+  ODataSearchExpression *search = [ODataSearchExpression searchWithString:@"(tea OR café) NOT \"iced tea\"" error:NULL];
+  XCTAssertTrue([search matchesTexts:@[ @"Green TEA" ]]);
+  XCTAssertTrue([search matchesTexts:@[ @"Cafe au lait" ]], @"diacritics aside");
+  XCTAssertFalse([search matchesTexts:@[ @"Iced tea, lemon" ]]);
+  XCTAssertFalse([search matchesTexts:@[ @"Water" ]]);
+  ODataQueryOptions *options = [ODataQueryOptions optionsWithQuery:@{ @"$search": @"\"earl grey\" OR mint", @"$expand": @"Items($search=blue green)" } error:NULL];
+  XCTAssertEqualObjects(options.searchExpression.description, @"(\"earl grey\" OR mint)");
+  XCTAssertEqualObjects([options.expand.firstObject options].searchExpression.description, @"(blue AND green)");
+  NSError *error = nil;
+  XCTAssertNil([ODataQueryOptions optionsWithQuery:@{ @"$search": @"OR" } error:&error]);
+}
+
+// $apply: filter, groupby and aggregate read and written back.
+- (void)testApplyTransformations
+{
+  for (NSString *text in @[ @"aggregate(UnitPrice with sum as Total,$count as N)",
+                            @"filter(UnitPrice gt 10)/groupby((Category/CategoryName,Discontinued),aggregate(UnitPrice with max as Top))",
+                            @"groupby((Category/CategoryName))/filter(Name eq 'a/b,c')",
+                            @"filter(ProductName eq 'it''s (so)')/aggregate(ProductName with countdistinct as Names)" ]) {
+    NSError *error = nil;
+    NSArray *transformations = [ODataApplyTransformation transformationsWithString:text error:&error];
+    XCTAssertNotNil(transformations, @"%@: %@", text, error);
+    NSString *written = [ODataApplyTransformation stringForTransformations:transformations];
+    XCTAssertEqualObjects([ODataApplyTransformation stringForTransformations:[ODataApplyTransformation transformationsWithString:written error:NULL]], written, @"%@", text);
+  }
+  NSArray *parsed = [ODataApplyTransformation transformationsWithString:@"groupby((Category/CategoryName),aggregate(UnitPrice with sum as Total))" error:NULL];
+  ODataApplyTransformation *groupBy = parsed.firstObject;
+  XCTAssertEqual(groupBy.kind, ODataApplyGroupBy);
+  XCTAssertEqualObjects(groupBy.groupPaths, (@[ @[ @"Category", @"CategoryName" ] ]));
+  XCTAssertEqualObjects([groupBy.aggregates.firstObject alias], @"Total");
+  NSDictionary *codes = @{ @"topcount(2,UnitPrice)": @(ODataIncrementalStoreErrorUnsupportedExpression),
+                           @"aggregate(UnitPrice with Custom.concat as X)": @(ODataIncrementalStoreErrorUnsupportedExpression),
+                           @"groupby((rollup($all,Category)))": @(ODataIncrementalStoreErrorUnsupportedExpression),
+                           @"aggregate(UnitPrice sum)": @(ODataIncrementalStoreErrorSyntax),
+                           @"nonsense": @(ODataIncrementalStoreErrorSyntax), @"": @(ODataIncrementalStoreErrorSyntax) };
+  for (NSString *text in codes) {
+    NSError *error = nil;
+    XCTAssertNil([ODataApplyTransformation transformationsWithString:text error:&error], @"%@", text);
+    XCTAssertEqual(error.code, [codes[text] integerValue], @"%@: %@", text, error);
+  }
+  NSArray *rows = [ODataAggregation groupObjects:@[ @{ @"k": @"a", @"v": @1 }, @{ @"k": @"b", @"v": @2 }, @{ @"k": @"a", @"v": [NSNull null] } ]
+                                      byKeyPaths:@[ @"k" ]
+                                      aggregates:@[ [ODataAggregate aggregateOfPath:@[ @"v" ] method:@"sum" alias:@"s"],
+                                                    [ODataAggregate aggregateOfPath:nil method:nil alias:@"n"] ]];
+  XCTAssertEqualObjects(rows, (@[ @{ @"k": @"a", @"s": [NSDecimalNumber one], @"n": @2 },
+                                  @{ @"k": @"b", @"s": [NSDecimalNumber decimalNumberWithString:@"2"], @"n": @1 } ]));
+}
+
 - (void)testResourcePathsAndKeys
 {
   NSError *error = nil;

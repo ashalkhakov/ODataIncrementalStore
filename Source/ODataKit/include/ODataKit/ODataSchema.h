@@ -119,6 +119,7 @@ FOUNDATION_EXPORT NSString *ODataSchemaSpelling(NSString *name, id<NSFastEnumera
 
 @interface ODataSchema : NSObject
 
+// CSDL XML, or CSDL JSON (4.01).
 + (nullable instancetype)schemaWithData:(NSData *)csdl error:(NSError **)error;
 
 @property (nonatomic, readonly) NSDictionary<NSString *, ODataSchemaEntityType *> *entityTypes;  // by qualified name

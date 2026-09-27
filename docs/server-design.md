@@ -45,7 +45,7 @@ FreeCoreData) and on Cocoa, with no platform-specific code in its core.
 
 ## Non-goals, at first
 
-- `$apply`, `$search`, delta links, async requests. (`$batch`, streams
+- Delta links, async requests. (`$batch`, `$apply`, `$search`, streams
   and media entities were ones; they are done.)
 - XML (Atom) payloads. JSON only, as the client speaks.
 - Being a general-purpose web framework.
@@ -375,6 +375,61 @@ block in another block, which libobjc2 leaked until
 blocks itself, so it does not depend on the fix. And gnustep-base leaves
 fast enumeration to `NSDictionary`'s subclasses, so the port's header
 dictionary implements it.
+
+### Measures, JSON values and repeatable requests
+
+- `userInfo` `OData.unit`, `OData.scale` and `OData.isoCurrency` (a code,
+  or the name of the attribute holding one, written as a path) are the
+  Measures terms of the property.
+- An attribute declared `OData.type` `Org.OData.JSON.V1.JSON` holds any
+  JSON value, a Transformable one as it is and a String one as its text;
+  payloads carry the value inline, and `$metadata` references the JSON
+  vocabulary.
+- Repeatable requests: a top-level request that changes something and
+  carries `Repeatability-Request-ID` (with `Repeatability-Client-ID`, if
+  any) and `Repeatability-First-Sent` is answered once; the answer is
+  remembered `repeatabilityDuration` (an hour; 0 turns it off) and given
+  again, `Repeatability-Result: accepted`, to the same request, told by
+  its method, URL and a hash of its body. A request first sent longer ago,
+  an ID given to another request (`400`), or one still being answered
+  (`409`) is `rejected`. A `5xx` answer is not remembered, so the request
+  may be tried again. The container says `Repeatability.Supported`.
+
+### `$metadata` in JSON
+
+`$metadata?$format=json`, or an `Accept` that names `application/json`
+and not XML, is answered in CSDL JSON (4.01): `ODataCSDL`, in ODataKit,
+turns the CSDL XML the writer makes into it, and turns CSDL JSON back
+into XML for the client's schema reader. The two defaults that differ are
+kept: `$Nullable` is false when absent in JSON, true in XML, and `$Type`
+is `Edm.String`.
+
+### `$apply`
+
+`$apply` (OData Data Aggregation 4.0) is read by `ODataApplyTransformation`
+in ODataKit: `filter(…)`, `groupby((paths),aggregate(…))` and
+`aggregate(…)`, of paths `with sum`, `min`, `max`, `average` or
+`countdistinct`, and `$count`, each `as` an alias. The rest (`compute`,
+`topcount` and its kin, `concat`, `expand`, `search`, rollup, custom
+methods, `from`) is `501`. Filters alone join `$filter`, and the answer is
+entities. Otherwise the handler fetches the rows the caller may see, with
+the leading filters in the fetch; `ODataAggregation` groups and aggregates
+them here (null left out; an empty sum is null, as section 3.1.3.1 has
+it); a filter after the grouping, and then `$filter`, `$orderby`,
+`$skip`, `$top` and `$count`, work on the grouped rows, whose paths are
+nested as the response has them (`{"Category": {"CategoryName": …},
+"Total": …}`). The container says `Aggregation.ApplySupported` with
+those transformations.
+
+### `$search`
+
+`$search` (Part 2 §5.1.7) is parsed by `ODataSearchExpression`, in
+ODataKit: words, `"phrases"`, `NOT`, `AND` or nothing between terms, `OR`,
+and parentheses. The service makes it a predicate: a word or phrase is
+`CONTAINS[cd]` in any of the set's searchable properties, which are its
+string properties, or the handler's `searchableProperties` (an empty set:
+not searchable, `501`, and `SearchRestrictions` says so). It is ANDed with
+`$filter`, and works in `/$count` and in `$expand`'s options.
 
 ### Streams
 

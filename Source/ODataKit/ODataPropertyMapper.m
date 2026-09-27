@@ -11,6 +11,9 @@ NSString * const ODataUserInfoLongDescription = @"OData.longDescription";
 NSString * const ODataUserInfoComputed = @"OData.computed";
 NSString * const ODataUserInfoImmutable = @"OData.immutable";
 NSString * const ODataUserInfoPermissions = @"OData.permissions";
+NSString * const ODataUserInfoUnit = @"OData.unit";
+NSString * const ODataUserInfoISOCurrency = @"OData.isoCurrency";
+NSString * const ODataUserInfoScale = @"OData.scale";
 NSString * const ODataUserInfoAnnotations = @"OData.annotations";
 
 @implementation ODataPropertyMapper
@@ -73,6 +76,38 @@ NSString * const ODataUserInfoAnnotations = @"OData.annotations";
 {
   id immutable = [self annotation:@"Core.Immutable" userInfo:ODataUserInfoImmutable ofAttribute:attribute];
   return [immutable respondsToSelector:@selector(boolValue)] && [immutable boolValue];
+}
+
+#pragma mark - Measures
+
+- (NSString *)unitOfAttribute:(NSAttributeDescription *)attribute
+{
+  id unit = [self annotation:@"Measures.Unit" userInfo:ODataUserInfoUnit ofAttribute:attribute]
+         ?: [self annotation:@"Measures.UNECEUnit" userInfo:nil ofAttribute:attribute];
+  return [unit isKindOfClass:[NSString class]] ? unit : nil;
+}
+
+- (NSNumber *)scaleOfAttribute:(NSAttributeDescription *)attribute
+{
+  id scale = [self annotation:@"Measures.Scale" userInfo:ODataUserInfoScale ofAttribute:attribute];
+  if ([scale isKindOfClass:[NSString class]]) scale = @([scale integerValue]);
+  return [scale isKindOfClass:[NSNumber class]] ? scale : nil;
+}
+
+- (NSString *)currencyOfAttribute:(NSAttributeDescription *)attribute inObject:(NSManagedObject *)object
+{
+  id currency = [self annotation:@"Measures.ISOCurrency" userInfo:ODataUserInfoISOCurrency ofAttribute:attribute];
+  NSString *path = [currency isKindOfClass:[NSDictionary class]] ? currency[@"$Path"] : nil;
+  // In userInfo, the name of the attribute that holds it; in $metadata, a path.
+  if ([currency isKindOfClass:[NSString class]] && attribute.entity.attributesByName[currency]) {
+    return [[object valueForKey:currency] description];
+  }
+  if (path) {
+    NSPropertyDescription *holder = [self propertyForWireName:path entity:attribute.entity];
+    id value = holder ? [object valueForKey:holder.name] : nil;
+    return [value isKindOfClass:[NSString class]] ? value : nil;
+  }
+  return [currency isKindOfClass:[NSString class]] ? currency : nil;
 }
 
 #pragma mark - Validation beyond Core Data's

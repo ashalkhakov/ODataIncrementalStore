@@ -3,6 +3,7 @@
 //
 // SPDX-License-Identifier: LGPL-2.1-or-later
 
+#import <ODataKit/ODataApply.h>
 #import "ODataIncrementalStore+Private.h"
 
 // One object's share of a save: the entity body, the $ref requests for
@@ -180,6 +181,8 @@ typedef NS_ENUM(NSInteger, OISWriteMode) {
   // A 4.0 service rejects 4.01 syntax (Northwind and TripPin answer `in`
   // with 400 and 500), so requests are written in the version it speaks.
   configuration.version = [configuration versionForService:_schema.version];
+  id repeatable = _schema.containerName ? [_schema annotation:@"Repeatability.Supported" forTarget:_schema.containerName] : nil;
+  configuration.repeatable = [repeatable isEqual:@YES];
   _builder.version = configuration.version;
   NSManagedObjectModel *model = self.persistentStoreCoordinator.managedObjectModel;
   _metadataProblems = _schema ? [_mapper problemsWithModel:model] : @[ schemaError.localizedDescription ?: @"$metadata could not be read" ];
@@ -590,6 +593,9 @@ static void OISCollectKeyPaths(NSPredicate *predicate, NSMutableSet *into)
     if (error) *error = OISError(ODataIncrementalStoreErrorMissingEntitySet, fetch.entityName ?: @"Unknown");
     return nil;
   }
+  if (fetch.resultType == NSDictionaryResultType && [self aggregates:fetch]) {
+    return [self executeAggregateFetch:fetch entity:entity context:context error:error];
+  }
   BOOL sortLocally = NO, countLocally = NO;
   NSUInteger skip = 0, limit = 0;
   NSFetchRequest *original = fetch;
@@ -641,6 +647,250 @@ static void OISCollectKeyPaths(NSPredicate *predicate, NSMutableSet *into)
     [objects addObject:[context objectWithID:oid]];
   }
   return objects;
+}
+
+#pragma mark - Grouping and aggregating
+
+// A key path grouped by or fetched: given as a string, a property, or as
+// Apple's Core Data passes a string on, an expression description of it.
+static NSString *OISKeyPathOf(id property)
+{
+  if ([property isKindOfClass:[NSString class]]) return property;
+  if ([property isKindOfClass:[NSExpressionDescription class]]) {
+    NSExpression *e = [(NSExpressionDescription *)property expression];
+    return e.expressionType == NSKeyPathExpressionType ? e.keyPath : nil;
+  }
+  if ([property isKindOfClass:[NSPropertyDescription class]] && ![property isKindOfClass:[NSExpressionDescription class]]) return [property name];
+  return nil;
+}
+
+// A dictionary fetch that groups (propertiesToGroupBy) or aggregates (an
+// NSExpressionDescription of sum:, min:, max:, average:, count:).
+- (BOOL)aggregates:(NSFetchRequest *)fetch
+{
+  if (fetch.propertiesToGroupBy.count) return YES;
+  for (id property in fetch.propertiesToFetch) {
+    if ([property isKindOfClass:[NSExpressionDescription class]] && !OISKeyPathOf(property)) return YES;
+  }
+  return NO;
+}
+
+// FreeCoreData shapes grouped and aggregated dictionary fetches itself
+// unless the store says it does; this one does.
+- (BOOL)_canShapeDictionaryRequest:(NSFetchRequest *)request
+{
+  return [self aggregates:request];
+}
+
+// The attribute a key path ends at, through to-one relationships.
+static NSAttributeDescription *OISAttributeAtKeyPath(NSEntityDescription *entity, NSString *keyPath)
+{
+  NSArray *parts = [keyPath componentsSeparatedByString:@"."];
+  NSEntityDescription *at = entity;
+  for (NSUInteger i = 0; i + 1 < parts.count; i++) {
+    NSRelationshipDescription *rel = at.relationshipsByName[parts[i]];
+    if (!rel || rel.isToMany) return nil;
+    at = rel.destinationEntity;
+  }
+  return at.attributesByName[parts.lastObject];
+}
+
+
+// Rows grouped and aggregated (Data Aggregation): by $apply where the
+// service says it has it (Aggregation.ApplySupported), else here over the
+// rows it sends. havingPredicate, the sort, the offset and the limit are
+// then applied here, to what was grouped. Keys are as Core Data's: the
+// grouped key paths (category.name) and the expressions' names.
+- (NSArray *)executeAggregateFetch:(NSFetchRequest *)fetch entity:(NSEntityDescription *)entity
+                           context:(NSManagedObjectContext *)context error:(NSError **)error
+{
+  NSMutableArray *keyPaths = [NSMutableArray array];
+  for (id property in fetch.propertiesToGroupBy) {
+    NSString *keyPath = OISKeyPathOf(property);
+    if (!keyPath || !OISAttributeAtKeyPath(entity, keyPath)) {
+      if (error) *error = OISError(ODataIncrementalStoreErrorUnsupportedRequest, [NSString stringWithFormat:@"Grouping by %@", property]);
+      return nil;
+    }
+    [keyPaths addObject:keyPath];
+  }
+  NSDictionary *methods = @{ @"sum:": @"sum", @"min:": @"min", @"max:": @"max", @"average:": @"average", @"count:": @"$count" };
+  NSMutableArray *local = [NSMutableArray array], *wire = [NSMutableArray array];
+  NSMutableArray *outputs = [NSMutableArray array];
+  NSMutableDictionary *resultTypes = [NSMutableDictionary dictionary], *aggregateAttributes = [NSMutableDictionary dictionary];
+  for (id property in fetch.propertiesToFetch) {
+    if (![property isKindOfClass:[NSExpressionDescription class]] || OISKeyPathOf(property)) {
+      NSString *keyPath = OISKeyPathOf(property);
+      if (!keyPath || ![keyPaths containsObject:keyPath]) {
+        if (error) *error = OISError(ODataIncrementalStoreErrorUnsupportedRequest,
+                                     [NSString stringWithFormat:@"%@ is fetched but not grouped by", property]);
+        return nil;
+      }
+      [outputs addObject:keyPath];
+      continue;
+    }
+    NSExpressionDescription *description = property;
+    NSExpression *e = description.expression;
+    NSString *method = e.expressionType == NSFunctionExpressionType ? methods[e.function] : nil;
+    NSExpression *argument = e.expressionType == NSFunctionExpressionType ? e.arguments.firstObject : nil;
+    NSString *keyPath = argument.expressionType == NSKeyPathExpressionType ? argument.keyPath : nil;
+    NSAttributeDescription *attribute = keyPath ? OISAttributeAtKeyPath(entity, keyPath) : nil;
+    if (!method || (!attribute && ![method isEqualToString:@"$count"])) {
+      if (error) *error = OISError(ODataIncrementalStoreErrorUnsupportedExpression, [NSString stringWithFormat:@"%@: %@", description.name, e]);
+      return nil;
+    }
+    BOOL count = [method isEqualToString:@"$count"];
+    [local addObject:[ODataAggregate aggregateOfPath:count ? nil : [keyPath componentsSeparatedByString:@"."]
+                                              method:count ? nil : method alias:description.name]];
+    [wire addObject:[ODataAggregate aggregateOfPath:count ? nil : [[_mapper propertyPathForKeyPath:keyPath entity:entity] componentsSeparatedByString:@"/"]
+                                             method:count ? nil : method alias:description.name]];
+    resultTypes[description.name] = @(description.expressionResultType);
+    if (attribute) aggregateAttributes[description.name] = attribute;
+    [outputs addObject:description.name];
+  }
+
+  // Each row as nested dictionaries, as the key paths read them.
+  NSMutableArray *rows = [NSMutableArray array];
+  id apply = [self capability:@"Aggregation.ApplySupported" forEntity:entity];
+  if (apply && apply != [NSNull null]) {
+    NSMutableArray *paths = [NSMutableArray array];
+    for (NSString *keyPath in keyPaths) [paths addObject:[[_mapper propertyPathForKeyPath:keyPath entity:entity] componentsSeparatedByString:@"/"]];
+    NSURL *url = [_builder URLForAggregateFetch:fetch entity:entity groupPaths:paths aggregates:wire error:error];
+    if (!url) return nil;
+    NSArray *answers = [self rowsAtURL:url limit:0 pageSize:0 error:error];
+    if (!answers) return nil;
+    for (NSDictionary *answer in answers) {
+      NSMutableDictionary *row = [NSMutableDictionary dictionary];
+      for (NSUInteger i = 0; i < keyPaths.count; i++) {
+        id json = answer;
+        for (NSString *segment in paths[i]) json = [json isKindOfClass:[NSDictionary class]] ? json[segment] : nil;
+        id value = json && json != [NSNull null] ? [_mapper.values coreDataValueForJSON:json attribute:OISAttributeAtKeyPath(entity, keyPaths[i])] : nil;
+        OISSetKeyPath(row, keyPaths[i], value);
+      }
+      for (ODataAggregate *aggregate in wire) {
+        OISSetKeyPath(row, aggregate.alias, [self aggregateValue:answer[aggregate.alias] method:aggregate.method
+                                                       attribute:aggregateAttributes[aggregate.alias]
+                                                            type:[resultTypes[aggregate.alias] unsignedIntegerValue]]);
+      }
+      [rows addObject:row];
+    }
+  } else {
+    // Here: every row, with what the key paths go through.
+    NSFetchRequest *all = [NSFetchRequest fetchRequestWithEntityName:entity.name];
+    all.entity = entity;
+    all.predicate = fetch.predicate;
+    NSMutableSet *through = [NSMutableSet set];
+    for (NSString *keyPath in [keyPaths arrayByAddingObjectsFromArray:[local valueForKey:@"path"]]) {
+      if ([(id)keyPath isKindOfClass:[NSNull class]]) continue;  // $count
+      NSArray *parts = [keyPath isKindOfClass:[NSArray class]] ? (NSArray *)keyPath : [keyPath componentsSeparatedByString:@"."];
+      if (parts.count > 1) [through addObject:[[parts subarrayWithRange:NSMakeRange(0, parts.count - 1)] componentsJoinedByString:@"."]];
+    }
+    all.relationshipKeyPathsForPrefetching = through.allObjects;
+    all.resultType = NSManagedObjectIDResultType;
+    NSArray *identifiers = [self executeFetch:all context:context error:error];
+    if (!identifiers) return nil;
+    // Each row as what its key paths read, from the rows kept.
+    NSMutableSet *needed = [NSMutableSet setWithArray:keyPaths];
+    for (ODataAggregate *aggregate in local) if (aggregate.path) [needed addObject:[aggregate.path componentsJoinedByString:@"."]];
+    NSMutableArray *objects = [NSMutableArray array];
+    for (NSManagedObjectID *oid in identifiers) {
+      NSMutableDictionary *object = [NSMutableDictionary dictionary];
+      for (NSString *keyPath in needed) {
+        id value = nil;
+        if (![self value:&value atKeyPath:keyPath objectID:oid context:context error:error]) return nil;
+        OISSetKeyPath(object, keyPath, value);
+      }
+      [objects addObject:object];
+    }
+    for (NSDictionary *group in [ODataAggregation groupObjects:objects byKeyPaths:keyPaths aggregates:local]) {
+      NSMutableDictionary *row = [NSMutableDictionary dictionary];
+      for (NSString *key in group) OISSetKeyPath(row, key, group[key] == [NSNull null] ? nil : group[key]);
+      // Sums and averages of the type asked for, as the service's would be.
+      for (ODataAggregate *aggregate in local) {
+        if ([aggregate.method isEqualToString:@"min"] || [aggregate.method isEqualToString:@"max"]) continue;
+        OISSetKeyPath(row, aggregate.alias, [self aggregateValue:group[aggregate.alias] method:aggregate.method attribute:nil
+                                                            type:[resultTypes[aggregate.alias] unsignedIntegerValue]]);
+      }
+      [rows addObject:row];
+    }
+  }
+
+  NSArray *result = rows;
+  if (fetch.havingPredicate) result = [result filteredArrayUsingPredicate:fetch.havingPredicate];
+  if (fetch.sortDescriptors.count) result = [result sortedArrayUsingDescriptors:fetch.sortDescriptors];
+  NSUInteger skip = MIN(fetch.fetchOffset, result.count);
+  result = [result subarrayWithRange:NSMakeRange(skip, result.count - skip)];
+  if (fetch.fetchLimit && fetch.fetchLimit < result.count) result = [result subarrayWithRange:NSMakeRange(0, fetch.fetchLimit)];
+  // Flat, keyed as Core Data keys them; a value there is none of is left out.
+  NSMutableArray *flat = [NSMutableArray array];
+  for (NSDictionary *row in result) {
+    NSMutableDictionary *out = [NSMutableDictionary dictionary];
+    for (NSString *key in outputs) {
+      id value = [row valueForKeyPath:key];
+      if (value && value != [NSNull null]) out[key] = value;
+    }
+    [flat addObject:out];
+  }
+  return flat;
+}
+
+// What a key path reads of an object, through its to-one relationships,
+// from the rows the store keeps (or reads). NO, with the error, when a row
+// cannot be read.
+- (BOOL)value:(id *)value atKeyPath:(NSString *)keyPath objectID:(NSManagedObjectID *)objectID
+      context:(NSManagedObjectContext *)context error:(NSError **)error
+{
+  NSArray *parts = [keyPath componentsSeparatedByString:@"."];
+  NSManagedObjectID *at = objectID;
+  *value = nil;
+  for (NSUInteger i = 0; i < parts.count; i++) {
+    NSIncrementalStoreNode *node = [self newValuesForObjectWithID:at withContext:context error:error];
+    if (!node) return NO;
+    NSPropertyDescription *property = at.entity.propertiesByName[parts[i]];
+    if (i + 1 == parts.count) {
+      id found = property ? [node valueForPropertyDescription:property] : nil;
+      *value = found == [NSNull null] ? nil : found;
+      return YES;
+    }
+    if (![property isKindOfClass:[NSRelationshipDescription class]] || [(NSRelationshipDescription *)property isToMany]) return YES;
+    id related = [node valueForPropertyDescription:property];
+    if (!related) related = [self newValueForRelationship:(NSRelationshipDescription *)property forObjectWithID:at withContext:context error:error];
+    if (![related isKindOfClass:[NSManagedObjectID class]]) return related != nil || !error || !*error;
+    at = related;
+  }
+  return YES;
+}
+
+// Sets value at a key path in nested dictionaries.
+static void OISSetKeyPath(NSMutableDictionary *row, NSString *keyPath, id value)
+{
+  NSArray *parts = [keyPath componentsSeparatedByString:@"."];
+  NSMutableDictionary *at = row;
+  for (NSUInteger i = 0; i + 1 < parts.count; i++) {
+    if (![at[parts[i]] isKindOfClass:[NSMutableDictionary class]]) at[parts[i]] = [NSMutableDictionary dictionary];
+    at = at[parts[i]];
+  }
+  at[parts.lastObject] = value ?: [NSNull null];
+}
+
+// An aggregated value as the expression's type has it: min and max as
+// the attribute's, the others as numbers of the result type.
+- (id)aggregateValue:(id)json method:(NSString *)method attribute:(NSAttributeDescription *)attribute type:(NSAttributeType)type
+{
+  if (!json || json == [NSNull null]) return nil;
+  if (attribute && ([method isEqualToString:@"min"] || [method isEqualToString:@"max"])) {
+    return [_mapper.values coreDataValueForJSON:json attribute:attribute];
+  }
+  NSDecimalNumber *number = [json isKindOfClass:[NSString class]] ? [NSDecimalNumber decimalNumberWithString:json]
+                          : [json isKindOfClass:[NSNumber class]] ? [NSDecimalNumber decimalNumberWithDecimal:[json decimalValue]] : nil;
+  if (!number) return nil;
+  switch (type) {
+    case NSInteger16AttributeType:
+    case NSInteger32AttributeType:
+    case NSInteger64AttributeType: return @(number.longLongValue);
+    case NSDoubleAttributeType:
+    case NSFloatAttributeType: return @(number.doubleValue);
+    default: return number;
+  }
 }
 
 // The rows of a collection, across every page the service splits it into:

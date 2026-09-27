@@ -273,6 +273,7 @@ static ODataEdmType OISEdmTypeNamed(NSString *declared)
         @"Edm.Duration": @(ODataEdmDuration),
         @"Edm.Guid": @(ODataEdmGuid),
         @"Edm.Binary": @(ODataEdmBinary),
+        @"Org.OData.JSON.V1.JSON": @(ODataEdmJSON), @"JSON.JSON": @(ODataEdmJSON),
       };
     }
     NSNumber *type = byName[declared];
@@ -297,6 +298,17 @@ static ODataEdmType OISEdmTypeOfCoreDataType(NSAttributeDescription *attribute)
     default:
       return attribute.attributeType == NSUUIDAttributeType ? ODataEdmGuid : ODataEdmUnknown;
   }
+}
+
+// Any JSON value as its text, a lone string or number too (gnustep-base
+// has no NSJSONWritingFragmentsAllowed): written inside an array, and
+// taken out of it.
+static NSString *OISJSONText(id value)
+{
+  NSData *data = [NSJSONSerialization dataWithJSONObject:@[ value ] options:0 error:NULL];
+  NSString *text = data ? [[NSString alloc] initWithData:data encoding:NSUTF8StringEncoding] : nil;
+  if (text.length < 2) return nil;
+  return [text substringWithRange:NSMakeRange(1, text.length - 2)];
 }
 
 @implementation ODataValueCoder
@@ -489,6 +501,8 @@ static NSString *OISElementType(NSString *typeName)
 {
   if (!json || json == [NSNull null]) return [NSNull null];
   switch (edm) {
+    case ODataEdmJSON:
+      return json;
     case ODataEdmBoolean:
       return [json isKindOfClass:[NSNumber class]] ? [NSNumber numberWithBool:[json boolValue]] : nil;
     case ODataEdmInteger:
@@ -567,6 +581,11 @@ static NSString *OISElementType(NSString *typeName)
 
 - (id)coreDataValueForJSON:(id)json attribute:(NSAttributeDescription *)attribute
 {
+  if ([self edmTypeOfAttribute:attribute] == ODataEdmJSON) {
+    if (!json || json == [NSNull null]) return [NSNull null];
+    if (attribute.attributeType != NSStringAttributeType) return json;
+    return OISJSONText(json) ?: (id)[NSNull null];
+  }
   return [self decode:json edm:[self edmTypeOfAttribute:attribute] typeName:[self codingTypeNameOfAttribute:attribute]
         enumAsInteger:OISIsIntegerAttribute(attribute) asUUID:attribute.attributeType == NSUUIDAttributeType];
 }
@@ -583,6 +602,8 @@ static NSString *OISElementType(NSString *typeName)
   if (!value || value == [NSNull null]) return [NSNull null];
   if (edm == ODataEdmUnknown) edm = OISEdmTypeOfValue(value);
   switch (edm) {
+    case ODataEdmJSON:
+      return value;
     case ODataEdmBoolean:
       // A real JSON boolean: @0 set on a Boolean attribute would be written 0.
       return [NSNumber numberWithBool:[value boolValue]];
@@ -653,6 +674,12 @@ static NSString *OISElementType(NSString *typeName)
 
 - (id)JSONForCoreDataValue:(id)value attribute:(NSAttributeDescription *)attribute
 {
+  if ([self edmTypeOfAttribute:attribute] == ODataEdmJSON) {
+    if (!value || value == [NSNull null]) return [NSNull null];
+    if (attribute.attributeType != NSStringAttributeType) return value;
+    id json = [NSJSONSerialization JSONObjectWithData:[value dataUsingEncoding:NSUTF8StringEncoding] options:NSJSONReadingAllowFragments error:NULL];
+    return json ?: value;
+  }
   return [self encode:value edm:[self edmTypeOfAttribute:attribute] typeName:[self codingTypeNameOfAttribute:attribute]];
 }
 
@@ -708,6 +735,10 @@ static NSString *OISElementType(NSString *typeName)
       return enumType ? [NSString stringWithFormat:@"%@'%@'", enumType.qualifiedName, escaped] : [NSString stringWithFormat:@"'%@'", escaped];
     }
     case ODataEdmComplex:
+    case ODataEdmJSON: {
+      NSString *json = OISJSONText(value) ?: [value description];
+      return [NSString stringWithFormat:@"'%@'", [json stringByReplacingOccurrencesOfString:@"'" withString:@"''"]];
+    }
     case ODataEdmCollection: {
       // A JSON literal (Part 2 section 5.1.1.14.5 in 4.01; [..] and {..}).
       id json = [self encode:value edm:edm typeName:typeName];

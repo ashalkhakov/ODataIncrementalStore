@@ -86,6 +86,32 @@ typedef NS_ENUM(NSInteger, ODataExpressionKind) {
 @property (nonatomic, readonly, strong) ODataQueryOptions *options;
 @end
 
+// $search (Part 2 section 5.1.7): words and "phrases", combined with AND
+// (or nothing between them), OR and NOT, grouped by parentheses; NOT binds
+// tightest, OR loosest. What a word matches is the service's to say.
+typedef NS_ENUM(NSInteger, ODataSearchKind) {
+  ODataSearchWord,     // text
+  ODataSearchPhrase,   // text, without its quotes
+  ODataSearchAnd,      // left, right
+  ODataSearchOr,       // left, right
+  ODataSearchNot       // operand
+};
+
+@interface ODataSearchExpression : NSObject
++ (nullable instancetype)searchWithString:(NSString *)text error:(NSError **)error;
++ (instancetype)searchWithKind:(ODataSearchKind)kind text:(nullable NSString *)text
+                          left:(nullable ODataSearchExpression *)left right:(nullable ODataSearchExpression *)right;
+@property (nonatomic, readonly) ODataSearchKind kind;
+@property (nonatomic, readonly, copy, nullable) NSString *text;
+@property (nonatomic, readonly, strong, nullable) ODataSearchExpression *left;
+@property (nonatomic, readonly, strong, nullable) ODataSearchExpression *right;
+@property (nonatomic, readonly, strong, nullable) ODataSearchExpression *operand;
+// Whether texts answer it: a word or phrase is in one of them, regardless
+// of case and diacritics.
+- (BOOL)matchesTexts:(NSArray<NSString *> *)texts;
+// -description is the expression as $search writes it.
+@end
+
 @interface ODataQueryOptions : NSObject
 
 // The options of a query string, as a dictionary of decoded values
@@ -103,6 +129,9 @@ typedef NS_ENUM(NSInteger, ODataExpressionKind) {
 @property (nonatomic, readonly, strong, nullable) NSNumber *includeCount;   // BOOL
 @property (nonatomic, readonly, strong, nullable) NSNumber *levels;  // -1: max
 @property (nonatomic, readonly, copy, nullable) NSString *search;
+@property (nonatomic, readonly, strong, nullable) ODataSearchExpression *searchExpression;
+// $apply (OData Data Aggregation): its transformations (ODataApply.h).
+@property (nonatomic, readonly, copy, nullable) NSArray *apply;
 @property (nonatomic, readonly, copy) NSDictionary<NSString *, ODataExpression *> *aliases;  // @p -> value
 // Taken as written: $format (json, or a media type with parameters), and
 // $skiptoken, which only the service that wrote it can read.

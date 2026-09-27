@@ -10,6 +10,8 @@
 #import "ODataPredicateBuilder.h"
 #import "ODataOperationCatalog.h"
 #import "ODataServiceBatch.h"
+#import "ODataApply.h"
+#import "ODataCSDL.h"
 #import <objc/runtime.h>
 
 NSString * const ODataUserInfoETag = @"OData.etag";
@@ -300,6 +302,8 @@ NSString * const ODataUserInfoETag = @"OData.etag";
 #pragma mark - The service's own state
 
 @interface ODataService ()
+- (void)rememberAnswer:(NSInteger)status headers:(NSDictionary *)headers body:(NSData *)body
+                forKey:(NSString *)key signature:(nullable NSString *)signature;
 - (void)prepare;
 @property (nonatomic, strong) ODataPredicateBuilder *predicates;
 @property (nonatomic, strong) NSMutableDictionary<NSString *, ODataEntitySetHandler *> *handlers;
@@ -344,6 +348,9 @@ typedef NS_ENUM(NSInteger, OISTargetKind) {
 // One request, from the URL to the response. Each step that asks a handler
 // for something goes on in the method its reply names.
 @interface OISServiceCall : NSObject
+// A repeatable request's: where its answer is remembered, and what it was.
+@property (nonatomic, copy, nullable) NSString *repeatabilityKey;
+@property (nonatomic, copy, nullable) NSString *repeatabilitySignature;
 @property (nonatomic, strong) ODataService *service;
 @property (nonatomic, strong) ODataExchange *exchange;
 @property (nonatomic, strong) ODataRequest *request;
@@ -396,6 +403,10 @@ typedef NS_ENUM(NSInteger, OISTargetKind) {
 
 // A read in progress.
 @property (nonatomic, strong, nullable) NSFetchRequest *fetch;
+// $metadata in CSDL JSON rather than XML.
+@property (nonatomic) BOOL metadataAsJSON;
+// $apply's transformations still to do on the rows fetched.
+@property (nonatomic, copy, nullable) NSArray<ODataApplyTransformation *> *applied;
 @property (nonatomic, strong, nullable) NSArray *objects;
 @property (nonatomic, strong, nullable) NSNumber *count;
 @property (nonatomic, copy, nullable) NSString *nextLink;
@@ -436,6 +447,11 @@ typedef NS_ENUM(NSInteger, OISTargetKind) {
   self.done = YES;
   NSMutableDictionary *all = [NSMutableDictionary dictionaryWithDictionary:headers ?: @{}];
   all[@"OData-Version"] = self.request.version ?: @"4.01";
+  if (self.repeatabilityKey) {
+    all[@"Repeatability-Result"] = @"accepted";
+    [self.service rememberAnswer:status headers:all body:body ?: [NSData data]
+                          forKey:self.repeatabilityKey signature:self.repeatabilitySignature];
+  }
   NSHTTPURLResponse *response = [[NSHTTPURLResponse alloc] initWithURL:self.exchange.request.URL
                                                             statusCode:status
                                                            HTTPVersion:@"HTTP/1.1"
@@ -603,18 +619,15 @@ typedef NS_ENUM(NSInteger, OISTargetKind) {
   }
   self.JSONAliases = JSONAliases;
   for (NSString *key in query) {
-    if ([@[ @"$apply", @"$compute", @"$index", @"$schemaversion", @"$deltatoken" ] containsObject:key]) {
+    if ([@[ @"$compute", @"$index", @"$schemaversion", @"$deltatoken" ] containsObject:key]) {
       [self fail:501 message:[NSString stringWithFormat:@"%@ is not supported", key]];
       return NO;
     }
   }
   ODataQueryOptions *options = [ODataQueryOptions optionsWithQuery:query error:&error];
   if (!options) {
-    [self respondError:ODataServiceError(400, error.localizedDescription)];
-    return NO;
-  }
-  if (options.search) {
-    [self fail:501 message:@"$search is not supported"];
+    NSInteger status = error.code == ODataIncrementalStoreErrorUnsupportedExpression ? 501 : 400;
+    [self respondError:ODataServiceError(status, error.localizedDescription)];
     return NO;
   }
   self.request.options = options;
@@ -669,14 +682,20 @@ typedef NS_ENUM(NSInteger, OISTargetKind) {
   if (format) {
     BOOL json = [lower isEqualToString:@"json"] || [lower hasPrefix:@"application/json"];
     BOOL xml = [lower isEqualToString:@"xml"] || [lower hasPrefix:@"application/xml"];
-    if (metadata && json) {
-      [self fail:501 message:@"$metadata as JSON is not supported"];
-      return NO;
-    }
-    if (!(metadata ? xml : json)) {
+    if (metadata && json) self.metadataAsJSON = YES;
+    if (!(metadata ? (xml || json) : json)) {
       [self fail:406 message:[NSString stringWithFormat:@"$format=%@ is not a format this resource has", format]];
       return NO;
     }
+  } else if (accept.length && metadata) {
+    // $metadata as JSON when JSON is asked for and XML is not.
+    BOOL json = NO, xml = NO;
+    for (NSString *range in [lower componentsSeparatedByString:@","]) {
+      NSString *type = [[range componentsSeparatedByString:@";"][0] stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceCharacterSet]];
+      if ([type isEqualToString:@"application/json"]) json = YES;
+      if ([type isEqualToString:@"application/xml"] || [type isEqualToString:@"*/*"] || [type isEqualToString:@"application/*"]) xml = YES;
+    }
+    self.metadataAsJSON = json && !xml;
   } else if (accept.length && !metadata && self.kind != OISTargetCount && self.kind != OISTargetValue && self.kind != OISTargetStream) {
     BOOL acceptable = NO;
     for (NSString *range in [lower componentsSeparatedByString:@","]) {
@@ -1089,7 +1108,16 @@ typedef NS_ENUM(NSInteger, OISTargetKind) {
       else [self methodNotAllowed:@[ @"GET" ]];
       return;
     case OISTargetMetadata:
-      if ([method isEqualToString:@"GET"]) {
+      if ([method isEqualToString:@"GET"] && self.metadataAsJSON) {
+        NSError *error = nil;
+        NSData *xml = [[self.service metadataXMLForVersion:self.request.version] dataUsingEncoding:NSUTF8StringEncoding];
+        NSData *json = [ODataCSDL JSONDataForXMLData:xml error:&error];
+        if (!json) {
+          [self respondError:ODataServiceError(500, error.localizedDescription)];
+          return;
+        }
+        [self respondStatus:200 headers:@{ @"Content-Type": @"application/json;charset=utf-8" } body:json];
+      } else if ([method isEqualToString:@"GET"]) {
         [self respondText:[self.service metadataXMLForVersion:self.request.version] contentType:@"application/xml;charset=utf-8" headers:nil];
       } else {
         [self methodNotAllowed:@[ @"GET" ]];
@@ -1489,6 +1517,14 @@ static const NSInteger OISMaxLevels = 32;
                                                        context:self.request.context error:error];
       if (!filter) return NO;
     }
+    if (options.searchExpression) {
+      NSPredicate *search = [self predicateForSearch:options.searchExpression entity:destination];
+      if (!search) {
+        if (error) *error = ODataServiceError(501, [NSString stringWithFormat:@"%@ cannot be searched", destination.name]);
+        return NO;
+      }
+      filter = filter ? [NSCompoundPredicate andPredicateWithSubpredicates:@[ filter, search ]] : search;
+    }
     NSArray *members;
     if (relationship.isToMany) {
       members = [[object valueForKey:relationship.name] allObjects];
@@ -1559,6 +1595,55 @@ static const NSInteger OISMaxLevels = 32;
   return [self.service entitySetForEntity:OISRootEntity(self.entity)];
 }
 
+// $search as a predicate over the entity's searchable string properties:
+// a word or phrase, CONTAINS[cd] in any of them. nil, answered, when the
+// set cannot be searched.
+- (NSPredicate *)predicateForSearch:(ODataSearchExpression *)search entity:(NSEntityDescription *)entity
+{
+  ODataEntitySetHandler *handler = [self.service handlerForEntity:entity];
+  NSSet *allowed = handler.searchableProperties;
+  NSMutableArray *names = [NSMutableArray array];
+  for (NSAttributeDescription *attribute in [self servedAttributesOf:entity]) {
+    if (attribute.attributeType != NSStringAttributeType) continue;
+    if (allowed && ![allowed containsObject:[self.mapper propertyForAttribute:attribute]]) continue;
+    NSString *type = [self.service.writer typeNameForAttribute:attribute];
+    if (![type isEqualToString:@"Edm.String"]) continue;  // an enumeration, a time of day: not text to search
+    [names addObject:attribute.name];
+  }
+  if (!names.count) {
+    [self fail:501 message:[NSString stringWithFormat:@"%@ cannot be searched", entity.name]];
+    return nil;
+  }
+  return [self predicateForSearch:search attributes:names];
+}
+
+- (NSPredicate *)predicateForSearch:(ODataSearchExpression *)search attributes:(NSArray<NSString *> *)names
+{
+  switch (search.kind) {
+    case ODataSearchWord:
+    case ODataSearchPhrase: {
+      NSMutableArray *any = [NSMutableArray array];
+      for (NSString *name in names) {
+        [any addObject:[NSComparisonPredicate predicateWithLeftExpression:[NSExpression expressionForKeyPath:name]
+                                                          rightExpression:[NSExpression expressionForConstantValue:search.text]
+                                                                 modifier:NSDirectPredicateModifier
+                                                                     type:NSContainsPredicateOperatorType
+                                                                  options:NSCaseInsensitivePredicateOption | NSDiacriticInsensitivePredicateOption]];
+      }
+      return any.count == 1 ? any.firstObject : [NSCompoundPredicate orPredicateWithSubpredicates:any];
+    }
+    case ODataSearchAnd:
+    case ODataSearchOr: {
+      NSArray *both = @[ [self predicateForSearch:search.left attributes:names], [self predicateForSearch:search.right attributes:names] ];
+      return search.kind == ODataSearchAnd ? [NSCompoundPredicate andPredicateWithSubpredicates:both]
+                                           : [NSCompoundPredicate orPredicateWithSubpredicates:both];
+    }
+    case ODataSearchNot:
+      return [NSCompoundPredicate notPredicateWithSubpredicate:[self predicateForSearch:search.operand attributes:names]];
+  }
+  return [NSPredicate predicateWithValue:NO];
+}
+
 // The predicate a collection's rows answer to: the filter, the navigation
 // they were reached through, and what the set lets the caller see.
 - (NSPredicate *)collectionPredicateWithFilter:(BOOL)withFilter error:(NSError **)error
@@ -1572,6 +1657,20 @@ static const NSInteger OISMaxLevels = 32;
                                                                     error:error];
     if (!filter) return nil;
     [parts addObject:filter];
+  }
+  if (withFilter && [self applyIsFiltersOnly]) {
+    for (ODataApplyTransformation *t in self.request.options.apply) {
+      NSPredicate *filter = [self.service.predicates predicateForExpression:t.filter entity:self.entity
+                                                                   aliases:self.request.options.aliases
+                                                                   context:self.request.context error:error];
+      if (!filter) return nil;
+      [parts addObject:filter];
+    }
+  }
+  if (withFilter && self.request.options.searchExpression) {
+    NSPredicate *search = [self predicateForSearch:self.request.options.searchExpression entity:self.entity];
+    if (!search) return nil;
+    [parts addObject:search];
   }
   if (self.members) [parts addObject:[self predicateForObjects:self.members]];
   if (self.parent && self.navigation) {
@@ -1683,9 +1782,239 @@ static NSPredicate *OISEquals(NSString *keyPath, id value, NSComparisonPredicate
   [self respondText:[reply.result description] ?: @"0" contentType:@"text/plain;charset=utf-8" headers:nil];
 }
 
+- (BOOL)applyIsFiltersOnly
+{
+  NSArray *apply = self.request.options.apply;
+  if (!apply.count) return NO;
+  for (ODataApplyTransformation *t in apply) {
+    if (t.kind != ODataApplyFilter) return NO;
+  }
+  return YES;
+}
+
+#pragma mark $apply
+
+// $apply (Data Aggregation section 3) that groups or aggregates: the rows
+// the caller may see, as the handler fetches them with the leading
+// filters, then the rest of the transformations here, then $filter,
+// $orderby, $skip, $top and $count over what they made.
+- (void)readApplied
+{
+  ODataQueryOptions *options = self.request.options;
+  if (options.expand.count || options.select.count) {
+    [self fail:501 message:@"$apply with $expand or $select is not supported"];
+    return;
+  }
+  NSError *error = nil;
+  NSPredicate *base = [self collectionPredicateWithFilter:NO error:&error];
+  if (!base) {
+    [self respondError:error];
+    return;
+  }
+  NSMutableArray *parts = [NSMutableArray arrayWithObject:base];
+  if (options.searchExpression) {
+    NSPredicate *search = [self predicateForSearch:options.searchExpression entity:self.entity];
+    if (!search) return;
+    [parts addObject:search];
+  }
+  NSUInteger first = 0;
+  for (; first < options.apply.count && ((ODataApplyTransformation *)options.apply[first]).kind == ODataApplyFilter; first++) {
+    NSPredicate *filter = [self.service.predicates predicateForExpression:((ODataApplyTransformation *)options.apply[first]).filter entity:self.entity
+                                                                 aliases:options.aliases context:self.request.context error:&error];
+    if (!filter) {
+      [self respondError:error];
+      return;
+    }
+    [parts addObject:filter];
+  }
+  self.applied = [options.apply subarrayWithRange:NSMakeRange(first, options.apply.count - first)];
+  NSFetchRequest *fetch = [NSFetchRequest fetchRequestWithEntityName:self.entity.name];
+  fetch.predicate = [NSCompoundPredicate andPredicateWithSubpredicates:parts];
+  self.fetch = fetch;
+  ODataReply *reply = [self replyWithAction:@selector(didFetchForApply:)];
+  [reply returned:[self.handler objectsForFetchRequest:fetch request:self.request reply:reply]];
+}
+
+// Sets value at path in nested dictionaries.
+static void OISSetAtPath(NSMutableDictionary *row, NSArray<NSString *> *path, id value)
+{
+  NSMutableDictionary *at = row;
+  for (NSUInteger i = 0; i + 1 < path.count; i++) {
+    NSMutableDictionary *next = at[path[i]];
+    if (![next isKindOfClass:[NSMutableDictionary class]]) {
+      next = [NSMutableDictionary dictionary];
+      at[path[i]] = next;
+    }
+    at = next;
+  }
+  at[path.lastObject] = value ?: [NSNull null];
+}
+
+// The rows of a groupby or aggregate, as the response has them: each
+// grouped path nested (Category/CategoryName is {"Category": {"CategoryName": ...}}),
+// each aggregate by its alias.
+- (NSArray *)rowsOfGrouping:(ODataApplyTransformation *)t over:(NSArray *)objects error:(NSError **)error
+{
+  NSMutableArray *keyPaths = [NSMutableArray array];
+  NSMutableArray *groupAttributes = [NSMutableArray array];
+  for (NSArray *path in t.groupPaths) {
+    NSPropertyDescription *property = nil;
+    NSString *keyPath = [self.service.predicates keyPathForPath:path entity:self.entity property:&property error:error];
+    if (!keyPath) return nil;
+    if (![property isKindOfClass:[NSAttributeDescription class]]) {
+      if (error) *error = ODataServiceError(501, [NSString stringWithFormat:@"groupby by %@, a navigation property", [path componentsJoinedByString:@"/"]]);
+      return nil;
+    }
+    [keyPaths addObject:keyPath];
+    [groupAttributes addObject:property];
+  }
+  NSMutableArray *aggregates = [NSMutableArray array];
+  NSMutableDictionary *aggregateAttributes = [NSMutableDictionary dictionary];
+  for (ODataAggregate *aggregate in t.aggregates) {
+    if (!aggregate.path) {
+      [aggregates addObject:aggregate];
+      continue;
+    }
+    NSPropertyDescription *property = nil;
+    NSString *keyPath = [self.service.predicates keyPathForPath:aggregate.path entity:self.entity property:&property error:error];
+    if (!keyPath) return nil;
+    if (![property isKindOfClass:[NSAttributeDescription class]]) {
+      if (error) *error = ODataServiceError(400, [NSString stringWithFormat:@"%@ is not a property to aggregate", [aggregate.path componentsJoinedByString:@"/"]]);
+      return nil;
+    }
+    aggregateAttributes[aggregate.alias] = property;
+    [aggregates addObject:[ODataAggregate aggregateOfPath:[keyPath componentsSeparatedByString:@"."] method:aggregate.method alias:aggregate.alias]];
+  }
+  NSArray *raw = [ODataAggregation groupObjects:objects byKeyPaths:keyPaths aggregates:aggregates];
+  NSMutableArray *rows = [NSMutableArray array];
+  for (NSDictionary *group in raw) {
+    NSMutableDictionary *row = [NSMutableDictionary dictionaryWithObject:[NSNull null] forKey:@"@odata.id"];
+    for (NSUInteger i = 0; i < keyPaths.count; i++) {
+      id value = group[keyPaths[i]];
+      OISSetAtPath(row, t.groupPaths[i], value == [NSNull null] ? nil : [self.coder JSONForCoreDataValue:value attribute:groupAttributes[i]]);
+    }
+    for (ODataAggregate *aggregate in t.aggregates) {
+      id value = group[aggregate.alias];
+      NSAttributeDescription *attribute = aggregateAttributes[aggregate.alias];
+      // min and max are of the property's type; the rest are numbers.
+      if (value != [NSNull null] && attribute && ([aggregate.method isEqualToString:@"min"] || [aggregate.method isEqualToString:@"max"])) {
+        value = [self.coder JSONForCoreDataValue:value attribute:attribute];
+      }
+      row[aggregate.alias] = value;
+    }
+    [rows addObject:row];
+  }
+  return rows;
+}
+
+// For a context URL: Category(CategoryName),Total.
+static NSString *OISSelectListOfPaths(NSArray<NSArray<NSString *> *> *paths)
+{
+  NSMutableArray *order = [NSMutableArray array];
+  NSMutableDictionary *children = [NSMutableDictionary dictionary];
+  for (NSArray *path in paths) {
+    NSString *head = path.firstObject;
+    if (!children[head]) {
+      children[head] = [NSMutableArray array];
+      [order addObject:head];
+    }
+    if (path.count > 1) [children[head] addObject:[path subarrayWithRange:NSMakeRange(1, path.count - 1)]];
+  }
+  NSMutableArray *items = [NSMutableArray array];
+  for (NSString *head in order) {
+    NSArray *below = children[head];
+    [items addObject:below.count ? [NSString stringWithFormat:@"%@(%@)", head, OISSelectListOfPaths(below)] : head];
+  }
+  return [items componentsJoinedByString:@","];
+}
+
+- (void)didFetchForApply:(ODataReply *)reply
+{
+  if (reply.error) {
+    [self respondError:reply.error];
+    return;
+  }
+  ODataQueryOptions *options = self.request.options;
+  NSArray *rows = reply.result ?: @[];
+  NSMutableArray *shape = nil;  // the paths of the rows' properties, once grouped
+  NSError *error = nil;
+  for (ODataApplyTransformation *t in self.applied) {
+    if (t.kind == ODataApplyFilter) {
+      NSPredicate *filter = shape ? [ODataAggregation predicateForExpression:t.filter error:&error]
+                                  : [self.service.predicates predicateForExpression:t.filter entity:self.entity aliases:options.aliases
+                                                                            context:self.request.context error:&error];
+      if (!filter) {
+        [self respondError:error.code == ODataIncrementalStoreErrorUnsupportedExpression ? ODataServiceError(501, error.localizedDescription) : error];
+        return;
+      }
+      rows = [rows filteredArrayUsingPredicate:filter];
+      continue;
+    }
+    if (shape) {
+      [self fail:501 message:@"$apply: grouping what is grouped already is not supported"];
+      return;
+    }
+    rows = [self rowsOfGrouping:t over:rows error:&error];
+    if (!rows) {
+      [self respondError:error];
+      return;
+    }
+    shape = [t.groupPaths mutableCopy];
+    for (ODataAggregate *aggregate in t.aggregates) [shape addObject:@[ aggregate.alias ]];
+  }
+  if (!shape) {
+    // Only filters, fetched and done: entities, as a collection is.
+    [self fail:501 message:@"$apply without groupby or aggregate after other options is not supported"];
+    return;
+  }
+  if (options.filter) {
+    NSPredicate *filter = [ODataAggregation predicateForExpression:options.filter error:&error];
+    if (!filter) {
+      [self respondError:ODataServiceError(501, error.localizedDescription)];
+      return;
+    }
+    rows = [rows filteredArrayUsingPredicate:filter];
+  }
+  if (options.orderBy.count) {
+    NSMutableArray *descriptors = [NSMutableArray array];
+    for (ODataOrderItem *item in options.orderBy) {
+      NSArray *path = item.expression.memberPath;
+      if (item.expression.kind != ODataExpressionMember || !path.count) {
+        [self fail:501 message:[NSString stringWithFormat:@"$orderby=%@ after $apply", item.expression]];
+        return;
+      }
+      [descriptors addObject:[NSSortDescriptor sortDescriptorWithKey:[path componentsJoinedByString:@"."] ascending:!item.descending
+                                                           comparator:^NSComparisonResult(id a, id b) {
+        // null first, as $orderby has it
+        BOOL noA = !a || a == [NSNull null], noB = !b || b == [NSNull null];
+        if (noA || noB) return noA == noB ? NSOrderedSame : noA ? NSOrderedAscending : NSOrderedDescending;
+        return [a compare:b];
+      }]];
+    }
+    rows = [rows sortedArrayUsingDescriptors:descriptors];
+  }
+  NSNumber *count = options.includeCount.boolValue ? @(rows.count) : nil;
+  NSUInteger skip = MIN(options.skip.unsignedIntegerValue, rows.count);
+  rows = [rows subarrayWithRange:NSMakeRange(skip, rows.count - skip)];
+  if (options.top && options.top.unsignedIntegerValue < rows.count) rows = [rows subarrayWithRange:NSMakeRange(0, options.top.unsignedIntegerValue)];
+  NSMutableDictionary *body = [NSMutableDictionary dictionary];
+  if (![self.metadataLevel isEqualToString:@"none"]) {
+    body[@"@odata.context"] = [NSString stringWithFormat:@"%@#%@(%@)", [self contextBase], [self setName], OISSelectListOfPaths(shape)];
+  }
+  if (count) body[@"@odata.count"] = count;
+  body[@"value"] = rows;
+  [self respondJSON:body status:200 headers:nil];
+}
+
+#pragma mark Collections
+
 - (void)readCollection
 {
   ODataQueryOptions *options = self.request.options;
+  if (options.apply.count && ![self applyIsFiltersOnly]) {
+    [self readApplied];
+    return;
+  }
   NSError *error = nil;
   NSFetchRequest *fetch = [NSFetchRequest fetchRequestWithEntityName:self.entity.name];
   fetch.predicate = [self collectionPredicateWithFilter:YES error:&error];
@@ -3132,7 +3461,11 @@ static NSNumber *OISScalarReturnValue(NSInvocation *invocation, char type)
 
 #pragma mark - The service
 
-@implementation ODataService
+@implementation ODataService {
+  // Repeatable requests: by client and request ID, what was answered.
+  NSMutableDictionary<NSString *, NSDictionary *> *_remembered;
+  NSLock *_rememberedLock;
+}
 
 - (instancetype)initWithPersistentStoreCoordinator:(NSPersistentStoreCoordinator *)coordinator serviceRoot:(NSURL *)serviceRoot
 {
@@ -3146,6 +3479,9 @@ static NSNumber *OISScalarReturnValue(NSInvocation *invocation, char type)
   _containerName = @"Container";
   _maxVersion = @"4.01";
   _replyTimeout = 60;
+  _repeatabilityDuration = 3600;
+  _remembered = [NSMutableDictionary dictionary];
+  _rememberedLock = [[NSLock alloc] init];
   _handlers = [NSMutableDictionary dictionary];
   _metadataByVersion = [NSMutableDictionary dictionary];
   return self;
@@ -3285,12 +3621,18 @@ static NSNumber *OISScalarReturnValue(NSInvocation *invocation, char type)
     @"SupportedFormats": @[ @"multipart/mixed", @"application/json" ] };
   annotations[[capabilities stringByAppendingString:@"SelectSupport"]] = @{ @"Supported": @YES, @"Expandable": @YES, @"Filterable": @YES,
                                                                             @"Sortable": @YES, @"TopSupported": @YES, @"SkipSupported": @YES,
-                                                                            @"Countable": @YES, @"ComputeSupported": @NO, @"Searchable": @NO };
+                                                                            @"Countable": @YES, @"ComputeSupported": @NO, @"Searchable": @YES };
   annotations[[capabilities stringByAppendingString:@"DeepInsertSupport"]] = @{ @"Supported": @YES, @"ContentIDSupported": @YES };
   annotations[[capabilities stringByAppendingString:@"DeepUpdateSupport"]] = @{ @"Supported": @YES, @"ContentIDSupported": @YES };
   annotations[[capabilities stringByAppendingString:@"FilterFunctions"]] = @[ @"contains", @"startswith", @"endswith", @"tolower", @"toupper",
                                                                                 @"length", @"year", @"month", @"day", @"hour", @"minute", @"second", @"date", @"floor", @"ceiling", @"round",
                                                                                 @"now", @"cast", @"isof", @"matchesPattern" ];
+  // Repeatable requests, remembered repeatabilityDuration.
+  if (self.repeatabilityDuration > 0) annotations[@"Org.OData.Repeatability.V1.Supported"] = @YES;
+  // $apply, as far as it goes (Data Aggregation section 6.1).
+  annotations[@"Org.OData.Aggregation.V1.ApplySupported"] = @{
+    @"Transformations": @[ @"filter", @"groupby", @"aggregate" ],
+    @"Rollup": @{ @"$EnumMember": @"Org.OData.Aggregation.V1.RollupType/None" } };
   for (NSString *term in self.containerAnnotations) annotations[[ODataMetadataWriter fullTerm:term]] = self.containerAnnotations[term];
   id<ODataAuthenticator> authenticator = self.authenticator;
   NSDictionary *authorization = [authenticator respondsToSelector:@selector(authorizationDescription)] ? [authenticator authorizationDescription] : nil;
@@ -3332,8 +3674,10 @@ static NSNumber *OISScalarReturnValue(NSInvocation *invocation, char type)
         restrictions[set] = refused;
         [signature appendFormat:@";%@:%@", set, [[refused.allObjects sortedArrayUsingSelector:@selector(compare:)] componentsJoinedByString:@","]];
       }
-      // No $search here; and what $filter and $orderby may not use.
-      NSMutableDictionary *capabilities = [@{ @"Org.OData.Capabilities.V1.SearchRestrictions": @{ @"Searchable": @NO } } mutableCopy];
+      // Whether $search does, and what $filter and $orderby may not use.
+      BOOL searchable = !handler.searchableProperties || handler.searchableProperties.count;
+      NSMutableDictionary *capabilities = [@{ @"Org.OData.Capabilities.V1.SearchRestrictions": @{ @"Searchable": @(searchable) } } mutableCopy];
+      if (!searchable) [signature appendFormat:@";%@ nosearch", set];
       NSArray *(^paths)(NSSet *) = ^NSArray *(NSSet *names) {
         NSMutableArray *out = [NSMutableArray array];
         for (NSString *name in [names.allObjects sortedArrayUsingSelector:@selector(compare:)]) [out addObject:@{ @"$PropertyPath": name }];
@@ -3382,11 +3726,106 @@ static NSNumber *OISScalarReturnValue(NSInvocation *invocation, char type)
   [self startExchange:exchange inContext:nil saves:YES authenticated:NO principal:nil];
 }
 
+#pragma mark Repeatable requests
+
+static NSDateFormatter *OISHTTPDateFormatter(void)
+{
+  static NSDateFormatter *formatter;
+  static dispatch_once_t once;
+  dispatch_once(&once, ^{
+    formatter = [[NSDateFormatter alloc] init];
+    formatter.locale = [NSLocale localeWithLocaleIdentifier:@"en_US_POSIX"];
+    formatter.timeZone = [NSTimeZone timeZoneForSecondsFromGMT:0];
+    formatter.dateFormat = @"EEE, dd MMM yyyy HH:mm:ss 'GMT'";
+  });
+  return formatter;
+}
+
+- (void)answer:(ODataExchange *)exchange status:(NSInteger)status headers:(NSDictionary *)headers body:(NSData *)body
+{
+  NSHTTPURLResponse *response = [[NSHTTPURLResponse alloc] initWithURL:exchange.request.URL statusCode:status
+                                                           HTTPVersion:@"HTTP/1.1" headerFields:headers];
+  exchange.URLResponse = response;
+  exchange.data = body ?: [NSData data];
+  [exchange finish];
+}
+
+- (void)reject:(ODataExchange *)exchange status:(NSInteger)status message:(NSString *)message
+{
+  NSDictionary *error = @{ @"error": @{ @"code": [NSString stringWithFormat:@"%ld", (long)status], @"message": message } };
+  [self answer:exchange status:status headers:@{ @"Content-Type": @"application/json;charset=utf-8", @"OData-Version": @"4.01",
+                                                 @"Repeatability-Result": @"rejected" }
+          body:[NSJSONSerialization dataWithJSONObject:error options:0 error:NULL]];
+}
+
+// A repeatable request: answered here when it is one already answered (the
+// same answer), too old to tell, or one whose ID another request took; else
+// marked as under way, and its key and signature given back to remember it by.
+- (BOOL)answeredRepeat:(ODataExchange *)exchange key:(NSString **)keyOut signature:(NSString **)signatureOut
+{
+  NSURLRequest *request = exchange.request;
+  NSString *requestID = [request valueForHTTPHeaderField:@"Repeatability-Request-ID"];
+  NSString *method = request.HTTPMethod ?: @"GET";
+  if (!requestID.length || self.repeatabilityDuration <= 0 || [method isEqualToString:@"GET"] || [method isEqualToString:@"HEAD"]) return NO;
+  NSDate *firstSent = [OISHTTPDateFormatter() dateFromString:[request valueForHTTPHeaderField:@"Repeatability-First-Sent"] ?: @""];
+  if (!firstSent) {
+    [self reject:exchange status:400 message:@"A repeatable request needs Repeatability-First-Sent"];
+    return YES;
+  }
+  if (-[firstSent timeIntervalSinceNow] > self.repeatabilityDuration) {
+    [self reject:exchange status:400 message:@"The request was first sent longer ago than the service remembers"];
+    return YES;
+  }
+  NSString *key = [NSString stringWithFormat:@"%@\n%@", [request valueForHTTPHeaderField:@"Repeatability-Client-ID"] ?: @"", requestID];
+  uint64_t hash = 14695981039346656037ULL;
+  const uint8_t *bytes = request.HTTPBody.bytes;
+  for (NSUInteger i = 0; i < request.HTTPBody.length; i++) {
+    hash ^= bytes[i];
+    hash *= 1099511628211ULL;
+  }
+  NSString *signature = [NSString stringWithFormat:@"%@ %@ %016llx", method, request.URL.absoluteString, (unsigned long long)hash];
+  [_rememberedLock lock];
+  // What is too old to be repeated any more is let go.
+  for (NSString *old in _remembered.allKeys) {
+    if (-[_remembered[old][@"date"] timeIntervalSinceNow] > self.repeatabilityDuration) [_remembered removeObjectForKey:old];
+  }
+  NSDictionary *entry = _remembered[key];
+  if (!entry) _remembered[key] = @{ @"date": [NSDate date], @"signature": signature, @"pending": @YES };
+  [_rememberedLock unlock];
+  if (!entry) {
+    *keyOut = key;
+    *signatureOut = signature;
+    return NO;
+  }
+  if (![entry[@"signature"] isEqualToString:signature]) {
+    [self reject:exchange status:400 message:@"That Repeatability-Request-ID was given to another request"];
+  } else if ([entry[@"pending"] boolValue]) {
+    [self reject:exchange status:409 message:@"The request is being answered"];
+  } else {
+    [self answer:exchange status:[entry[@"status"] integerValue] headers:entry[@"headers"] body:entry[@"body"]];
+  }
+  return YES;
+}
+
+- (void)rememberAnswer:(NSInteger)status headers:(NSDictionary *)headers body:(NSData *)body
+                forKey:(NSString *)key signature:(NSString *)signature
+{
+  [_rememberedLock lock];
+  // A failure of the service's own is not the answer: the request may be tried again.
+  if (status >= 500) [_remembered removeObjectForKey:key];
+  else _remembered[key] = @{ @"date": [NSDate date], @"signature": signature ?: @"", @"status": @(status), @"headers": headers, @"body": body };
+  [_rememberedLock unlock];
+}
+
 - (void)startExchange:(ODataExchange *)exchange inContext:(NSManagedObjectContext *)shared saves:(BOOL)saves
         authenticated:(BOOL)authenticated principal:(ODataPrincipal *)principal
 {
   [self prepare];
+  NSString *repeatabilityKey = nil, *repeatabilitySignature = nil;
+  if (!shared && [self answeredRepeat:exchange key:&repeatabilityKey signature:&repeatabilitySignature]) return;
   OISServiceCall *call = [[OISServiceCall alloc] init];
+  call.repeatabilityKey = repeatabilityKey;
+  call.repeatabilitySignature = repeatabilitySignature;
   call.service = self;
   call.exchange = exchange;
   call.request = [[ODataRequest alloc] initWithURLRequest:exchange.request];

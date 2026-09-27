@@ -42,7 +42,9 @@ LIBRARY_NAME = ODataKit ODataIncrementalStore ODataService
 
 ODataKit_NEEDS_GUI = no
 ODataKit_OBJC_FILES = \
+	Source/ODataKit/ODataApply.m \
 	Source/ODataKit/ODataBatch.m \
+	Source/ODataKit/ODataCSDL.m \
 	Source/ODataKit/ODataError.m \
 	Source/ODataKit/ODataExpression.m \
 	Source/ODataKit/ODataLexer.m \
@@ -52,7 +54,9 @@ ODataKit_OBJC_FILES = \
 	Source/ODataKit/ODataValue.m
 
 ODataKit_HEADER_FILES = \
+	ODataApply.h \
 	ODataBatch.h \
+	ODataCSDL.h \
 	ODataError.h \
 	ODataExpression.h \
 	ODataKit.h \
@@ -82,6 +86,7 @@ ODataIncrementalStore_OBJC_FILES = \
 	Source/ODataIncrementalStore/ODataModelBuilder.m \
 	Source/ODataIncrementalStore/ODataOperationCall.m \
 	Source/ODataIncrementalStore/ODataStreamTransfer.m \
+	Source/ODataIncrementalStore/ODataSearchPredicate.m \
 	Source/ODataIncrementalStore/ODataPredicateTranslator.m \
 	Source/ODataIncrementalStore/ODataQueryBuilder.m \
 	Source/ODataIncrementalStore/ODataResourceIdentifier.m
@@ -96,6 +101,7 @@ ODataIncrementalStore_HEADER_FILES = \
 	ODataModelBuilder.h \
 	ODataOperationCall.h \
 	ODataStreamTransfer.h \
+	ODataSearchPredicate.h \
 	ODataPredicateTranslator.h \
 	ODataQueryBuilder.h \
 	ODataResourceIdentifier.h

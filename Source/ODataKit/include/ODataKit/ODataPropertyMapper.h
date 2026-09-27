@@ -31,6 +31,13 @@ FOUNDATION_EXPORT NSString * const ODataUserInfoComputed;
 FOUNDATION_EXPORT NSString * const ODataUserInfoImmutable;
 FOUNDATION_EXPORT NSString * const ODataUserInfoPermissions;
 FOUNDATION_EXPORT NSString * const ODataUserInfoAnnotations;
+// The Measures vocabulary in userInfo: OData.unit (Measures.Unit, "kg"),
+// OData.isoCurrency (Measures.ISOCurrency: an ISO 4217 code, "EUR", or the
+// name of the attribute that holds one), OData.scale (Measures.Scale: the
+// decimal places that are significant).
+FOUNDATION_EXPORT NSString * const ODataUserInfoUnit;
+FOUNDATION_EXPORT NSString * const ODataUserInfoISOCurrency;
+FOUNDATION_EXPORT NSString * const ODataUserInfoScale;
 
 @interface ODataPropertyMapper : NSObject
 @property (nonatomic) ODataPropertyNaming naming;
@@ -78,6 +85,13 @@ FOUNDATION_EXPORT NSString * const ODataUserInfoAnnotations;
 - (BOOL)attributeIsComputed:(NSAttributeDescription *)attribute;
 // Written when the entity is made, and not after: Core.Immutable.
 - (BOOL)attributeIsImmutable:(NSAttributeDescription *)attribute;
+// Measures: the attribute's unit (Measures.Unit, else UNECEUnit), its
+// significant decimal places (Measures.Scale; nil for none said), and
+// the ISO 4217 currency of an amount (Measures.ISOCurrency), read from
+// the object when the currency is another of its properties.
+- (nullable NSString *)unitOfAttribute:(NSAttributeDescription *)attribute;
+- (nullable NSNumber *)scaleOfAttribute:(NSAttributeDescription *)attribute;
+- (nullable NSString *)currencyOfAttribute:(NSAttributeDescription *)attribute inObject:(nullable NSManagedObject *)object;
 // What of the Validation vocabulary Core Data cannot hold an object
 // breaks: Validation.MultipleOf of an attribute, Validation.Constraint of
 // its entity type or a property (a condition, a CSDL expression over the

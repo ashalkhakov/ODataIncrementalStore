@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: LGPL-2.1-or-later
 
 #import "ODataSchema.h"
+#import "ODataCSDL.h"
 #import "ODataError.h"
 
 @implementation ODataSchemaProperty
@@ -460,6 +461,14 @@ static NSDictionary<NSString *, NSString *> *OISStandardVocabularies(void)
 
 + (instancetype)schemaWithData:(NSData *)csdl error:(NSError **)error
 {
+  // CSDL JSON (4.01) is read as the CSDL XML it says the same as.
+  const char *bytes = csdl.bytes;
+  NSUInteger at = 0;
+  while (at < csdl.length && (bytes[at] == ' ' || bytes[at] == '\n' || bytes[at] == '\r' || bytes[at] == '\t')) at++;
+  if (at < csdl.length && bytes[at] == '{') {
+    csdl = [ODataCSDL XMLDataForJSONData:csdl error:error];
+    if (!csdl) return nil;
+  }
   OISSchemaReader *reader = [[OISSchemaReader alloc] init];
   NSXMLParser *parser = [[NSXMLParser alloc] initWithData:csdl];
   parser.delegate = reader;

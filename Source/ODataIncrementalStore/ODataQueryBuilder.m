@@ -5,6 +5,8 @@
 #import "ODataFunctionExpression.h"
 #import "ODataPredicateTranslator.h"
 #import "ODataError.h"
+#import "ODataSearchPredicate.h"
+#import <ODataKit/ODataApply.h>
 #import <ODataKit/ODataExpression.h>
 
 static NSString *OISPercentEncode(NSString *value)
@@ -61,6 +63,17 @@ static NSString *OISPercentEncode(NSString *value)
     return nil;
   }
   return url;
+}
+
+// Whether the entity's set can be searched (Capabilities.SearchRestrictions).
+- (BOOL)searches:(NSEntityDescription *)entity
+{
+  ODataSchema *schema = self.mapper.schema;
+  if (!schema) return YES;
+  NSEntityDescription *root = entity;
+  while (root.superentity) root = root.superentity;
+  id restrictions = [schema capability:@"Capabilities.SearchRestrictions" forEntitySet:[self.mapper entitySetForEntity:root]];
+  return !([restrictions isKindOfClass:[NSDictionary class]] && [restrictions[@"Searchable"] isEqual:@NO]);
 }
 
 // Whether the service expands this navigation property of the entity's
@@ -194,17 +207,40 @@ static void OISCollectCalls(ODataExpression *e, NSMutableSet *into)
   return nil;
 }
 
+// The predicate without the searches ANDed at its top, which go into
+// searches; nil when nothing else is left.
+static NSPredicate *OISWithoutSearches(NSPredicate *predicate, NSMutableArray<ODataSearchExpression *> *searches)
+{
+  if ([predicate isKindOfClass:[ODataSearchPredicate class]]) {
+    [searches addObject:((ODataSearchPredicate *)predicate).search];
+    return nil;
+  }
+  if ([predicate isKindOfClass:[NSCompoundPredicate class]] &&
+      ((NSCompoundPredicate *)predicate).compoundPredicateType == NSAndPredicateType) {
+    NSMutableArray *rest = [NSMutableArray array];
+    for (NSPredicate *sub in ((NSCompoundPredicate *)predicate).subpredicates) {
+      NSPredicate *left = OISWithoutSearches(sub, searches);
+      if (left) [rest addObject:left];
+    }
+    if (!rest.count) return nil;
+    return rest.count == 1 ? rest.firstObject : [NSCompoundPredicate andPredicateWithSubpredicates:rest];
+  }
+  return predicate;
+}
+
 - (NSURL *)URLForFetch:(NSFetchRequest *)fetch entity:(NSEntityDescription *)entity error:(NSError **)error
 {
   // The entity set, with a type cast for a derived type (Animals/Zoo.Lion).
   NSString *set = [self.mapper collectionPathForEntity:entity];
   NSMutableArray *items = [NSMutableArray array];
 
-  if (fetch.predicate) {
+  NSMutableArray<ODataSearchExpression *> *searches = [NSMutableArray array];
+  NSPredicate *predicate = OISWithoutSearches(fetch.predicate, searches);
+  if (predicate) {
     ODataPredicateTranslator *t = [[ODataPredicateTranslator alloc] initWithMapper:self.mapper entity:entity];
     t.keysForObjectID = self.keysForObjectID;
     if (self.version) t.version = self.version;
-    NSString *filter = [t translatePredicate:fetch.predicate error:error];
+    NSString *filter = [t translatePredicate:predicate error:error];
     if (!filter) return nil;
     NSString *refused = [self refusedFunctionIn:filter entity:entity];
     if (refused) {
@@ -213,6 +249,18 @@ static void OISCollectCalls(ODataExpression *e, NSMutableSet *into)
       return nil;
     }
     [items addObject:@[ @"$filter", filter ]];
+  }
+  if (searches.count) {
+    if (![self searches:entity]) {
+      if (error) *error = OISError(ODataIncrementalStoreErrorNotAllowedByService,
+                                   [NSString stringWithFormat:@"%@: the service does not search (Capabilities.SearchRestrictions)", entity.name]);
+      return nil;
+    }
+    ODataSearchExpression *search = searches.firstObject;
+    for (NSUInteger i = 1; i < searches.count; i++) {
+      search = [ODataSearchExpression searchWithKind:ODataSearchAnd text:nil left:search right:searches[i]];
+    }
+    [items addObject:@[ @"$search", search.description ]];
   }
 
   // /$count takes $filter alone (Part 2 section 4.8): TripPin answers
@@ -288,6 +336,35 @@ static void OISCollectCalls(ODataExpression *e, NSMutableSet *into)
   }
 
   return [self composePath:set query:items error:error];
+}
+
+- (NSURL *)URLForAggregateFetch:(NSFetchRequest *)fetch
+                          entity:(NSEntityDescription *)entity
+                      groupPaths:(NSArray *)paths
+                      aggregates:(NSArray *)aggregates
+                           error:(NSError **)error
+{
+  NSMutableArray<ODataSearchExpression *> *searches = [NSMutableArray array];
+  NSPredicate *predicate = OISWithoutSearches(fetch.predicate, searches);
+  NSMutableArray *steps = [NSMutableArray array];
+  if (predicate) {
+    ODataPredicateTranslator *t = [[ODataPredicateTranslator alloc] initWithMapper:self.mapper entity:entity];
+    t.keysForObjectID = self.keysForObjectID;
+    if (self.version) t.version = self.version;
+    NSString *filter = [t translatePredicate:predicate error:error];
+    if (!filter) return nil;
+    [steps addObject:[NSString stringWithFormat:@"filter(%@)", filter]];
+  }
+  ODataApplyTransformation *grouping = paths.count ? [ODataApplyTransformation groupByPaths:paths aggregates:aggregates]
+                                                   : [ODataApplyTransformation aggregateWith:aggregates];
+  [steps addObject:grouping.description];
+  NSMutableArray *items = [NSMutableArray arrayWithObject:@[ @"$apply", [steps componentsJoinedByString:@"/"] ]];
+  if (searches.count) {
+    ODataSearchExpression *search = searches.firstObject;
+    for (NSUInteger i = 1; i < searches.count; i++) search = [ODataSearchExpression searchWithKind:ODataSearchAnd text:nil left:search right:searches[i]];
+    [items addObject:@[ @"$search", search.description ]];
+  }
+  return [self composePath:[self.mapper collectionPathForEntity:entity] query:items error:error];
 }
 
 // Prefetch key paths as $expand items, a path through relationships

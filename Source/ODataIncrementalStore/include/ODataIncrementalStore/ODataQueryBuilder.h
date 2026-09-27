@@ -26,6 +26,14 @@ NS_ASSUME_NONNULL_BEGIN
 - (nullable NSURL *)URLForFetch:(NSFetchRequest *)fetch
                          entity:(NSEntityDescription *)entity
                           error:(NSError **)error;
+// $apply for a fetch that groups and aggregates: its predicate as
+// filter(), then groupby((paths),aggregate(...)), or aggregate(...) alone
+// (Data Aggregation section 3). Paths are wire paths (Category/CategoryName).
+- (nullable NSURL *)URLForAggregateFetch:(NSFetchRequest *)fetch
+                                  entity:(NSEntityDescription *)entity
+                              groupPaths:(NSArray<NSArray<NSString *> *> *)paths
+                              aggregates:(NSArray *)aggregates
+                                   error:(NSError **)error;
 - (nullable NSURL *)URLForIdentifier:(ODataResourceIdentifier *)identifier error:(NSError **)error;
 // For reading one entity: the entity URL with its to-one keys expanded.
 - (nullable NSURL *)URLForReadingIdentifier:(ODataResourceIdentifier *)identifier

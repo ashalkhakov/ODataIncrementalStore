@@ -4,6 +4,7 @@
 #import "ODataExpression.h"
 #import "ODataLexer.h"
 #import "ODataError.h"
+#import "ODataApply.h"
 
 // The parser, below the tree.
 @class ODataQueryOptions, ODataResourcePath;
@@ -190,6 +191,8 @@ static NSString *OISQuoted(NSString *text)
 @property (nonatomic, strong, nullable) NSNumber *includeCount;
 @property (nonatomic, strong, nullable) NSNumber *levels;
 @property (nonatomic, copy, nullable) NSString *search;
+@property (nonatomic, strong, nullable) ODataSearchExpression *searchExpression;
+@property (nonatomic, copy, nullable) NSArray *apply;
 @property (nonatomic, copy) NSDictionary *aliases;
 @property (nonatomic, copy, nullable) NSString *format;
 @property (nonatomic, copy, nullable) NSString *skipToken;
@@ -757,6 +760,12 @@ static NSString *OISQuoted(NSString *text)
     NSUInteger end = _token.kind == OISTokenEnd ? _lexer.string.length : _token.range.location;
     options.search = [[_lexer.string substringWithRange:NSMakeRange(start, end - start)]
                       stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceCharacterSet]];
+    NSError *error = nil;
+    options.searchExpression = [ODataSearchExpression searchWithString:options.search error:&error];
+    if (!options.searchExpression) {
+      if (!self.error) self.error = error;
+      return NO;
+    }
     return YES;
   }
   [self fail:[NSString stringWithFormat:@"no query option %@", option]];
@@ -858,6 +867,18 @@ static NSString *OISQuoted(NSString *text)
         options.skipToken = value;
         continue;
       }
+      if ([key isEqualToString:@"$apply"]) {
+        options.apply = [ODataApplyTransformation transformationsWithString:value error:error];
+        if (!options.apply) return nil;
+        continue;
+      }
+      if ([key isEqualToString:@"$search"]) {
+        // Its own grammar, with "phrases" the OData lexer has no token for.
+        options.search = [value stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceCharacterSet]];
+        options.searchExpression = [ODataSearchExpression searchWithString:options.search error:error];
+        if (!options.searchExpression) return nil;
+        continue;
+      }
       if ([key isEqualToString:@"$deltatoken"] ||
           [key isEqualToString:@"$schemaversion"] || [key isEqualToString:@"$id"] || [key isEqualToString:@"$index"]) {
         continue;
@@ -892,3 +913,195 @@ static NSString *OISQuoted(NSString *text)
 
 @end
 
+
+#pragma mark - $search
+
+@interface ODataSearchExpression ()
+@property (nonatomic) ODataSearchKind kind;
+@property (nonatomic, copy, nullable) NSString *text;
+@property (nonatomic, strong, nullable) ODataSearchExpression *left;
+@property (nonatomic, strong, nullable) ODataSearchExpression *right;
+@end
+
+// A recursive descent over characters: $search has a grammar of its own.
+@interface OISSearchParser : NSObject {
+@public
+  NSString *_text;
+  NSUInteger _at;
+  NSError *_error;
+}
+@end
+
+@implementation OISSearchParser
+
+- (void)skipSpace
+{
+  while (_at < _text.length && [[NSCharacterSet whitespaceAndNewlineCharacterSet] characterIsMember:[_text characterAtIndex:_at]]) _at++;
+}
+
+- (id)fail:(NSString *)message
+{
+  if (!_error) {
+    _error = OISError(ODataIncrementalStoreErrorSyntax,
+                      [NSString stringWithFormat:@"$search: %@ at %lu in \"%@\"", message, (unsigned long)_at, _text]);
+  }
+  return nil;
+}
+
+// The next word, not consumed; nil at a parenthesis, a quote or the end.
+- (NSString *)peekWord
+{
+  [self skipSpace];
+  NSUInteger end = _at;
+  while (end < _text.length) {
+    unichar c = [_text characterAtIndex:end];
+    if (c == '(' || c == ')' || c == '"' || [[NSCharacterSet whitespaceAndNewlineCharacterSet] characterIsMember:c]) break;
+    end++;
+  }
+  return end > _at ? [_text substringWithRange:NSMakeRange(_at, end - _at)] : nil;
+}
+
+- (BOOL)atKeyword:(NSString *)keyword
+{
+  if (![[self peekWord] isEqualToString:keyword]) return NO;
+  _at += keyword.length;
+  return YES;
+}
+
+- (ODataSearchExpression *)parseOr
+{
+  ODataSearchExpression *left = [self parseAnd];
+  while (left && [self atKeyword:@"OR"]) {
+    ODataSearchExpression *right = [self parseAnd];
+    if (!right) return nil;
+    left = [ODataSearchExpression searchWithKind:ODataSearchOr text:nil left:left right:right];
+  }
+  return left;
+}
+
+- (BOOL)startsTerm
+{
+  [self skipSpace];
+  if (_at >= _text.length) return NO;
+  unichar c = [_text characterAtIndex:_at];
+  if (c == ')') return NO;
+  return ![[self peekWord] isEqualToString:@"OR"];
+}
+
+- (ODataSearchExpression *)parseAnd
+{
+  ODataSearchExpression *left = [self parseUnary];
+  while (left) {
+    BOOL explicitAnd = [self atKeyword:@"AND"];
+    if (!explicitAnd && ![self startsTerm]) break;
+    ODataSearchExpression *right = [self parseUnary];
+    if (!right) return nil;
+    left = [ODataSearchExpression searchWithKind:ODataSearchAnd text:nil left:left right:right];
+  }
+  return left;
+}
+
+- (ODataSearchExpression *)parseUnary
+{
+  if ([self atKeyword:@"NOT"]) {
+    ODataSearchExpression *operand = [self parseUnary];
+    return operand ? [ODataSearchExpression searchWithKind:ODataSearchNot text:nil left:operand right:nil] : nil;
+  }
+  [self skipSpace];
+  if (_at >= _text.length) return [self fail:@"a word or a phrase is missing"];
+  unichar c = [_text characterAtIndex:_at];
+  if (c == '(') {
+    _at++;
+    ODataSearchExpression *inner = [self parseOr];
+    if (!inner) return nil;
+    [self skipSpace];
+    if (_at >= _text.length || [_text characterAtIndex:_at] != ')') return [self fail:@"a ) is missing"];
+    _at++;
+    return inner;
+  }
+  if (c == '"') {
+    // "a phrase", with \" and \\ inside (4.01).
+    NSMutableString *phrase = [NSMutableString string];
+    _at++;
+    while (_at < _text.length) {
+      unichar d = [_text characterAtIndex:_at++];
+      if (d == '"') {
+        if (!phrase.length) return [self fail:@"a phrase is empty"];
+        return [ODataSearchExpression searchWithKind:ODataSearchPhrase text:phrase left:nil right:nil];
+      }
+      if (d == '\\' && _at < _text.length) d = [_text characterAtIndex:_at++];
+      [phrase appendFormat:@"%C", d];
+    }
+    return [self fail:@"a phrase is not closed"];
+  }
+  if (c == ')') return [self fail:@"a word or a phrase is missing"];
+  NSString *word = [self peekWord];
+  if ([word isEqualToString:@"AND"] || [word isEqualToString:@"OR"]) return [self fail:[NSString stringWithFormat:@"%@ needs a word before it", word]];
+  _at += word.length;
+  return [ODataSearchExpression searchWithKind:ODataSearchWord text:word left:nil right:nil];
+}
+
+@end
+
+@implementation ODataSearchExpression
+
++ (instancetype)searchWithString:(NSString *)text error:(NSError **)error
+{
+  OISSearchParser *parser = [[OISSearchParser alloc] init];
+  parser->_text = text ?: @"";
+  ODataSearchExpression *e = [parser parseOr];
+  [parser skipSpace];
+  if (e && parser->_at < parser->_text.length) e = [parser fail:@"unexpected text"];
+  if (!e && error) *error = parser->_error ?: OISError(ODataIncrementalStoreErrorSyntax, @"$search is empty");
+  return e;
+}
+
++ (instancetype)searchWithKind:(ODataSearchKind)kind text:(NSString *)text left:(ODataSearchExpression *)left right:(ODataSearchExpression *)right
+{
+  ODataSearchExpression *e = [[self alloc] init];
+  e.kind = kind;
+  e.text = text;
+  e.left = left;
+  e.right = right;
+  return e;
+}
+
+- (ODataSearchExpression *)operand
+{
+  return self.kind == ODataSearchNot ? self.left : nil;
+}
+
+- (BOOL)matchesTexts:(NSArray<NSString *> *)texts
+{
+  switch (self.kind) {
+    case ODataSearchWord:
+    case ODataSearchPhrase:
+      for (NSString *text in texts) {
+        if (![text isKindOfClass:[NSString class]]) continue;
+        if ([text rangeOfString:self.text options:NSCaseInsensitiveSearch | NSDiacriticInsensitiveSearch].location != NSNotFound) return YES;
+      }
+      return NO;
+    case ODataSearchAnd: return [self.left matchesTexts:texts] && [self.right matchesTexts:texts];
+    case ODataSearchOr: return [self.left matchesTexts:texts] || [self.right matchesTexts:texts];
+    case ODataSearchNot: return ![self.left matchesTexts:texts];
+  }
+  return NO;
+}
+
+- (NSString *)description
+{
+  switch (self.kind) {
+    case ODataSearchWord: return self.text;
+    case ODataSearchPhrase: {
+      NSString *escaped = [[self.text stringByReplacingOccurrencesOfString:@"\\" withString:@"\\\\"]
+                           stringByReplacingOccurrencesOfString:@"\"" withString:@"\\\""];
+      return [NSString stringWithFormat:@"\"%@\"", escaped];
+    }
+    case ODataSearchAnd: return [NSString stringWithFormat:@"(%@ AND %@)", self.left, self.right];
+    case ODataSearchOr: return [NSString stringWithFormat:@"(%@ OR %@)", self.left, self.right];
+    case ODataSearchNot: return [NSString stringWithFormat:@"NOT %@", self.left];
+  }
+  return @"";
+}
+
+@end

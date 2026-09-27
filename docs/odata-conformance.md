@@ -45,7 +45,7 @@ calling the client conformant.
 | 11–15 | MAY: entity references, delta, async, `metadata=minimal`, streaming | — | Optional. The client asks for `metadata=minimal`; see 2.1. |
 | 16 | 4.01: MUST send 4.0 payloads to a service that does not advertise 4.01 in `Core.ODataVersions` | ✅ | The container's `Core.ODataVersions` decides, its highest version listed; without it, `<edmx:Edmx Version>` does, since only a 4.01 service writes 4.01 CSDL. `ODataService` advertises `4.0 4.01`. |
 | 17 | 4.01: MUST spell identifiers in payloads and URLs as `$metadata` does | ✅ | Property, navigation property, entity set, type and enumeration member names are given `$metadata`'s spelling where the model's differs only in case (`Id` for `ID`, `Staff` for `staff`), names from `userInfo` included. |
-| 18 | 4.01: MUST be prepared for any valid 4.01 CSDL | ✅ | Tested with `Edm.Untyped` and abstract property types, `Scale` variable and floating, `SRID`, key aliases, a nullable singleton, `IncludeInServiceDocument`, `Edm.Int64` enumerations, `ContainsTarget` with `OnDelete`, action overloads with `EntitySetPath`, terms of its own, `IncludeAnnotations`, and `UrlRef`, `LabeledElement` and `Apply` annotations: parsed, and a model built from it. JSON CSDL is not read yet. |
+| 18 | 4.01: MUST be prepared for any valid 4.01 CSDL | ✅ | Tested with `Edm.Untyped` and abstract property types, `Scale` variable and floating, `SRID`, key aliases, a nullable singleton, `IncludeInServiceDocument`, `Edm.Int64` enumerations, `ContainsTarget` with `OnDelete`, action overloads with `EntitySetPath`, terms of its own, `IncludeAnnotations`, and `UrlRef`, `LabeledElement` and `Apply` annotations: parsed, and a model built from it. CSDL JSON is read too (`ODataCSDL` turns it into the XML it says the same as), and so is the specification's own example. |
 | 19 | 4.01: MUST be prepared for any valid 4.01 response in the format asked for | ✅ | Control information without `odata.` (2.4), `@removed` and `#$deletedEntity`, `#$link` and `#$deletedLink` in deltas, decimals with exponents, `Nav@count` and unknown annotations. |
 | 20 | 4.01: SHOULD check Capabilities before 4.01 syntax, or be ready for `400` and `501` | ✅ | `in` and `matchesPattern` go only to a service that speaks 4.01; a canonical function the set's `Capabilities.FilterFunctions` leaves out is refused before anything is sent (`ODataIncrementalStoreErrorNotAllowedByService`); a `400` or `501` otherwise is the fetch's error. |
 
@@ -69,7 +69,7 @@ calling the client conformant.
 
 | Area | Section | Status | Notes |
 |---|---|---|---|
-| Service root and `$metadata` fetch | §11.1 | ✅ **live** | Requested as XML. (It used to be sent with a JSON `Accept`, and Northwind refused to open.) |
+| Service root and `$metadata` fetch | §11.1 | ✅ **live** | Requested as XML. (It used to be sent with a JSON `Accept`, and Northwind refused to open.) CSDL JSON (4.01) is read as well, where a document is JSON. |
 | `$metadata` use | §11.1.2 | ✅ **live** | Read when the store opens (CSDL XML: entity types, keys, base types, properties, navigation, enumerations, entity sets, containment). It fills in what the model leaves unsaid, and the model is checked against it (`metadataProblems`). It can also be the model: built at runtime, or generated as a versioned `.xcdatamodeld` by `ois-model`; see the README. |
 | Status codes and error bodies | §9, JSON §21 | ✅ **live** | The service's message is the `NSError`'s description; its code, target, details, the HTTP status and the body are in `userInfo` (`ODataErrorCodeKey` and friends). XML error bodies too, for `$metadata`. A `412` is `ODataIncrementalStoreErrorOptimisticLocking`, alone or inside a change set. |
 | Errors surfaced from fetches | | ✅ **live** | A failed request fails the fetch with its `NSError`, for collections and relationships alike; it is never an empty result. |
@@ -108,6 +108,8 @@ calling the client conformant.
 | Rows read as objects | `$select` | ✅ | A fetch of objects or object IDs, a fault and a relationship read ask for the model's attributes that the service's type has, and a subentity's own behind its cast (`Zoo.Lion/MaxRoar`); an expanded entity's options do the same. Nothing is trimmed without `$metadata`, when a subentity names no type, or where `Capabilities.SelectSupport` says the set has none. |
 | `relationshipKeyPathsForPrefetching` | `$expand` | ✅ | Inline entities are cached, a to-one's object ID goes in the row, and a to-many's members are kept, so reading the relationship asks nothing, unless the collection came in pages (`Nav@odata.nextLink`). Each expanded entity names its own to-ones (`Products($expand=Category($select=CategoryID))`). Kept members are dropped with their object's row and at every save, which may move them. |
 | `fetchBatchSize` | `Prefer: odata.maxpagesize` | ✅ | The pages are followed to the end, each of that size. |
+| `propertiesToGroupBy`, aggregate `NSExpressionDescription`s (dictionary results) | `$apply` | ✅ | OData Data Aggregation: the predicate as `filter()`, then `groupby((paths),aggregate(…))` or `aggregate(…)`, with `sum:`, `min:`, `max:`, `average:` as those methods and `count:` as `$count`. Sent where `$metadata` has `Aggregation.ApplySupported`; elsewhere the rows are read and grouped and aggregated here, with the same result. `havingPredicate`, the sort, the offset and the limit are applied here to the grouped rows. Keys are Core Data's: `category.name`, and each expression's name. |
+| `ODataSearchPredicate` | `$search` | ✅ | Part 2 §5.1.7: words, `"phrases"`, `AND` (or nothing), `OR`, `NOT`, parentheses. Alone or ANDed at the top of the predicate it is sent as `$search` beside the `$filter` the rest makes, counts too; under `OR` or `NOT` it is `ODataIncrementalStoreErrorUnsupportedPredicate`, and a set `SearchRestrictions` calls unsearchable is not asked. Evaluated in memory it looks for each word in the object's strings, regardless of case and diacritics. |
 | To-one fault | `GET Entity(key)/Nav` | ✅ **live** | |
 | To-many fault | `GET Entity(key)/Nav` | ✅ **live** | Every page; the rows are cached. |
 | Firing faults | | ✅ | Every fetched row is cached, and each to-one relationship is expanded to its key (`Nav($select=Key)`), because Core Data asks for every to-one as soon as a fault fires. Firing N faults used to cost N or 2N requests; it costs none. Northwind ignores the nested `$select` and sends the whole related entity, which is cached as well. |
@@ -499,7 +501,8 @@ done on both sides; the rest is ❌ unless marked otherwise.
     `TopSupported`, `SkipSupported`, `BatchSupported` and `BatchSupport`,
     `SelectSupport`, `KeyAsSegmentSupported`, `DeepInsertSupport`,
     `DeepUpdateSupport`, `IndexableByKey`, `FilterFunctions`, and per set
-    `SearchRestrictions`), and what each set's handler allows:
+    `SearchRestrictions`, searchable unless the handler's
+    `searchableProperties` is empty), and what each set's handler allows:
     `Insert/Update/DeleteRestrictions`, and `FilterRestrictions` and
     `SortRestrictions` from its `nonFilterableProperties` and
     `nonSortableProperties`, which it enforces (`400`).
@@ -512,12 +515,32 @@ done on both sides; the rest is ❌ unless marked otherwise.
     `ODataIncrementalStoreErrorNotAllowedByService`; `NonInsertable`
     and `NonUpdatableProperties` are left out of bodies.
 
-**Later.**
-
-- **Measures** (`ISOCurrency`, `Unit`, `Scale`), **Temporal**, **JSON**
-  (`Schema`), **Repeatability** (`Repeatability-Request-ID` headers for
-  retrying a POST safely, worth having once async requests exist).
-- **Aggregation**: only with `$apply`, which is out of scope for now.
+- ✅ **Measures** (`ISOCurrency`, `Scale`, `Unit`, `UNECEUnit`):
+  a model built from `$metadata` carries them in `userInfo`
+  (`OData.isoCurrency`, `OData.scale`, `OData.unit`), and
+  `ODataPropertyMapper` answers `-unitOfAttribute:`, `-scaleOfAttribute:`
+  and `-currencyOfAttribute:inObject:`, which reads the currency from the
+  object when `ISOCurrency` is a path to another property. The server
+  writes the same `userInfo` as the terms, a currency naming an attribute
+  as a path.
+- ✅ **JSON**: a property of type `JSON.JSON` (`Edm.Stream` of
+  `application/json`) is any JSON value, inline in payloads as 4.01 has
+  it; a model keeps it in a Transformable attribute as it is, and a
+  server serves a Transformable attribute (as it is) or a String one (as
+  its JSON text) declared `OData.type` `Org.OData.JSON.V1.JSON`.
+  `JSON.Schema` is carried as any annotation is.
+- ✅ **Repeatability** (`Supported`; OData Repeatable Requests 1.0): a
+  service that says it has them gets `Repeatability-Request-ID` and
+  `Repeatability-First-Sent` on every write, and a write that has no
+  answer at all is sent again, as it was, up to twice. `ODataService`
+  remembers each answer `repeatabilityDuration` (an hour) and gives a
+  repeat the same answer (`Repeatability-Result: accepted`); one first
+  sent longer ago, or an ID reused for another request, is `400`,
+  `rejected`. Deleting remembered requests
+  (`DeleteWith…IDSupported`) is not offered.
+- ✅ **Aggregation**: `ApplySupported`, with `$apply` (section 4.1).
+- — **Temporal**, and geographic types: left out, unless a clean and
+  simple mapping to Core Data turns up.
 
 The work common to all of them:
 

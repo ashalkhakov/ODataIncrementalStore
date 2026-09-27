@@ -68,6 +68,20 @@ NSString * const ODataIncrementalStoreType = @"ODataIncrementalStore";
 
 - (void)applyToRequest:(NSMutableURLRequest *)request
 {
+  NSString *method = request.HTTPMethod ?: @"GET";
+  if (self.repeatable && ![method isEqualToString:@"GET"] && ![method isEqualToString:@"HEAD"] &&
+      ![request valueForHTTPHeaderField:@"Repeatability-Request-ID"]) {
+    static NSDateFormatter *formatter;
+    static dispatch_once_t once;
+    dispatch_once(&once, ^{
+      formatter = [[NSDateFormatter alloc] init];
+      formatter.locale = [NSLocale localeWithLocaleIdentifier:@"en_US_POSIX"];
+      formatter.timeZone = [NSTimeZone timeZoneForSecondsFromGMT:0];
+      formatter.dateFormat = @"EEE, dd MMM yyyy HH:mm:ss 'GMT'";
+    });
+    [request setValue:[NSUUID UUID].UUIDString forHTTPHeaderField:@"Repeatability-Request-ID"];
+    [request setValue:[formatter stringFromDate:[NSDate date]] forHTTPHeaderField:@"Repeatability-First-Sent"];
+  }
   // JSON is the default, not a rule: $metadata asks for XML and $count for
   // text, and a service answers 406 or 415 when Accept rules those out.
   // IEEE754Compatible=true: Int64 and Decimal as strings, both ways
