@@ -470,6 +470,12 @@ typedef NS_ENUM(NSInteger, OISTargetKind) {
 @property (nonatomic) NSUInteger pageSize;
 @property (nonatomic) NSUInteger skipToken;
 @property (nonatomic) BOOL pagedByPreference;
+// $orderby by what $compute computes: sorted, then paged, here.
+@property (nonatomic, copy, nullable) NSArray<NSSortDescriptor *> *memorySort;
+@property (nonatomic) NSUInteger memoryOffset;
+@property (nonatomic) NSUInteger memoryLimit;
+// $compute's values' expressions, by entity and name.
+@property (nonatomic, strong, nullable) NSMutableDictionary<NSString *, NSExpression *> *computedExpressions;
 // Change tracking: the $deltatoken asked about, and the token a delta link
 // in the response carries (the history as it stood when the read began).
 @property (nonatomic, copy, nullable) NSString *deltaToken;
@@ -683,7 +689,7 @@ typedef NS_ENUM(NSInteger, OISTargetKind) {
   self.JSONAliases = JSONAliases;
   self.deltaToken = query[@"$deltatoken"];
   for (NSString *key in query) {
-    if ([@[ @"$compute", @"$index", @"$schemaversion" ] containsObject:key]) {
+    if ([@[ @"$index", @"$schemaversion" ] containsObject:key]) {
       [self fail:501 message:[NSString stringWithFormat:@"%@ is not supported", key]];
       return NO;
     }
@@ -1508,6 +1514,10 @@ typedef NS_ENUM(NSInteger, OISTargetKind) {
       if (error) *error = ODataServiceError(501, [NSString stringWithFormat:@"$select=%@ is not supported", [item.path componentsJoinedByString:@"/"]]);
       return nil;
     }
+    if (options == self.request.options && [self computedNames][item.path[0]]) {
+      [selected addObject:item.path[0]];
+      continue;
+    }
     NSPropertyDescription *property = [self.mapper propertyForWireName:item.path[0] entity:object.entity];
     if (!property && ![self.mapper propertyForWireName:item.path[0] entity:expected ?: object.entity]) {
       if (error) *error = ODataServiceError(400, [NSString stringWithFormat:@"%@ has no property %@", object.entity.name, item.path[0]]);
@@ -1525,6 +1535,13 @@ typedef NS_ENUM(NSInteger, OISTargetKind) {
       continue;
     }
     json[[self.mapper propertyForAttribute:attribute]] = [self.coder JSONForCoreDataValue:[object valueForKey:attribute.name] attribute:attribute];
+  }
+  // $compute's values: the request's own, not an expansion's.
+  for (ODataComputeItem *item in options == self.request.options ? options.compute : @[]) {
+    if (!star && ![selected containsObject:item.alias]) continue;
+    id value = [self computedValue:item of:object error:error];
+    if (!value) return nil;
+    json[item.alias] = value;
   }
   for (ODataExpandItem *item in options.expand) {
     if (![self expand:item of:object into:json error:error]) return nil;
@@ -1730,6 +1747,7 @@ static const NSInteger OISMaxLevels = 32;
     NSPredicate *filter = [self.service.predicates predicateForExpression:self.request.options.filter
                                                                    entity:self.entity
                                                                   aliases:self.request.options.aliases
+                                                                 computed:[self computedNames]
                                                                   context:self.request.context
                                                                     error:error];
     if (!filter) return nil;
@@ -1739,6 +1757,7 @@ static const NSInteger OISMaxLevels = 32;
     for (ODataApplyTransformation *t in self.request.options.apply) {
       NSPredicate *filter = [self.service.predicates predicateForExpression:t.filter entity:self.entity
                                                                    aliases:self.request.options.aliases
+                                                                  computed:[self computedNames]
                                                                    context:self.request.context error:error];
       if (!filter) return nil;
       [parts addObject:filter];
@@ -2104,8 +2123,10 @@ static NSString *OISSelectListOfPaths(NSArray<NSArray<NSString *> *> *paths)
     return;
   }
   NSMutableArray *sort = [NSMutableArray array];
+  BOOL inMemory = NO;
   if (options.orderBy.count) {
-    NSArray *descriptors = [self.service.predicates sortDescriptorsForOrderBy:options.orderBy entity:self.entity error:&error];
+    NSArray *descriptors = [self.service.predicates sortDescriptorsForOrderBy:options.orderBy entity:self.entity
+                                                                     computed:[self computedNames] inMemory:&inMemory error:&error];
     if (!descriptors) {
       [self respondError:error];
       return;
@@ -2113,10 +2134,15 @@ static NSString *OISSelectListOfPaths(NSArray<NSArray<NSString *> *> *paths)
     [sort addObjectsFromArray:descriptors];
   }
   // The key last, so that pages do not overlap.
+  NSMutableArray *keys = [NSMutableArray array];
   for (NSAttributeDescription *attribute in [self.mapper keyAttributesForEntity:OISRootEntity(self.entity)]) {
-    [sort addObject:[NSSortDescriptor sortDescriptorWithKey:attribute.name ascending:YES]];
+    [keys addObject:[NSSortDescriptor sortDescriptorWithKey:attribute.name ascending:YES]];
   }
-  fetch.sortDescriptors = sort;
+  [sort addObjectsFromArray:keys];
+  // By a computed value: every row, sorted and paged here, as a store
+  // cannot sort by an expression.
+  fetch.sortDescriptors = inMemory ? keys : sort;
+  if (inMemory) self.memorySort = sort;
 
   // Paging: the smaller of the service's page and the client's.
   NSUInteger page = self.service.maxPageSize;
@@ -2159,6 +2185,12 @@ static NSString *OISSelectListOfPaths(NSArray<NSArray<NSString *> *> *paths)
   // One more than the page, to know whether there is a next one.
   if (limit != NSUIntegerMax) fetch.fetchLimit = limit < remaining ? limit + 1 : limit;
   if (limit == 0) fetch.fetchLimit = 1;
+  if (self.memorySort) {
+    self.memoryOffset = fetch.fetchOffset;
+    self.memoryLimit = fetch.fetchLimit;
+    fetch.fetchOffset = 0;
+    fetch.fetchLimit = 0;
+  }
 
   [self prefetchExpansionsIn:fetch];
   self.fetch = fetch;
@@ -2174,6 +2206,13 @@ static NSString *OISSelectListOfPaths(NSArray<NSArray<NSString *> *> *paths)
     return;
   }
   NSArray *objects = reply.result ?: @[];
+  if (self.memorySort) {
+    objects = [objects sortedArrayUsingDescriptors:self.memorySort];
+    NSUInteger start = MIN(self.memoryOffset, objects.count);
+    NSUInteger length = objects.count - start;
+    if (self.memoryLimit) length = MIN(length, self.memoryLimit);
+    objects = [objects subarrayWithRange:NSMakeRange(start, length)];
+  }
   if (self.pageSize != NSUIntegerMax && objects.count > self.pageSize) {
     objects = [objects subarrayWithRange:NSMakeRange(0, self.pageSize)];
     self.nextLink = [self nextLinkWithToken:self.skipToken + self.pageSize];
@@ -2285,6 +2324,47 @@ static NSString *OISSelectListOfPaths(NSArray<NSArray<NSString *> *> *paths)
   if (self.trackingToken) [applied addObject:@"odata.track-changes"];
   NSDictionary *headers = applied.count ? @{ @"Preference-Applied": [applied componentsJoinedByString:@", "] } : nil;
   [self respondJSON:body status:200 headers:headers];
+}
+
+#pragma mark $compute
+
+// The request's computed names, and what each stands for.
+- (NSDictionary<NSString *, ODataExpression *> *)computedNames
+{
+  NSMutableDictionary *names = [NSMutableDictionary dictionary];
+  for (ODataComputeItem *item in self.request.options.compute) names[item.alias] = item.expression;
+  return names;
+}
+
+// A computed value of an object, as JSON: typed by what it is, null when
+// it cannot be computed (a null operand).
+- (id)computedValue:(ODataComputeItem *)item of:(NSManagedObject *)object error:(NSError **)error
+{
+  if (!self.computedExpressions) self.computedExpressions = [NSMutableDictionary dictionary];
+  NSString *key = [NSString stringWithFormat:@"%@/%@", object.entity.name, item.alias];
+  NSExpression *expression = self.computedExpressions[key];
+  if (!expression) {
+    expression = [self.service.predicates valueExpressionForExpression:item.expression entity:object.entity
+                                                               aliases:self.request.options.aliases computed:[self computedNames] error:error];
+    if (!expression) return nil;
+    self.computedExpressions[key] = expression;
+  }
+  id value = nil;
+  @try {
+    value = [expression expressionValueWithObject:object context:nil];
+  } @catch (NSException *exception) {
+    value = nil;
+  }
+  if (!value || value == [NSNull null]) return [NSNull null];
+  NSString *type = @"Edm.String";
+  if ([value isKindOfClass:[NSDecimalNumber class]]) type = @"Edm.Decimal";
+  else if ([value isKindOfClass:[NSNumber class]]) {
+    const char *objCType = [value objCType];
+    if ([value isKindOfClass:[@YES class]]) type = @"Edm.Boolean";
+    else type = (*objCType == 'd' || *objCType == 'f') ? @"Edm.Double" : @"Edm.Int64";
+  } else if ([value isKindOfClass:[NSDate class]]) type = @"Edm.DateTimeOffset";
+  else if ([value isKindOfClass:[NSData class]]) type = @"Edm.Binary";
+  return [self.coder JSONForValue:value typeName:type] ?: [NSNull null];
 }
 
 #pragma mark Status monitors
@@ -3988,7 +4068,7 @@ static NSNumber *OISScalarReturnValue(NSInvocation *invocation, char type)
     @"SupportedFormats": @[ @"multipart/mixed", @"application/json" ] };
   annotations[[capabilities stringByAppendingString:@"SelectSupport"]] = @{ @"Supported": @YES, @"Expandable": @YES, @"Filterable": @YES,
                                                                             @"Sortable": @YES, @"TopSupported": @YES, @"SkipSupported": @YES,
-                                                                            @"Countable": @YES, @"ComputeSupported": @NO, @"Searchable": @YES };
+                                                                            @"Countable": @YES, @"ComputeSupported": @YES, @"Searchable": @YES };
   annotations[[capabilities stringByAppendingString:@"DeepInsertSupport"]] = @{ @"Supported": @YES, @"ContentIDSupported": @YES };
   annotations[[capabilities stringByAppendingString:@"DeepUpdateSupport"]] = @{ @"Supported": @YES, @"ContentIDSupported": @YES };
   annotations[[capabilities stringByAppendingString:@"FilterFunctions"]] = @[ @"contains", @"startswith", @"endswith", @"tolower", @"toupper",
@@ -3998,6 +4078,8 @@ static NSNumber *OISScalarReturnValue(NSInvocation *invocation, char type)
   if (self.repeatabilityDuration > 0) annotations[@"Org.OData.Repeatability.V1.Supported"] = @YES;
   // Prefer: respond-async, where a request takes its time.
   if (self.asyncResultDuration > 0) annotations[@"Org.OData.Capabilities.V1.AsynchronousRequestsSupported"] = @YES;
+  // The versions it speaks: 4.0 alone for a service that speaks no 4.01.
+  if ([self.maxVersion isEqualToString:@"4.0"]) annotations[@"Org.OData.Core.V1.ODataVersions"] = @"4.0";
   // $apply, as far as it goes (Data Aggregation section 6.1).
   annotations[@"Org.OData.Aggregation.V1.ApplySupported"] = @{
     @"Transformations": @[ @"filter", @"groupby", @"aggregate" ],

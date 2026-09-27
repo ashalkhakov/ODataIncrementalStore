@@ -485,6 +485,30 @@
 }
 @end
 
+// Refuses a $batch in JSON with 415, as a service that reads only
+// multipart would; passes on everything else.
+@interface OISMultipartOnlyTransport : NSObject <ODataTransport>
+@property (nonatomic, strong) id<ODataTransport> next;
+@property (atomic, strong) NSMutableArray<NSURLRequest *> *requests;
+@end
+
+@implementation OISMultipartOnlyTransport
+- (void)startExchange:(ODataExchange *)exchange
+{
+  if (!self.requests) self.requests = [NSMutableArray array];
+  [self.requests addObject:exchange.request];
+  NSString *type = [exchange.request valueForHTTPHeaderField:@"Content-Type"] ?: @"";
+  if ([exchange.request.URL.path hasSuffix:@"$batch"] && [type hasPrefix:@"application/json"]) {
+    exchange.URLResponse = [[NSHTTPURLResponse alloc] initWithURL:exchange.request.URL statusCode:415 HTTPVersion:@"HTTP/1.1"
+                                                     headerFields:@{ @"Content-Type": @"application/json" }];
+    exchange.data = [@"{\"error\":{\"code\":\"415\",\"message\":\"multipart only\"}}" dataUsingEncoding:NSUTF8StringEncoding];
+    [exchange finish];
+    return;
+  }
+  [self.next startExchange:exchange];
+}
+@end
+
 // Loses the answer to the first write it carries, as a dropped connection
 // would: the service has done it, the client hears nothing.
 @interface OISLosingTransport : NSObject <ODataTransport>
@@ -2989,6 +3013,153 @@ static NSString *OISHTTPDate(NSDate *date)
   [self send:@"POST" path:@"Categories" headers:headers body:@{ @"CategoryName": @"A" }];
   [self send:@"POST" path:@"Categories" headers:headers body:@{ @"CategoryName": @"A" }];
   XCTAssertEqualObjects([self get:@"Categories/$count"].text, @"6", @"off: each made");
+}
+
+#pragma mark $compute
+
+// Part 2 section 5.1.3: computed values, by name in $select, $filter and
+// $orderby, and in one another.
+- (void)testCompute
+{
+  XCTAssertTrue([[self get:@"$metadata"].text containsString:@"<PropertyValue Property=\"ComputeSupported\"><Bool>true</Bool></PropertyValue>"]);
+  OISServiceResponse *r = [self get:@"Products?$compute=UnitPrice mul 2 as Twice&$select=ProductName,Twice&$filter=Twice gt 40&$orderby=Twice desc"];
+  XCTAssertEqual(r.status, 200, @"%@", r.text);
+  NSArray *values = r.json[@"value"];
+  XCTAssertEqualObjects([values valueForKey:@"ProductName"], (@[ @"Chef Anton's Cajun Seasoning", @"Chef Anton's Gumbo Mix" ]), @"%@", r.text);
+  XCTAssertEqualWithAccuracy([values[0][@"Twice"] doubleValue], 44.0, 0.001);
+  XCTAssertEqualWithAccuracy([values[1][@"Twice"] doubleValue], 42.7, 0.001);
+  XCTAssertNil(values[0][@"UnitPrice"], @"only what is selected");
+
+  // Without $select, with the rest; one name used by the next.
+  r = [self get:@"Products(1)?$compute=UnitPrice mul 2 as Twice,Twice add 1 as More"];
+  XCTAssertEqual(r.status, 200, @"%@", r.text);
+  XCTAssertEqualWithAccuracy([r.json[@"More"] doubleValue], 37.0, 0.001, @"%@", r.text);
+  XCTAssertEqualObjects(r.json[@"ProductName"], @"Chai");
+
+  // Sorted by it here, and paged after: the pages follow on.
+  NSMutableArray *names = [NSMutableArray array];
+  NSString *next = @"Products?$compute=UnitPrice mul -1 as Negative&$orderby=Negative&$select=ProductName";
+  while (next) {
+    r = [self send:@"GET" path:next headers:@{ @"Prefer": @"odata.maxpagesize=2" } body:nil];
+    XCTAssertEqual(r.status, 200, @"%@", r.text);
+    [names addObjectsFromArray:[r.json[@"value"] valueForKey:@"ProductName"]];
+    next = r.json[@"@odata.nextLink"] ? [self pathOfLink:r.json[@"@odata.nextLink"]] : nil;
+  }
+  XCTAssertEqualObjects(names, (@[ @"Chef Anton's Cajun Seasoning", @"Chef Anton's Gumbo Mix", @"Chang", @"Chai", @"Aniseed Syrup" ]));
+
+  XCTAssertEqualObjects([self get:@"Products/$count?$compute=UnitPrice mul 2 as Twice&$filter=Twice lt 30"].text, @"1");
+  XCTAssertEqual([self get:@"Products?$compute=UnitPrice mul 2"].status, 400, @"a name for it");
+  XCTAssertEqual([self get:@"Products?$compute=Category as Whole"].status, 400, @"not a value");
+}
+
+// A dictionary fetch's computed values: $compute where the service has
+// it (4.01), computed from the rows here where it has not (4.0).
+- (void)testIncrementalStoreComputes
+{
+  NSExpressionDescription *twice = [[NSExpressionDescription alloc] init];
+  twice.name = @"twice";
+  // As each platform names multiplication.
+  twice.expression = [NSExpression expressionWithFormat:@"unitPrice * 2"];
+  twice.expressionResultType = NSDecimalAttributeType;
+  for (NSString *version in @[ @"4.01", @"4.0" ]) {
+    [self serveModel:OISCatalogModel()];  // a service's version is its own from the first request
+    _service.maxVersion = version;
+    OISRecordingTransport *transport = [[OISRecordingTransport alloc] init];
+    transport.next = _service;
+    NSError *error = nil;
+    NSManagedObjectContext *client = [self clientOver:transport options:nil error:&error];
+    NSFetchRequest *fetch = [NSFetchRequest fetchRequestWithEntityName:@"Product"];
+    fetch.resultType = NSDictionaryResultType;
+    // Here, from the objects, a path through a to-one relationship too (the
+    // service does not $select one).
+    BOOL here = [version isEqualToString:@"4.0"];
+    fetch.propertiesToFetch = here ? @[ @"name", @"category.name", twice ] : @[ @"name", twice ];
+    fetch.predicate = [NSPredicate predicateWithFormat:@"id <= 2"];
+    fetch.sortDescriptors = @[ [NSSortDescriptor sortDescriptorWithKey:@"id" ascending:YES] ];
+    NSArray *rows = [client executeFetchRequest:fetch error:&error];
+    XCTAssertEqual(rows.count, 2u, @"%@: %@", version, error);
+    XCTAssertEqualObjects([rows valueForKey:@"name"], (@[ @"Chai", @"Chang" ]), @"%@", version);
+    if (here) XCTAssertEqualObjects(rows.firstObject[@"category.name"], @"Beverages", @"%@: %@", version, rows);
+    XCTAssertEqualWithAccuracy([rows.firstObject[@"twice"] doubleValue], 36.0, 0.001, @"%@: %@", version, rows);
+    XCTAssertEqualWithAccuracy([rows.lastObject[@"twice"] doubleValue], 38.0, 0.001, @"%@: %@", version, rows);
+    NSString *sent = [[transport.requests.lastObject URL].absoluteString stringByRemovingPercentEncoding];
+    BOOL computed = [sent containsString:@"$compute=(UnitPrice mul 2) as twice"];
+    XCTAssertEqual(computed, [version isEqualToString:@"4.01"], @"%@: %@", version, sent);
+  }
+}
+
+#pragma mark JSON $batch
+
+- (NSArray<NSURLRequest *> *)batchesIn:(NSArray<NSURLRequest *> *)requests
+{
+  return [requests filteredArrayUsingPredicate:[NSPredicate predicateWithFormat:@"URL.absoluteString ENDSWITH '$batch'"]];
+}
+
+// A 4.01 service's $batch in JSON (JSON Format section 19): a save of two
+// changes is one atomicity group; a stale one fails it whole.
+- (void)testJSONBatchSaves
+{
+  OISRecordingTransport *transport = [[OISRecordingTransport alloc] init];
+  transport.next = _service;
+  NSError *error = nil;
+  NSManagedObjectContext *client = [self clientOver:transport options:nil error:&error];
+  NSFetchRequest *fetch = [NSFetchRequest fetchRequestWithEntityName:@"Product"];
+  fetch.predicate = [NSPredicate predicateWithFormat:@"id <= 2"];
+  NSArray *products = [client executeFetchRequest:fetch error:&error];
+  XCTAssertEqual(products.count, 2u, @"%@", error);
+  for (NSManagedObject *product in products) [product setValue:[[product valueForKey:@"name"] stringByAppendingString:@"!"] forKey:@"name"];
+  [transport.requests removeAllObjects];
+  XCTAssertTrue([client save:&error], @"%@", error);
+  NSArray *batches = [self batchesIn:transport.requests];
+  XCTAssertEqual(batches.count, 1u);
+  XCTAssertEqualObjects([batches.firstObject valueForHTTPHeaderField:@"Content-Type"], @"application/json");
+  NSDictionary *body = [NSJSONSerialization JSONObjectWithData:[batches.firstObject HTTPBody] options:0 error:NULL];
+  XCTAssertEqualObjects([body[@"requests"] valueForKey:@"method"], (@[ @"PATCH", @"PATCH" ]));
+  XCTAssertEqualObjects([body[@"requests"] valueForKey:@"atomicityGroup"], (@[ @"g1", @"g1" ]));
+  XCTAssertEqualObjects([self get:@"Products(1)"].json[@"ProductName"], @"Chai!");
+  XCTAssertEqualObjects([self get:@"Products(2)"].json[@"ProductName"], @"Chang!");
+
+  // Meanwhile, product 2 changes at the service: the group fails whole,
+  // and the save reports the conflict.
+  XCTAssertEqual(([self send:@"PATCH" path:@"Products(2)" headers:nil body:@{ @"UnitPrice": @20 }].status), 204);
+  for (NSManagedObject *product in products) [product setValue:[[product valueForKey:@"name"] stringByAppendingString:@"?"] forKey:@"name"];
+  XCTAssertFalse([client save:&error]);
+  NSArray *conflicts = error.userInfo[NSPersistentStoreSaveConflictsErrorKey];
+  XCTAssertEqual(conflicts.count, 1u, @"%@", error);
+  XCTAssertEqualObjects([[conflicts.firstObject sourceObject] valueForKey:@"id"], @2);
+  XCTAssertEqualObjects([self get:@"Products(1)"].json[@"ProductName"], @"Chai!", @"nothing of it done");
+}
+
+// A service that refuses the JSON form gets multipart, from then on; and
+// the option keeps to multipart from the start.
+- (void)testJSONBatchRefusedIsSentAsMultipart
+{
+  OISMultipartOnlyTransport *transport = [[OISMultipartOnlyTransport alloc] init];
+  transport.next = _service;
+  NSError *error = nil;
+  NSManagedObjectContext *client = [self clientOver:transport options:nil error:&error];
+  NSArray *categories = [client executeFetchRequest:[NSFetchRequest fetchRequestWithEntityName:@"Category"] error:&error];
+  XCTAssertEqual(categories.count, 2u, @"%@", error);
+  for (int round = 0; round < 2; round++) {
+    for (NSManagedObject *category in categories) [category setValue:[NSString stringWithFormat:@"%@ %d", [category valueForKey:@"name"], round] forKey:@"name"];
+    [transport.requests removeAllObjects];
+    XCTAssertTrue([client save:&error], @"%@", error);
+    NSArray *types = [[self batchesIn:transport.requests] valueForKey:@"allHTTPHeaderFields"];
+    NSArray *expected = round == 0 ? @[ @"application/json", @"multipart" ] : @[ @"multipart" ];
+    XCTAssertEqual(types.count, expected.count, @"round %d: %@", round, types);
+    for (NSUInteger i = 0; i < MIN(types.count, expected.count); i++) {
+      XCTAssertTrue([types[i][@"Content-Type"] hasPrefix:expected[i]], @"round %d: %@", round, types);
+    }
+  }
+  XCTAssertEqualObjects([self get:@"Categories(1)"].json[@"CategoryName"], @"Beverages 0 1");
+
+  OISRecordingTransport *recording = [[OISRecordingTransport alloc] init];
+  recording.next = _service;
+  client = [self clientOver:recording options:@{ ODataIncrementalStoreJSONBatchOption: @NO } error:&error];
+  categories = [client executeFetchRequest:[NSFetchRequest fetchRequestWithEntityName:@"Category"] error:&error];
+  for (NSManagedObject *category in categories) [category setValue:@"Same" forKey:@"name"];
+  XCTAssertTrue([client save:&error], @"%@", error);
+  XCTAssertTrue([[[self batchesIn:recording.requests].firstObject valueForHTTPHeaderField:@"Content-Type"] hasPrefix:@"multipart/mixed"]);
 }
 
 #pragma mark Asynchronous requests

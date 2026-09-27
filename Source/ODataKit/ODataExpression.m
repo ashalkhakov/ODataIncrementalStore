@@ -193,10 +193,61 @@ static NSString *OISQuoted(NSString *text)
 @property (nonatomic, copy, nullable) NSString *search;
 @property (nonatomic, strong, nullable) ODataSearchExpression *searchExpression;
 @property (nonatomic, copy, nullable) NSArray *apply;
+@property (nonatomic, copy) NSArray *compute;
 @property (nonatomic, copy) NSDictionary *aliases;
 @property (nonatomic, copy, nullable) NSString *format;
 @property (nonatomic, copy, nullable) NSString *skipToken;
 @end
+
+@interface ODataComputeItem ()
+@property (nonatomic, strong) ODataExpression *expression;
+@property (nonatomic, copy) NSString *alias;
+@end
+
+@implementation ODataComputeItem
+- (NSString *)description
+{
+  return [NSString stringWithFormat:@"%@ as %@", self.expression, self.alias];
+}
+@end
+
+// $compute: items at the commas outside parentheses and quotes, each an
+// expression, "as", and a name.
+static NSArray *OISComputeItems(NSString *text, NSError **error)
+{
+  NSMutableArray *pieces = [NSMutableArray array];
+  NSInteger depth = 0, start = 0;
+  BOOL quoted = NO;
+  for (NSUInteger i = 0; i < text.length; i++) {
+    unichar c = [text characterAtIndex:i];
+    if (c == '\'') quoted = !quoted;
+    if (quoted) continue;
+    if (c == '(') depth++;
+    if (c == ')') depth--;
+    if (c == ',' && depth == 0) {
+      [pieces addObject:[text substringWithRange:NSMakeRange((NSUInteger)start, i - (NSUInteger)start)]];
+      start = (NSInteger)i + 1;
+    }
+  }
+  [pieces addObject:[text substringFromIndex:(NSUInteger)start]];
+  NSRegularExpression *as = [NSRegularExpression regularExpressionWithPattern:@"^(.*\\S)\\s+as\\s+([A-Za-z_][A-Za-z0-9_]*)\\s*$" options:0 error:NULL];
+  NSMutableArray *items = [NSMutableArray array];
+  for (NSString *piece in pieces) {
+    NSString *trimmed = [piece stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceCharacterSet]];
+    NSTextCheckingResult *match = [as firstMatchInString:trimmed options:0 range:NSMakeRange(0, trimmed.length)];
+    ODataExpression *expression = match ? [ODataExpression expressionWithString:[trimmed substringWithRange:[match rangeAtIndex:1]] error:error] : nil;
+    if (!expression) {
+      if (error && !*error) *error = OISError(ODataIncrementalStoreErrorSyntax,
+                                              [NSString stringWithFormat:@"$compute=%@: each item is an expression as a name", trimmed]);
+      return nil;
+    }
+    ODataComputeItem *item = [[ODataComputeItem alloc] init];
+    item.expression = expression;
+    item.alias = [trimmed substringWithRange:[match rangeAtIndex:2]];
+    [items addObject:item];
+  }
+  return items;
+}
 
 @interface ODataExpandItem ()
 @property (nonatomic, copy) NSArray *path;
@@ -840,6 +891,7 @@ static NSString *OISQuoted(NSString *text)
   _orderBy = @[];
   _select = @[];
   _expand = @[];
+  _compute = @[];
   _aliases = @{};
   return self;
 }
@@ -865,6 +917,11 @@ static NSString *OISQuoted(NSString *text)
       }
       if ([key isEqualToString:@"$skiptoken"]) {
         options.skipToken = value;
+        continue;
+      }
+      if ([key isEqualToString:@"$compute"]) {
+        options.compute = OISComputeItems(value, error);
+        if (!options.compute) return nil;
         continue;
       }
       if ([key isEqualToString:@"$apply"]) {
@@ -908,6 +965,7 @@ static NSString *OISQuoted(NSString *text)
   if (self.includeCount) [parts addObject:[NSString stringWithFormat:@"$count=%@", self.includeCount.boolValue ? @"true" : @"false"]];
   if (self.levels) [parts addObject:self.levels.integerValue < 0 ? @"$levels=max" : [NSString stringWithFormat:@"$levels=%@", self.levels]];
   if (self.search) [parts addObject:[@"$search=" stringByAppendingString:self.search]];
+  if (self.compute.count) [parts addObject:[@"$compute=" stringByAppendingString:[[self.compute valueForKey:@"description"] componentsJoinedByString:@","]]];
   return [parts componentsJoinedByString:@";"];
 }
 

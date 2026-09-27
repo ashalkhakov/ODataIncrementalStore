@@ -32,6 +32,16 @@ NS_ASSUME_NONNULL_BEGIN
 // Content-IDs are 1, 2, ... in order.
 FOUNDATION_EXPORT NSData *ODataChangeSetBody(NSArray<NSURLRequest *> *requests, NSString *batchBoundary);
 
+// The same change set in OData 4.01's JSON batch format (JSON Format
+// section 19): {"requests": [...]}, one atomicity group, ids 1, 2, ...,
+// absolute URLs, JSON bodies as JSON.
+FOUNDATION_EXPORT NSData *ODataJSONBatchBody(NSArray<NSURLRequest *> *requests);
+
+// The responses of a JSON batch response, in order, as parts: status,
+// headers, the body as data (JSON re-serialised), and the request's id as
+// the Content-ID. nil if it is not one.
+FOUNDATION_EXPORT NSArray<ODataBatchPart *> * _Nullable ODataJSONBatchParts(NSData *body);
+
 // The boundary parameter of a multipart Content-Type, or nil.
 FOUNDATION_EXPORT NSString * _Nullable ODataMultipartBoundary(NSString *contentType);
 

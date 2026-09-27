@@ -29,12 +29,17 @@ static void OISAppend(NSMutableData *data, NSString *text)
   [data appendData:[text dataUsingEncoding:NSUTF8StringEncoding]];
 }
 
+// Headers a request of a batch carries: what describes it, not what the
+// batch request carries for them all.
+static BOOL OISBatchCarriesHeader(NSString *name)
+{
+  NSSet *skip = [NSSet setWithObjects:@"authorization", @"user-agent", @"content-length", @"host", nil];
+  return ![skip containsObject:name.lowercaseString];
+}
+
 NSData *ODataChangeSetBody(NSArray<NSURLRequest *> *requests, NSString *batchBoundary)
 {
   NSString *changeSet = [@"changeset_" stringByAppendingString:[[NSUUID UUID] UUIDString]];
-  // Per part only what describes that request; authorisation and the
-  // like belong to the batch request that carries them all.
-  NSSet *skip = [NSSet setWithObjects:@"authorization", @"user-agent", @"content-length", @"host", nil];
   NSMutableData *out = [NSMutableData data];
   OISAppend(out, [NSString stringWithFormat:@"--%@\r\nContent-Type: multipart/mixed; boundary=%@\r\n\r\n", batchBoundary, changeSet]);
   NSUInteger contentID = 1;
@@ -44,7 +49,7 @@ NSData *ODataChangeSetBody(NSArray<NSURLRequest *> *requests, NSString *batchBou
     OISAppend(out, [NSString stringWithFormat:@"%@ %@ HTTP/1.1\r\n", request.HTTPMethod ?: @"GET", request.URL.absoluteString]);
     NSDictionary *headers = request.allHTTPHeaderFields;
     for (NSString *name in [headers.allKeys sortedArrayUsingSelector:@selector(compare:)]) {
-      if ([skip containsObject:name.lowercaseString]) continue;
+      if (!OISBatchCarriesHeader(name)) continue;
       OISAppend(out, [NSString stringWithFormat:@"%@: %@\r\n", name, headers[name]]);
     }
     OISAppend(out, @"\r\n");
@@ -142,6 +147,62 @@ static ODataBatchPart *OISHTTPMessage(NSData *data, NSString *contentID)
   part.headers = OISHeaderDictionary([lines subarrayWithRange:NSMakeRange(1, lines.count - 1)]);
   part.body = body;
   return part;
+}
+
+NSData *ODataJSONBatchBody(NSArray<NSURLRequest *> *requests)
+{
+  NSMutableArray *out = [NSMutableArray array];
+  NSUInteger identifier = 1;
+  for (NSURLRequest *request in requests) {
+    NSMutableDictionary *item = [NSMutableDictionary dictionary];
+    item[@"id"] = [NSString stringWithFormat:@"%lu", (unsigned long)identifier++];
+    item[@"atomicityGroup"] = @"g1";
+    item[@"method"] = request.HTTPMethod ?: @"GET";
+    item[@"url"] = request.URL.absoluteString ?: @"";
+    NSMutableDictionary *headers = [NSMutableDictionary dictionary];
+    for (NSString *name in request.allHTTPHeaderFields) {
+      if (OISBatchCarriesHeader(name)) headers[name.lowercaseString] = request.allHTTPHeaderFields[name];
+    }
+    if (headers.count) item[@"headers"] = headers;
+    if (request.HTTPBody.length) {
+      id body = [NSJSONSerialization JSONObjectWithData:request.HTTPBody options:NSJSONReadingAllowFragments error:NULL];
+      item[@"body"] = body ?: [[NSString alloc] initWithData:request.HTTPBody encoding:NSUTF8StringEncoding] ?: @"";
+    }
+    [out addObject:item];
+  }
+  return [NSJSONSerialization dataWithJSONObject:@{ @"requests": out } options:0 error:NULL];
+}
+
+NSArray *ODataJSONBatchParts(NSData *body)
+{
+  id json = body.length ? [NSJSONSerialization JSONObjectWithData:body options:0 error:NULL] : nil;
+  NSArray *responses = [json isKindOfClass:[NSDictionary class]] ? json[@"responses"] : nil;
+  if (![responses isKindOfClass:[NSArray class]]) return nil;
+  NSMutableArray *parts = [NSMutableArray array];
+  for (NSDictionary *response in responses) {
+    if (![response isKindOfClass:[NSDictionary class]]) return nil;
+    ODataBatchPart *part = [[ODataBatchPart alloc] init];
+    part.status = [response[@"status"] integerValue];
+    id identifier = response[@"id"];
+    part.contentID = [identifier isKindOfClass:[NSString class]] ? identifier : [identifier description];
+    NSMutableDictionary *headers = [NSMutableDictionary dictionary];
+    NSDictionary *given = [response[@"headers"] isKindOfClass:[NSDictionary class]] ? response[@"headers"] : @{};
+    for (NSString *name in given) headers[name] = [given[name] description];
+    id content = response[@"body"];
+    NSData *data = [NSData data];
+    if ([content isKindOfClass:[NSString class]] && ![(OISHeader(headers, @"Content-Type") ?: @"").lowercaseString hasPrefix:@"application/json"]) {
+      data = [content dataUsingEncoding:NSUTF8StringEncoding];
+    } else if (content && content != [NSNull null]) {
+      // A fragment is written inside an array, and the brackets cut off.
+      NSData *wrapped = [NSJSONSerialization dataWithJSONObject:@[ content ] options:0 error:NULL];
+      data = wrapped.length > 2 ? [wrapped subdataWithRange:NSMakeRange(1, wrapped.length - 2)] : [NSData data];
+      if (!OISHeader(headers, @"Content-Type")) headers[@"Content-Type"] = @"application/json";
+    }
+    part.headers = headers;
+    part.body = data;
+    [parts addObject:part];
+  }
+  return parts;
 }
 
 ODataBatchPart *ODataHTTPMessage(NSData *data)

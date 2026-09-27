@@ -422,6 +422,21 @@ nested as the response has them (`{"Category": {"CategoryName": …},
 "Total": …}`). The container says `Aggregation.ApplySupported` with
 those transformations.
 
+### `$compute`
+
+`$compute` (Part 2 §5.1.3) is read as a list of `expression as Name`.
+Each name then stands for its expression: in `$filter` (and a filter of
+`$apply`, and `/$count`), in `$select`, where it is written into each
+row, and in `$orderby`, and in a later `$compute` item. Its value is the
+expression's `NSExpression`, evaluated with each object, and typed by
+what it is: a decimal as `Edm.Decimal`, a whole number as `Edm.Int64`, a
+date as `Edm.DateTimeOffset`; a null operand makes it null. Without
+`$select` the computed values come with the rest. A store cannot sort by
+an expression, so ordering by a computed value reads every matching row,
+sorts them here, and pages after; ordering by properties stays with the
+store. `$compute` inside `$expand` is not read. `SelectSupport` says
+`ComputeSupported`.
+
 ### `$search`
 
 `$search` (Part 2 §5.1.7) is parsed by `ODataSearchExpression`, in

@@ -306,14 +306,29 @@ static NSPredicate *OISWithoutSearches(NSPredicate *predicate, NSMutableArray<OD
 
   if (fetch.resultType == NSDictionaryResultType && fetch.propertiesToFetch.count) {
     NSMutableArray *names = [NSMutableArray array];
+    NSMutableArray *computed = [NSMutableArray array];
     for (id prop in fetch.propertiesToFetch) {
-      if ([prop isKindOfClass:[NSAttributeDescription class]]) {
+      if ([prop isKindOfClass:[NSExpressionDescription class]]) {
+        NSExpression *expression = [(NSExpressionDescription *)prop expression];
+        if (expression.expressionType == NSKeyPathExpressionType) {
+          [names addObject:[self.mapper propertyPathForKeyPath:expression.keyPath entity:entity]];
+          continue;
+        }
+        // Computed by the service: $compute=<expression> as <name>.
+        ODataPredicateTranslator *t = [[ODataPredicateTranslator alloc] initWithMapper:self.mapper entity:entity];
+        if (self.version) t.version = self.version;
+        NSString *text = [t translateExpression:expression error:error];
+        if (!text) return nil;
+        [computed addObject:[NSString stringWithFormat:@"%@ as %@", text, [prop name]]];
+        [names addObject:[prop name]];
+      } else if ([prop isKindOfClass:[NSAttributeDescription class]]) {
         [names addObject:[self.mapper propertyForAttribute:prop]];
       } else if ([prop isKindOfClass:[NSString class]]) {
         NSAttributeDescription *attr = entity.attributesByName[prop];
         [names addObject:attr ? [self.mapper propertyForAttribute:attr] : [self.mapper wireName:prop]];
       }
     }
+    if (computed.count) [items addObject:@[ @"$compute", [computed componentsJoinedByString:@","] ]];
     if (names.count) [items addObject:@[ @"$select", [names componentsJoinedByString:@","] ]];
   } else if (fetch.resultType == NSManagedObjectResultType || fetch.resultType == NSManagedObjectIDResultType) {
     // Object IDs too: their rows are cached the same.

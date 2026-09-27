@@ -78,6 +78,13 @@ typedef NS_ENUM(NSInteger, ODataExpressionKind) {
 @end
 
 // One $expand item: a navigation path, its options, and $ref or $count.
+// $compute's items (Part 2 section 5.1.3): an expression, and the name
+// it is known by in $select, $filter and $orderby.
+@interface ODataComputeItem : NSObject
+@property (nonatomic, readonly, strong) ODataExpression *expression;
+@property (nonatomic, readonly, copy) NSString *alias;
+@end
+
 @interface ODataExpandItem : NSObject
 @property (nonatomic, readonly, copy) NSArray<NSString *> *path;
 @property (nonatomic, readonly) BOOL isStar;
@@ -132,6 +139,7 @@ typedef NS_ENUM(NSInteger, ODataSearchKind) {
 @property (nonatomic, readonly, strong, nullable) ODataSearchExpression *searchExpression;
 // $apply (OData Data Aggregation): its transformations (ODataApply.h).
 @property (nonatomic, readonly, copy, nullable) NSArray *apply;
+@property (nonatomic, readonly, copy) NSArray<ODataComputeItem *> *compute;
 @property (nonatomic, readonly, copy) NSDictionary<NSString *, ODataExpression *> *aliases;  // @p -> value
 // Taken as written: $format (json, or a media type with parameters), and
 // $skiptoken, which only the service that wrote it can read.

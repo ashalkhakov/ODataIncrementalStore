@@ -158,6 +158,9 @@ static NSPredicate *OISCompare(NSExpression *left, NSPredicateOperatorType type,
 @property (nonatomic, copy) NSDictionary<NSString *, NSEntityDescription *> *entitiesByTypeName;
 @property (nonatomic, copy) NSSet * (^restrictedProperties)(NSEntityDescription *entity, BOOL sorting);
 @property (nonatomic) BOOL sorting;
+// $compute's names, and how deep one stands for another.
+@property (nonatomic, copy) NSDictionary<NSString *, ODataExpression *> *computed;
+@property (nonatomic) NSInteger computeDepth;
 @property (nonatomic) NSInteger variables;
 @property (nonatomic, strong, nullable) NSError *error;
 // The request's, for the span of a date month() and the like range over.
@@ -530,6 +533,14 @@ static BOOL OISWidens(NSString *from, NSString *to)
 
 - (OISTerm *)memberTerm:(ODataExpression *)e
 {
+  ODataExpression *computed = e.operand ? nil : self.computed[e.name];
+  if (computed) {
+    if (self.computeDepth > 8) return [self fail:400 message:[NSString stringWithFormat:@"$compute: %@ stands for itself", e.name]];
+    self.computeDepth++;
+    OISTerm *t = [self term:computed];
+    self.computeDepth--;
+    return t;
+  }
   OISTerm *base = e.operand ? [self term:e.operand] : [self itTerm];
   if (!base) return nil;
   if (base.kind == OISTermCollection) {
@@ -1340,6 +1351,77 @@ static const NSUInteger OISMaxDateRanges = 200;
   NSPredicate *predicate = [build predicate:expression];
   if (!predicate && error) *error = build.error ?: ODataServiceError(400, @"The filter does not apply");
   return predicate;
+}
+
+- (NSPredicate *)predicateForExpression:(ODataExpression *)expression
+                                 entity:(NSEntityDescription *)entity
+                                aliases:(NSDictionary *)aliases
+                               computed:(NSDictionary *)computed
+                                context:(NSManagedObjectContext *)context
+                                  error:(NSError **)error
+{
+  OISPredicateBuild *build = [self buildForEntity:entity aliases:aliases];
+  build.context = context;
+  build.computed = computed ?: @{};
+  NSPredicate *predicate = [build predicate:expression];
+  if (!predicate && error) *error = build.error ?: ODataServiceError(400, @"The filter does not apply");
+  return predicate;
+}
+
+- (NSExpression *)valueExpressionForExpression:(ODataExpression *)expression
+                                        entity:(NSEntityDescription *)entity
+                                       aliases:(NSDictionary *)aliases
+                                      computed:(NSDictionary *)computed
+                                         error:(NSError **)error
+{
+  OISPredicateBuild *build = [self buildForEntity:entity aliases:aliases];
+  build.computed = computed ?: @{};
+  OISTerm *t = [build term:expression];
+  if (t && (t.kind == OISTermEntity || t.kind == OISTermCollection)) {
+    [build fail:400 message:[NSString stringWithFormat:@"%@ is not a value", expression]];
+    t = nil;
+  }
+  NSExpression *value = t ? [build valueExpression:t typedBy:nil] : nil;
+  if (!value && error) *error = build.error ?: ODataServiceError(400, [NSString stringWithFormat:@"%@ is not a value", expression]);
+  return value;
+}
+
+- (NSArray *)sortDescriptorsForOrderBy:(NSArray *)items entity:(NSEntityDescription *)entity computed:(NSDictionary *)computed
+                              inMemory:(BOOL *)inMemory error:(NSError **)error
+{
+  *inMemory = NO;
+  NSError *keyPathError = nil;
+  NSArray *keyPaths = [self sortDescriptorsForOrderBy:items entity:entity error:&keyPathError];
+  if (keyPaths || !computed.count) {
+    if (!keyPaths && error) *error = keyPathError;
+    return keyPaths;
+  }
+  *inMemory = YES;
+  // Each item's value with each object, compared: nulls first, as OData
+  // sorts them ascending.
+  NSMutableArray *descriptors = [NSMutableArray array];
+  for (ODataOrderItem *item in items) {
+    NSExpression *value = [self valueExpressionForExpression:item.expression entity:entity aliases:nil computed:computed error:error];
+    if (!value) return nil;
+    [descriptors addObject:[NSSortDescriptor sortDescriptorWithKey:@"self" ascending:!item.descending comparator:^NSComparisonResult(id a, id b) {
+      id x = nil, y = nil;
+      @try {
+        x = [value expressionValueWithObject:a context:nil];
+      } @catch (NSException *exception) {
+        x = nil;
+      }
+      @try {
+        y = [value expressionValueWithObject:b context:nil];
+      } @catch (NSException *exception) {
+        y = nil;
+      }
+      if (x == [NSNull null]) x = nil;
+      if (y == [NSNull null]) y = nil;
+      if (!x || !y) return !x && !y ? NSOrderedSame : (!x ? NSOrderedAscending : NSOrderedDescending);
+      return [x compare:y];
+    }]];
+  }
+  return descriptors;
 }
 
 - (NSArray *)sortDescriptorsForOrderBy:(NSArray *)items entity:(NSEntityDescription *)entity error:(NSError **)error

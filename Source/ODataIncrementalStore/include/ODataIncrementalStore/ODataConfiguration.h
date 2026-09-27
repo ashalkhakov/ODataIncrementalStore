@@ -30,6 +30,10 @@ FOUNDATION_EXPORT NSString * const ODataIncrementalStoreIEEE754CompatibleOption;
 // $batch change set, so it takes effect whole or not at all. A service
 // that refuses $batch gets the requests one at a time regardless.
 FOUNDATION_EXPORT NSString * const ODataIncrementalStoreBatchSavesOption;
+// NSNumber BOOL, default YES: with a service that speaks 4.01, send a
+// $batch in the JSON batch format rather than multipart. A service that
+// refuses it gets multipart from then on.
+FOUNDATION_EXPORT NSString * const ODataIncrementalStoreJSONBatchOption;
 // NSNumber BOOL, default NO: requests prefer respond-async (Part 1 section
 // 8.2.8.8). A service may then answer one that takes its time with 202
 // and a status monitor, which the client polls, as Retry-After asks, until
@@ -102,6 +106,11 @@ FOUNDATION_EXPORT NSString * const ODataIncrementalStoreCredentialProviderOption
 @property (nonatomic) BOOL postOnObtainPermanentIDs;
 @property (nonatomic) BOOL IEEE754Compatible;
 @property (nonatomic) BOOL batchSaves;
+// $batch as JSON (4.01) rather than multipart: set by the store once it
+// knows the service speaks 4.01, where ODataIncrementalStoreJSONBatchOption
+// allows it.
+@property (nonatomic) BOOL JSONBatch;
+@property (nonatomic, readonly) BOOL JSONBatchAllowed;
 // Requests that change something carry Repeatability-Request-ID and
 // Repeatability-First-Sent (OData Repeatable Requests), and one that gets
 // no answer at all is sent again, as it was, up to twice: the service

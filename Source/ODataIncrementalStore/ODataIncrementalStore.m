@@ -181,6 +181,7 @@ typedef NS_ENUM(NSInteger, OISWriteMode) {
   // A 4.0 service rejects 4.01 syntax (Northwind and TripPin answer `in`
   // with 400 and 500), so requests are written in the version it speaks.
   configuration.version = [configuration versionForService:_schema.version];
+  configuration.JSONBatch = configuration.JSONBatchAllowed && [configuration.version isEqualToString:@"4.01"];
   id repeatable = _schema.containerName ? [_schema annotation:@"Repeatability.Supported" forTarget:_schema.containerName] : nil;
   configuration.repeatable = [repeatable isEqual:@YES];
   _builder.version = configuration.version;
@@ -596,6 +597,9 @@ static void OISCollectKeyPaths(NSPredicate *predicate, NSMutableSet *into)
   if (fetch.resultType == NSDictionaryResultType && [self aggregates:fetch]) {
     return [self executeAggregateFetch:fetch entity:entity context:context error:error];
   }
+  if (fetch.resultType == NSDictionaryResultType && [self computes:fetch] && ![self sendsComputeForEntity:entity]) {
+    return [self executeComputedFetchHere:fetch entity:entity context:context error:error];
+  }
   BOOL sortLocally = NO, countLocally = NO;
   NSUInteger skip = 0, limit = 0;
   NSFetchRequest *original = fetch;
@@ -666,20 +670,79 @@ static NSString *OISKeyPathOf(id property)
 
 // A dictionary fetch that groups (propertiesToGroupBy) or aggregates (an
 // NSExpressionDescription of sum:, min:, max:, average:, count:).
+// An aggregate (sum:, min:, max:, average:, count:), as against a value
+// computed from each row.
+static BOOL OISIsAggregate(NSExpressionDescription *description)
+{
+  NSExpression *e = description.expression;
+  return e.expressionType == NSFunctionExpressionType &&
+         [@[ @"sum:", @"min:", @"max:", @"average:", @"count:" ] containsObject:e.function];
+}
+
 - (BOOL)aggregates:(NSFetchRequest *)fetch
 {
   if (fetch.propertiesToGroupBy.count) return YES;
   for (id property in fetch.propertiesToFetch) {
-    if ([property isKindOfClass:[NSExpressionDescription class]] && !OISKeyPathOf(property)) return YES;
+    if ([property isKindOfClass:[NSExpressionDescription class]] && !OISKeyPathOf(property) && OISIsAggregate(property)) return YES;
   }
   return NO;
 }
 
-// FreeCoreData shapes grouped and aggregated dictionary fetches itself
-// unless the store says it does; this one does.
+// Values computed from each row (unitPrice * 2), not grouped.
+- (BOOL)computes:(NSFetchRequest *)fetch
+{
+  for (id property in fetch.propertiesToFetch) {
+    if ([property isKindOfClass:[NSExpressionDescription class]] && !OISKeyPathOf(property) && !OISIsAggregate(property)) return YES;
+  }
+  return NO;
+}
+
+// $compute: 4.01, where the service does not say it has none
+// (Capabilities.SelectSupport/ComputeSupported).
+- (BOOL)sendsComputeForEntity:(NSEntityDescription *)entity
+{
+  if (![_client.configuration.version isEqualToString:@"4.01"]) return NO;
+  id support = [self capability:@"Capabilities.SelectSupport" forEntity:entity];
+  return !([support isKindOfClass:[NSDictionary class]] && OISRefused(support[@"ComputeSupported"]));
+}
+
+// FreeCoreData shapes grouped, aggregated and computed dictionary fetches
+// itself unless the store says it does; this one does.
 - (BOOL)_canShapeDictionaryRequest:(NSFetchRequest *)request
 {
-  return [self aggregates:request];
+  return [self aggregates:request] || [self computes:request];
+}
+
+// Where the service computes nothing: the rows, and each value computed
+// here from its object.
+- (NSArray *)executeComputedFetchHere:(NSFetchRequest *)fetch entity:(NSEntityDescription *)entity
+                              context:(NSManagedObjectContext *)context error:(NSError **)error
+{
+  NSFetchRequest *rows = [fetch copy];
+  rows.entity = entity;
+  rows.resultType = NSManagedObjectResultType;
+  rows.propertiesToFetch = nil;
+  NSArray *objects = [self executeFetch:rows context:context error:error];
+  if (!objects) return nil;
+  NSMutableArray *out = [NSMutableArray array];
+  for (NSManagedObject *object in objects) {
+    NSMutableDictionary *row = [NSMutableDictionary dictionary];
+    for (id property in fetch.propertiesToFetch) {
+      // An attribute, a key path, or an expression to evaluate.
+      NSString *keyPath = OISKeyPathOf(property);
+      id value = nil;
+      @try {
+        value = keyPath ? [object valueForKeyPath:keyPath]
+                        : [[(NSExpressionDescription *)property expression] expressionValueWithObject:object context:nil];
+      } @catch (NSException *exception) {
+        value = nil;  // a null operand
+      }
+      NSString *name = [property isKindOfClass:[NSString class]] ? property : [property name];
+      if (value && value != [NSNull null]) row[name] = value;
+    }
+    [out addObject:row];
+  }
+  return out;
 }
 
 // The attribute a key path ends at, through to-one relationships.
@@ -1464,6 +1527,12 @@ static BOOL OISSameRow(NSDictionary *a, NSDictionary *b)
       if (error) *error = batchError;
       return NO;
     }
+    // Refused as JSON: multipart, which every service with $batch reads,
+    // from then on.
+    if (_client.configuration.JSONBatch) {
+      _client.configuration.JSONBatch = NO;
+      return [self sendOperations:operations error:error];
+    }
     _batchRefused = YES;
   }
   for (OISOperation *operation in operations) {
@@ -1803,8 +1872,20 @@ static BOOL OISKeyIsSet(id value)
   NSMutableDictionary *out = [NSMutableDictionary dictionary];
   NSArray *wanted = properties.count ? properties : entity.attributesByName.allKeys;
   for (id prop in wanted) {
-    NSString *name = [prop isKindOfClass:[NSAttributeDescription class]] ? [prop name] : prop;
-    NSAttributeDescription *attr = entity.attributesByName[name];
+    if ([prop isKindOfClass:[NSExpressionDescription class]] && !OISKeyPathOf(prop)) {
+      // $compute's: typed as the description says.
+      id raw = payload[[prop name]];
+      if (!raw || raw == [NSNull null]) continue;
+      NSAttributeDescription *typed = [[NSAttributeDescription alloc] init];
+      typed.name = [prop name];
+      typed.attributeType = [(NSExpressionDescription *)prop expressionResultType];
+      id value = typed.attributeType == NSUndefinedAttributeType ? raw : [_mapper.values coreDataValueForJSON:raw attribute:typed];
+      if (value) out[[prop name]] = value;
+      continue;
+    }
+    NSString *name = [prop isKindOfClass:[NSPropertyDescription class]] ? [prop name] : prop;
+    NSString *attributeName = [prop isKindOfClass:[NSExpressionDescription class]] ? OISKeyPathOf(prop) : name;
+    NSAttributeDescription *attr = attributeName ? entity.attributesByName[attributeName] : nil;
     if (!attr) continue;
     id raw = payload[[_mapper propertyForAttribute:attr]];
     id value = raw ? [_mapper.values coreDataValueForJSON:raw attribute:attr] : nil;

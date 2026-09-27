@@ -331,13 +331,20 @@ static NSString *OISHeaderOf(NSHTTPURLResponse *response, NSString *name)
 
 - (ODataExchange *)sendChangeSet:(NSArray *)requests target:(id)target action:(SEL)action
 {
-  NSString *boundary = [@"batch_" stringByAppendingString:[[NSUUID UUID] UUIDString]];
   NSURL *url = [self.configuration.serviceRoot URLByAppendingPathComponent:@"$batch"];
   NSMutableURLRequest *batch = [NSMutableURLRequest requestWithURL:url];
   batch.HTTPMethod = @"POST";
-  batch.HTTPBody = ODataChangeSetBody(requests, boundary);
-  [batch setValue:[@"multipart/mixed; boundary=" stringByAppendingString:boundary] forHTTPHeaderField:@"Content-Type"];
-  [batch setValue:@"multipart/mixed" forHTTPHeaderField:@"Accept"];
+  if (self.configuration.JSONBatch) {
+    // 4.01's JSON batch format (JSON Format section 19).
+    batch.HTTPBody = ODataJSONBatchBody(requests);
+    [batch setValue:@"application/json" forHTTPHeaderField:@"Content-Type"];
+    [batch setValue:@"application/json" forHTTPHeaderField:@"Accept"];
+  } else {
+    NSString *boundary = [@"batch_" stringByAppendingString:[[NSUUID UUID] UUIDString]];
+    batch.HTTPBody = ODataChangeSetBody(requests, boundary);
+    [batch setValue:[@"multipart/mixed; boundary=" stringByAppendingString:boundary] forHTTPHeaderField:@"Content-Type"];
+    [batch setValue:@"multipart/mixed" forHTTPHeaderField:@"Accept"];
+  }
   [self.configuration applyToRequest:batch];
   ODataExchange *exchange = [[ODataExchange alloc] initWithRequest:batch target:target action:action];
   exchange.context = requests;
@@ -363,16 +370,23 @@ static NSString *OISHeaderOf(NSHTTPURLResponse *response, NSString *name)
   ODataHTTPResponse *response = [self responseFrom:wire error:error];
   if (!response) return nil;
   NSURL *url = wire.request.URL;
-  NSString *responseBoundary = ODataMultipartBoundary([response valueForHeader:@"Content-Type"] ?: @"");
-  NSArray *parts = responseBoundary ? ODataBatchParts(response.data, responseBoundary) : nil;
+  NSString *type = [response valueForHeader:@"Content-Type"] ?: @"";
+  NSString *responseBoundary = ODataMultipartBoundary(type);
+  BOOL JSON = [type.lowercaseString hasPrefix:@"application/json"];
+  NSArray *parts = JSON ? ODataJSONBatchParts(response.data) : responseBoundary ? ODataBatchParts(response.data, responseBoundary) : nil;
   if (!parts) {
-    if (error) *error = OISError(ODataIncrementalStoreErrorDecoding, @"The $batch response is not a multipart body");
+    if (error) *error = OISError(ODataIncrementalStoreErrorDecoding, JSON ? @"The $batch response is not a JSON batch response"
+                                                                         : @"The $batch response is not a multipart body");
     return nil;
   }
   // A change set that failed is answered with one response: the failure
-  // (section 11.7.7.5).
+  // (section 11.7.7.5). In JSON, each of its requests has one, the others
+  // 424 Failed Dependency: the failure is the one that is not.
+  ODataBatchPart *failure = nil;
   for (ODataBatchPart *part in parts) {
-    if (part.status < 400) continue;
+    if (part.status >= 400 && (!failure || failure.status == 424)) failure = part;
+  }
+  for (ODataBatchPart *part in failure ? @[ failure ] : @[]) {
     NSUInteger index = part.contentID ? (NSUInteger)(part.contentID.integerValue - 1) : 0;
     NSURL *failed = index < requests.count ? [requests[index] URL] : url;
     ODataIncrementalStoreErrorCode code = part.status == 412

@@ -72,6 +72,28 @@ NS_ASSUME_NONNULL_BEGIN
                                                              entity:(NSEntityDescription *)entity
                                                               error:(NSError **)error;
 
+// $compute (Part 2 section 5.1.3): its names stand for their expressions,
+// by alias, in the filter and the ordering. A value's expression, to be
+// evaluated with each object (in memory); and an ordering, as key paths
+// where each item is one, else (*inMemory YES) as descriptors that compare
+// the objects' values, which a store cannot sort by.
+- (nullable NSPredicate *)predicateForExpression:(ODataExpression *)expression
+                                          entity:(NSEntityDescription *)entity
+                                         aliases:(nullable NSDictionary<NSString *, ODataExpression *> *)aliases
+                                        computed:(nullable NSDictionary<NSString *, ODataExpression *> *)computed
+                                         context:(nullable NSManagedObjectContext *)context
+                                           error:(NSError **)error;
+- (nullable NSExpression *)valueExpressionForExpression:(ODataExpression *)expression
+                                                 entity:(NSEntityDescription *)entity
+                                                aliases:(nullable NSDictionary<NSString *, ODataExpression *> *)aliases
+                                               computed:(nullable NSDictionary<NSString *, ODataExpression *> *)computed
+                                                  error:(NSError **)error;
+- (nullable NSArray<NSSortDescriptor *> *)sortDescriptorsForOrderBy:(NSArray<ODataOrderItem *> *)items
+                                                             entity:(NSEntityDescription *)entity
+                                                           computed:(nullable NSDictionary<NSString *, ODataExpression *> *)computed
+                                                           inMemory:(BOOL *)inMemory
+                                                              error:(NSError **)error;
+
 // A path of wire names (Category/CategoryName) as a Core Data key path
 // (category.name), through to-one relationships; the property it ends at
 // through `property`. nil, with a 400, for a name that is not there.
