@@ -655,123 +655,262 @@ gnustep-patches' `constant-expression-copy`).
 
 ### `$filter` to `NSPredicate`
 
-The parsing exists: `ODataExpression.h` reads resource paths with their
-key predicates and every system query option (`$filter` and `$orderby`
-expressions with OData's precedence, lambdas, casts, function calls and
-literals of every type; `$select`; `$expand` with options nested to any
-depth), with a split lexer and a recursive descent parser, and describes
-the tree back as canonical OData text. The client's tests already check
-that every `$filter` the translator writes parses.
+`ODataExpression.h` parses a `$filter` into a tree, with a split lexer and a
+recursive descent parser, and with OData's precedence. It reads the other
+system query options and resource paths too (`$orderby`, `$select`,
+`$expand` with options nested to any depth, and key predicates), and it
+describes a tree back as canonical OData text. The client's tests check that
+every `$filter` the translator writes parses.
 
-`ODataPredicateBuilder` builds the predicate from that tree, out of
-`NSComparisonPredicate`, `NSCompoundPredicate` and `NSExpression` objects:
-comparisons, `in`, `and`/`or`/`not`, arithmetic, `contains`,
-`startswith`, `endswith`, `tolower`/`toupper`, `length`, `now`, `any` and
-`all` (as `SUBQUERY`), `$count` of a to-many relationship, parameter
-aliases, type casts and `isof`, casts to a primitive type that holds
-every value of the property's own, `year`, `month`, `day`, `hour`,
-`minute`, `second`, `date`, `floor`, `ceiling` and `round` compared with
-a literal, `substring`, `trim` and `indexof` of a string property and
-`concat` of one with a literal, compared with a literal (each a pattern
-the property matches: `substring(Name,1) eq 'hai'` is `name MATCHES
-'(?s).{1}hai'`, `indexof(Name,'a') eq 2` is `name MATCHES
-'(?s)(?:(?!a).){2}a.*'`; `concat(Name,' tea') eq 'Chai tea'` is `name ==
-'Chai'`), and `has` (all below). Narrowing casts and casts to and from
-strings, `time`, `totaloffsetminutes` and the rest, and a service's own
-functions answer `501`. Literals are typed by the attribute they meet.
-`tolower(Name) eq 'abc'` becomes `name ==[c] 'abc'`, which a SQL store can
-use without lowering every row. gnustep-base names its arithmetic
-functions differently from Apple (`_add`, not `add:to:`) and has no
-modulo, so `mod` is Apple only.
-Type casts (`Default.Manager/Budget`, `Manager/Default.Manager/Budget`,
-`Reports/Default.Manager/any(…)`, `Reports/Default.Manager/$count`,
-`cast(Manager,Default.Manager)`) and `isof` (`isof(Default.Manager)`,
-`isof(Manager,Default.Manager)`) ask an object's type with `entity IN
-{the type and its subentities}`. Apple's stores all answer `entity` in a
-predicate, of the fetched object, of one it reaches through a
-relationship and of a `SUBQUERY`'s variable, in SQL or evaluated on their
-nodes; FreeCoreData's do too since its atomic stores' nodes answer it.
-Whatever reads a cast object is behind that test in an `AND`, since a
-store that evaluates a predicate itself raises when asked an Employee's
-`budget`; and where the object is not of the type the cast is null, as
-the URL conventions have it: `Default.Manager/Budget eq null` holds for
-every Employee that is not a Manager (`NOT test OR budget == nil`).
-Ordering by a cast is `501`: a store that sorts objects would ask them
-all.
-`year`, `date`, `floor`, `ceiling` and `round` have no `NSPredicate`
-function a store evaluates, but each is a step function: compared with a
-literal, it is a range of its argument. `year(Hired) eq 2025` is
-`hired >= 2025-01-01T00:00Z AND hired < 2026-01-01T00:00Z` (in UTC, as
-dates are written), `floor(Price) le 18` is `price < 19`, `round(Price)
-eq -5` is `-5.5 < price <= -4.5` (half away from zero); `ne` is outside
-the range or null, `in` each value's range, and a fraction makes `eq`
-false and moves the others to the whole number beside it. A SQL store can
-use an index for that. Compared with anything but a literal, or ordered
-by, they are `501`.
-`month`, `day`, `hour`, `minute` and `second` are not one range but one
-in each year, month, day, hour or minute: `month(Hired) eq 3` is every
-March from the earliest `Hired` the store has to the latest, which two
-fetches of one row each find (the builder is given the request's context
-for that). A span of more than 200 of them (six years of days for `hour`)
-is `501`, since an `OR` that long is more than SQLite takes.
-A cast to a primitive type holds when the type takes every value of the
-property's: `cast(Quantity,Edm.Decimal) gt 2.5` is the quantity compared
-as a number, `isof(Quantity,Edm.Int64)` is true (null too: it casts to
-anything). A narrowing cast rounds as the service sees fit, and one to or
-from a string depends on text, so both are `501`.
-`has` has no bitwise `and` a store evaluates either, but an enumeration
-has few values: a flags one's are the combinations of its members' bits,
-a plain one's its members'. `Colours has Default.Colour'Red'` is
-`colours IN {1, 3, 5, 7}`, the values that have the bit, which every
-store takes. An enumeration kept as text is kept as its canonical text
-(`Red,Green` whatever order or numbers it was written in), so it is `IN`
-those values' texts. One of more than 16 flags is
-`501`.
-**It never builds a predicate by formatting a string for
-`+predicateWithFormat:`**. The one exception is a key path off a lambda's
+`ODataPredicateBuilder` walks that tree from the top down, building
+`NSCompoundPredicate`, `NSComparisonPredicate` and `NSExpression` objects.
+It never formats a string ([below](#no-format-strings)). The sections below
+follow the same order: logical operators, which hold comparisons, which hold
+operands, which are paths, literals, arithmetic or function calls.
+
+Anything not listed answers `501`: `time`, `totaloffsetminutes` and the
+other functions not named here, narrowing casts, casts to and from strings,
+and a service's own functions.
+
+#### 1. Logical operators
+
+| `$filter` | `NSPredicate` |
+|---|---|
+| `a and b`, `a or b` | `NSCompoundPredicate` `AND`, `OR` |
+| `not a` | `NOT`, with OData's null ([below](#tested-against-the-client)) |
+| `(…)` | Nesting only |
+| `Discontinued` (a Boolean property) | `discontinued == YES` |
+| `any`, `all`, `isof`, `has` | Predicates in their own right: see their sections |
+
+#### 2. Comparisons
+
+A comparison is two operands and an operator.
+
+| `$filter` | `NSPredicate` |
+|---|---|
+| `Price gt 20` | `price > 20` (and `eq`, `ne`, `lt`, `le`, `ge`) |
+| `Price gt 20`, where `Price` is optional | `price != nil AND price > 20` |
+| `Price ne 18`, where `Price` is optional | `price == nil OR price != 18` |
+| `Name eq null` | `name == nil` |
+| `ID in (1, 2)` | `id IN {1, 2}` |
+| `tolower(Name) eq 'abc'` | `name ==[c] 'abc'`, which a SQL store can use without lowering every row |
+
+- **Null tests come first.** The null tests make a comparison hold as OData
+  says it does. They come first so that a store evaluating the predicate
+  itself never does arithmetic on nil, which raises.
+- **Literals are typed** by the attribute they meet: `'2025-03-01'` against
+  a Date attribute is a date.
+- **Functions compared with a literal** are the exception to "two
+  operands". A function the store cannot evaluate is rewritten, together
+  with the literal it is compared with, into a range or a pattern of its
+  argument ([step functions](#step-functions-as-ranges),
+  [date parts](#date-parts), [string functions](#string-functions-as-patterns)).
+
+#### 3. Operands: paths
+
+| `$filter` | `NSPredicate` |
+|---|---|
+| `Name` | `name` |
+| `Category/Name` | `category.name` |
+| `Products/$count` | `products.@count` |
+| `Products/any(p:p/Price gt 20)` | `SUBQUERY(products, $v0, $v0.price > 20).@count > 0` |
+| `Products/all(p:p/Price gt 20)` | `SUBQUERY(products, $v0, NOT $v0.price > 20).@count == 0` |
+| `Products/any()` | `products.@count > 0` |
+| `@p` | The parameter alias's value, followed through aliases of aliases |
+
+A lambda's body is built recursively, from [logical operators](#1-logical-operators)
+down, with its variable in scope as `$v0`, `$v1` and so on.
+
+##### Type casts and `isof`
+
+- **Forms.** Type casts (`Default.Manager/Budget`,
+  `Manager/Default.Manager/Budget`, `Reports/Default.Manager/any(…)`,
+  `Reports/Default.Manager/$count`, `cast(Manager,Default.Manager)`) and
+  `isof` (`isof(Default.Manager)`, `isof(Manager,Default.Manager)`) test an
+  object's type with `entity IN {the type and its subentities}`.
+- **Store support.** Apple's stores all answer `entity` in a predicate, in
+  SQL or evaluated on their nodes. That holds of the fetched object, of one
+  it reaches through a relationship, and of a `SUBQUERY`'s variable.
+  FreeCoreData's stores answer it too, since its atomic stores' nodes do.
+- **The test comes first.** Whatever reads a cast object sits behind that
+  test in an `AND`. A store that evaluates a predicate itself raises when
+  asked an Employee's `budget`.
+- **Null elsewhere.** Where the object is not of the type, the cast is
+  null, as the URL conventions have it: `Default.Manager/Budget eq null`
+  holds for every Employee that is not a Manager
+  (`NOT test OR budget == nil`).
+- **Ordering by a cast is `501`**: a store that sorts objects would ask
+  every object for the property.
+- **Primitive casts.** A cast to a primitive type holds when that type
+  takes every value of the property's type:
+  `cast(Quantity,Edm.Decimal) gt 2.5` compares the quantity as a number,
+  and `isof(Quantity,Edm.Int64)` is true (null too: null casts to
+  anything). A narrowing cast rounds as the service sees fit, and a cast
+  to or from a string depends on text, so both are `501`.
+
+#### 4. Operands: literals
+
+Every OData literal type is read. A literal takes the type of the attribute
+it is compared with, so `2.5` against a Decimal attribute is an
+`NSDecimalNumber`, and against a Double one an `NSNumber`. Numbers in
+[arithmetic](#5-operands-arithmetic), and numbers compared with arithmetic,
+are always plain `NSNumber`s.
+
+#### 5. Operands: arithmetic
+
+| `$filter` | `NSPredicate` |
+|---|---|
+| `Price add 5 gt 20` | `price + 5 > 20` (and `sub`, `mul`, `div`) |
+| `Price mod 2 eq 0` | `modulus:by:(price, 2) == 0`, on Apple only |
+| `-Price` | `price * -1` |
+
+gnustep-base names its arithmetic functions differently from Apple (`_add`,
+not `add:to:`) and has no modulo, so `mod` works on Apple only.
+
+#### 6. Operands: function calls
+
+Only a few functions become an `NSExpression` the store evaluates:
+
+| `$filter` | `NSPredicate` |
+|---|---|
+| `contains(Name, 'ha')` | `name CONTAINS 'ha'` |
+| `startswith(Name, 'Ch')`, `endswith(…)` | `BEGINSWITH`, `ENDSWITH` |
+| `tolower(x)`, `toupper(x)` | `[c]` on the comparison, or a folded constant |
+| `now()` | The request's time, as a constant |
+| `matchesPattern(Name, 'a.c')` | `name MATCHES '(?s).*(?:a.c).*'`, the pattern found anywhere |
+
+The rest have no `NSPredicate` equivalent, so they work only when compared
+with a literal, as the following sections show.
+
+##### Step functions as ranges
+
+`year`, `date`, `floor`, `ceiling` and `round` are step functions, so
+compared with a literal each is a range of its argument, and a SQL store can
+use an index for it:
+
+| `$filter` | `NSPredicate` |
+|---|---|
+| `year(Hired) eq 2025` | `hired >= 2025-01-01T00:00Z AND hired < 2026-01-01T00:00Z` (in UTC, as dates are written) |
+| `floor(Price) le 18` | `price < 19` |
+| `round(Price) eq -5` | `-5.5 < price <= -4.5` (half away from zero) |
+
+- `ne` is outside the range, or null.
+- `in` is each value's range.
+- A fractional literal makes `eq` false, and moves the other comparisons to
+  the whole number beside it.
+- Compared with anything but a literal, or used in `$orderby`, these
+  functions are `501`.
+
+##### Date parts
+
+`month`, `day`, `hour`, `minute` and `second` are not one range but one in
+each year, month, day, hour or minute.
+
+- `month(Hired) eq 3` is every March from the earliest `Hired` the store has
+  to the latest.
+- Two fetches of one row each find that span; the builder is given the
+  request's context for them.
+- A span of more than 200 ranges (six years of days, for `hour`) is `501`,
+  since an `OR` that long is more than SQLite takes.
+
+##### String functions as patterns
+
+`length`, `substring`, `trim` and `indexof` of a string property, and
+`concat` of one with a literal, are compared with a literal. Each becomes a
+pattern the property matches, or a plain comparison:
+
+| `$filter` | `NSPredicate` |
+|---|---|
+| `length(Name) gt 10` | `name MATCHES '(?s).{11,}'` |
+| `substring(Name,1) eq 'hai'` | `name MATCHES '(?s).{1}hai'` |
+| `indexof(Name,'a') eq 2` | `name MATCHES '(?s)(?:(?!a).){2}a.*'` |
+| `trim(Name) eq 'Chai'` | `name MATCHES '(?s)\s*Chai\s*'` |
+| `concat(Name,' tea') eq 'Chai tea'` | `name == 'Chai'` |
+
+`substring`, `trim` and `concat` are compared with `eq` and `ne` only.
+
+##### `has`
+
+`has` has no bitwise `and` that a store evaluates, but an enumeration has
+few values.
+
+- **Flags.** A flags enumeration's values are the combinations of its
+  members' bits. `Colours has Default.Colour'Red'` is
+  `colours IN {1, 3, 5, 7}`: every value that has the bit. Every store
+  takes that.
+- **Plain enumerations.** A plain enumeration's values are its members.
+- **Kept as text.** An enumeration kept as text is kept as its canonical
+  text (`Red,Green`, whatever order or numbers it was written in), so the
+  test is `IN` those values' texts.
+- **Limit.** An enumeration with more than 16 flags is `501`.
+
+#### No format strings
+
+**The builder never builds a predicate by formatting a string for
+`+predicateWithFormat:`.** The one exception is a key path off a lambda's
 variable (`$v0.unitPrice`), which is made from a generated name and the
-model's own property names, never from request text:
+model's own property names, never from request text. There are two
+reasons:
 
 - A string built from request input is an injection vector.
 - gnustep-base's predicate parser has quirks the client has already hit.
-  It rewrites `BETWEEN` into `>=` / `<=` and wraps each bound in a second
-  constant expression, so parsing is not a neutral step.
+  It rewrites `BETWEEN` into `>=` and `<=`, and wraps each bound in a
+  second constant expression, so parsing is not a neutral step.
 
-The client's `ODataPredicateTranslator` and this builder are tested
-against each other (`Tests/ODataPredicatePairTests.m`): predicate →
-`$filter` → predicate, and `$filter` → predicate → `$filter` → predicate,
-each pair selecting the same rows, over an in-memory store and SQLite, in
-4.0 and 4.01. A `$filter` the service reads and the client cannot write
-is listed with why (today: `matchesPattern`, and `length()`, which is read
-as one, in 4.0), and the test fails when the list is no longer true. What
-it found, and what came of it:
+#### Tested against the client
 
-- OData's null is not SQL's. `UnitPrice ne 18` holds for a null price, and
-  `not (UnitPrice gt 20)` too; SQL's `NULL <> 18` and `NOT (NULL > 20)`
-  are unknown, so Apple's SQLite store left those rows out where its
-  in-memory store kept them. A comparison now tests its nullable key
-  paths (an optional attribute, anything through a relationship) first:
-  `price != nil AND price > 20`, and `price == nil OR price != 18` for
-  `ne`. First, so that a store evaluating it itself never does arithmetic
-  on nil, which raises.
-- Apple's SQLite store compares a computed value with an
-  `NSDecimalNumber` constant as text, so `UnitPrice mul 2 lt 30` took
-  every row: numbers in arithmetic, and compared with it, are plain
-  `NSNumber`s.
-- It takes every row for `name.length > 10`: `length(x) op n` is a
-  pattern of so many characters, `name MATCHES '(?s).{11,}'`.
-- `startswith(tolower(Name), tolower('ch'))` was `lowercase:(name)
-  BEGINSWITH 'ch'`, which Apple's SQLite store refuses (a `500`); the
-  case-insensitive form now takes a folded constant as it takes a literal.
-- `matchesPattern` (4.01), which the client writes for `LIKE` and
-  `MATCHES`, is read, as the pattern found anywhere in the string.
-- The client dropped the case of `==[c]`, wrote `Suppliers/@count`,
-  guessed a wire name for any unknown key path (`entity` became `Entity
-  eq '<NSEntityDescription …>'`), and could not write `SUBQUERY` counts,
-  arithmetic, or a subentity's property. It now writes `tolower(…) eq
-  tolower(…)`, `$count`, `isof` for an entity test, `any`/`all` for a
-  counted `SUBQUERY`, `add`/`sub`/`mul`/`div`/`mod`, and casts
-  (`Default.Manager/Budget`), and refuses a name the model does not have.
+The client's `ODataPredicateTranslator` and this builder are tested against
+each other (`Tests/ODataPredicatePairTests.m`):
+
+- predicate → `$filter` → predicate, and
+  `$filter` → predicate → `$filter` → predicate;
+- each pair selecting the same rows;
+- over an in-memory store and SQLite, in 4.0 and 4.01.
+
+A `$filter` the service reads but the client cannot write is listed, with
+the reason. Today the list has two entries, both in 4.0, which has no
+`matchesPattern`: `matchesPattern` itself, and `length()`, which the service
+reads as a `MATCHES` pattern that the client could write back only as
+`matchesPattern`. The test fails when the list stops being true.
+
+What the tests found, and what was done about each:
+
+- **OData's null is not SQL's.** `UnitPrice ne 18` holds for a null price,
+  and so does `not (UnitPrice gt 20)`. SQL's `NULL <> 18` and
+  `NOT (NULL > 20)` are unknown, so Apple's SQLite store left those rows
+  out where its in-memory store kept them.
+  - A comparison now tests its nullable key paths first: an optional
+    attribute, or anything reached through a relationship.
+    `UnitPrice gt 20` becomes `price != nil AND price > 20`, and
+    `UnitPrice ne 18` becomes `price == nil OR price != 18`.
+  - The test comes first so that a store evaluating the predicate itself
+    never does arithmetic on nil, which raises.
+- **Decimals compared as text.** Apple's SQLite store compares a computed
+  value with an `NSDecimalNumber` constant as text, so
+  `UnitPrice mul 2 lt 30` returned every row. Numbers in arithmetic, and
+  numbers compared with arithmetic, are now plain `NSNumber`s.
+- **`length`.** Apple's SQLite store returned every row for
+  `name.length > 10`. `length(x) op n` is now a pattern of that many
+  characters: `name MATCHES '(?s).{11,}'`.
+- **Folded constants.** `startswith(tolower(Name), tolower('ch'))` was
+  `lowercase:(name) BEGINSWITH 'ch'`, which Apple's SQLite store refuses
+  (a `500`). The case-insensitive form now takes a folded constant the same
+  way it takes a literal.
+- **`matchesPattern`.** The 4.01 function, which the client writes for
+  `LIKE` and `MATCHES`, is read as the pattern found anywhere in the
+  string.
+- **Client fixes.** The client:
+  - dropped the case of `==[c]`;
+  - wrote `Suppliers/@count`;
+  - guessed a wire name for any unknown key path (`entity` became
+    `Entity eq '<NSEntityDescription …>'`);
+  - could not write `SUBQUERY` counts, arithmetic, or a subentity's
+    property.
+
+  It now writes `tolower(…) eq tolower(…)`, `$count`, `isof` for an entity
+  test, `any`/`all` for a counted `SUBQUERY`, `add`/`sub`/`mul`/`div`/`mod`,
+  and casts (`Default.Manager/Budget`), and it refuses a name the model
+  does not have.
 
 ### Values are serialised by the model's types
 
