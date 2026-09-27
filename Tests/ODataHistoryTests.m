@@ -157,7 +157,7 @@
   XCTAssertEqual(change.changeType, NSPersistentHistoryChangeTypeUpdate);
   XCTAssertEqualObjects(change.changedObjectID, zebra.objectID);
   XCTAssertEqualObjects([change.updatedProperties valueForKey:@"name"], ([NSSet setWithObjects:@"home", @"nicknames", nil]));
-  XCTAssertEqualObjects([[transaction.objectIDNotification.userInfo[NSUpdatedObjectIDsKey] anyObject] URIRepresentation], zebra.objectID.URIRepresentation);
+  XCTAssertEqualObjects([transaction.objectIDNotification.userInfo[NSUpdatedObjectIDsKey] anyObject], zebra.objectID);
 
   // FreeCoreData's coordinator makes tokens of its own from the store's
   // history (Apple's gives none for a store of this kind).

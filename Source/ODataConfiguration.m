@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: LGPL-2.1-or-later
 
 #import "ODataConfiguration.h"
+#import "ODataSchema.h"
 
 NSString * const ODataIncrementalStoreAccessTokenOption = @"ODataIncrementalStoreAccessToken";
 NSString * const ODataIncrementalStoreUsernameOption = @"ODataIncrementalStoreUsername";
@@ -9,6 +10,12 @@ NSString * const ODataIncrementalStorePasswordOption = @"ODataIncrementalStorePa
 NSString * const ODataIncrementalStoreTimeoutOption = @"ODataIncrementalStoreTimeout";
 NSString * const ODataIncrementalStorePostOnObtainPermanentIDsOption = @"ODataIncrementalStorePostOnObtainPermanentIDs";
 NSString * const ODataIncrementalStoreTransportOption = @"ODataIncrementalStoreTransport";
+NSString * const ODataIncrementalStoreAPIKeyOption = @"ODataIncrementalStoreAPIKey";
+NSString * const ODataIncrementalStoreCredentialProviderOption = @"ODataIncrementalStoreCredentialProvider";
+NSString * const ODataIncrementalStoreDidReceiveMessagesNotification = @"ODataIncrementalStoreDidReceiveMessagesNotification";
+NSString * const ODataMessagesKey = @"ODataMessages";
+NSString * const ODataMessagesURLKey = @"ODataMessagesURL";
+NSString * const ODataMessagesObjectIDKey = @"ODataMessagesObjectID";
 NSString * const ODataIncrementalStoreTrackedEntitiesOption = @"ODataIncrementalStoreTrackedEntities";
 NSString * const ODataIncrementalStoreKeyAsSegmentOption = @"ODataIncrementalStoreKeyAsSegment";
 NSString * const ODataIncrementalStoreMaxVersionOption = @"ODataIncrementalStoreMaxVersion";
@@ -17,7 +24,9 @@ NSString * const ODataIncrementalStoreBatchSavesOption = @"ODataIncrementalStore
 NSString * const ODataIncrementalStoreRequireMatchingModelOption = @"ODataIncrementalStoreRequireMatchingModel";
 NSString * const ODataIncrementalStoreType = @"ODataIncrementalStore";
 
-@implementation ODataConfiguration
+@implementation ODataConfiguration {
+  NSString *_providedToken;
+}
 
 - (instancetype)initWithURL:(NSURL *)url options:(NSDictionary *)options
 {
@@ -31,6 +40,8 @@ NSString * const ODataIncrementalStoreType = @"ODataIncrementalStore";
   _accessToken = [options[ODataIncrementalStoreAccessTokenOption] copy];
   _username = [options[ODataIncrementalStoreUsernameOption] copy];
   _password = [options[ODataIncrementalStorePasswordOption] copy];
+  _apiKey = [options[ODataIncrementalStoreAPIKeyOption] copy];
+  _credentialProvider = options[ODataIncrementalStoreCredentialProviderOption];
   id timeout = options[ODataIncrementalStoreTimeoutOption];
   _timeout = timeout ? [timeout doubleValue] : 60.0;
   _naming = ODataPropertyNamingPascalCase;
@@ -72,14 +83,120 @@ NSString * const ODataIncrementalStoreType = @"ODataIncrementalStore";
   [request setValue:self.maxVersion forHTTPHeaderField:@"OData-MaxVersion"];
   [request setValue:self.userAgent forHTTPHeaderField:@"User-Agent"];
   request.timeoutInterval = self.timeout;
-  if (self.accessToken.length) {
-    [request setValue:[NSString stringWithFormat:@"Bearer %@", self.accessToken] forHTTPHeaderField:@"Authorization"];
-  } else if (self.username) {
-    NSString *pair = [NSString stringWithFormat:@"%@:%@", self.username, self.password ?: @""];
-    NSData *data = [pair dataUsingEncoding:NSUTF8StringEncoding];
-    NSString *b64 = [data base64EncodedStringWithOptions:0];
-    [request setValue:[NSString stringWithFormat:@"Basic %@", b64] forHTTPHeaderField:@"Authorization"];
+  [self signRequest:request];
+}
+
+#pragma mark Signing in
+
+- (id<ODataCredentialProviding>)provider
+{
+  return self.credentialProvider;
+}
+
+- (NSString *)bearerTokenFor:(ODataSchemaAuthorization *)authorization
+{
+  if (self.accessToken.length) return self.accessToken;
+  @synchronized (self) {
+    if (!_providedToken && [self.provider respondsToSelector:@selector(accessTokenForAuthorization:refresh:)]) {
+      _providedToken = [[self.provider accessTokenForAuthorization:authorization refresh:NO] copy];
+    }
+    return _providedToken;
   }
+}
+
+- (NSURLCredential *)basicCredentialFor:(ODataSchemaAuthorization *)authorization
+{
+  if (self.username) return [NSURLCredential credentialWithUser:self.username password:self.password ?: @"" persistence:NSURLCredentialPersistenceNone];
+  return [self.provider respondsToSelector:@selector(credentialForAuthorization:)] ? [self.provider credentialForAuthorization:authorization] : nil;
+}
+
+- (NSString *)keyFor:(ODataSchemaAuthorization *)authorization
+{
+  if (self.apiKey.length) return self.apiKey;
+  return [self.provider respondsToSelector:@selector(APIKeyForAuthorization:)] ? [self.provider APIKeyForAuthorization:authorization] : nil;
+}
+
+// The first way to sign in the credentials can take.
+- (ODataSchemaAuthorization *)authorization
+{
+  for (ODataSchemaAuthorization *authorization in self.authorizations) {
+    if (authorization.usesBearerToken) {
+      if (self.accessToken.length || [self.provider respondsToSelector:@selector(accessTokenForAuthorization:refresh:)]) return authorization;
+    } else if ([authorization.kind isEqualToString:@"Http"]) {
+      if (self.username || [self.provider respondsToSelector:@selector(credentialForAuthorization:)]) return authorization;
+    } else if ([authorization.kind isEqualToString:@"ApiKey"]) {
+      if (self.apiKey.length || [self.provider respondsToSelector:@selector(APIKeyForAuthorization:)]) return authorization;
+    }
+  }
+  return nil;
+}
+
+static void OISSetBasic(NSMutableURLRequest *request, NSURLCredential *credential)
+{
+  NSString *pair = [NSString stringWithFormat:@"%@:%@", credential.user ?: @"", credential.password ?: @""];
+  NSString *b64 = [[pair dataUsingEncoding:NSUTF8StringEncoding] base64EncodedStringWithOptions:0];
+  [request setValue:[NSString stringWithFormat:@"Basic %@", b64] forHTTPHeaderField:@"Authorization"];
+}
+
+- (void)signRequest:(NSMutableURLRequest *)request
+{
+  ODataSchemaAuthorization *authorization = self.authorization;
+  if (!authorization) {
+    // None declared (or $metadata not read yet), or none these credentials
+    // can take: the ones given, as they are; a provider is asked for a way
+    // the service declares.
+    NSString *token = self.accessToken;
+    if (token.length) {
+      [request setValue:[NSString stringWithFormat:@"Bearer %@", token] forHTTPHeaderField:@"Authorization"];
+    } else if (self.username) {
+      OISSetBasic(request, [self basicCredentialFor:nil]);
+    }
+    return;
+  }
+  if (authorization.usesBearerToken) {
+    NSString *token = [self bearerTokenFor:authorization];
+    if (token.length) [request setValue:[NSString stringWithFormat:@"Bearer %@", token] forHTTPHeaderField:@"Authorization"];
+  } else if ([authorization.kind isEqualToString:@"Http"]) {
+    NSURLCredential *credential = [self basicCredentialFor:authorization];
+    if (credential) OISSetBasic(request, credential);
+  } else if ([authorization.kind isEqualToString:@"ApiKey"]) {
+    NSString *key = [self keyFor:authorization];
+    NSString *name = authorization.keyName ?: @"api_key";
+    if (!key.length) return;
+    if ([authorization.location isEqualToString:@"QueryOption"]) {
+      NSURLComponents *components = [NSURLComponents componentsWithURL:request.URL resolvingAgainstBaseURL:YES];
+      NSMutableArray *items = [components.queryItems mutableCopy] ?: [NSMutableArray array];
+      for (NSURLQueryItem *item in items) if ([item.name isEqualToString:name]) return;  // signed already
+      [items addObject:[NSURLQueryItem queryItemWithName:name value:key]];
+      components.queryItems = items;
+      request.URL = components.URL;
+    } else if ([authorization.location isEqualToString:@"Cookie"]) {
+      [request setValue:[NSString stringWithFormat:@"%@=%@", name, key] forHTTPHeaderField:@"Cookie"];
+    } else {
+      [request setValue:key forHTTPHeaderField:name];
+    }
+  }
+}
+
+- (BOOL)refreshCredentials
+{
+  ODataSchemaAuthorization *authorization = self.authorization;
+  if (self.accessToken.length || ![self.provider respondsToSelector:@selector(accessTokenForAuthorization:refresh:)]) return NO;
+  if (authorization && !authorization.usesBearerToken) return NO;
+  NSString *fresh = [self.provider accessTokenForAuthorization:authorization refresh:YES];
+  @synchronized (self) {
+    BOOL changed = fresh.length && ![fresh isEqualToString:_providedToken];
+    _providedToken = [fresh copy];
+    return changed;
+  }
+}
+
+- (NSString *)expectedCredentials
+{
+  if (!self.authorizations.count) return nil;
+  return [NSString stringWithFormat:@"The service signs in by %@: give the store credentials for one of them "
+                                    @"(an access token, a user and password, an API key), or a credential provider",
+          [[self.authorizations valueForKey:@"description"] componentsJoinedByString:@"; or "]];
 }
 
 @end

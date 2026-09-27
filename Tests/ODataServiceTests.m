@@ -335,6 +335,75 @@
 }
 @end
 
+// Products that have something to say: why some are missing, and what
+// became of a price.
+@interface OISChattyProducts : ODataEntitySetHandler
+@end
+
+@implementation OISChattyProducts
+- (NSArray *)objectsForFetchRequest:(NSFetchRequest *)fetchRequest request:(ODataRequest *)request reply:(ODataReply *)reply
+{
+  [request addMessage:@"Products no longer sold are listed too" code:@"Listed" severity:@"info" target:nil];
+  return [super objectsForFetchRequest:fetchRequest request:request reply:reply];
+}
+
+- (NSManagedObject *)insertObjectWithValues:(NSDictionary *)values request:(ODataRequest *)request reply:(ODataReply *)reply
+{
+  [request addMessage:@"The price was rounded to cents" code:@"Rounded" severity:@"warning" target:@"UnitPrice"];
+  return [super insertObjectWithValues:values request:request reply:reply];
+}
+@end
+
+// Signs in with an API key in X-API-Key, and says so in $metadata.
+@interface OISKeyAuthenticator : NSObject <ODataAuthenticator>
+@end
+
+@implementation OISKeyAuthenticator
+- (void)authenticateRequest:(ODataRequest *)request reply:(ODataReply *)reply
+{
+  BOOL open = [[request valueForHeader:@"X-API-Key"] isEqualToString:@"sesame"];
+  [reply finishWithResult:open ? [[ODataPrincipal alloc] initWithSubject:@"keyholder" claims:nil] : nil];
+}
+
+- (NSDictionary *)authorizationDescription
+{
+  return @{ @"@type": @"Org.OData.Authorization.V1.ApiKey", @"Name": @"Key", @"KeyName": @"X-API-Key",
+            @"Location": @{ @"$EnumMember": @"Org.OData.Authorization.V1.KeyLocation/Header" } };
+}
+@end
+
+// Gives the tokens it holds, a fresh one when asked to refresh; keeps what
+// it was asked.
+@interface OISTokenProvider : NSObject <ODataCredentialProviding>
+@property (nonatomic, copy) NSString *token;
+@property (nonatomic, copy) NSString *freshToken;
+@property (atomic, strong) NSMutableArray *asked;
+@end
+
+@implementation OISTokenProvider
+- (NSString *)accessTokenForAuthorization:(ODataSchemaAuthorization *)authorization refresh:(BOOL)refresh
+{
+  if (!self.asked) self.asked = [NSMutableArray array];
+  [self.asked addObject:@[ authorization ?: [NSNull null], @(refresh) ]];
+  return refresh ? self.freshToken : self.token;
+}
+@end
+
+// Hands exchanges on to a service, keeping each request.
+@interface OISRecordingTransport : NSObject <ODataTransport>
+@property (nonatomic, strong) id<ODataTransport> next;
+@property (atomic, strong) NSMutableArray<NSURLRequest *> *requests;
+@end
+
+@implementation OISRecordingTransport
+- (void)startExchange:(ODataExchange *)exchange
+{
+  if (!self.requests) self.requests = [NSMutableArray array];
+  [self.requests addObject:exchange.request];
+  [self.next startExchange:exchange];
+}
+@end
+
 @interface ODataServiceTests : XCTestCase
 @end
 
@@ -1892,6 +1961,483 @@ static NSAttributeDescription *OISSwatchAttribute(NSString *name, NSAttributeTyp
   XCTAssertEqual([self getProductsWithToken:@"opaque-ann"].status, 503, @"the provider would not answer");
 }
 
+#pragma mark Vocabularies
+
+static NSComparisonPredicate *OISValidation(NSString *keyPath, NSPredicateOperatorType type, id constant)
+{
+  NSExpression *left = keyPath ? [NSExpression expressionForKeyPath:keyPath] : [NSExpression expressionForEvaluatedObject];
+  return (NSComparisonPredicate *)[NSComparisonPredicate predicateWithLeftExpression:left rightExpression:[NSExpression expressionForConstantValue:constant]
+                                                                             modifier:NSDirectPredicateModifier type:type options:0];
+}
+
+// Items with what Core and Validation say of them: constraints as Xcode
+// writes them, and userInfo.
+- (void)serveItems
+{
+  NSEntityDescription *item = [[NSEntityDescription alloc] init];
+  item.name = @"Item";
+  item.managedObjectClassName = @"NSManagedObject";
+  item.userInfo = @{ @"OData.entitySet": @"Items", @"OData.description": @"Something in stock",
+                     @"OData.annotations": @"{\"Validation.Constraint\": {\"FailureMessage\": \"A priced item needs a name\", "
+                                           @"\"Condition\": {\"$Or\": [{\"$Eq\": [{\"$Path\": \"Price\"}, null]}, "
+                                           @"{\"$Ne\": [{\"$Path\": \"Name\"}, null]}]}}}" };
+  NSEntityDescription *tag = [[NSEntityDescription alloc] init];
+  tag.name = @"Tag";
+  tag.managedObjectClassName = @"NSManagedObject";
+  tag.userInfo = @{ @"OData.entitySet": @"Tags" };
+
+  NSAttributeDescription *identifier = OISSwatchAttribute(@"id", NSInteger32AttributeType, nil);
+  identifier.userInfo = @{ @"OData.key": @"YES" };
+  NSAttributeDescription *name = OISSwatchAttribute(@"name", NSStringAttributeType, nil);
+  [name setValidationPredicates:@[ OISValidation(@"length", NSLessThanOrEqualToPredicateOperatorType, @50),
+                                   OISValidation(nil, NSMatchesPredicateOperatorType, @"[A-Z].*") ]
+         withValidationWarnings:@[ @(NSValidationStringTooLongError), @(NSValidationStringPatternMatchingError) ]];
+  name.userInfo = @{ @"OData.description": @"What it is called",
+                     @"OData.annotations": @"{\"Core.Description#fr\": \"Son nom\", \"Org.Example.V1.Searchable\": true}" };
+  NSAttributeDescription *price = OISSwatchAttribute(@"price", NSDecimalAttributeType, nil);
+  [price setValidationPredicates:@[ OISValidation(nil, NSGreaterThanOrEqualToPredicateOperatorType, [NSDecimalNumber zero]),
+                                    OISValidation(nil, NSLessThanPredicateOperatorType, [NSDecimalNumber decimalNumberWithString:@"1000"]) ]
+          withValidationWarnings:@[ @(NSValidationNumberTooSmallError), @(NSValidationNumberTooLargeError) ]];
+  price.userInfo = @{ @"OData.annotations": @"{\"Validation.MultipleOf\": 0.25}" };
+  NSAttributeDescription *colour = OISSwatchAttribute(@"colour", NSStringAttributeType, nil);
+  [colour setValidationPredicates:@[ OISValidation(nil, NSInPredicateOperatorType, @[ @"red", @"blue" ]) ]
+           withValidationWarnings:@[ @(NSValidationStringPatternMatchingError) ]];
+  NSAttributeDescription *code = OISSwatchAttribute(@"code", NSStringAttributeType, nil);
+  code.userInfo = @{ @"OData.immutable": @"YES",
+                     @"OData.annotations": @"{\"Validation.Constraint#code\": {\"FailureMessage\": \"A code starts with a letter\", "
+                                           @"\"Condition\": {\"$Apply\": [{\"$Path\": \"Code\"}, \"^[A-Z]\"], \"$Function\": \"odata.matchesPattern\"}}}" };
+  NSAttributeDescription *stamp = OISSwatchAttribute(@"stamp", NSStringAttributeType, nil);
+  stamp.userInfo = @{ @"OData.computed": @"YES" };
+  NSAttributeDescription *note = OISSwatchAttribute(@"note", NSStringAttributeType, nil);
+  note.userInfo = @{ @"OData.permissions": @"Read" };
+  NSRelationshipDescription *tags = [[NSRelationshipDescription alloc] init];
+  tags.name = @"tags";
+  tags.destinationEntity = tag;
+  tags.minCount = 0;
+  tags.maxCount = 5;
+  tags.optional = YES;
+  NSAttributeDescription *tagID = OISSwatchAttribute(@"id", NSInteger32AttributeType, nil);
+  tagID.userInfo = @{ @"OData.key": @"YES" };
+  item.properties = @[ identifier, name, price, colour, code, stamp, note, tags ];
+  tag.properties = @[ tagID ];
+  NSManagedObjectModel *model = [[NSManagedObjectModel alloc] init];
+  model.entities = @[ item, tag ];
+
+  _coordinator = [[NSPersistentStoreCoordinator alloc] initWithManagedObjectModel:model];
+  NSError *error = nil;
+  XCTAssertNotNil([_coordinator addPersistentStoreWithType:NSInMemoryStoreType configuration:nil URL:nil options:nil error:&error], @"%@", error);
+  NSManagedObjectContext *context = [[NSManagedObjectContext alloc] init];
+  context.persistentStoreCoordinator = _coordinator;
+  [self insert:@"Item" into:context values:@{ @"id": @1, @"name": @"Anvil", @"price": [NSDecimalNumber decimalNumberWithString:@"99"],
+                                               @"code": @"A-1", @"stamp": @"made", @"note": @"heavy" }];
+  XCTAssertTrue([context save:&error], @"%@", error);
+  _service = [[ODataService alloc] initWithPersistentStoreCoordinator:_coordinator serviceRoot:[NSURL URLWithString:@"http://example.test/odata/"]];
+}
+
+- (void)testVocabulariesInMetadata
+{
+  [self serveItems];
+  _service.containerAnnotations = @{ @"Core.Description": @"The stock", @"Core.LongDescription#en": @"Everything in stock, by item" };
+  ODataJWTAuthenticator *jwt = [[ODataJWTAuthenticator alloc] initWithIssuer:@"https://id.example.test/realms/ois" audience:@"ois-api"];
+  jwt.keySet = @{ @"keys": @[] };
+  jwt.requiredScopes = [NSSet setWithObjects:@"odata.read", nil];
+  _service.authenticator = jwt;
+  _service.allowsAnonymousRequests = YES;
+
+  OISServiceResponse *metadata = [self get:@"$metadata"];
+  XCTAssertEqual(metadata.status, 200);
+  NSError *error = nil;
+  ODataSchema *schema = [ODataSchema schemaWithData:metadata.data error:&error];
+  XCTAssertNotNil(schema, @"%@", error);
+  NSString *type = @"Default.Item";
+  XCTAssertEqualObjects([schema annotation:@"Core.Description" forTarget:type], @"Something in stock");
+  XCTAssertEqualObjects([schema annotation:@"Core.Description" forTarget:@"Default.Item/Name"], @"What it is called");
+  XCTAssertEqualObjects([schema annotation:@"Core.Description#fr" forTarget:@"Default.Item/Name"], @"Son nom");
+  XCTAssertEqualObjects([schema annotation:@"Org.Example.V1.Searchable" forTarget:@"Default.Item/Name"], @YES, @"any term at all");
+  XCTAssertEqualObjects([schema annotation:@"Validation.Pattern" forTarget:@"Default.Item/Name"], @"^(?:[A-Z].*)$");
+  XCTAssertTrue([metadata.text rangeOfString:@"<Property Name=\"Name\" Type=\"Edm.String\" MaxLength=\"50\">"].location != NSNotFound, @"%@", metadata.text);
+  XCTAssertEqualObjects([schema annotation:@"Validation.Minimum" forTarget:@"Default.Item/Price"], [NSDecimalNumber zero]);
+  XCTAssertEqualObjects([schema annotation:@"Validation.Maximum" forTarget:@"Default.Item/Price"], [NSDecimalNumber decimalNumberWithString:@"1000"]);
+  XCTAssertTrue([metadata.text rangeOfString:@"Org.OData.Validation.V1.Exclusive"].location != NSNotFound, @"below 1000, not up to it");
+  XCTAssertEqualObjects([schema annotation:@"Validation.AllowedValues" forTarget:@"Default.Item/Colour"], (@[ @{ @"Value": @"red" }, @{ @"Value": @"blue" } ]));
+  XCTAssertEqualObjects([schema annotation:@"Core.Immutable" forTarget:@"Default.Item/Code"], @YES);
+  XCTAssertEqualObjects([schema annotation:@"Core.Computed" forTarget:@"Default.Item/Stamp"], @YES);
+  XCTAssertEqualObjects([schema annotation:@"Core.Permissions" forTarget:@"Default.Item/Note"], @"Read");
+  XCTAssertEqualObjects([schema annotation:@"Validation.MaxItems" forTarget:@"Default.Item/Tags"], @5);
+  XCTAssertEqualObjects([schema annotation:@"Core.Description" forTarget:@"Default.Container"], @"The stock");
+  XCTAssertEqualObjects([schema annotation:@"Core.LongDescription#en" forTarget:@"Default.Container"], @"Everything in stock, by item");
+  NSArray *authorizations = [schema annotation:@"Authorization.Authorizations" forTarget:@"Default.Container"];
+  XCTAssertEqualObjects([authorizations.firstObject objectForKey:@"@type"], @"Org.OData.Authorization.V1.OpenIDConnect");
+  XCTAssertEqualObjects([authorizations.firstObject objectForKey:@"IssuerUrl"], @"https://id.example.test/realms/ois");
+  NSArray *schemes = [schema annotation:@"Authorization.SecuritySchemes" forTarget:@"Default.Container"];
+  XCTAssertEqualObjects(schemes, (@[ @{ @"Authorization": @"OpenIDConnect", @"RequiredScopes": @[ @"odata.read" ] } ]));
+  for (NSString *vocabulary in @[ @"Core", @"Validation", @"Authorization" ]) {
+    NSString *include = [NSString stringWithFormat:@"<edmx:Include Namespace=\"Org.OData.%@.V1\" Alias=\"%@\"/>", vocabulary, vocabulary];
+    XCTAssertTrue([metadata.text rangeOfString:include].location != NSNotFound, @"references %@", vocabulary);
+  }
+  XCTAssertEqualObjects(_service.metadataProblems, @[]);
+}
+
+- (void)testComputedAndImmutablePropertiesAreTheServices
+{
+  [self serveItems];
+  OISServiceResponse *created = [self send:@"POST" path:@"Items" headers:nil body:@{ @"Id": @2, @"Name": @"Bolt", @"Code": @"B-2", @"Stamp": @"mine", @"Note": @"mine" }];
+  XCTAssertEqual(created.status, 201, @"%@", created.text);
+  XCTAssertEqualObjects(created.json[@"Stamp"], [NSNull null], @"a computed property is the service's to set");
+  XCTAssertEqualObjects(created.json[@"Note"], [NSNull null], @"as is a read-only one");
+  XCTAssertEqualObjects(created.json[@"Code"], @"B-2", @"an immutable one is set when the entity is made");
+
+  XCTAssertEqual(([self send:@"PATCH" path:@"Items(1)" headers:nil body:@{ @"Code": @"A-2" }].status), 400, @"and not after");
+  XCTAssertEqual(([self send:@"PATCH" path:@"Items(1)" headers:nil body:@{ @"Code": @"A-1", @"Stamp": @"changed" }].status), 204, @"the same value is no change");
+  XCTAssertEqualObjects([self get:@"Items(1)/Stamp"].json[@"value"], @"made");
+  XCTAssertEqual(([self send:@"PUT" path:@"Items(1)" headers:nil body:@{ @"Name": @"Anvil" }].status), 204);
+  XCTAssertEqualObjects([self get:@"Items(1)/Code"].json[@"value"], @"A-1", @"PUT does not reset what cannot be written");
+  XCTAssertEqualObjects([self get:@"Items(1)/Note"].json[@"value"], @"heavy");
+
+  OISServiceResponse *invalid = [self send:@"PATCH" path:@"Items(1)" headers:nil body:@{ @"Price": @-1, @"Name": @"lowercase" }];
+  XCTAssertEqual(invalid.status, 400, @"%@", invalid.text);
+  XCTAssertEqualObjects([[invalid.json[@"error"][@"details"] valueForKey:@"target"] sortedArrayUsingSelector:@selector(compare:)], (@[ @"Name", @"Price" ]),
+                        @"Core Data's validation, each property named");
+}
+
+- (NSURLRequest *)request:(NSString *)method in:(OISRecordingTransport *)transport since:(NSUInteger)index
+{
+  NSArray *requests = transport.requests;
+  for (NSUInteger i = index; i < requests.count; i++) {
+    if ([[requests[i] HTTPMethod] isEqualToString:method]) return requests[i];
+  }
+  return nil;
+}
+
+- (void)testClientsModelFromTheServicesVocabularies
+{
+  // The service writes Core and Validation from its model; a client
+  // builds its model from that $metadata, validates as the service does,
+  // and leaves out what the service sets.
+  [self serveItems];
+  ODataSchema *schema = [ODataSchema schemaWithData:[self get:@"$metadata"].data error:NULL];
+  NSManagedObjectModel *model = [ODataModelBuilder modelWithSchema:schema];
+  [ODataIncrementalStore registerStore];
+  OISRecordingTransport *transport = [[OISRecordingTransport alloc] init];
+  transport.next = _service;
+  NSPersistentStoreCoordinator *client = [[NSPersistentStoreCoordinator alloc] initWithManagedObjectModel:model];
+  NSError *error = nil;
+  XCTAssertNotNil([client addPersistentStoreWithType:[ODataIncrementalStore storeType] configuration:nil
+                                                 URL:[NSURL URLWithString:@"http://example.test/odata/"]
+                                             options:@{ ODataIncrementalStoreTransportOption: transport } error:&error], @"%@", error);
+  NSManagedObjectContext *context = [[NSManagedObjectContext alloc] init];
+  context.persistentStoreCoordinator = client;
+
+  NSManagedObject *bad = [NSEntityDescription insertNewObjectForEntityForName:@"Item" inManagedObjectContext:context];
+  [bad setValue:@3 forKey:@"id"];
+  [bad setValue:@"lowercase" forKey:@"name"];
+  [bad setValue:[NSDecimalNumber decimalNumberWithString:@"1000"] forKey:@"price"];
+  NSUInteger asked = transport.requests.count;
+  XCTAssertFalse([context save:&error], @"Pattern, and Maximum 1000 exclusive");
+  XCTAssertEqual(transport.requests.count, asked, @"refused before the service is asked");
+  [context deleteObject:bad];
+
+  NSManagedObject *odd = [NSEntityDescription insertNewObjectForEntityForName:@"Item" inManagedObjectContext:context];
+  [odd setValue:@4 forKey:@"id"];
+  [odd setValue:@"Awl" forKey:@"name"];
+  [odd setValue:[NSDecimalNumber decimalNumberWithString:@"1.3"] forKey:@"price"];
+  asked = transport.requests.count;
+  error = nil;
+  XCTAssertFalse([context save:&error], @"Validation.MultipleOf 0.25");
+  XCTAssertEqualObjects(error.userInfo[NSValidationKeyErrorKey], @"price", @"%@", error);
+  XCTAssertEqual(transport.requests.count, asked, @"refused before the service is asked");
+  [odd setValue:nil forKey:@"name"];
+  [odd setValue:[NSDecimalNumber decimalNumberWithString:@"1.5"] forKey:@"price"];
+  error = nil;
+  XCTAssertFalse([context save:&error], @"the entity's constraint");
+  XCTAssertEqualObjects(error.localizedDescription, @"A priced item needs a name", @"%@", error);
+  XCTAssertEqual(transport.requests.count, asked);
+  [context deleteObject:odd];
+
+  NSManagedObject *item = [NSEntityDescription insertNewObjectForEntityForName:@"Item" inManagedObjectContext:context];
+  [item setValue:@3 forKey:@"id"];
+  [item setValue:@"Chisel" forKey:@"name"];
+  [item setValue:@"C-3" forKey:@"code"];
+  [item setValue:@"mine" forKey:@"stamp"];
+  NSUInteger before = transport.requests.count;
+  XCTAssertTrue([context save:&error], @"%@", error);
+  NSURLRequest *post = [self request:@"POST" in:transport since:before];
+  NSDictionary *body = [NSJSONSerialization JSONObjectWithData:post.HTTPBody ?: [NSData data] options:0 error:NULL];
+  XCTAssertNotNil(post, @"%@", [transport.requests valueForKey:@"HTTPMethod"]);
+  XCTAssertEqualObjects(body[@"Code"], @"C-3", @"an immutable property is sent when the entity is made");
+  XCTAssertNil(body[@"Stamp"], @"a computed one never");
+
+  [item setValue:@"C-4" forKey:@"code"];
+  [item setValue:@"Chisels" forKey:@"name"];
+  before = transport.requests.count;
+  XCTAssertTrue([context save:&error], @"%@", error);
+  NSURLRequest *patch = [self request:@"PATCH" in:transport since:before];
+  NSDictionary *changes = [NSJSONSerialization JSONObjectWithData:patch.HTTPBody ?: [NSData data] options:0 error:NULL];
+  XCTAssertNotNil(patch, @"%@", [transport.requests valueForKey:@"HTTPMethod"]);
+  XCTAssertEqualObjects(changes.allKeys, @[ @"Name" ], @"nor an immutable one after");
+}
+
+#pragma mark Messages
+
+- (void)testMessagesAlongsideTheAnswer
+{
+  [_service setHandler:[[OISChattyProducts alloc] initWithEntity:OISCatalogEntity(@"Product")] forEntitySet:@"Products"];
+  NSArray *messages = [self get:@"Products"].json[ODataMessagesAnnotation];
+  XCTAssertEqualObjects([messages valueForKey:@"code"], @[ @"Listed" ]);
+  XCTAssertEqualObjects([messages.firstObject objectForKey:@"severity"], @"info");
+  XCTAssertEqualObjects([[ODataMessage messagesInJSON:[self get:@"Products"].json].firstObject message], @"Products no longer sold are listed too");
+
+  NSDictionary *included = @{ @"\"*\"": @YES, @"\"-*\"": @NO, @"\"Core.Messages\"": @YES, @"\"-Core.*\"": @NO,
+                              @"\"*,-Org.OData.Core.V1.Messages\"": @NO, @"\"-*,Core.*\"": @YES, @"\"Measures.*\"": @NO };
+  for (NSString *preference in included) {
+    NSDictionary *prefer = @{ @"Prefer": [@"odata.include-annotations=" stringByAppendingString:preference] };
+    OISServiceResponse *response = [self send:@"GET" path:@"Products" headers:prefer body:nil];
+    XCTAssertEqual(response.json[ODataMessagesAnnotation] != nil, [included[preference] boolValue], @"%@", preference);
+  }
+
+  OISServiceResponse *created = [self send:@"POST" path:@"Products" headers:nil body:@{ @"ProductName": @"Mate", @"UnitPrice": @3.333 }];
+  XCTAssertEqual(created.status, 201);
+  NSDictionary *warning = [created.json[ODataMessagesAnnotation] firstObject];
+  XCTAssertEqualObjects(warning[@"target"], @"UnitPrice");
+  XCTAssertEqualObjects(warning[@"severity"], @"warning");
+  OISServiceResponse *minimal = [self send:@"POST" path:@"Products" headers:@{ @"Prefer": @"return=minimal" } body:@{ @"ProductName": @"Mate" }];
+  XCTAssertEqual(minimal.status, 204, @"no body to carry them");
+}
+
+- (void)testClientsHearTheMessages
+{
+  [_service setHandler:[[OISChattyProducts alloc] initWithEntity:OISCatalogEntity(@"Product")] forEntitySet:@"Products"];
+  [ODataIncrementalStore registerStore];
+  NSPersistentStoreCoordinator *client = [[NSPersistentStoreCoordinator alloc] initWithManagedObjectModel:OISCatalogModel()];
+  NSError *error = nil;
+  NSPersistentStore *store = [client addPersistentStoreWithType:[ODataIncrementalStore storeType] configuration:nil
+                                                            URL:[NSURL URLWithString:@"http://example.test/odata/"]
+                                                        options:@{ ODataIncrementalStoreTransportOption: _service } error:&error];
+  XCTAssertNotNil(store, @"%@", error);
+  NSManagedObjectContext *context = [[NSManagedObjectContext alloc] init];
+  context.persistentStoreCoordinator = client;
+  NSMutableArray<NSNotification *> *heard = [NSMutableArray array];
+  id observer = [[NSNotificationCenter defaultCenter] addObserverForName:ODataIncrementalStoreDidReceiveMessagesNotification object:store
+                                                                   queue:nil usingBlock:^(NSNotification *note) {
+    [heard addObject:note];
+  }];
+
+  NSFetchRequest *fetch = [NSFetchRequest fetchRequestWithEntityName:@"Product"];
+  XCTAssertNotNil([context executeFetchRequest:fetch error:&error], @"%@", error);
+  XCTAssertEqual(heard.count, 1u);
+  ODataMessage *listed = [heard.firstObject.userInfo[ODataMessagesKey] firstObject];
+  XCTAssertEqualObjects(listed.code, @"Listed");
+  XCTAssertNil(heard.firstObject.userInfo[ODataMessagesObjectIDKey], @"of the collection");
+  XCTAssertTrue([[heard.firstObject.userInfo[ODataMessagesURLKey] path] hasSuffix:@"/Products"]);
+
+  NSManagedObject *mate = [NSEntityDescription insertNewObjectForEntityForName:@"Product" inManagedObjectContext:context];
+  [mate setValue:@"Mate" forKey:@"name"];
+  [heard removeAllObjects];
+  XCTAssertTrue([context save:&error], @"%@", error);
+  XCTAssertEqual(heard.count, 1u);
+  ODataMessage *rounded = [heard.firstObject.userInfo[ODataMessagesKey] firstObject];
+  XCTAssertEqualObjects(rounded.code, @"Rounded");
+  XCTAssertEqualObjects(rounded.target, @"UnitPrice");
+  XCTAssertEqualObjects(heard.firstObject.userInfo[ODataMessagesObjectIDKey], mate.objectID, @"about the product it made");
+  [[NSNotificationCenter defaultCenter] removeObserver:observer];
+}
+
+#pragma mark Beyond Core Data's validation
+
+- (void)testMultipleOfAndConstraints
+{
+  [self serveItems];
+  ODataSchema *schema = [ODataSchema schemaWithData:[self get:@"$metadata"].data error:NULL];
+  XCTAssertEqualObjects([schema annotation:@"Validation.MultipleOf" forTarget:@"Default.Item/Price"], [NSDecimalNumber decimalNumberWithString:@"0.25"]);
+  NSDictionary *constraint = [schema annotation:@"Validation.Constraint" forTarget:@"Default.Item"];
+  XCTAssertEqualObjects(constraint[@"FailureMessage"], @"A priced item needs a name");
+  XCTAssertNotNil(constraint[@"Condition"][@"$Or"]);
+
+  OISServiceResponse *step = [self send:@"PATCH" path:@"Items(1)" headers:nil body:@{ @"Price": @1.3 }];
+  XCTAssertEqual(step.status, 400);
+  XCTAssertEqualObjects(step.json[@"error"][@"target"], @"Price", @"%@", step.text);
+  XCTAssertEqual(([self send:@"PATCH" path:@"Items(1)" headers:nil body:@{ @"Price": @1.25 }].status), 204);
+
+  OISServiceResponse *nameless = [self send:@"POST" path:@"Items" headers:nil body:@{ @"Id": @5, @"Price": @5 }];
+  XCTAssertEqual(nameless.status, 400);
+  XCTAssertEqualObjects(nameless.json[@"error"][@"message"], @"A priced item needs a name");
+  XCTAssertEqual(([self send:@"POST" path:@"Items" headers:nil body:@{ @"Id": @5 }].status), 201, @"no price, no name needed");
+
+  OISServiceResponse *code = [self send:@"POST" path:@"Items" headers:nil body:@{ @"Id": @6, @"Name": @"Rasp", @"Code": @"r-6" }];
+  XCTAssertEqual(code.status, 400);
+  XCTAssertEqualObjects(code.json[@"error"][@"message"], @"A code starts with a letter");
+  XCTAssertEqualObjects(code.json[@"error"][@"target"], @"Code");
+  XCTAssertEqual([self get:@"Items/$count"].text.integerValue, 2, @"neither was made");
+}
+
+#pragma mark Signing in as the service says
+
+- (NSManagedObjectContext *)clientOver:(id<ODataTransport>)transport options:(NSDictionary *)options error:(NSError **)error
+{
+  [ODataIncrementalStore registerStore];
+  NSPersistentStoreCoordinator *client = [[NSPersistentStoreCoordinator alloc] initWithManagedObjectModel:OISCatalogModel()];
+  NSMutableDictionary *all = [NSMutableDictionary dictionaryWithDictionary:options ?: @{}];
+  all[ODataIncrementalStoreTransportOption] = transport;
+  if (![client addPersistentStoreWithType:[ODataIncrementalStore storeType] configuration:nil
+                                      URL:[NSURL URLWithString:@"http://example.test/odata/"] options:all error:error]) return nil;
+  NSManagedObjectContext *context = [[NSManagedObjectContext alloc] init];
+  context.persistentStoreCoordinator = client;
+  return context;
+}
+
+- (void)testClientsSignInAsTheServiceSays
+{
+  NSDictionary *fixtures = [NSJSONSerialization JSONObjectWithData:[OISJWTFixturesJSON dataUsingEncoding:NSUTF8StringEncoding] options:0 error:NULL];
+  ODataJWTAuthenticator *jwt = [[ODataJWTAuthenticator alloc] initWithIssuer:fixtures[@"issuer"] audience:fixtures[@"audience"]];
+  jwt.keySet = fixtures[@"keys"];
+  jwt.requiredScopes = [NSSet setWithObject:@"odata.read"];
+  _service.authenticator = jwt;
+  _service.allowsAnonymousMetadata = YES;
+  XCTAssertEqual([self get:@"$metadata"].status, 200, @"$metadata to anyone");
+  XCTAssertEqual([self get:@"Products"].status, 401, @"the rest not");
+
+  // OpenID Connect: a token from the provider, refreshed once refused.
+  OISTokenProvider *provider = [[OISTokenProvider alloc] init];
+  provider.token = fixtures[@"tokens"][@"expired"];
+  provider.freshToken = fixtures[@"tokens"][@"rs256"];
+  NSError *error = nil;
+  NSManagedObjectContext *context = [self clientOver:_service options:@{ ODataIncrementalStoreCredentialProviderOption: provider } error:&error];
+  XCTAssertNotNil(context, @"%@", error);
+  NSArray *rows = [context executeFetchRequest:[NSFetchRequest fetchRequestWithEntityName:@"Product"] error:&error];
+  XCTAssertEqual(rows.count, 5u, @"%@", error);
+  NSMutableArray *refreshes = [NSMutableArray array];
+  for (NSArray *call in provider.asked) [refreshes addObject:call.lastObject];
+  XCTAssertEqualObjects(refreshes, (@[ @NO, @YES ]), @"asked, then asked again after a 401");
+  ODataSchemaAuthorization *asked = [provider.asked.firstObject firstObject];
+  XCTAssertEqualObjects(asked.kind, @"OpenIDConnect");
+  XCTAssertEqualObjects(asked.issuerURL.absoluteString, fixtures[@"issuer"]);
+  XCTAssertEqualObjects(asked.requiredScopes, @[ @"odata.read" ]);
+
+  // Nothing to sign in with: the error says what would do.
+  context = [self clientOver:_service options:nil error:&error];
+  error = nil;
+  XCTAssertNil([context executeFetchRequest:[NSFetchRequest fetchRequestWithEntityName:@"Product"] error:&error]);
+  XCTAssertEqual([error.userInfo[ODataErrorHTTPStatusKey] integerValue], 401);
+  NSString *suggestion = error.userInfo[NSLocalizedRecoverySuggestionErrorKey];
+  XCTAssertTrue([suggestion rangeOfString:@"OpenIDConnect"].location != NSNotFound && [suggestion rangeOfString:fixtures[@"issuer"]].location != NSNotFound,
+                @"%@", suggestion);
+
+  // An API key, where the service wants it.
+  _service.authenticator = [[OISKeyAuthenticator alloc] init];
+  OISRecordingTransport *transport = [[OISRecordingTransport alloc] init];
+  transport.next = _service;
+  context = [self clientOver:transport options:@{ ODataIncrementalStoreAPIKeyOption: @"sesame" } error:&error];
+  XCTAssertNotNil(context, @"%@", error);
+  rows = [context executeFetchRequest:[NSFetchRequest fetchRequestWithEntityName:@"Category"] error:&error];
+  XCTAssertEqual(rows.count, 2u, @"%@", error);
+  NSURLRequest *signed_ = transport.requests.lastObject;
+  XCTAssertEqualObjects([signed_ valueForHTTPHeaderField:@"X-API-Key"], @"sesame");
+  XCTAssertNil([signed_ valueForHTTPHeaderField:@"Authorization"]);
+}
+
+#pragma mark Capabilities
+
+- (void)testCapabilitiesInMetadata
+{
+  ODataEntitySetHandler *products = [[ODataEntitySetHandler alloc] initWithEntity:OISCatalogEntity(@"Product")];
+  products.nonFilterableProperties = [NSSet setWithObject:@"QuantityPerUnit"];
+  products.nonSortableProperties = [NSSet setWithObjects:@"ProductName", @"UnitPrice", nil];
+  [_service setHandler:products forEntitySet:@"Products"];
+  ODataSchema *schema = [ODataSchema schemaWithData:[self get:@"$metadata"].data error:NULL];
+  XCTAssertEqualObjects([schema capability:@"Capabilities.ConformanceLevel" forEntitySet:@"Products"], @"Intermediate");
+  XCTAssertEqualObjects([schema capability:@"Capabilities.BatchSupported" forEntitySet:nil], @YES);
+  XCTAssertEqualObjects([[schema capability:@"Capabilities.BatchSupport" forEntitySet:nil] objectForKey:@"ContinueOnErrorSupported"], @YES);
+  XCTAssertTrue([[schema capability:@"Capabilities.FilterFunctions" forEntitySet:nil] containsObject:@"year"]);
+  XCTAssertEqualObjects([schema capability:@"Capabilities.SearchRestrictions" forEntitySet:@"Categories"], @{ @"Searchable": @NO });
+  XCTAssertEqualObjects([schema capability:@"Capabilities.FilterRestrictions" forEntitySet:@"Products"],
+                        @{ @"NonFilterableProperties": @[ @{ @"$PropertyPath": @"QuantityPerUnit" } ] });
+  NSArray *nonSortable = [schema capability:@"Capabilities.SortRestrictions" forEntitySet:@"Products"][@"NonSortableProperties"];
+  XCTAssertEqual(nonSortable.count, 2u);
+  XCTAssertNil([schema capability:@"Capabilities.FilterRestrictions" forEntitySet:@"Categories"]);
+
+  XCTAssertEqual([self get:@"Products?$filter=QuantityPerUnit eq 'x'"].status, 400, @"as it says");
+  XCTAssertEqual([self get:@"Products?$orderby=ProductName"].status, 400);
+  XCTAssertEqual([self get:@"Products?$filter=UnitPrice gt 10&$orderby=ProductID"].status, 200);
+  XCTAssertEqual([self get:@"Categories(1)/Products?$filter=QuantityPerUnit eq 'x'"].status, 400, @"however the products are reached");
+}
+
+- (void)testClientsHeedTheCapabilities
+{
+  // A service that says it does not do $top, $skip, $count, $expand or
+  // $batch, sorting by name or filtering by quantity, or deleting
+  // products: the client does not ask, and does it itself where it can.
+  ODataEntitySetHandler *products = [[ODataEntitySetHandler alloc] initWithEntity:OISCatalogEntity(@"Product")];
+  products.nonFilterableProperties = [NSSet setWithObject:@"QuantityPerUnit"];
+  products.nonSortableProperties = [NSSet setWithObject:@"ProductName"];
+  products.allowsDelete = NO;
+  [_service setHandler:products forEntitySet:@"Products"];
+  _service.containerAnnotations = @{ @"Capabilities.TopSupported": @NO, @"Capabilities.SkipSupported": @NO,
+                                     @"Capabilities.BatchSupported": @NO, @"Capabilities.CountRestrictions": @{ @"Countable": @NO },
+                                     @"Capabilities.ExpandRestrictions": @{ @"Expandable": @NO } };
+  [ODataIncrementalStore registerStore];
+  OISRecordingTransport *transport = [[OISRecordingTransport alloc] init];
+  transport.next = _service;
+  NSPersistentStoreCoordinator *client = [[NSPersistentStoreCoordinator alloc] initWithManagedObjectModel:OISCatalogModel()];
+  NSError *error = nil;
+  XCTAssertNotNil([client addPersistentStoreWithType:[ODataIncrementalStore storeType] configuration:nil
+                                                 URL:[NSURL URLWithString:@"http://example.test/odata/"]
+                                             options:@{ ODataIncrementalStoreTransportOption: transport } error:&error], @"%@", error);
+  NSManagedObjectContext *context = [[NSManagedObjectContext alloc] init];
+  context.persistentStoreCoordinator = client;
+
+  NSFetchRequest *fetch = [NSFetchRequest fetchRequestWithEntityName:@"Product"];
+  fetch.sortDescriptors = @[ [NSSortDescriptor sortDescriptorWithKey:@"name" ascending:NO] ];
+  fetch.fetchOffset = 1;
+  fetch.fetchLimit = 2;
+  NSUInteger before = transport.requests.count;
+  NSArray *rows = [context executeFetchRequest:fetch error:&error];
+  XCTAssertEqualObjects([rows valueForKey:@"name"], (@[ @"Chef Anton's Cajun Seasoning", @"Chang" ]), @"%@", error);
+  NSString *query = [[transport.requests[before] URL] query] ?: @"";
+  for (NSString *option in @[ @"orderby", @"top", @"skip", @"expand" ]) {
+    XCTAssertTrue([query rangeOfString:option].location == NSNotFound, @"%@ in %@", option, query);
+  }
+
+  fetch = [NSFetchRequest fetchRequestWithEntityName:@"Product"];
+  fetch.predicate = [NSPredicate predicateWithFormat:@"discontinued == NO"];
+  before = transport.requests.count;
+  XCTAssertEqual([context countForFetchRequest:fetch error:&error], 4u, @"%@", error);
+  XCTAssertTrue([[[transport.requests[before] URL] path] rangeOfString:@"$count"].location == NSNotFound, @"counted here");
+
+  fetch.predicate = [NSPredicate predicateWithFormat:@"quantityPerUnit == 'x'"];
+  before = transport.requests.count;
+  XCTAssertNil([context executeFetchRequest:fetch error:&error]);
+  XCTAssertEqual(error.code, ODataIncrementalStoreErrorNotAllowedByService, @"%@", error);
+  XCTAssertEqual(transport.requests.count, before, @"not asked");
+
+  fetch = [NSFetchRequest fetchRequestWithEntityName:@"Product"];
+  fetch.predicate = [NSPredicate predicateWithFormat:@"id == 2"];
+  NSManagedObject *chang = [[context executeFetchRequest:fetch error:NULL] firstObject];
+  [context deleteObject:chang];
+  before = transport.requests.count;
+  error = nil;
+  XCTAssertFalse([context save:&error]);
+  XCTAssertEqual(error.code, ODataIncrementalStoreErrorNotAllowedByService, @"%@", error);
+  // Core Data reads the relationships its delete rules nullify; nothing
+  // is deleted.
+  NSArray *sent = [[transport.requests subarrayWithRange:NSMakeRange(before, transport.requests.count - before)] valueForKey:@"HTTPMethod"];
+  XCTAssertFalse([sent containsObject:@"DELETE"], @"%@", sent);
+  [context rollback];
+
+  for (NSNumber *identifier in @[ @70, @71 ]) {
+    NSManagedObject *product = [NSEntityDescription insertNewObjectForEntityForName:@"Product" inManagedObjectContext:context];
+    [product setValue:identifier forKey:@"id"];
+    [product setValue:@"Tea" forKey:@"name"];
+  }
+  before = transport.requests.count;
+  XCTAssertTrue([context save:&error], @"%@", error);
+  NSArray *methods = [[transport.requests subarrayWithRange:NSMakeRange(before, transport.requests.count - before)] valueForKey:@"HTTPMethod"];
+  XCTAssertEqual([methods indexesOfObjectsPassingTest:^BOOL(id m, NSUInteger i, BOOL *stop) { return [m isEqual:@"POST"]; }].count, 2u,
+                 @"two POSTs, no $batch: %@", methods);
+  for (NSURLRequest *request in [transport.requests subarrayWithRange:NSMakeRange(before, transport.requests.count - before)]) {
+    XCTAssertTrue([request.URL.path rangeOfString:@"$batch"].location == NSNotFound);
+  }
+}
+
 #pragma mark Deep updates
 
 - (NSArray *)productIDsOf:(NSString *)path
@@ -1965,17 +2511,21 @@ static NSAttributeDescription *OISSwatchAttribute(NSString *name, NSAttributeTyp
 
 - (void)testRestrictionsInMetadata
 {
-  XCTAssertTrue([[self get:@"$metadata"].text rangeOfString:@"Restrictions"].location == NSNotFound, @"everything allowed");
+  NSString *allowed = [self get:@"$metadata"].text;
+  for (NSString *restriction in @[ @"InsertRestrictions", @"UpdateRestrictions", @"DeleteRestrictions" ]) {
+    XCTAssertTrue([allowed rangeOfString:restriction].location == NSNotFound, @"everything allowed");
+  }
   ODataEntitySetHandler *locations = [[ODataEntitySetHandler alloc] initWithEntity:OISCatalogEntity(@"Location")];
   [_service setHandler:locations forEntitySet:@"Locations"];
   locations.allowsInsert = NO;
   locations.allowsDelete = NO;
   NSString *xml = [self get:@"$metadata"].text;
   XCTAssertTrue([xml rangeOfString:@"<EntitySet Name=\"Locations\" EntityType=\"Default.Location\">"].location != NSNotFound);
-  XCTAssertTrue([xml rangeOfString:@"Org.OData.Capabilities.V1.InsertRestrictions\"><Record><PropertyValue Property=\"Insertable\" Bool=\"false\"/>"].location != NSNotFound, @"%@", xml);
-  XCTAssertTrue([xml rangeOfString:@"Org.OData.Capabilities.V1.DeleteRestrictions"].location != NSNotFound);
-  XCTAssertTrue([xml rangeOfString:@"UpdateRestrictions"].location == NSNotFound);
-  XCTAssertNotNil([ODataSchema schemaWithData:[xml dataUsingEncoding:NSUTF8StringEncoding] error:NULL], @"still reads");
+  ODataSchema *schema = [ODataSchema schemaWithData:[xml dataUsingEncoding:NSUTF8StringEncoding] error:NULL];
+  XCTAssertNotNil(schema, @"still reads");
+  XCTAssertEqualObjects([schema annotation:@"Capabilities.InsertRestrictions" forTarget:@"Default.Container/Locations"], @{ @"Insertable": @NO }, @"%@", xml);
+  XCTAssertEqualObjects([schema annotation:@"Capabilities.DeleteRestrictions" forTarget:@"Default.Container/Locations"], @{ @"Deletable": @NO });
+  XCTAssertNil([schema annotation:@"Capabilities.UpdateRestrictions" forTarget:@"Default.Container/Locations"]);
   XCTAssertEqual(([self send:@"POST" path:@"Locations" headers:nil body:@{ @"LocationName": @"Shed" }].status), 405);
 }
 

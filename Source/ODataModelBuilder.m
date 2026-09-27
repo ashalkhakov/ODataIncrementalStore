@@ -130,6 +130,101 @@ static NSString *OISAttributeTypeName(NSAttributeType type)
 
 #pragma mark - The model
 
+#pragma mark Vocabularies
+
+static NSComparisonPredicate *OISConstraint(NSString *keyPath, NSPredicateOperatorType type, id constant)
+{
+  NSExpression *left = keyPath ? [NSExpression expressionForKeyPath:keyPath] : [NSExpression expressionForEvaluatedObject];
+  return (NSComparisonPredicate *)[NSComparisonPredicate predicateWithLeftExpression:left
+                                                                     rightExpression:[NSExpression expressionForConstantValue:constant]
+                                                                            modifier:NSDirectPredicateModifier
+                                                                                type:type
+                                                                             options:0];
+}
+
+// A bound as the attribute holds it: a date from its text, a decimal as
+// an NSDecimalNumber.
+static id OISBound(id value, NSAttributeType type)
+{
+  if (type == NSDateAttributeType) return [value isKindOfClass:[NSString class]] ? ODataDateFromString(value) : nil;
+  if (![value isKindOfClass:[NSNumber class]]) return nil;
+  if (type == NSDecimalAttributeType && ![value isKindOfClass:[NSDecimalNumber class]]) {
+    return [NSDecimalNumber decimalNumberWithDecimal:[value decimalValue]];
+  }
+  return value;
+}
+
+// What a property's annotations say, in the model: Core's in userInfo,
+// Validation's as Core Data's own validation, so that an object that breaks
+// them fails at -save:, before the service is asked; and every annotation,
+// as JSON, under OData.annotations.
+static void OISApplyVocabularies(NSDictionary<NSString *, id> *annotations, ODataSchemaProperty *property,
+                                 NSAttributeDescription *attribute, NSMutableDictionary *info)
+{
+  if (!annotations.count && !property.maxLength) return;
+  NSString *core = @"Org.OData.Core.V1.", *validation = @"Org.OData.Validation.V1.";
+  id description = annotations[[core stringByAppendingString:@"Description"]];
+  if ([description isKindOfClass:[NSString class]]) info[ODataUserInfoDescription] = description;
+  id longDescription = annotations[[core stringByAppendingString:@"LongDescription"]];
+  if ([longDescription isKindOfClass:[NSString class]]) info[ODataUserInfoLongDescription] = longDescription;
+  if ([annotations[[core stringByAppendingString:@"Computed"]] isEqual:@YES]) info[ODataUserInfoComputed] = @"YES";
+  if ([annotations[[core stringByAppendingString:@"Immutable"]] isEqual:@YES]) info[ODataUserInfoImmutable] = @"YES";
+  id permissions = annotations[[core stringByAppendingString:@"Permissions"]];
+  if ([permissions isKindOfClass:[NSString class]]) info[ODataUserInfoPermissions] = permissions;
+  if (annotations.count) {
+    NSData *json = [NSJSONSerialization isValidJSONObject:annotations] ? [NSJSONSerialization dataWithJSONObject:annotations options:0 error:NULL] : nil;
+    if (json) info[ODataUserInfoAnnotations] = [[NSString alloc] initWithData:json encoding:NSUTF8StringEncoding];
+  }
+  if (!attribute) return;
+
+  NSMutableArray *predicates = [NSMutableArray array];
+  NSMutableArray *warnings = [NSMutableArray array];
+  NSAttributeType type = attribute.attributeType;
+  BOOL date = type == NSDateAttributeType;
+  NSString *minimumTerm = [validation stringByAppendingString:@"Minimum"];
+  NSString *maximumTerm = [validation stringByAppendingString:@"Maximum"];
+  NSString *exclusive = [@"@" stringByAppendingString:[validation stringByAppendingString:@"Exclusive"]];
+  id minimum = OISBound(annotations[minimumTerm], type);
+  if (minimum) {
+    BOOL open = [annotations[[minimumTerm stringByAppendingString:exclusive]] isEqual:@YES];
+    [predicates addObject:OISConstraint(nil, open ? NSGreaterThanPredicateOperatorType : NSGreaterThanOrEqualToPredicateOperatorType, minimum)];
+    [warnings addObject:@(date ? NSValidationDateTooSoonError : NSValidationNumberTooSmallError)];
+  }
+  id maximum = OISBound(annotations[maximumTerm], type);
+  if (maximum) {
+    BOOL open = [annotations[[maximumTerm stringByAppendingString:exclusive]] isEqual:@YES];
+    [predicates addObject:OISConstraint(nil, open ? NSLessThanPredicateOperatorType : NSLessThanOrEqualToPredicateOperatorType, maximum)];
+    [warnings addObject:@(date ? NSValidationDateTooLateError : NSValidationNumberTooLargeError)];
+  }
+  if (type == NSStringAttributeType) {
+    id pattern = annotations[[validation stringByAppendingString:@"Pattern"]];
+    if ([pattern isKindOfClass:[NSString class]]) {
+      // ECMAScript's test: the pattern anywhere; MATCHES is of the whole.
+      [predicates addObject:OISConstraint(nil, NSMatchesPredicateOperatorType, [NSString stringWithFormat:@"(?s).*(?:%@).*", pattern])];
+      [warnings addObject:@(NSValidationStringPatternMatchingError)];
+    }
+    if (property.maxLength) {
+      [predicates addObject:OISConstraint(@"length", NSLessThanOrEqualToPredicateOperatorType, property.maxLength)];
+      [warnings addObject:@(NSValidationStringTooLongError)];
+    }
+  }
+  id allowed = annotations[[validation stringByAppendingString:@"AllowedValues"]];
+  if ([allowed isKindOfClass:[NSArray class]]) {
+    NSMutableArray *values = [NSMutableArray array];
+    for (id record in allowed) {
+      id value = [record isKindOfClass:[NSDictionary class]] ? record[@"Value"] : nil;
+      if (!value) continue;
+      id bound = type == NSStringAttributeType ? value : OISBound(value, type);
+      if (bound) [values addObject:bound];
+    }
+    if (values.count) {
+      [predicates addObject:OISConstraint(nil, NSInPredicateOperatorType, values)];
+      [warnings addObject:@(NSManagedObjectValidationError)];
+    }
+  }
+  if (predicates.count) [attribute setValidationPredicates:predicates withValidationWarnings:warnings];
+}
+
 @implementation ODataModelBuilder
 
 + (NSString *)versionIdentifierForSchema:(ODataSchema *)schema
@@ -212,6 +307,7 @@ static NSString *OISAttributeTypeName(NSAttributeType type)
       if ([schema.entitySets[set] isEqualToString:qualified]) [sets addObject:set];
     }
     if (sets.count == 1) info[ODataUserInfoEntitySet] = sets.firstObject;
+    OISApplyVocabularies([schema annotationsForTarget:qualified], nil, nil, info);
     entity.userInfo = info;
     entities[qualified] = entity;
   }
@@ -257,6 +353,7 @@ static NSString *OISAttributeTypeName(NSAttributeType type)
       NSMutableDictionary *info = [@{ ODataUserInfoProperty: wire } mutableCopy];
       if ([key containsObject:wire]) info[ODataUserInfoKey] = @"YES";
       if (marked) info[ODataUserInfoType] = marked;
+      OISApplyVocabularies([schema annotationsForTarget:[NSString stringWithFormat:@"%@/%@", qualified, wire]], property, attr, info);
       attr.userInfo = info;
       if (attributeType == NSTransformableAttributeType) {
         attr.valueTransformerName = @"NSSecureUnarchiveFromData";
@@ -278,7 +375,15 @@ static NSString *OISAttributeTypeName(NSAttributeType type)
       rel.maxCount = navigation.isCollection ? 0 : 1;
       rel.optional = YES;
       rel.deleteRule = NSNullifyDeleteRule;
-      rel.userInfo = @{ ODataUserInfoProperty: wire };
+      NSMutableDictionary *relInfo = [@{ ODataUserInfoProperty: wire } mutableCopy];
+      NSDictionary *relAnnotations = [schema annotationsForTarget:[NSString stringWithFormat:@"%@/%@", qualified, wire]];
+      OISApplyVocabularies(relAnnotations, nil, nil, relInfo);
+      if (navigation.isCollection) {
+        id least = relAnnotations[@"Org.OData.Validation.V1.MinItems"], most = relAnnotations[@"Org.OData.Validation.V1.MaxItems"];
+        if ([least isKindOfClass:[NSNumber class]]) rel.minCount = [least unsignedIntegerValue];
+        if ([most isKindOfClass:[NSNumber class]]) rel.maxCount = [most unsignedIntegerValue];
+      }
+      rel.userInfo = relInfo;
       relationships[[NSString stringWithFormat:@"%@/%@", qualified, wire]] = rel;
       [own addObject:rel];
     }

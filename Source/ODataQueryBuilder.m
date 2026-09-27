@@ -62,6 +62,25 @@ static NSString *OISPercentEncode(NSString *value)
   return url;
 }
 
+// Whether the service expands this navigation property of the entity's
+// set (Capabilities.ExpandRestrictions): an expansion only saves requests,
+// so one it refuses is left out.
+- (BOOL)expands:(NSString *)wire entity:(NSEntityDescription *)entity
+{
+  ODataSchema *schema = self.mapper.schema;
+  if (!schema) return YES;
+  NSEntityDescription *root = entity;
+  while (root.superentity) root = root.superentity;
+  id restrictions = [schema capability:@"Capabilities.ExpandRestrictions" forEntitySet:[self.mapper entitySetForEntity:root]];
+  if (![restrictions isKindOfClass:[NSDictionary class]]) return YES;
+  if ([restrictions[@"Expandable"] isEqual:@NO]) return NO;
+  for (id path in [restrictions[@"NonExpandableProperties"] isKindOfClass:[NSArray class]] ? restrictions[@"NonExpandableProperties"] : @[]) {
+    id name = [path isKindOfClass:[NSDictionary class]] ? path[@"$NavigationPropertyPath"] : path;
+    if ([name isEqual:wire]) return NO;
+  }
+  return YES;
+}
+
 // Nav($select=Key) for each to-one relationship not already expanded.
 // Core Data asks for every to-one relationship as soon as a fault fires,
 // and a row does not name its related entities; without this, firing N
@@ -75,7 +94,7 @@ static NSString *OISPercentEncode(NSString *value)
     NSRelationshipDescription *rel = entity.relationshipsByName[name];
     if (rel.isToMany || !rel.destinationEntity) continue;
     NSString *wire = [self.mapper propertyForRelationship:rel];
-    if ([expanded containsObject:wire]) continue;
+    if ([expanded containsObject:wire] || ![self expands:wire entity:entity]) continue;
     NSMutableArray *keys = [NSMutableArray array];
     for (NSAttributeDescription *key in [self.mapper keyAttributesForEntity:rel.destinationEntity]) {
       [keys addObject:[self.mapper propertyForAttribute:key]];
@@ -190,6 +209,7 @@ static NSString *OISPercentEncode(NSString *value)
     NSArray *parts = [path componentsSeparatedByString:@"."];
     NSRelationshipDescription *rel = entity.relationshipsByName[parts.firstObject];
     NSString *wire = rel ? [self.mapper propertyForRelationship:rel] : [self.mapper wireName:parts.firstObject];
+    if (![self expands:wire entity:entity]) continue;
     if (!children[wire]) {
       [order addObject:wire];
       children[wire] = [NSMutableArray array];

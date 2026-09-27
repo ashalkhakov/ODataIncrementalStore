@@ -140,6 +140,13 @@ FOUNDATION_EXPORT NSString * const ODataUserInfoETag;  // @"OData.etag"
 // Who is asking, as the service's authenticator found them; nil without
 // one, or for an anonymous request it allows (ODataAuthentication.h).
 @property (nonatomic, readonly, strong, nullable) ODataPrincipal *principal;
+// Something to tell the client alongside the answer (Core.Messages): a
+// price rounded, a property ignored. Written into the response's JSON
+// body, unless the client's Prefer: odata.include-annotations leaves
+// Core.Messages out; a response without a body (204) has none to carry
+// it. Severity: success, info, warning or error. From any thread.
+- (void)addMessage:(NSString *)message code:(NSString *)code severity:(NSString *)severity target:(nullable NSString *)target;
+@property (nonatomic, readonly, copy) NSArray<ODataMessage *> *messages;
 @end
 
 // What an entity set does. The default does everything over the request's
@@ -159,6 +166,11 @@ FOUNDATION_EXPORT NSString * const ODataUserInfoETag;  // @"OData.etag"
 @property (nonatomic) BOOL allowsInsert;
 @property (nonatomic) BOOL allowsUpdate;
 @property (nonatomic) BOOL allowsDelete;
+// Properties (wire names) of the set's entities that $filter, and
+// $orderby, may not use: answered 400, and said in $metadata
+// (Capabilities.FilterRestrictions, SortRestrictions). Empty by default.
+@property (nonatomic, copy) NSSet<NSString *> *nonFilterableProperties;
+@property (nonatomic, copy) NSSet<NSString *> *nonSortableProperties;
 
 // The rows the caller may see at all, however they are reached: fetched,
 // by key, through navigation or $expand. nil: every row.
@@ -222,6 +234,16 @@ FOUNDATION_EXPORT NSString * const ODataUserInfoETag;  // @"OData.etag"
 // authenticator (the default) every request is anonymous and answered.
 @property (nonatomic, strong, nullable) id<ODataAuthenticator> authenticator;
 @property (nonatomic) BOOL allowsAnonymousRequests;
+// The service document and $metadata to anyone, as a client needs them
+// to learn how to sign in (the Authorization vocabulary in $metadata).
+// Default: NO.
+@property (nonatomic) BOOL allowsAnonymousMetadata;
+// Annotations of the entity container in $metadata, by term
+// (Core.Description, Authorization.Authorizations, or qualified), valued
+// as JSON CSDL has them (ODataSchema.h). Set before the first request.
+// Entities and properties are annotated from the model (see
+// ODataMetadataWriter.h), how to sign in from the authenticator.
+@property (nonatomic, copy, nullable) NSDictionary<NSString *, id> *containerAnnotations;
 // The object whose methods are the service's unbound operations; see
 // ODataFunctions. Set it before the first request.
 @property (nonatomic, strong, nullable) id serviceOperations;

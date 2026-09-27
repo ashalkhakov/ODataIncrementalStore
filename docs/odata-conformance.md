@@ -383,25 +383,41 @@ constrain requests. Where Core Data has the concept already, the model
 is the source of truth and the annotation is derived from it. Anything
 else is kept in `userInfo`, as the other `OData.*` mappings are.
 
-Today the client reads exactly one term,
-`Capabilities.KeyAsSegmentSupported`, under any alias. Everything below
-is ❌ unless marked otherwise.
+✅ Annotations are read in general (`ODataSchema`): inline and in
+`<Annotations Target>`, under the document's aliases or a standard
+vocabulary's own name, with qualifiers, annotations of annotations
+(`Validation.Maximum@Validation.Exclusive`, as JSON CSDL keys them), and
+every expression (constants, paths, `Collection`, `Record`, `If`, `Apply`
+and the rest), as JSON CSDL values. A model built from `$metadata` carries
+every annotation of an entity or property in `userInfo`
+(`OData.annotations`), for the application. What is marked ✅ below is
+done on both sides; the rest is ❌ unless marked otherwise.
 
 **Wanted first: Core, Validation, Authorization.**
 
 - **Core** (44 terms). The ones that change behaviour:
-  - `Computed` and `Immutable`. The client should leave computed
-    properties out of POST and PATCH, and immutable ones out of PATCH. The
-    server should refuse writes to them.
-  - `Permissions` (`Read`, `ReadWrite`): a read-only attribute.
-  - `OptimisticConcurrency`: the properties an ETag is made of. This
+  - ✅ `Computed` and `Immutable`. The client leaves computed properties
+    out of POST and PATCH, and immutable ones out of PATCH. The server
+    writes `Computed` for derived attributes and the version, and either
+    from `userInfo` (`OData.computed`, `OData.immutable`); it ignores a
+    computed value in a body, and refuses to change an immutable one
+    (`400`).
+  - ✅ `Permissions` (`Read`, `ReadWrite`): a read-only attribute, which
+    both sides treat as computed (`OData.permissions`).
+  - ✅ `OptimisticConcurrency`: the properties an ETag is made of. This
     answers the server's ETag open question with a standard spelling.
-  - `Description` and `LongDescription`: documentation. They become
-    comments in generated classes, and the model's element descriptions
-    in `$metadata`.
-  - `Messages`, as an instance annotation: warnings and details alongside
-    a success or an error. The client surfaces them in the `NSError` or
-    the save result.
+  - ✅ `Description` and `LongDescription`: documentation, from
+    `OData.description` and `OData.longDescription`. They become comments
+    in generated classes.
+  - ✅ `Messages`, as an instance annotation: warnings and details
+    alongside a success. A handler or an operation adds them to the
+    request (`-[ODataRequest addMessage:code:severity:target:]`), and the
+    service writes them into the JSON body as
+    `@Org.OData.Core.V1.Messages`, as `Prefer: odata.include-annotations`
+    allows (a `204` has no body to carry them). The client reads them
+    (`ODataMessage`) and the store posts
+    `ODataIncrementalStoreDidReceiveMessagesNotification`, with the object
+    they are about when there is one (a POST's, a PATCH's, a row's own).
   - `MediaType`, `AcceptableMediaTypes`, `IsMediaType`, `IsURL`: for
     streams (section 8).
   - `Revisions`: deprecation. The client could warn when a request uses a
@@ -418,33 +434,62 @@ is ❌ unless marked otherwise.
   - `MinItems` and `MaxItems` are a to-many relationship's min and max
     counts.
 
-  The client adds them to models it builds from `$metadata`, so an
-  invalid object fails at `-save:` locally rather than as a `400`. The
-  server writes them from the model and gets enforcement for free:
-  `-save:` validates, and the failure becomes a `400` whose `details`
-  name each property.
+  ✅ The client adds them to models it builds from `$metadata`, so an
+  invalid object fails at `-save:` locally rather than as a `400`; the
+  facet `MaxLength` too, as `length <= n`. The server writes them from the
+  model's validation predicates, as Xcode and FreeCoreData's momc write a
+  minimum, a maximum, a length and a pattern (`SELF >= 1`, `SELF < 100` as
+  a `Maximum` with `Exclusive`, `length <= 50` as `MaxLength`, `SELF
+  MATCHES "..."`, `SELF IN {...}`), and a to-many relationship's counts as
+  `MinItems`/`MaxItems`; enforcement comes free: `-save:` validates, and
+  the failure becomes a `400` whose `details` name each property.
+  ✅ `MultipleOf` and `Constraint`, which Core Data cannot hold, are
+  checked before a save on both sides (`-[ODataPropertyMapper
+  vocabularyViolationOfObject:]`): a `Constraint`'s condition (`Eq`, `Ne`,
+  `Gt`, `Ge`, `Lt`, `Le`, `And`, `Or`, `Not`, `If`, `In`, paths, `Null`,
+  constants, `odata.matchesPattern`) as a predicate of the entity's
+  objects; a property's only while it has a value. The service answers
+  `400` with the constraint's `FailureMessage`; the client refuses the save
+  with a validation error before sending it. `DerivedTypeConstraint` is
+  not mapped.
 - **Authorization** (2 terms: `SecuritySchemes`, `Authorizations`, with
   API key, HTTP basic or bearer, OAuth 2 flows and OpenID Connect). This
   vocabulary describes authentication; it does not perform it.
-  - The server declares whatever its reverse proxy or its own hooks
-    enforce.
-  - The client could use it to tell the caller which credentials a
-    service expects, and to attach a bearer token or API key from a
-    credential source it is given.
+  - ✅ The server declares what its authenticator enforces:
+    `ODataJWTAuthenticator` an `OpenIDConnect` scheme with its issuer,
+    `ODataTokenIntrospectionAuthenticator` an `Http` bearer one, each with
+    `SecuritySchemes` naming the scopes a token needs; anything else
+    through the service's `containerAnnotations`.
+  - ✅ The client reads it (`schema.authorizations`, in `SecuritySchemes`
+    order, with their scopes) and signs requests the first way its
+    credentials can: a bearer token (the configuration's, or an
+    `ODataCredentialProviding` provider's, asked again for a fresh one
+    after a `401`), a user and password for `Http` basic, or an API key in
+    the header, query option or cookie `ApiKey` names. Refused still, the
+    error's recovery suggestion says what the service would take. A
+    service can let anyone read `$metadata` (`allowsAnonymousMetadata`) so
+    that a client learns how to sign in.
+
+- ✅ **Capabilities** (40 terms): what a service allows, per set.
+  - The server declares what it does (`ConformanceLevel` Intermediate,
+    `TopSupported`, `SkipSupported`, `BatchSupported` and `BatchSupport`,
+    `SelectSupport`, `KeyAsSegmentSupported`, `DeepInsertSupport`,
+    `DeepUpdateSupport`, `IndexableByKey`, `FilterFunctions`, and per set
+    `SearchRestrictions`), and what each set's handler allows:
+    `Insert/Update/DeleteRestrictions`, and `FilterRestrictions` and
+    `SortRestrictions` from its `nonFilterableProperties` and
+    `nonSortableProperties`, which it enforces (`400`).
+  - The client does not send what they rule out: without `$top` or
+    `$skip`, or sorting by a property, it sorts, skips and limits the rows
+    itself; without `$count`, it counts the keys; without `$expand`, or
+    `$select`, it leaves them out; without `$batch`, it saves one request
+    at a time. A filter the service will not take, or an insert, update
+    or delete it refuses, fails before it is sent, with
+    `ODataIncrementalStoreErrorNotAllowedByService`; `NonInsertable`
+    and `NonUpdatableProperties` are left out of bodies.
 
 **Later.**
 
-- **Capabilities** (40 terms): what a service allows, per set.
-  - Examples: `FilterRestrictions` (non-filterable properties, required
-    filters), `SortRestrictions`, `ExpandRestrictions`,
-    `CountRestrictions`, `TopSupported`/`SkipSupported`,
-    `Insert/Update/DeleteRestrictions`, `ChangeTracking`,
-    `BatchSupported`.
-  - The client could use them to evaluate in memory, or fail with a clear
-    error, instead of sending a query the service will answer with `400`
-    or `501`.
-  - The server derives them from what the application allows. An entity
-    set whose insert is switched off says so here.
 - **Measures** (`ISOCurrency`, `Unit`, `Scale`), **Temporal**, **JSON**
   (`Schema`), **Repeatability** (`Repeatability-Request-ID` headers for
   retrying a POST safely, worth having once async requests exist).

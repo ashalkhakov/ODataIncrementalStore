@@ -651,6 +651,28 @@ before the split rather than after.
    the one the client already uses; FreeCoreData models can be copied
    since #43.
 
+## Vocabularies
+
+`$metadata` carries the Core, Validation, Capabilities and Authorization
+vocabularies, each referenced when it is used, from what the model and
+the service already say (see [odata-conformance.md](odata-conformance.md)
+section 9): Core's `Computed`, `Immutable`, `Permissions`, `Description`
+and `LongDescription` from `userInfo` and derived and version attributes,
+and `OptimisticConcurrency`; Validation's `Minimum`, `Maximum` (with
+`Exclusive`), `Pattern`, `AllowedValues`, `MinItems` and `MaxItems`, and
+the `MaxLength` facet, from the model's validation predicates and
+relationship counts; Capabilities' insert, update and delete
+restrictions from the handlers; Authorization's schemes from the
+authenticator. `OData.annotations` in `userInfo`, and the service's
+`containerAnnotations`, add any others (JSON CSDL values). The service
+ignores a value a body gives a computed property, and refuses to change
+an immutable one; Core Data's validation enforces the rest, and the
+service itself `Validation.MultipleOf` and `Constraint` before it saves.
+Capabilities say what it does (its conformance level, batches, deep
+inserts and updates, the functions `$filter` takes) and what each set's
+handler allows, including properties `$filter` and `$orderby` may not
+use. `Core.Messages` a handler adds go into the response's JSON body.
+
 ## Open questions
 
 - ~~ETags~~: both. A version attribute where `userInfo` names one (and

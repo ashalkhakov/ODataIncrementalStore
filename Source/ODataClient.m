@@ -24,6 +24,67 @@
 #define OIS_HAVE_NSURLSESSION 0
 #endif
 
+NSString * const ODataMessagesAnnotation = @"@Org.OData.Core.V1.Messages";
+
+@implementation ODataMessage
+
++ (instancetype)messageWithCode:(NSString *)code text:(NSString *)text severity:(NSString *)severity target:(NSString *)target
+{
+  ODataMessage *message = [[self alloc] init];
+  message.code = code ?: @"";
+  message.message = text ?: @"";
+  message.severity = severity ?: @"info";
+  message.target = target;
+  message.details = @[];
+  return message;
+}
+
+static ODataMessage *OISMessageFromJSON(id json)
+{
+  if (![json isKindOfClass:[NSDictionary class]]) return nil;
+  id code = json[@"code"], text = json[@"message"], severity = json[@"severity"], target = json[@"target"];
+  ODataMessage *message = [ODataMessage messageWithCode:[code isKindOfClass:[NSString class]] ? code : [code description]
+                                                   text:[text isKindOfClass:[NSString class]] ? text : @""
+                                               severity:[severity isKindOfClass:[NSString class]] ? severity : @"info"
+                                                 target:[target isKindOfClass:[NSString class]] ? target : nil];
+  NSMutableArray *details = [NSMutableArray array];
+  for (id detail in [json[@"details"] isKindOfClass:[NSArray class]] ? json[@"details"] : @[]) {
+    ODataMessage *inner = OISMessageFromJSON(detail);
+    if (inner) [details addObject:inner];
+  }
+  message.details = details;
+  return message;
+}
+
++ (NSArray *)messagesInJSON:(id)json
+{
+  if (![json isKindOfClass:[NSDictionary class]]) return nil;
+  id list = json[ODataMessagesAnnotation] ?: json[@"@Core.Messages"];
+  if (![list isKindOfClass:[NSArray class]]) return nil;
+  NSMutableArray *messages = [NSMutableArray array];
+  for (id item in list) {
+    ODataMessage *message = OISMessageFromJSON(item);
+    if (message) [messages addObject:message];
+  }
+  return messages.count ? messages : nil;
+}
+
+- (NSDictionary *)JSONObject
+{
+  NSMutableDictionary *json = [@{ @"code": self.code ?: @"", @"message": self.message ?: @"", @"severity": self.severity ?: @"info" } mutableCopy];
+  if (self.target) json[@"target"] = self.target;
+  if (self.details.count) json[@"details"] = [self.details valueForKey:@"JSONObject"];
+  return json;
+}
+
+- (NSString *)description
+{
+  return [NSString stringWithFormat:@"<ODataMessage %@ %@: %@%@>", self.severity, self.code, self.message,
+          self.target ? [@" at " stringByAppendingString:self.target] : @""];
+}
+
+@end
+
 @implementation ODataHTTPResponse
 - (NSString *)etag
 {
@@ -324,9 +385,30 @@ id<ODataTransport> ODataDefaultTransport(void)
 
 - (ODataHTTPResponse *)sendRequest:(NSURLRequest *)request error:(NSError **)error
 {
-  return [self waitFor:^ODataExchange *(OISWaiter *waiter) {
+  NSError *failure = nil;
+  ODataHTTPResponse *response = [self waitFor:^ODataExchange *(OISWaiter *waiter) {
     return [self sendRequest:request target:waiter action:@selector(exchangeDidFinish:)];
-  } error:error].response;
+  } error:&failure].response;
+  BOOL refused = !response && [failure.userInfo[ODataErrorHTTPStatusKey] integerValue] == 401;
+  // Refused: once more, with a fresh token from the provider.
+  if (refused && [self.configuration refreshCredentials]) {
+    NSMutableURLRequest *again = [request mutableCopy];
+    [again setValue:nil forHTTPHeaderField:@"Authorization"];
+    failure = nil;
+    response = [self waitFor:^ODataExchange *(OISWaiter *waiter) {
+      return [self sendRequest:again target:waiter action:@selector(exchangeDidFinish:)];
+    } error:&failure].response;
+    refused = !response && [failure.userInfo[ODataErrorHTTPStatusKey] integerValue] == 401;
+  }
+  // Refused still: what the service would take, as $metadata says.
+  NSString *expected = refused ? self.configuration.expectedCredentials : nil;
+  if (expected) {
+    NSMutableDictionary *info = [failure.userInfo mutableCopy];
+    info[NSLocalizedRecoverySuggestionErrorKey] = expected;
+    failure = [NSError errorWithDomain:failure.domain code:failure.code userInfo:info];
+  }
+  if (!response && error) *error = failure;
+  return response;
 }
 
 - (id)JSONAtURL:(NSURL *)url error:(NSError **)error

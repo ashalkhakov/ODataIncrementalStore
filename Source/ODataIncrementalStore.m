@@ -30,6 +30,7 @@
 // list of these, sent as one $batch change set or one at a time.
 @interface OISOperation : NSObject
 @property (nonatomic, strong) NSURLRequest *request;
+@property (nonatomic, strong) NSManagedObjectID *objectID;  // what it writes, for its messages
 @property (nonatomic, copy) BOOL (^completion)(ODataHTTPResponse *response, NSError **error);
 @end
 
@@ -167,6 +168,7 @@ typedef NS_ENUM(NSInteger, OISWriteMode) {
   NSError *schemaError = nil;
   _schema = [ODataSchema schemaWithData:metadata error:&schemaError];
   _mapper.schema = _schema;
+  configuration.authorizations = _schema.authorizations;
   id keyAsSegment = self.options[ODataIncrementalStoreKeyAsSegmentOption];
   _builder.keyAsSegment = keyAsSegment ? [keyAsSegment boolValue] : _schema.keyAsSegmentSupported;
   // A 4.0 service rejects 4.01 syntax (Northwind and TripPin answer `in`
@@ -300,6 +302,14 @@ typedef NS_ENUM(NSInteger, OISWriteMode) {
 // cycle leaves unbound is written by -executeSave:.
 - (NSArray *)obtainPermanentIDsForObjects:(NSArray *)array error:(NSError **)error
 {
+  for (NSManagedObject *object in array) {
+    if (object.objectID.isTemporaryID && ![self checkCapabilitiesOf:object change:@"Insert" error:error]) return nil;
+    NSError *violation = object.objectID.isTemporaryID && _client.configuration.postOnObtainPermanentIDs ? [_mapper vocabularyViolationOfObject:object] : nil;
+    if (violation) {
+      if (error) *error = violation;
+      return nil;
+    }
+  }
   NSMutableDictionary *assigned = [NSMutableDictionary dictionary];  // temporary ID -> permanent ID
   NSArray *order = _client.configuration.postOnObtainPermanentIDs ? [self insertOrder:array] : array;
   for (NSManagedObject *object in order) {
@@ -312,6 +322,7 @@ typedef NS_ENUM(NSInteger, OISWriteMode) {
       oid = [self objectIDFromPayload:payload entity:entity error:error];
       if (!oid) return nil;
       [self cacheNodeForObjectID:oid entity:entity payload:payload error:nil];
+      [self noteMessagesIn:payload URL:nil objectID:oid];
       if (write.deferred.count) {
         [_lock lock];
         _deferred[oid] = [write.deferred copy];
@@ -362,6 +373,199 @@ typedef NS_ENUM(NSInteger, OISWriteMode) {
   return order;
 }
 
+#pragma mark - Messages
+
+// Core.Messages in a JSON body, as a notification.
+- (void)noteMessagesIn:(id)json URL:(NSURL *)url objectID:(NSManagedObjectID *)objectID
+{
+  NSArray *messages = [ODataMessage messagesInJSON:json];
+  if (!messages) return;
+  NSMutableDictionary *info = [NSMutableDictionary dictionaryWithObject:messages forKey:ODataMessagesKey];
+  if (url) info[ODataMessagesURLKey] = url;
+  if (objectID) info[ODataMessagesObjectIDKey] = objectID;
+  [[NSNotificationCenter defaultCenter] postNotificationName:ODataIncrementalStoreDidReceiveMessagesNotification object:self userInfo:info];
+}
+
+- (void)noteMessagesOf:(ODataHTTPResponse *)response operation:(OISOperation *)operation
+{
+  if (!response.data.length) return;
+  [self noteMessagesIn:[response JSONWithError:NULL] URL:operation.request.URL objectID:operation.objectID];
+}
+
+#pragma mark - Capabilities
+
+// What the service's Capabilities say of an entity's set: a term's value
+// there, or the container's.
+- (id)capability:(NSString *)term forEntity:(NSEntityDescription *)entity
+{
+  NSEntityDescription *root = entity;
+  while (root.superentity) root = root.superentity;
+  return [_schema capability:term forEntitySet:[_mapper entitySetForEntity:root]];
+}
+
+static BOOL OISRefused(id value)
+{
+  return [value isEqual:@NO];
+}
+
+// The property paths a record's member lists ({"$PropertyPath": "Name"}).
+static NSSet *OISPropertyPaths(id record, NSString *member)
+{
+  NSMutableSet *paths = [NSMutableSet set];
+  id list = [record isKindOfClass:[NSDictionary class]] ? record[member] : nil;
+  if (![list isKindOfClass:[NSArray class]]) return paths;
+  for (id item in list) {
+    id path = [item isKindOfClass:[NSDictionary class]] ? (item[@"$PropertyPath"] ?: item[@"$NavigationPropertyPath"]) : item;
+    if ([path isKindOfClass:[NSString class]]) [paths addObject:path];
+  }
+  return paths;
+}
+
+// The key paths a predicate uses, from the fetched entity.
+static void OISCollectKeyPaths(NSPredicate *predicate, NSMutableSet *into)
+{
+  if ([predicate isKindOfClass:[NSCompoundPredicate class]]) {
+    for (NSPredicate *sub in [(NSCompoundPredicate *)predicate subpredicates]) OISCollectKeyPaths(sub, into);
+  } else if ([predicate isKindOfClass:[NSComparisonPredicate class]]) {
+    for (NSExpression *e in @[ [(NSComparisonPredicate *)predicate leftExpression], [(NSComparisonPredicate *)predicate rightExpression] ]) {
+      if (e.expressionType == NSKeyPathExpressionType) [into addObject:e.keyPath];
+    }
+  }
+}
+
+- (NSError *)notAllowed:(NSString *)what entity:(NSEntityDescription *)entity term:(NSString *)term
+{
+  return OISError(ODataIncrementalStoreErrorNotAllowedByService,
+                  [NSString stringWithFormat:@"%@: the service does not %@ (Capabilities.%@)", entity.name, what, term]);
+}
+
+// The fetch to send, as the service's Capabilities let it be sent; what it
+// does not do is done here after: sorting, then skipping, then the limit
+// (sortLocally, and a nonzero skip or limit). A filter it cannot take is
+// an error: evaluating it here would read every row.
+- (NSFetchRequest *)sendableFetch:(NSFetchRequest *)fetch entity:(NSEntityDescription *)entity
+                      sortLocally:(BOOL *)sortLocally skip:(NSUInteger *)skip limit:(NSUInteger *)limit
+                            count:(BOOL *)countLocally error:(NSError **)error
+{
+  *sortLocally = NO;
+  *skip = 0;
+  *limit = 0;
+  *countLocally = NO;
+  if (!_schema) return fetch;
+  NSFetchRequest *sent = [fetch copy];
+
+  id filtering = [self capability:@"Capabilities.FilterRestrictions" forEntity:entity];
+  if ([filtering isKindOfClass:[NSDictionary class]]) {
+    if (fetch.predicate && OISRefused(filtering[@"Filterable"])) {
+      if (error) *error = [self notAllowed:@"filter" entity:entity term:@"FilterRestrictions"];
+      return nil;
+    }
+    if (!fetch.predicate && [filtering[@"RequiresFilter"] isEqual:@YES]) {
+      if (error) *error = [self notAllowed:@"list every row: give a predicate" entity:entity term:@"FilterRestrictions"];
+      return nil;
+    }
+    NSSet *forbidden = OISPropertyPaths(filtering, @"NonFilterableProperties");
+    NSMutableSet *used = [NSMutableSet set];
+    if (fetch.predicate) OISCollectKeyPaths(fetch.predicate, used);
+    for (NSString *keyPath in used) {
+      NSString *wire = [_mapper propertyPathForKeyPath:keyPath entity:entity];
+      NSString *first = [wire componentsSeparatedByString:@"/"].firstObject;
+      if ([forbidden containsObject:wire] || [forbidden containsObject:first]) {
+        if (error) *error = [self notAllowed:[NSString stringWithFormat:@"filter by %@", wire] entity:entity term:@"FilterRestrictions"];
+        return nil;
+      }
+    }
+    NSMutableSet *usedWire = [NSMutableSet set];
+    for (NSString *keyPath in used) [usedWire addObject:[_mapper propertyPathForKeyPath:keyPath entity:entity]];
+    for (NSString *required in OISPropertyPaths(filtering, @"RequiredProperties")) {
+      if (![usedWire containsObject:required]) {
+        if (error) *error = [self notAllowed:[NSString stringWithFormat:@"list rows without a filter on %@", required] entity:entity term:@"FilterRestrictions"];
+        return nil;
+      }
+    }
+  }
+
+  if (fetch.resultType == NSCountResultType) {
+    id counting = [self capability:@"Capabilities.CountRestrictions" forEntity:entity];
+    if ([counting isKindOfClass:[NSDictionary class]] && OISRefused(counting[@"Countable"])) {
+      // Counted here: the keys of the rows.
+      *countLocally = YES;
+      sent.resultType = NSManagedObjectIDResultType;
+    }
+  }
+
+  id sorting = [self capability:@"Capabilities.SortRestrictions" forEntity:entity];
+  if (fetch.sortDescriptors.count && [sorting isKindOfClass:[NSDictionary class]]) {
+    BOOL local = OISRefused(sorting[@"Sortable"]);
+    NSSet *forbidden = OISPropertyPaths(sorting, @"NonSortableProperties");
+    for (NSSortDescriptor *descriptor in fetch.sortDescriptors) {
+      if (descriptor.key && [forbidden containsObject:[_mapper propertyPathForKeyPath:descriptor.key entity:entity]]) local = YES;
+    }
+    if (local) {
+      *sortLocally = YES;
+      sent.sortDescriptors = nil;
+    }
+  }
+  BOOL top = !OISRefused([self capability:@"Capabilities.TopSupported" forEntity:entity]);
+  BOOL skipping = !OISRefused([self capability:@"Capabilities.SkipSupported" forEntity:entity]);
+  // Sorted here, every row is needed before the skip and the limit.
+  if (*sortLocally || !skipping || (!top && fetch.fetchOffset)) {
+    *skip = fetch.fetchOffset;
+    *limit = fetch.fetchLimit;
+    sent.fetchOffset = 0;
+    sent.fetchLimit = 0;
+    if (!*sortLocally && top && fetch.fetchLimit) sent.fetchLimit = fetch.fetchOffset + fetch.fetchLimit;
+  } else if (!top) {
+    *limit = fetch.fetchLimit;
+    sent.fetchLimit = 0;
+  }
+
+  id select = [self capability:@"Capabilities.SelectSupport" forEntity:entity];
+  if ([select isKindOfClass:[NSDictionary class]] && OISRefused(select[@"Supported"])) sent.propertiesToFetch = nil;
+  return sent;
+}
+
+// Sorted, skipped and limited here, as the service would have.
+- (NSArray *)finishLocally:(NSArray *)results sort:(NSArray *)sort skip:(NSUInteger)skip limit:(NSUInteger)limit
+                   context:(NSManagedObjectContext *)context
+{
+  if (sort.count) {
+    BOOL identifiers = [results.firstObject isKindOfClass:[NSManagedObjectID class]];
+    if (identifiers && context) {
+      NSMutableArray *objects = [NSMutableArray array];
+      for (NSManagedObjectID *oid in results) [objects addObject:[context objectWithID:oid]];
+      results = [[objects sortedArrayUsingDescriptors:sort] valueForKey:@"objectID"];
+    } else if (!identifiers) {
+      results = [results sortedArrayUsingDescriptors:sort];
+    }
+  }
+  if (skip) results = skip < results.count ? [results subarrayWithRange:NSMakeRange(skip, results.count - skip)] : @[];
+  if (limit && results.count > limit) results = [results subarrayWithRange:NSMakeRange(0, limit)];
+  return results;
+}
+
+// A change the service's Capabilities refuse, before anything is sent.
+- (BOOL)checkCapabilitiesOf:(NSManagedObject *)object change:(NSString *)change error:(NSError **)error
+{
+  if (!_schema) return YES;
+  NSString *term = [NSString stringWithFormat:@"Capabilities.%@Restrictions", change];
+  id restrictions = [self capability:term forEntity:object.entity];
+  NSString *member = [change isEqualToString:@"Insert"] ? @"Insertable" : [change isEqualToString:@"Update"] ? @"Updatable" : @"Deletable";
+  if ([restrictions isKindOfClass:[NSDictionary class]] && OISRefused(restrictions[member])) {
+    if (error) *error = [self notAllowed:[change lowercaseString] entity:object.entity term:[change stringByAppendingString:@"Restrictions"]];
+    return NO;
+  }
+  return YES;
+}
+
+// Properties a POST (or a PATCH) is not to carry: Non*Properties.
+- (NSSet *)unwritablePropertiesOf:(NSEntityDescription *)entity insert:(BOOL)insert
+{
+  if (!_schema) return [NSSet set];
+  id restrictions = [self capability:insert ? @"Capabilities.InsertRestrictions" : @"Capabilities.UpdateRestrictions" forEntity:entity];
+  return OISPropertyPaths(restrictions, insert ? @"NonInsertableProperties" : @"NonUpdatableProperties");
+}
+
 #pragma mark - Fetch / save
 
 - (id)executeFetch:(NSFetchRequest *)fetch context:(NSManagedObjectContext *)context error:(NSError **)error
@@ -371,6 +575,11 @@ typedef NS_ENUM(NSInteger, OISWriteMode) {
     if (error) *error = OISError(ODataIncrementalStoreErrorMissingEntitySet, fetch.entityName ?: @"Unknown");
     return nil;
   }
+  BOOL sortLocally = NO, countLocally = NO;
+  NSUInteger skip = 0, limit = 0;
+  NSFetchRequest *original = fetch;
+  fetch = [self sendableFetch:original entity:entity sortLocally:&sortLocally skip:&skip limit:&limit count:&countLocally error:error];
+  if (!fetch) return nil;
   NSURL *url = [_builder URLForFetch:fetch entity:entity error:error];
   if (!url) return nil;
 
@@ -384,12 +593,13 @@ typedef NS_ENUM(NSInteger, OISWriteMode) {
   NSArray *rows = [self rowsAtURL:url limit:fetch.fetchLimit pageSize:fetch.fetchBatchSize error:error];
   if (!rows) return nil;
 
+  NSArray *sort = sortLocally ? original.sortDescriptors : nil;
   if (fetch.resultType == NSDictionaryResultType) {
     NSMutableArray *dicts = [NSMutableArray array];
     for (NSDictionary *row in rows) {
-      [dicts addObject:[self dictionaryFromPayload:row entity:entity properties:fetch.propertiesToFetch]];
+      [dicts addObject:[self dictionaryFromPayload:row entity:entity properties:original.propertiesToFetch]];
     }
-    return dicts;
+    return [self finishLocally:dicts sort:sort skip:skip limit:limit context:context];
   }
 
   // Every row is a whole entity, so it is cached whether or not the fetch
@@ -400,16 +610,19 @@ typedef NS_ENUM(NSInteger, OISWriteMode) {
     NSManagedObjectID *oid = [self objectIDFromPayload:row entity:entity error:error];
     if (!oid) return nil;
     [self cacheNodeForObjectID:oid entity:oid.entity payload:row error:nil];
+    [self noteMessagesIn:row URL:url objectID:oid];
     // A set of a base type holds its derived types too; a fetch that does
     // not include sub-entities leaves them out.
     if (!fetch.includesSubentities && oid.entity != entity && ![oid.entity.name isEqualToString:entity.name]) continue;
     [objectIDs addObject:oid];
   }
 
-  if (fetch.resultType == NSManagedObjectIDResultType) return objectIDs;
-  if (!context) return objectIDs;
+  NSArray *identifiers = [self finishLocally:objectIDs sort:sort skip:skip limit:limit context:context];
+  if (countLocally) return @[ @(identifiers.count) ];
+  if (fetch.resultType == NSManagedObjectIDResultType) return identifiers;
+  if (!context) return identifiers;
   NSMutableArray *objects = [NSMutableArray array];
-  for (NSManagedObjectID *oid in objectIDs) {
+  for (NSManagedObjectID *oid in identifiers) {
     [objects addObject:[context objectWithID:oid]];
   }
   return objects;
@@ -456,6 +669,8 @@ typedef NS_ENUM(NSInteger, OISWriteMode) {
       if (error) *error = OISError(ODataIncrementalStoreErrorDecoding, [NSString stringWithFormat:@"Expected a JSON object from %@", absolute]);
       return nil;
     }
+    // Of the collection; an entity's own, as its row is read.
+    if (json[@"value"]) [self noteMessagesIn:json URL:url objectID:nil];
     id value = json[@"value"];
     NSArray *page = [value isKindOfClass:[NSArray class]] ? value : @[ json ];
     for (id row in page) {
@@ -479,6 +694,26 @@ typedef NS_ENUM(NSInteger, OISWriteMode) {
 {
   NSMutableArray *operations = [NSMutableArray array];
   NSMutableArray *referenced = [NSMutableArray array];  // objects whose $ref requests may change their ETag
+  for (NSManagedObject *object in save.insertedObjects) {
+    if (![self checkCapabilitiesOf:object change:@"Insert" error:error]) return nil;
+  }
+  // Validation.MultipleOf and Constraint: refused here, as the service
+  // would.
+  for (NSSet *changed in @[ save.insertedObjects ?: [NSSet set], save.updatedObjects ?: [NSSet set] ]) {
+    for (NSManagedObject *object in changed) {
+      NSError *violation = [_mapper vocabularyViolationOfObject:object];
+      if (violation) {
+        if (error) *error = violation;
+        return nil;
+      }
+    }
+  }
+  for (NSManagedObject *object in save.updatedObjects) {
+    if (![self checkCapabilitiesOf:object change:@"Update" error:error]) return nil;
+  }
+  for (NSManagedObject *object in save.deletedObjects) {
+    if (![self checkCapabilitiesOf:object change:@"Delete" error:error]) return nil;
+  }
 
   if (!_client.configuration.postOnObtainPermanentIDs) {
     for (NSManagedObject *object in [self insertOrder:save.insertedObjects.allObjects]) {
@@ -815,7 +1050,10 @@ static BOOL OISSameRow(NSDictionary *a, NSDictionary *b)
 - (BOOL)sendOperations:(NSArray *)operations error:(NSError **)error
 {
   if (!operations.count) return YES;
-  BOOL batch = operations.count > 1 && _client.configuration.batchSaves && !_batchRefused;
+  id batchSupport = [_schema capability:@"Capabilities.BatchSupport" forEntitySet:nil];
+  BOOL batchable = !OISRefused([_schema capability:@"Capabilities.BatchSupported" forEntitySet:nil]) &&
+                   !([batchSupport isKindOfClass:[NSDictionary class]] && OISRefused(batchSupport[@"Supported"]));
+  BOOL batch = operations.count > 1 && _client.configuration.batchSaves && !_batchRefused && batchable;
   if (batch) {
     NSMutableArray *requests = [NSMutableArray array];
     for (OISOperation *operation in operations) [requests addObject:operation.request];
@@ -825,6 +1063,7 @@ static BOOL OISSameRow(NSDictionary *a, NSDictionary *b)
       for (NSUInteger i = 0; i < operations.count; i++) {
         OISOperation *operation = operations[i];
         if (operation.completion && !operation.completion(responses[i], error)) return NO;
+        [self noteMessagesOf:responses[i] operation:operation];
       }
       return YES;
     }
@@ -842,6 +1081,7 @@ static BOOL OISSameRow(NSDictionary *a, NSDictionary *b)
     ODataHTTPResponse *response = [_client sendRequest:operation.request error:error];
     if (!response) return NO;
     if (operation.completion && !operation.completion(response, error)) return NO;
+    [self noteMessagesOf:response operation:operation];
   }
   return YES;
 }
@@ -853,12 +1093,14 @@ static BOOL OISSameRow(NSDictionary *a, NSDictionary *b)
   NSURL *url = [_client.configuration.serviceRoot URLByAppendingPathComponent:[_mapper entitySetForEntity:entity]];
   NSMutableURLRequest *request = [_client requestWithMethod:@"POST" URL:url body:write.body etag:nil error:error];
   if (!request) return NO;
-  [operations addObject:[self operation:request completion:^BOOL(ODataHTTPResponse *response, NSError **e) {
+  OISOperation *post = [self operation:request completion:^BOOL(ODataHTTPResponse *response, NSError **e) {
     NSDictionary *payload = [self createdEntityFrom:response URL:url error:e];
     if (!payload) return NO;
     [self cacheNodeForObjectID:objectID entity:entity payload:payload error:nil];
     return YES;
-  }]];
+  }];
+  post.objectID = objectID;
+  [operations addObject:post];
   return YES;
 }
 
@@ -872,10 +1114,12 @@ static BOOL OISSameRow(NSDictionary *a, NSDictionary *b)
     NSMutableURLRequest *request = url ? [_client requestWithMethod:@"PATCH" URL:url body:write.body
                                                                etag:[self currentETagForObjectID:object.objectID] error:error] : nil;
     if (!request) return NO;
-    [operations addObject:[self operation:request completion:^BOOL(ODataHTTPResponse *response, NSError **e) {
+    OISOperation *patch = [self operation:request completion:^BOOL(ODataHTTPResponse *response, NSError **e) {
       [self absorbResponse:response object:object URL:url];
       return YES;
-    }]];
+    }];
+    patch.objectID = object.objectID;
+    [operations addObject:patch];
   }
   return [self addReferencesOf:write to:operations error:error];
 }
@@ -1053,6 +1297,7 @@ static BOOL OISKeyIsSet(id value)
   if (mode == OISWriteInsert && [_mapper entityIsDerivedInItsSet:entity]) {
     write.body[@"@odata.type"] = [@"#" stringByAppendingString:[_mapper qualifiedTypeForEntity:entity]];
   }
+  NSSet *unwritable = [self unwritablePropertiesOf:entity insert:mode == OISWriteInsert];
   if (mode != OISWriteDeferred) {
     NSMutableSet *keyNames = [NSMutableSet set];
     for (NSAttributeDescription *attr in [_mapper keyAttributesForEntity:entity]) [keyNames addObject:attr.name];
@@ -1066,6 +1311,11 @@ static BOOL OISKeyIsSet(id value)
         continue;
       }
       if (mode == OISWriteUpdate && !changed[name]) continue;
+      // What the service sets (Core.Computed, read only), and after the
+      // entity is made, what it will not change (Core.Immutable).
+      if ([_mapper attributeIsComputed:attr]) continue;
+      if (mode == OISWriteUpdate && [_mapper attributeIsImmutable:attr]) continue;
+      if ([unwritable containsObject:[_mapper propertyForAttribute:attr]]) continue;
       id json = [_mapper.values JSONForCoreDataValue:value attribute:attr];
       // POST omits unset optional properties (section 11.4.2); PATCH sends
       // null to clear one.

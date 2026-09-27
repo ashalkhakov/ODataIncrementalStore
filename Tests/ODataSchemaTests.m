@@ -347,4 +347,122 @@ static NSManagedObjectModel *OISZooModel(NSArray *extraAnimalAttributes)
   XCTAssertTrue([cause.localizedDescription rangeOfString:@"wingspan"].location != NSNotFound, @"%@", error);
 }
 
+#pragma mark Annotations
+
+// CSDL section 14: inline and targeted, under a vocabulary's own alias or
+// another, with qualifiers, records, collections, paths and a dynamic
+// expression.
+static NSString * const OISAnnotatedCSDL =
+  @"<?xml version=\"1.0\"?>"
+  @"<edmx:Edmx xmlns:edmx=\"http://docs.oasis-open.org/odata/ns/edmx\" Version=\"4.01\">"
+  @"<edmx:Reference Uri=\"https://oasis-tcs.github.io/odata-vocabularies/vocabularies/Org.OData.Core.V1.xml\">"
+  @"<edmx:Include Namespace=\"Org.OData.Core.V1\" Alias=\"C\"/></edmx:Reference>"
+  @"<edmx:Reference Uri=\"https://oasis-tcs.github.io/odata-vocabularies/vocabularies/Org.OData.Validation.V1.xml\">"
+  @"<edmx:Include Namespace=\"Org.OData.Validation.V1\" Alias=\"Validation\"/></edmx:Reference>"
+  @"<edmx:DataServices><Schema xmlns=\"http://docs.oasis-open.org/odata/ns/edm\" Namespace=\"Shop\" Alias=\"Self\">"
+  @"<EntityType Name=\"Product\">"
+  @"<Annotation Term=\"C.Description\" String=\"Something for sale\"/>"
+  @"<Key><PropertyRef Name=\"ID\"/></Key>"
+  @"<Property Name=\"ID\" Type=\"Edm.Int32\" Nullable=\"false\"><Annotation Term=\"C.Computed\"/></Property>"
+  @"<Property Name=\"Name\" Type=\"Edm.String\" MaxLength=\"40\">"
+  @"<Annotation Term=\"C.Description\" String=\"The name\"/>"
+  @"<Annotation Term=\"C.Description\" Qualifier=\"fr\" String=\"Le nom\"/>"
+  @"<Annotation Term=\"Validation.Pattern\" String=\"^[A-Z]\"/>"
+  @"<Annotation Term=\"C.Permissions\" EnumMember=\"C.Permission/Read C.Permission/Write\"/>"
+  @"</Property>"
+  @"<Property Name=\"Price\" Type=\"Edm.Decimal\">"
+  @"<Annotation Term=\"Validation.Minimum\" Decimal=\"0\"><Annotation Term=\"Validation.Exclusive\" Bool=\"true\"/></Annotation>"
+  @"<Annotation Term=\"Validation.Maximum\"><Decimal>100.5</Decimal></Annotation>"
+  @"<Annotation Term=\"C.Description\" Qualifier=\"dyn\"><If><Path>IsNew</Path><String>new</String><String>old</String></If></Annotation>"
+  @"</Property>"
+  @"</EntityType>"
+  @"<EntityType Name=\"Special\" BaseType=\"Self.Product\"/>"
+  @"<EnumType Name=\"Colour\"><Member Name=\"Red\" Value=\"1\"><Annotation Term=\"C.Description\" String=\"Warm\"/></Member></EnumType>"
+  @"<EntityContainer Name=\"Container\">"
+  @"<Annotation Term=\"Org.OData.Capabilities.V1.KeyAsSegmentSupported\"/>"
+  @"<EntitySet Name=\"Products\" EntityType=\"Self.Product\"/>"
+  @"</EntityContainer>"
+  @"<Annotations Target=\"Self.Product/Name\"><Annotation Term=\"C.LongDescription\"><String>Long text</String></Annotation></Annotations>"
+  @"<Annotations Target=\"Self.Container/Products\">"
+  @"<Annotation Term=\"Org.OData.Capabilities.V1.InsertRestrictions\"><Record>"
+  @"<PropertyValue Property=\"Insertable\" Bool=\"false\"/>"
+  @"<PropertyValue Property=\"NonInsertableProperties\"><Collection><PropertyPath>ID</PropertyPath><PropertyPath>Name</PropertyPath></Collection></PropertyValue>"
+  @"</Record></Annotation>"
+  @"</Annotations>"
+  @"</Schema></edmx:DataServices></edmx:Edmx>";
+
+- (void)testAnnotations
+{
+  NSError *error = nil;
+  ODataSchema *schema = [ODataSchema schemaWithData:[OISAnnotatedCSDL dataUsingEncoding:NSUTF8StringEncoding] error:&error];
+  XCTAssertNotNil(schema, @"%@", error);
+
+  XCTAssertEqualObjects([schema annotation:@"Core.Description" forTarget:@"Shop.Product"], @"Something for sale");
+  XCTAssertEqualObjects([schema annotation:@"Org.OData.Core.V1.Computed" forTarget:@"Shop.Product/ID"], @YES, @"a tag is true");
+  XCTAssertEqualObjects([schema annotation:@"C.Description" forTarget:@"Self.Product/Name"], @"The name", @"the document's alias, both places");
+  XCTAssertEqualObjects([schema annotation:@"Core.Description#fr" forTarget:@"Shop.Product/Name"], @"Le nom");
+  XCTAssertEqualObjects([schema annotation:@"Validation.Pattern" forTarget:@"Shop.Product/Name"], @"^[A-Z]");
+  XCTAssertEqualObjects([schema annotation:@"Core.Permissions" forTarget:@"Shop.Product/Name"], @"Read,Write");
+  XCTAssertEqualObjects([schema annotation:@"Core.LongDescription" forTarget:@"Shop.Product/Name"], @"Long text", @"targeted");
+  XCTAssertEqualObjects([schema annotation:@"Validation.Minimum" forTarget:@"Shop.Product/Price"], [NSDecimalNumber decimalNumberWithString:@"0"]);
+  XCTAssertEqualObjects([schema annotation:@"Validation.Maximum" forTarget:@"Shop.Product/Price"], [NSDecimalNumber decimalNumberWithString:@"100.5"]);
+  NSDictionary *dynamic = [schema annotation:@"Core.Description#dyn" forTarget:@"Shop.Product/Price"];
+  XCTAssertEqualObjects(dynamic, (@{ @"$If": @[ @{ @"$Path": @"IsNew" }, @"new", @"old" ] }));
+  XCTAssertEqualObjects([schema annotation:@"Core.Description" forTarget:@"Shop.Colour/Red"], @"Warm");
+
+  NSDictionary *insert = [schema annotation:@"Capabilities.InsertRestrictions" forTarget:@"Shop.Container/Products"];
+  XCTAssertEqualObjects(insert[@"Insertable"], @NO);
+  XCTAssertEqualObjects(insert[@"NonInsertableProperties"], (@[ @{ @"$PropertyPath": @"ID" }, @{ @"$PropertyPath": @"Name" } ]));
+  XCTAssertTrue(schema.keyAsSegmentSupported, @"read as any other annotation now");
+
+  ODataSchemaEntityType *special = [schema entityTypeNamed:@"Shop.Special"];
+  XCTAssertEqualObjects([schema annotation:@"Core.Computed" forProperty:@"ID" ofEntityType:special], @YES, @"through the base type");
+  XCTAssertNil([schema annotation:@"Core.Computed" forProperty:@"Name" ofEntityType:special]);
+  XCTAssertEqualObjects([schema annotation:@"Validation.Minimum@Validation.Exclusive" forTarget:@"Shop.Product/Price"], @YES,
+                        @"an annotation of an annotation, as JSON CSDL keys it");
+  XCTAssertEqual([schema annotationsForTarget:@"Shop.Product/Price"].count, 4u);
+  ODataSchemaEntityType *product = [schema entityTypeNamed:@"Shop.Product"];
+  XCTAssertEqualObjects([schema property:@"Name" ofEntityType:product].maxLength, @40);
+  XCTAssertNil([schema property:@"Price" ofEntityType:product].maxLength);
+}
+
+- (void)testModelsCarryTheVocabularies
+{
+  // Core in userInfo, Validation as Core Data's own validation: an object
+  // that breaks it fails at -save:, before the service is asked.
+  ODataSchema *schema = [ODataSchema schemaWithData:[OISAnnotatedCSDL dataUsingEncoding:NSUTF8StringEncoding] error:NULL];
+  NSManagedObjectModel *model = [ODataModelBuilder modelWithSchema:schema];
+  NSEntityDescription *product = model.entitiesByName[@"Product"];
+  XCTAssertEqualObjects(product.userInfo[ODataUserInfoDescription], @"Something for sale");
+  NSAttributeDescription *identifier = product.attributesByName[@"id"];
+  XCTAssertEqualObjects(identifier.userInfo[ODataUserInfoComputed], @"YES");
+  NSAttributeDescription *name = product.attributesByName[@"name"];
+  XCTAssertEqualObjects(name.userInfo[ODataUserInfoDescription], @"The name");
+  XCTAssertEqualObjects(name.userInfo[ODataUserInfoPermissions], @"Read,Write");
+  XCTAssertNotNil(name.userInfo[ODataUserInfoAnnotations], @"every annotation, for the application");
+  ODataPropertyMapper *mapper = [[ODataPropertyMapper alloc] init];
+  XCTAssertTrue([mapper attributeIsComputed:identifier]);
+  XCTAssertFalse([mapper attributeIsComputed:name]);
+
+  NSPersistentStoreCoordinator *coordinator = [[NSPersistentStoreCoordinator alloc] initWithManagedObjectModel:model];
+  [coordinator addPersistentStoreWithType:NSInMemoryStoreType configuration:nil URL:nil options:nil error:NULL];
+  NSManagedObjectContext *context = [[NSManagedObjectContext alloc] init];
+  context.persistentStoreCoordinator = coordinator;
+  NSManagedObject *item = [NSEntityDescription insertNewObjectForEntityForName:@"Product" inManagedObjectContext:context];
+  [item setValue:@1 forKey:@"id"];
+  NSError *error = nil;
+  NSString *good = @"Anvil";
+  XCTAssertTrue([item validateValue:&good forKey:@"name" error:&error], @"%@", error);
+  NSString *lowercase = @"anvil";
+  XCTAssertFalse([item validateValue:&lowercase forKey:@"name" error:NULL], @"Validation.Pattern ^[A-Z]");
+  NSString *longName = [@"A" stringByPaddingToLength:41 withString:@"a" startingAtIndex:0];
+  XCTAssertFalse([item validateValue:&longName forKey:@"name" error:NULL], @"MaxLength 40");
+  NSDecimalNumber *zero = [NSDecimalNumber zero], *some = [NSDecimalNumber decimalNumberWithString:@"50"];
+  NSDecimalNumber *most = [NSDecimalNumber decimalNumberWithString:@"100.5"], *more = [NSDecimalNumber decimalNumberWithString:@"100.6"];
+  XCTAssertFalse([item validateValue:&zero forKey:@"price" error:NULL], @"Minimum 0, exclusive");
+  XCTAssertTrue([item validateValue:&some forKey:@"price" error:NULL]);
+  XCTAssertTrue([item validateValue:&most forKey:@"price" error:NULL], @"Maximum 100.5, inclusive");
+  XCTAssertFalse([item validateValue:&more forKey:@"price" error:NULL]);
+}
+
 @end

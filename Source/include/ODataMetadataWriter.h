@@ -21,6 +21,8 @@
 
 NS_ASSUME_NONNULL_BEGIN
 
+// The userInfo it writes as annotations: see ODataPropertyMapper.h.
+
 @interface ODataMetadataWriter : NSObject
 
 - (instancetype)initWithModel:(NSManagedObjectModel *)model mapper:(ODataPropertyMapper *)mapper NS_DESIGNATED_INITIALIZER;
@@ -42,6 +44,11 @@ NS_ASSUME_NONNULL_BEGIN
 
 // More elements for the schema of namespaceName (Function, Action) and for
 // the entity container (FunctionImport, ActionImport), as CSDL XML.
+// Annotations of each entity set, by set name, by term.
+@property (nonatomic, copy, nullable) NSDictionary<NSString *, NSDictionary<NSString *, id> *> *entitySetAnnotations;
+// Annotations of the entity container, by term (Core.Description, or
+// qualified), valued as JSON CSDL has them: the service's Authorization.
+@property (nonatomic, copy, nullable) NSDictionary<NSString *, id> *containerAnnotations;
 @property (nonatomic, copy, nullable) NSString *additionalSchemaXML;
 @property (nonatomic, copy, nullable) NSString *additionalContainerXML;
 

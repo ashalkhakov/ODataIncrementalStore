@@ -54,6 +54,11 @@ NS_ASSUME_NONNULL_BEGIN
 @optional
 // The WWW-Authenticate header of a 401. Default: Bearer.
 - (NSString *)challengeForRequest:(ODataRequest *)request;
+// How a client signs in, for $metadata: an Authorization vocabulary record
+// as JSON CSDL has it ({"@type": "Org.OData.Authorization.V1.OpenIDConnect",
+// "Name": ..., "IssuerUrl": ...}), written into Authorizations, and with
+// requiredScopes (when the authenticator has them) into SecuritySchemes.
+- (nullable NSDictionary<NSString *, id> *)authorizationDescription;
 @end
 
 @interface ODataTrustedHeaderAuthenticator : NSObject <ODataAuthenticator>

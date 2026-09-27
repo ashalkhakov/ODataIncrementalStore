@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: LGPL-2.1-or-later
 
 #import "ODataClassWriter.h"
+#import "ODataPropertyMapper.h"
 #import "ODataValue.h"
 
 static NSString * const OISImport = @"#import <ODataIncrementalStore/ODataIncrementalStore.h>";
@@ -203,6 +204,27 @@ static NSString *OISQuoted(NSString *s)
          [self write:source to:[directory stringByAppendingPathComponent:[name stringByAppendingPathExtension:@"m"]] always:NO written:written error:error];
 }
 
+// What the service says of an entity or property (Core.Description and
+// LongDescription, and whether it is its to set), as comment lines.
+static NSString *OISDocumentation(NSDictionary *userInfo)
+{
+  NSMutableArray *lines = [NSMutableArray array];
+  for (NSString *key in @[ ODataUserInfoDescription, ODataUserInfoLongDescription ]) {
+    NSString *text = userInfo[key];
+    if (![text isKindOfClass:[NSString class]] || !text.length) continue;
+    for (NSString *line in [text componentsSeparatedByCharactersInSet:[NSCharacterSet newlineCharacterSet]]) {
+      [lines addObject:[@"/// " stringByAppendingString:line]];
+    }
+  }
+  NSString *permissions = userInfo[ODataUserInfoPermissions];
+  if ([userInfo[ODataUserInfoComputed] boolValue] || [permissions isEqual:@"Read"]) {
+    [lines addObject:@"/// Set by the service: a save does not send it."];
+  } else if ([userInfo[ODataUserInfoImmutable] boolValue]) {
+    [lines addObject:@"/// Set when the entity is made; the service does not change it after."];
+  }
+  return lines.count ? [[lines componentsJoinedByString:@"\n"] stringByAppendingString:@"\n"] : @"";
+}
+
 - (BOOL)writeEntity:(NSEntityDescription *)entity toDirectory:(NSString *)directory written:(NSMutableArray *)written error:(NSError **)error
 {
   NSString *name = entity.name;
@@ -228,7 +250,7 @@ static NSString *OISQuoted(NSString *s)
     } else {
       continue;
     }
-    [properties appendFormat:@"@property (nonatomic, strong, nullable) %@%@;\n", objcType, property];
+    [properties appendFormat:@"%@@property (nonatomic, strong, nullable) %@%@;\n", OISDocumentation(description.userInfo), objcType, property];
     [dynamics appendFormat:@"@dynamic %@;\n", property];
   }
 
@@ -264,7 +286,7 @@ static NSString *OISQuoted(NSString *s)
   [header appendString:@"\n"];
   NSArray *forward = [related.allObjects sortedArrayUsingSelector:@selector(compare:)];
   if (forward.count) [header appendFormat:@"@class %@;\n\n", [forward componentsJoinedByString:@", "]];
-  [header appendFormat:@"NS_ASSUME_NONNULL_BEGIN\n\n@interface _%@ : %@\n\n%@", name, superclass, properties];
+  [header appendFormat:@"NS_ASSUME_NONNULL_BEGIN\n\n%@@interface _%@ : %@\n\n%@", OISDocumentation(entity.userInfo), name, superclass, properties];
   if (declarations.length) [header appendFormat:@"\n%@", declarations];
   [header appendString:@"\n@end\n\nNS_ASSUME_NONNULL_END\n"];
 

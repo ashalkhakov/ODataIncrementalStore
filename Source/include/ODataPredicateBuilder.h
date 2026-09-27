@@ -30,6 +30,9 @@ NS_ASSUME_NONNULL_BEGIN
 @property (nonatomic, readonly) ODataPropertyMapper *mapper;
 // The entity each qualified type name stands for, for casts and isof.
 @property (nonatomic, copy, nullable) NSDictionary<NSString *, NSEntityDescription *> *entitiesByTypeName;
+// Properties (Core Data names) of an entity that $filter (sorting: NO) or
+// $orderby (YES) may not use; a use is a 400.
+@property (nonatomic, copy, nullable) NSSet<NSString *> * _Nullable (^restrictedProperties)(NSEntityDescription *entity, BOOL sorting);
 
 // A boolean expression over the entity's properties: eq ne gt ge lt le in,
 // and or not, add sub mul div (and mod, on Apple), contains startswith

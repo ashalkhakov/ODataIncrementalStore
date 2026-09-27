@@ -156,6 +156,8 @@ static NSPredicate *OISCompare(NSExpression *left, NSPredicateOperatorType type,
 @property (nonatomic, copy) NSDictionary<NSString *, ODataExpression *> *aliases;
 @property (nonatomic, strong) NSMutableDictionary<NSString *, OISTerm *> *scope;
 @property (nonatomic, copy) NSDictionary<NSString *, NSEntityDescription *> *entitiesByTypeName;
+@property (nonatomic, copy) NSSet * (^restrictedProperties)(NSEntityDescription *entity, BOOL sorting);
+@property (nonatomic) BOOL sorting;
 @property (nonatomic) NSInteger variables;
 @property (nonatomic, strong, nullable) NSError *error;
 @end
@@ -479,6 +481,9 @@ static NSPredicate *OISCompare(NSExpression *left, NSPredicateOperatorType type,
     return [self fail:400 message:[NSString stringWithFormat:@"%@ has no property %@", base.entity.name, e.name]];
   }
   if (!OISIsPlainName(property.name)) return [self unsupported:[NSString stringWithFormat:@"The property %@", e.name]];
+  if (self.restrictedProperties && [self.restrictedProperties(base.entity, self.sorting) containsObject:property.name]) {
+    return [self fail:400 message:[NSString stringWithFormat:@"%@ cannot be %@ by here", e.name, self.sorting ? @"sorted" : @"filtered"]];
+  }
 
   OISTerm *t = [[OISTerm alloc] init];
   t.guard = base.guard;
@@ -1095,6 +1100,7 @@ static NSString *OISConstantString(OISTerm *t)
   build.aliases = aliases ?: @{};
   build.scope = [NSMutableDictionary dictionary];
   build.entitiesByTypeName = self.entitiesByTypeName ?: @{};
+  build.restrictedProperties = self.restrictedProperties;
   return build;
 }
 
@@ -1112,6 +1118,7 @@ static NSString *OISConstantString(OISTerm *t)
 - (NSArray *)sortDescriptorsForOrderBy:(NSArray *)items entity:(NSEntityDescription *)entity error:(NSError **)error
 {
   OISPredicateBuild *build = [self buildForEntity:entity aliases:nil];
+  build.sorting = YES;
   NSMutableArray *descriptors = [NSMutableArray array];
   for (ODataOrderItem *item in items) {
     OISTerm *t = [build term:item.expression];

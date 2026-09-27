@@ -6,7 +6,7 @@
 // types with their keys, properties, navigation properties and base types;
 // complex types with their properties and base types; enumeration types;
 // entity sets. A property typed by a type definition takes its underlying
-// type. Functions, actions and annotations are read past. Type names are
+// type. Annotations are read into their targets. Type names are
 // kept qualified by namespace; an alias ("Self.Person") resolves to its
 // namespace, in a collection's element type too. Functions and actions
 // are read with their parameters and return types, and their imports.
@@ -20,6 +20,7 @@ NS_ASSUME_NONNULL_BEGIN
 @property (nonatomic, copy) NSString *name;
 @property (nonatomic, copy) NSString *type;          // qualified: Edm.String, NS.Color, Collection(Edm.String)
 @property (nonatomic) BOOL nullable;
+@property (nonatomic, copy, nullable) NSNumber *maxLength;  // MaxLength; nil for none, or max
 @property (nonatomic, readonly) BOOL isCollection;
 @property (nonatomic, readonly) NSString *elementType;  // the type, without Collection()
 @end
@@ -91,6 +92,25 @@ NS_ASSUME_NONNULL_BEGIN
 @property (nonatomic, copy, nullable) NSString *entitySet;  // where returned entities live
 @end
 
+// A way to sign in the service declares (the Authorization vocabulary),
+// in the order its SecuritySchemes list them.
+@interface ODataSchemaAuthorization : NSObject
+@property (nonatomic, copy) NSString *name;
+// OpenIDConnect, Http, ApiKey, OAuth2ClientCredentials, OAuth2Implicit,
+// OAuth2Password, OAuth2AuthCode.
+@property (nonatomic, copy) NSString *kind;
+@property (nonatomic, copy, nullable) NSString *text;              // its Description
+@property (nonatomic, copy, nullable) NSURL *issuerURL;            // OpenIDConnect
+@property (nonatomic, copy, nullable) NSString *scheme;            // Http: bearer, basic
+@property (nonatomic, copy, nullable) NSString *keyName;           // ApiKey
+@property (nonatomic, copy, nullable) NSString *location;          // ApiKey: Header, QueryOption, Cookie
+@property (nonatomic, copy, nullable) NSURL *tokenURL;             // OAuth2 flows
+@property (nonatomic, copy, nullable) NSURL *authorizationURL;     // OAuth2Implicit, AuthCode
+@property (nonatomic, copy) NSArray<NSString *> *requiredScopes;  // SecuritySchemes'
+// A bearer token signs requests in: OpenIDConnect, OAuth2 flows, Http bearer.
+@property (nonatomic, readonly) BOOL usesBearerToken;
+@end
+
 @interface ODataSchema : NSObject
 
 + (nullable instancetype)schemaWithData:(NSData *)csdl error:(NSError **)error;
@@ -107,6 +127,35 @@ NS_ASSUME_NONNULL_BEGIN
 @property (nonatomic, readonly, copy) NSString *version;
 // The entity container is annotated Org.OData.Capabilities.V1.KeyAsSegmentSupported.
 @property (nonatomic, readonly) BOOL keyAsSegmentSupported;
+
+// Annotations (CSDL section 14), inline and in <Annotations Target>: by
+// target (NS.Product, NS.Product/Name, NS.Container, NS.Container/Products,
+// NS.Colour/Red), the value of each term applied to it, by the term's
+// qualified name (Org.OData.Core.V1.Description, with #Qualifier after it
+// for a qualified one, and Term@Term for an annotation of an annotation:
+// Validation.Maximum@Validation.Exclusive). Values as JSON CSDL has them: strings, numbers,
+// Booleans (a tag is true), an enumeration's member names ("Read,Write"),
+// a Collection an array, a Record a dictionary (its type as @type), a path
+// {"$Path": "..."} ($PropertyPath, $NavigationPropertyPath, ...), a dynamic
+// expression {"$If": [...]}, {"$Apply": [...], "$Function": "..."}.
+@property (nonatomic, readonly) NSDictionary<NSString *, NSDictionary<NSString *, id> *> *annotations;
+// For a target as the document names it, alias or not.
+- (NSDictionary<NSString *, id> *)annotationsForTarget:(NSString *)target;
+// A term qualified, alias-qualified, or by a standard vocabulary's own
+// name whatever alias the document gives it (Core.Computed,
+// Validation.Maximum, Capabilities.InsertRestrictions).
+- (nullable id)annotation:(NSString *)term forTarget:(NSString *)target;
+// On a property of an entity type, or of the base type declaring it.
+- (nullable id)annotation:(NSString *)term forProperty:(NSString *)name ofEntityType:(ODataSchemaEntityType *)type;
+// The entity container, qualified.
+@property (nonatomic, readonly, copy, nullable) NSString *containerName;
+// The ways to sign in the container's Authorization.Authorizations
+// declare: those SecuritySchemes name first, in their order, with their
+// scopes; then any other.
+@property (nonatomic, readonly, copy) NSArray<ODataSchemaAuthorization *> *authorizations;
+// A term (Capabilities.TopSupported) for an entity set: its own
+// annotation, else the container's.
+- (nullable id)capability:(NSString *)term forEntitySet:(nullable NSString *)set;
 
 // A qualified or alias-qualified name, as the schema's qualified name.
 - (NSString *)qualifiedName:(NSString *)name;

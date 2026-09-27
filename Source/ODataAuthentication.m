@@ -235,6 +235,12 @@ typedef void (^OISFetched)(NSDictionary *json);
   return OISBearerChallenge(request);
 }
 
+- (NSDictionary *)authorizationDescription
+{
+  return @{ @"@type": @"Org.OData.Authorization.V1.OpenIDConnect", @"Name": @"OpenIDConnect",
+            @"Description": @"An access token from the issuer, as Authorization: Bearer", @"IssuerUrl": self.issuer };
+}
+
 - (void)authenticateRequest:(ODataRequest *)request reply:(ODataReply *)reply
 {
   NSString *token = OISBearerToken(request);
@@ -441,6 +447,12 @@ static NSString *OISFormEncoded(NSString *text)
 - (NSString *)challengeForRequest:(ODataRequest *)request
 {
   return OISBearerChallenge(request);
+}
+
+- (NSDictionary *)authorizationDescription
+{
+  return @{ @"@type": @"Org.OData.Authorization.V1.Http", @"Name": @"Bearer", @"Scheme": @"bearer",
+            @"Description": @"An access token from the identity provider, as Authorization: Bearer" };
 }
 
 - (void)authenticateRequest:(ODataRequest *)request reply:(ODataReply *)reply

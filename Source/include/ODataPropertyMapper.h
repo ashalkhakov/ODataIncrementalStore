@@ -13,6 +13,19 @@ NS_ASSUME_NONNULL_BEGIN
 FOUNDATION_EXPORT NSString * const ODataUserInfoEntitySet;
 FOUNDATION_EXPORT NSString * const ODataUserInfoProperty;
 FOUNDATION_EXPORT NSString * const ODataUserInfoKey;
+// The Core vocabulary in userInfo: OData.description and
+// OData.longDescription (text), OData.computed and OData.immutable (YES),
+// OData.permissions (Read, ReadWrite, None); and OData.annotations, any
+// annotations at all, by term, as a dictionary of JSON CSDL values or JSON
+// text of one ({"Validation.Pattern": "^[A-Z]", "Core.Description#fr":
+// "Nom"}). A service writes them into $metadata; a model built from
+// $metadata has them from its annotations.
+FOUNDATION_EXPORT NSString * const ODataUserInfoDescription;
+FOUNDATION_EXPORT NSString * const ODataUserInfoLongDescription;
+FOUNDATION_EXPORT NSString * const ODataUserInfoComputed;
+FOUNDATION_EXPORT NSString * const ODataUserInfoImmutable;
+FOUNDATION_EXPORT NSString * const ODataUserInfoPermissions;
+FOUNDATION_EXPORT NSString * const ODataUserInfoAnnotations;
 
 @interface ODataPropertyMapper : NSObject
 @property (nonatomic) ODataPropertyNaming naming;
@@ -54,6 +67,25 @@ FOUNDATION_EXPORT NSString * const ODataUserInfoKey;
 // The entity type an entity stands for: userInfo[@"OData.type"] on the
 // entity, else the schema's entity type of the entity's name.
 - (nullable ODataSchemaEntityType *)entityTypeForEntity:(NSEntityDescription *)entity;
+// An attribute a client does not write: Core.Computed, or Core.Permissions
+// Read (or None), in its userInfo or the schema's annotations of its
+// property.
+- (BOOL)attributeIsComputed:(NSAttributeDescription *)attribute;
+// Written when the entity is made, and not after: Core.Immutable.
+- (BOOL)attributeIsImmutable:(NSAttributeDescription *)attribute;
+// What of the Validation vocabulary Core Data cannot hold an object
+// breaks: Validation.MultipleOf of an attribute, Validation.Constraint of
+// its entity type or a property (a condition, a CSDL expression over the
+// entity's properties: Eq, Ne, Gt, Ge, Lt, Le, And, Or, Not, If, In, Path,
+// Null, constants, and Apply of odata.matchesPattern; a property's only
+// while it has a value). A
+// NSManagedObjectValidationError naming the object, and the property, with
+// the constraint's FailureMessage; nil when it breaks none. From the
+// schema's annotations, else userInfo's (OData.annotations).
+- (nullable NSError *)vocabularyViolationOfObject:(NSManagedObject *)object;
+// A condition as a predicate of an entity's objects; nil for an expression
+// it cannot write.
+- (nullable NSPredicate *)predicateForCondition:(id)condition entity:(NSEntityDescription *)entity;
 // Its qualified name, from the schema or from userInfo alone.
 - (nullable NSString *)qualifiedTypeForEntity:(NSEntityDescription *)entity;
 // The path an entity's rows are read from: its entity set, followed by a

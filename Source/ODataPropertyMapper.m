@@ -6,6 +6,12 @@
 NSString * const ODataUserInfoEntitySet = @"OData.entitySet";
 NSString * const ODataUserInfoProperty = @"OData.property";
 NSString * const ODataUserInfoKey = @"OData.key";
+NSString * const ODataUserInfoDescription = @"OData.description";
+NSString * const ODataUserInfoLongDescription = @"OData.longDescription";
+NSString * const ODataUserInfoComputed = @"OData.computed";
+NSString * const ODataUserInfoImmutable = @"OData.immutable";
+NSString * const ODataUserInfoPermissions = @"OData.permissions";
+NSString * const ODataUserInfoAnnotations = @"OData.annotations";
 
 @implementation ODataPropertyMapper
 
@@ -44,6 +50,224 @@ NSString * const ODataUserInfoKey = @"OData.key";
   if (type) return type.qualifiedName;
   NSString *declared = entity.userInfo[ODataUserInfoType];
   return [declared isKindOfClass:[NSString class]] ? declared : nil;
+}
+
+// A term's value for an attribute: its userInfo's, else the schema's.
+- (id)annotation:(NSString *)term userInfo:(NSString *)key ofAttribute:(NSAttributeDescription *)attribute
+{
+  id local = key ? attribute.userInfo[key] : nil;
+  if (local) return local;
+  ODataSchemaEntityType *type = [self entityTypeForEntity:attribute.entity];
+  return type ? [self.schema annotation:term forProperty:[self propertyForAttribute:attribute] ofEntityType:type] : nil;
+}
+
+- (BOOL)attributeIsComputed:(NSAttributeDescription *)attribute
+{
+  id computed = [self annotation:@"Core.Computed" userInfo:ODataUserInfoComputed ofAttribute:attribute];
+  if ([computed respondsToSelector:@selector(boolValue)] && [computed boolValue]) return YES;
+  id permissions = [self annotation:@"Core.Permissions" userInfo:ODataUserInfoPermissions ofAttribute:attribute];
+  return [permissions isEqual:@"Read"] || [permissions isEqual:@"None"];
+}
+
+- (BOOL)attributeIsImmutable:(NSAttributeDescription *)attribute
+{
+  id immutable = [self annotation:@"Core.Immutable" userInfo:ODataUserInfoImmutable ofAttribute:attribute];
+  return [immutable respondsToSelector:@selector(boolValue)] && [immutable boolValue];
+}
+
+#pragma mark - Validation beyond Core Data's
+
+// Annotations of a property or an entity: the schema's, else what
+// userInfo's OData.annotations holds (by the full term name).
+- (NSDictionary *)annotationsOfProperty:(NSPropertyDescription *)property entity:(NSEntityDescription *)entity
+{
+  ODataSchemaEntityType *type = [self entityTypeForEntity:entity];
+  NSMutableDictionary *found = [NSMutableDictionary dictionary];
+  if (type) {
+    // The declaring type's own target, through the base types.
+    for (ODataSchemaEntityType *t = type; t; t = t.baseType ? [self.schema entityTypeNamed:t.baseType] : nil) {
+      NSString *target = t.qualifiedName;
+      if (property) {
+        NSString *wire = [property isKindOfClass:[NSAttributeDescription class]] ? [self propertyForAttribute:(NSAttributeDescription *)property]
+                                                                                   : [self propertyForRelationship:(NSRelationshipDescription *)property];
+        target = [target stringByAppendingFormat:@"/%@", wire];
+      }
+      NSDictionary *annotations = [self.schema annotationsForTarget:target];
+      for (NSString *term in annotations) if (!found[term]) found[term] = annotations[term];
+      if (!property) break;
+    }
+  }
+  if (found.count) return found;
+  id local = (property ?: (id)entity) ? [(property ? (id)property : (id)entity) userInfo][ODataUserInfoAnnotations] : nil;
+  if ([local isKindOfClass:[NSString class]]) local = [NSJSONSerialization JSONObjectWithData:[local dataUsingEncoding:NSUTF8StringEncoding] options:0 error:NULL];
+  if (![local isKindOfClass:[NSDictionary class]]) return found;
+  for (NSString *term in local) {
+    NSString *full = term;
+    for (NSString *vocabulary in @[ @"Core", @"Validation", @"Capabilities" ]) {
+      NSString *prefix = [vocabulary stringByAppendingString:@"."];
+      if ([term hasPrefix:prefix]) full = [NSString stringWithFormat:@"Org.OData.%@.V1.%@", vocabulary, [term substringFromIndex:prefix.length]];
+    }
+    found[full] = local[term];
+  }
+  return found;
+}
+
+// A CSDL expression, as JSON CSDL writes it, as an NSExpression: a path
+// from the entity, or a constant.
+- (NSExpression *)expressionForOperand:(id)operand entity:(NSEntityDescription *)entity
+{
+  if ([operand isKindOfClass:[NSDictionary class]]) {
+    NSString *path = operand[@"$Path"] ?: operand[@"$PropertyPath"];
+    if (![path isKindOfClass:[NSString class]]) return nil;
+    NSMutableArray *keys = [NSMutableArray array];
+    NSEntityDescription *current = entity;
+    for (NSString *wire in [path componentsSeparatedByString:@"/"]) {
+      NSPropertyDescription *found = nil;
+      for (NSPropertyDescription *property in current.properties) {
+        NSString *name = [property isKindOfClass:[NSAttributeDescription class]] ? [self propertyForAttribute:(NSAttributeDescription *)property]
+                                                                                   : [self propertyForRelationship:(NSRelationshipDescription *)property];
+        if ([name isEqualToString:wire]) found = property;
+      }
+      if (!found) return nil;
+      [keys addObject:found.name];
+      current = [found isKindOfClass:[NSRelationshipDescription class]] ? [(NSRelationshipDescription *)found destinationEntity] : nil;
+    }
+    return [NSExpression expressionForKeyPath:[keys componentsJoinedByString:@"."]];
+  }
+  if (operand == [NSNull null]) return [NSExpression expressionForConstantValue:nil];
+  if ([operand isKindOfClass:[NSString class]] || [operand isKindOfClass:[NSNumber class]]) return [NSExpression expressionForConstantValue:operand];
+  return nil;
+}
+
+- (NSPredicate *)predicateForCondition:(id)condition entity:(NSEntityDescription *)entity
+{
+  if ([condition isKindOfClass:[NSNumber class]]) return [NSPredicate predicateWithValue:[condition boolValue]];
+  if (![condition isKindOfClass:[NSDictionary class]]) return nil;
+  NSDictionary *comparisons = @{ @"$Eq": @(NSEqualToPredicateOperatorType), @"$Ne": @(NSNotEqualToPredicateOperatorType),
+                                 @"$Gt": @(NSGreaterThanPredicateOperatorType), @"$Ge": @(NSGreaterThanOrEqualToPredicateOperatorType),
+                                 @"$Lt": @(NSLessThanPredicateOperatorType), @"$Le": @(NSLessThanOrEqualToPredicateOperatorType) };
+  for (NSString *op in comparisons) {
+    NSArray *operands = condition[op];
+    if (![operands isKindOfClass:[NSArray class]]) continue;
+    if (operands.count != 2) return nil;
+    NSExpression *left = [self expressionForOperand:operands[0] entity:entity];
+    NSExpression *right = [self expressionForOperand:operands[1] entity:entity];
+    if (!left || !right) return nil;
+    return [NSComparisonPredicate predicateWithLeftExpression:left rightExpression:right modifier:NSDirectPredicateModifier
+                                                         type:[comparisons[op] unsignedIntegerValue] options:0];
+  }
+  for (NSString *op in @[ @"$And", @"$Or" ]) {
+    NSArray *operands = condition[op];
+    if (![operands isKindOfClass:[NSArray class]]) continue;
+    NSMutableArray *parts = [NSMutableArray array];
+    for (id operand in operands) {
+      NSPredicate *part = [self predicateForCondition:operand entity:entity];
+      if (!part) return nil;
+      [parts addObject:part];
+    }
+    return [op isEqualToString:@"$And"] ? [NSCompoundPredicate andPredicateWithSubpredicates:parts]
+                                        : [NSCompoundPredicate orPredicateWithSubpredicates:parts];
+  }
+  NSArray *not = condition[@"$Not"];
+  if ([not isKindOfClass:[NSArray class]]) {
+    NSPredicate *inner = not.count == 1 ? [self predicateForCondition:not[0] entity:entity] : nil;
+    return inner ? [NSCompoundPredicate notPredicateWithSubpredicate:inner] : nil;
+  }
+  NSArray *branches = condition[@"$If"];
+  if ([branches isKindOfClass:[NSArray class]]) {
+    if (branches.count != 3) return nil;
+    NSPredicate *test = [self predicateForCondition:branches[0] entity:entity];
+    NSPredicate *then = [self predicateForCondition:branches[1] entity:entity];
+    NSPredicate *otherwise = [self predicateForCondition:branches[2] entity:entity];
+    if (!test || !then || !otherwise) return nil;
+    return [NSCompoundPredicate orPredicateWithSubpredicates:@[
+      [NSCompoundPredicate andPredicateWithSubpredicates:@[ test, then ]],
+      [NSCompoundPredicate andPredicateWithSubpredicates:@[ [NSCompoundPredicate notPredicateWithSubpredicate:test], otherwise ]] ]];
+  }
+  NSArray *in = condition[@"$In"];
+  if ([in isKindOfClass:[NSArray class]] && in.count == 2 && [in[1] isKindOfClass:[NSArray class]]) {
+    NSExpression *left = [self expressionForOperand:in[0] entity:entity];
+    if (!left) return nil;
+    return [NSComparisonPredicate predicateWithLeftExpression:left rightExpression:[NSExpression expressionForConstantValue:in[1]]
+                                                     modifier:NSDirectPredicateModifier type:NSInPredicateOperatorType options:0];
+  }
+  NSArray *apply = condition[@"$Apply"];
+  if ([apply isKindOfClass:[NSArray class]] && [condition[@"$Function"] isEqual:@"odata.matchesPattern"] && apply.count == 2 &&
+      [apply[1] isKindOfClass:[NSString class]]) {
+    NSExpression *text = [self expressionForOperand:apply[0] entity:entity];
+    if (!text) return nil;
+    NSString *anywhere = [NSString stringWithFormat:@"(?s).*(?:%@).*", apply[1]];
+    return [NSComparisonPredicate predicateWithLeftExpression:text rightExpression:[NSExpression expressionForConstantValue:anywhere]
+                                                     modifier:NSDirectPredicateModifier type:NSMatchesPredicateOperatorType options:0];
+  }
+  return nil;
+}
+
+static NSError *OISViolation(NSManagedObject *object, NSString *key, NSString *message)
+{
+  NSMutableDictionary *info = [NSMutableDictionary dictionaryWithObject:message forKey:NSLocalizedDescriptionKey];
+  info[NSValidationObjectErrorKey] = object;
+  if (key) info[NSValidationKeyErrorKey] = key;
+  return [NSError errorWithDomain:NSCocoaErrorDomain code:NSManagedObjectValidationError userInfo:info];
+}
+
+// Each Validation.Constraint (qualified or not) of these annotations that
+// the object breaks.
+- (NSError *)constraintViolation:(NSDictionary *)annotations object:(NSManagedObject *)object key:(NSString *)key
+{
+  NSString *constraint = @"Org.OData.Validation.V1.Constraint";
+  for (NSString *term in [annotations.allKeys sortedArrayUsingSelector:@selector(compare:)]) {
+    if (![term isEqualToString:constraint] && ![term hasPrefix:[constraint stringByAppendingString:@"#"]]) continue;
+    NSDictionary *record = annotations[term];
+    if (![record isKindOfClass:[NSDictionary class]]) continue;
+    NSPredicate *condition = [self predicateForCondition:record[@"Condition"] entity:object.entity];
+    if (!condition) continue;  // one it cannot read is the service's to check
+    BOOL holds = NO;
+    @try {
+      holds = [condition evaluateWithObject:object];
+    } @catch (NSException *exception) {
+      holds = NO;
+    }
+    if (!holds) {
+      NSString *message = [record[@"FailureMessage"] isKindOfClass:[NSString class]] ? record[@"FailureMessage"]
+          : [NSString stringWithFormat:@"%@ breaks a constraint", key ?: object.entity.name];
+      return OISViolation(object, key, message);
+    }
+  }
+  return nil;
+}
+
+- (NSError *)vocabularyViolationOfObject:(NSManagedObject *)object
+{
+  NSEntityDescription *entity = object.entity;
+  NSError *violation = [self constraintViolation:[self annotationsOfProperty:nil entity:entity] object:object key:nil];
+  if (violation) return violation;
+  for (NSPropertyDescription *property in entity.properties) {
+    NSDictionary *annotations = [self annotationsOfProperty:property entity:entity];
+    if (!annotations.count) continue;
+    if ([property isKindOfClass:[NSAttributeDescription class]]) {
+      id step = annotations[@"Org.OData.Validation.V1.MultipleOf"];
+      id value = [object valueForKey:property.name];
+      if ([step isKindOfClass:[NSNumber class]] && [value isKindOfClass:[NSNumber class]] && [step doubleValue] != 0) {
+        NSDecimalNumber *v = [NSDecimalNumber decimalNumberWithDecimal:[value decimalValue]];
+        NSDecimalNumber *m = [NSDecimalNumber decimalNumberWithDecimal:[step decimalValue]];
+        NSDecimalNumber *quotient = [v decimalNumberByDividingBy:m];
+        NSDecimalNumberHandler *whole = [NSDecimalNumberHandler decimalNumberHandlerWithRoundingMode:NSRoundPlain scale:0 raiseOnExactness:NO
+                                                                                    raiseOnOverflow:NO raiseOnUnderflow:NO raiseOnDivideByZero:NO];
+        if ([[quotient decimalNumberByRoundingAccordingToBehavior:whole] compare:quotient] != NSOrderedSame) {
+          NSString *wire = [self propertyForAttribute:(NSAttributeDescription *)property];
+          return OISViolation(object, property.name, [NSString stringWithFormat:@"%@ is a multiple of %@", wire, step]);
+        }
+      }
+    }
+    // A property's constraint is of its value: none while it has none (as
+    // Core Data's own validation of a property; Nullable says whether it
+    // may have none).
+    if ([object valueForKey:property.name] == nil) continue;
+    violation = [self constraintViolation:annotations object:object key:property.name];
+    if (violation) return violation;
+  }
+  return nil;
 }
 
 - (NSString *)entitySetForEntity:(NSEntityDescription *)entity

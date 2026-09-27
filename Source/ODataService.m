@@ -128,9 +128,55 @@ NSString * const ODataUserInfoETag = @"OData.etag";
 @property (nonatomic, readwrite, strong) NSMutableDictionary *userInfo;
 @property (nonatomic, readwrite, strong, nullable) NSFetchRequest *collectionFetchRequest;
 @property (nonatomic, readwrite, strong, nullable) ODataPrincipal *principal;
+@property (nonatomic, strong) NSMutableArray<ODataMessage *> *pendingMessages;
 @end
 
 @implementation ODataRequest
+
+- (void)addMessage:(NSString *)message code:(NSString *)code severity:(NSString *)severity target:(NSString *)target
+{
+  @synchronized (self) {
+    if (!self.pendingMessages) self.pendingMessages = [NSMutableArray array];
+    [self.pendingMessages addObject:[ODataMessage messageWithCode:code text:message severity:severity target:target]];
+  }
+}
+
+- (NSArray *)messages
+{
+  @synchronized (self) {
+    return [self.pendingMessages copy] ?: @[];
+  }
+}
+
+// Whether Prefer: odata.include-annotations="..." takes this annotation
+// (Part 1 section 8.2.8.4): a list of terms, NS.* and *, each excluded with
+// a leading -, the most specific winning. None given: every one.
+- (BOOL)includesAnnotation:(NSString *)term
+{
+  NSString *preference = self.preferences[@"odata.include-annotations"] ?: self.preferences[@"include-annotations"];
+  if (!preference) return YES;
+  preference = [preference stringByTrimmingCharactersInSet:[NSCharacterSet characterSetWithCharactersInString:@"\" "]];
+  NSString *namespace = [term substringToIndex:[term rangeOfString:@"." options:NSBackwardsSearch].location];
+  NSDictionary *aliases = @{ @"Org.OData.Core.V1": @"Core" };
+  BOOL included = NO;
+  NSInteger best = -1;
+  for (NSString *raw in [preference componentsSeparatedByString:@","]) {
+    NSString *item = [raw stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceCharacterSet]];
+    BOOL exclude = [item hasPrefix:@"-"];
+    if (exclude) item = [item substringFromIndex:1];
+    NSString *short_ = aliases[namespace] ? [NSString stringWithFormat:@"%@%@", aliases[namespace], [term substringFromIndex:namespace.length]] : term;
+    NSInteger rank = -1;
+    if ([item isEqualToString:term] || [item isEqualToString:short_]) rank = 2;
+    else if ([item isEqualToString:[namespace stringByAppendingString:@".*"]] ||
+             (aliases[namespace] && [item isEqualToString:[aliases[namespace] stringByAppendingString:@".*"]])) rank = 1;
+    else if ([item isEqualToString:@"*"]) rank = 0;
+    if (rank > best || (rank == best && exclude)) {
+      best = rank;
+      included = !exclude;
+    }
+  }
+  return best >= 0 && included;
+}
 
 - (instancetype)initWithURLRequest:(NSURLRequest *)request
 {
@@ -169,6 +215,8 @@ NSString * const ODataUserInfoETag = @"OData.etag";
   if (!self) return nil;
   _entity = entity;
   _allowsInsert = YES;
+  _nonFilterableProperties = [NSSet set];
+  _nonSortableProperties = [NSSet set];
   _allowsUpdate = YES;
   _allowsDelete = YES;
   return self;
@@ -259,6 +307,9 @@ NSString * const ODataUserInfoETag = @"OData.etag";
 @property (nonatomic, strong) OISOperationCatalog *catalog;
 @property (nonatomic) BOOL prepared;
 - (ODataEntitySetHandler *)handlerForEntity:(NSEntityDescription *)entity;
+- (BOOL)isComputedAttribute:(NSAttributeDescription *)attribute;
+- (BOOL)isImmutableAttribute:(NSAttributeDescription *)attribute;
+- (NSDictionary *)metadataContainerAnnotations;
 - (NSString *)entitySetForEntity:(NSEntityDescription *)entity;
 - (NSAttributeDescription *)versionAttributeOfEntity:(NSEntityDescription *)entity;
 @end
@@ -388,6 +439,13 @@ typedef NS_ENUM(NSInteger, OISTargetKind) {
 
 - (void)respondJSON:(id)json status:(NSInteger)status headers:(NSDictionary *)headers
 {
+  NSArray *messages = self.request.messages;
+  if (messages.count && [json isKindOfClass:[NSDictionary class]] && ![json objectForKey:@"error"] &&
+      [self.request includesAnnotation:@"Org.OData.Core.V1.Messages"]) {
+    NSMutableDictionary *annotated = [json mutableCopy];
+    annotated[ODataMessagesAnnotation] = [messages valueForKey:@"JSONObject"];
+    json = annotated;
+  }
   NSError *error = nil;
   NSData *data = [NSJSONSerialization dataWithJSONObject:json options:0 error:&error];
   if (!data) {
@@ -634,7 +692,23 @@ typedef NS_ENUM(NSInteger, OISTargetKind) {
 {
   NSMutableDictionary *preferences = [NSMutableDictionary dictionary];
   NSString *prefer = [self.request valueForHeader:@"Prefer"];
-  for (NSString *item in prefer.length ? [prefer componentsSeparatedByString:@","] : @[]) {
+  // Split at commas outside quotes (RFC 7240): include-annotations="-*,Core.*"
+  // is one preference.
+  NSMutableArray *items = [NSMutableArray array];
+  NSMutableString *current = [NSMutableString string];
+  BOOL quoted = NO;
+  for (NSUInteger i = 0; i < prefer.length; i++) {
+    unichar c = [prefer characterAtIndex:i];
+    if (c == '"') quoted = !quoted;
+    if (c == ',' && !quoted) {
+      [items addObject:[current copy]];
+      [current setString:@""];
+      continue;
+    }
+    [current appendFormat:@"%C", c];
+  }
+  if (current.length) [items addObject:current];
+  for (NSString *item in items) {
     NSString *part = [[item componentsSeparatedByString:@";"][0] stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceCharacterSet]];
     NSRange equals = [part rangeOfString:@"="];
     NSString *name = (equals.location == NSNotFound ? part : [part substringToIndex:equals.location]).lowercaseString;
@@ -669,7 +743,12 @@ typedef NS_ENUM(NSInteger, OISTargetKind) {
     return;
   }
   ODataPrincipal *principal = [reply.result isKindOfClass:[ODataPrincipal class]] ? reply.result : nil;
-  if (!principal && !self.service.allowsAnonymousRequests) {
+  NSString *path = self.request.URLRequest.URL.path ?: @"";
+  NSString *root = self.service.serviceRoot.path ?: @"/";
+  if (![root hasSuffix:@"/"]) root = [root stringByAppendingString:@"/"];
+  BOOL metadata = [path isEqualToString:root] || [path isEqualToString:[root substringToIndex:root.length - 1]] ||
+                  [path isEqualToString:[root stringByAppendingString:@"$metadata"]];
+  if (!principal && !self.service.allowsAnonymousRequests && !(metadata && self.service.allowsAnonymousMetadata)) {
     [self fail:401 message:@"The request names no one: sign in"];
     return;
   }
@@ -2258,7 +2337,14 @@ static NSNumber *OISScalarReturnValue(NSInvocation *invocation, char type)
         return nil;
       }
       NSAttributeDescription *attribute = (NSAttributeDescription *)property;
+      // Core.Computed, or read only: the service's to set, whatever a body
+      // says.
+      if ([self.service isComputedAttribute:attribute]) continue;
       if (value == [NSNull null]) {
+        if (object && [self.service isImmutableAttribute:attribute] && [object valueForKey:attribute.name]) {
+          [self fail:400 message:[NSString stringWithFormat:@"%@ cannot change", name]];
+          return nil;
+        }
         values[attribute.name] = [NSNull null];
         continue;
       }
@@ -2266,6 +2352,14 @@ static NSNumber *OISScalarReturnValue(NSInvocation *invocation, char type)
       if (!converted || converted == [NSNull null]) {
         [self fail:400 message:[NSString stringWithFormat:@"%@ is not a value of %@", value, name]];
         return nil;
+      }
+      // Core.Immutable: set when the entity is made, and not after.
+      if (object && [self.service isImmutableAttribute:attribute]) {
+        if (![converted isEqual:[object valueForKey:attribute.name]]) {
+          [self fail:400 message:[NSString stringWithFormat:@"%@ cannot change", name]];
+          return nil;
+        }
+        continue;
       }
       values[attribute.name] = converted;
       continue;
@@ -2712,6 +2806,7 @@ static NSNumber *OISScalarReturnValue(NSInvocation *invocation, char type)
     NSArray *key = [self.mapper keyAttributesForEntity:OISRootEntity(object.entity)];
     for (NSAttributeDescription *attribute in [self servedAttributesOf:object.entity]) {
       if ([key containsObject:attribute] || attribute == version || values[attribute.name]) continue;
+      if ([self.service isComputedAttribute:attribute] || [self.service isImmutableAttribute:attribute]) continue;
       values[attribute.name] = attribute.defaultValue ?: [NSNull null];
     }
   }
@@ -2772,6 +2867,20 @@ static NSNumber *OISScalarReturnValue(NSInvocation *invocation, char type)
 
 - (BOOL)save
 {
+  // What Core Data's validation cannot hold: Validation.MultipleOf and
+  // Validation.Constraint, of every object this request inserts or updates
+  // (in a change set, of everything it has changed so far).
+  NSManagedObjectContext *context = self.request.context;
+  for (NSSet *changed in @[ context.insertedObjects, context.updatedObjects ]) {
+    for (NSManagedObject *object in changed) {
+      NSError *violation = [self.mapper vocabularyViolationOfObject:object];
+      if (violation) {
+        [context rollback];
+        [self respondError:violation];
+        return NO;
+      }
+    }
+  }
   if (!self.saves) return YES;
   NSError *error = nil;
   if ([self.request.context save:&error]) return YES;
@@ -2833,6 +2942,22 @@ static NSNumber *OISScalarReturnValue(NSInvocation *invocation, char type)
     NSMutableDictionary *types = [NSMutableDictionary dictionary];
     for (NSEntityDescription *entity in writer.entities) types[[writer typeNameForEntity:entity]] = entity;
     self.predicates.entitiesByTypeName = types;
+    // What each set's handler, as it is now, lets $filter and $orderby use.
+    __weak ODataService *weakService = self;
+    self.predicates.restrictedProperties = ^NSSet *(NSEntityDescription *entity, BOOL sorting) {
+      ODataService *service = weakService;
+      ODataEntitySetHandler *handler = [service handlerForEntity:entity];
+      NSSet *wire = sorting ? handler.nonSortableProperties : handler.nonFilterableProperties;
+      if (!wire.count) return nil;
+      NSMutableSet *names = [NSMutableSet set];
+      for (NSPropertyDescription *property in entity.properties) {
+        NSString *name = [property isKindOfClass:[NSAttributeDescription class]]
+            ? [service.mapper propertyForAttribute:(NSAttributeDescription *)property]
+            : [service.mapper propertyForRelationship:(NSRelationshipDescription *)property];
+        if ([wire containsObject:name]) [names addObject:property.name];
+      }
+      return names;
+    };
     for (NSEntityDescription *entity in writer.entities) {
       if (entity.superentity) continue;
       NSString *set = [self.mapper entitySetForEntity:entity];
@@ -2881,6 +3006,65 @@ static NSNumber *OISScalarReturnValue(NSInvocation *invocation, char type)
   }
 }
 
+
+// Core.Computed: derived, the version, or userInfo says so (or read only).
+- (BOOL)isComputedAttribute:(NSAttributeDescription *)attribute
+{
+  Class derived = NSClassFromString(@"NSDerivedAttributeDescription");
+  if (derived && [attribute isKindOfClass:derived]) return YES;
+  if (attribute == [self versionAttributeOfEntity:attribute.entity]) return YES;
+  id computed = attribute.userInfo[ODataUserInfoComputed];
+  if ([computed respondsToSelector:@selector(boolValue)] && [computed boolValue]) return YES;
+  NSString *permissions = attribute.userInfo[ODataUserInfoPermissions];
+  return [permissions isEqual:@"Read"] || [permissions isEqual:@"None"];
+}
+
+- (BOOL)isImmutableAttribute:(NSAttributeDescription *)attribute
+{
+  id immutable = attribute.userInfo[ODataUserInfoImmutable];
+  return [immutable respondsToSelector:@selector(boolValue)] && [immutable boolValue];
+}
+
+// The container's annotations: the application's, and how to sign in, as
+// the authenticator describes it (the Authorization vocabulary).
+- (NSDictionary *)metadataContainerAnnotations
+{
+  // What the service does, as the Capabilities vocabulary says it; the
+  // application's own annotations go over these.
+  NSString *capabilities = @"Org.OData.Capabilities.V1.";
+  NSMutableDictionary *annotations = [NSMutableDictionary dictionary];
+  annotations[[capabilities stringByAppendingString:@"ConformanceLevel"]] = @{ @"$EnumMember": @"Org.OData.Capabilities.V1.ConformanceLevelType/Intermediate" };
+  annotations[[capabilities stringByAppendingString:@"KeyAsSegmentSupported"]] = @YES;
+  annotations[[capabilities stringByAppendingString:@"AsynchronousRequestsSupported"]] = @NO;
+  annotations[[capabilities stringByAppendingString:@"IndexableByKey"]] = @YES;
+  annotations[[capabilities stringByAppendingString:@"TopSupported"]] = @YES;
+  annotations[[capabilities stringByAppendingString:@"SkipSupported"]] = @YES;
+  annotations[[capabilities stringByAppendingString:@"BatchSupported"]] = @YES;
+  annotations[[capabilities stringByAppendingString:@"BatchSupport"]] = @{
+    @"Supported": @YES, @"ContinueOnErrorSupported": @YES, @"ReferencesInRequestBodiesSupported": @YES,
+    @"ReferencesAcrossChangeSetsSupported": @NO, @"EtagReferencesSupported": @NO, @"RequestDependencyConditionsSupported": @NO,
+    @"SupportedFormats": @[ @"multipart/mixed", @"application/json" ] };
+  annotations[[capabilities stringByAppendingString:@"SelectSupport"]] = @{ @"Supported": @YES, @"Expandable": @YES, @"Filterable": @YES,
+                                                                            @"Sortable": @YES, @"TopSupported": @YES, @"SkipSupported": @YES,
+                                                                            @"Countable": @YES, @"ComputeSupported": @NO, @"Searchable": @NO };
+  annotations[[capabilities stringByAppendingString:@"DeepInsertSupport"]] = @{ @"Supported": @YES, @"ContentIDSupported": @YES };
+  annotations[[capabilities stringByAppendingString:@"DeepUpdateSupport"]] = @{ @"Supported": @YES, @"ContentIDSupported": @YES };
+  annotations[[capabilities stringByAppendingString:@"FilterFunctions"]] = @[ @"contains", @"startswith", @"endswith", @"tolower", @"toupper",
+                                                                                @"length", @"year", @"date", @"floor", @"ceiling", @"round",
+                                                                                @"now", @"cast", @"isof", @"matchesPattern" ];
+  [annotations addEntriesFromDictionary:self.containerAnnotations ?: @{}];
+  id<ODataAuthenticator> authenticator = self.authenticator;
+  NSDictionary *authorization = [authenticator respondsToSelector:@selector(authorizationDescription)] ? [authenticator authorizationDescription] : nil;
+  if (authorization && !annotations[@"Authorization.Authorizations"] && !annotations[@"Org.OData.Authorization.V1.Authorizations"]) {
+    annotations[@"Org.OData.Authorization.V1.Authorizations"] = @[ authorization ];
+    NSMutableDictionary *scheme = [NSMutableDictionary dictionaryWithObject:authorization[@"Name"] ?: @"" forKey:@"Authorization"];
+    NSSet *scopes = [(id)authenticator respondsToSelector:@selector(requiredScopes)] ? [(id)authenticator requiredScopes] : nil;
+    scheme[@"RequiredScopes"] = [scopes.allObjects sortedArrayUsingSelector:@selector(compare:)] ?: @[];
+    annotations[@"Org.OData.Authorization.V1.SecuritySchemes"] = @[ scheme ];
+  }
+  return annotations;
+}
+
 - (NSAttributeDescription *)versionAttributeOfEntity:(NSEntityDescription *)entity
 {
   for (NSAttributeDescription *attribute in entity.attributesByName.allValues) {
@@ -2897,6 +3081,7 @@ static NSNumber *OISScalarReturnValue(NSInvocation *invocation, char type)
     // What the handlers allow, as they are now: a handler may be replaced,
     // or change its mind, after the first request.
     NSMutableDictionary *restrictions = [NSMutableDictionary dictionary];
+    NSMutableDictionary *setAnnotations = [NSMutableDictionary dictionary];
     NSMutableString *signature = [NSMutableString stringWithString:version];
     for (NSString *set in [self.handlers.allKeys sortedArrayUsingSelector:@selector(compare:)]) {
       ODataEntitySetHandler *handler = self.handlers[set];
@@ -2908,10 +3093,32 @@ static NSNumber *OISScalarReturnValue(NSInvocation *invocation, char type)
         restrictions[set] = refused;
         [signature appendFormat:@";%@:%@", set, [[refused.allObjects sortedArrayUsingSelector:@selector(compare:)] componentsJoinedByString:@","]];
       }
+      // No $search here; and what $filter and $orderby may not use.
+      NSMutableDictionary *capabilities = [@{ @"Org.OData.Capabilities.V1.SearchRestrictions": @{ @"Searchable": @NO } } mutableCopy];
+      NSArray *(^paths)(NSSet *) = ^NSArray *(NSSet *names) {
+        NSMutableArray *out = [NSMutableArray array];
+        for (NSString *name in [names.allObjects sortedArrayUsingSelector:@selector(compare:)]) [out addObject:@{ @"$PropertyPath": name }];
+        return out;
+      };
+      if (handler.nonFilterableProperties.count) {
+        capabilities[@"Org.OData.Capabilities.V1.FilterRestrictions"] = @{ @"NonFilterableProperties": paths(handler.nonFilterableProperties) };
+        [signature appendFormat:@";%@ filter:%@", set, [paths(handler.nonFilterableProperties) valueForKey:@"$PropertyPath"]];
+      }
+      if (handler.nonSortableProperties.count) {
+        capabilities[@"Org.OData.Capabilities.V1.SortRestrictions"] = @{ @"NonSortableProperties": paths(handler.nonSortableProperties) };
+        [signature appendFormat:@";%@ sort:%@", set, [paths(handler.nonSortableProperties) valueForKey:@"$PropertyPath"]];
+      }
+      setAnnotations[set] = capabilities;
     }
+    // The container's: the authenticator, or the application's, may be set
+    // after the first request.
+    NSDictionary *container = [self metadataContainerAnnotations];
+    [signature appendFormat:@";container:%lu", (unsigned long)container.description.hash];
     NSString *xml = self.metadataByVersion[signature];
     if (!xml) {
+      self.writer.containerAnnotations = container;
       self.writer.restrictions = restrictions;
+      self.writer.entitySetAnnotations = setAnnotations;
       xml = [self.writer XMLStringForVersion:version];
       self.metadataByVersion[signature] = xml;
     }

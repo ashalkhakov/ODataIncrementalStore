@@ -24,6 +24,25 @@ NS_ASSUME_NONNULL_BEGIN
 - (nullable id)JSONWithError:(NSError **)error;
 @end
 
+// Core.Messages (the Core vocabulary's MessageType): what a service says
+// of a request it answered, alongside the answer: a price rounded, a
+// field ignored. In a JSON body as the instance annotation
+// @Org.OData.Core.V1.Messages (or @Core.Messages), of the whole response
+// or of one entity in it.
+@interface ODataMessage : NSObject
++ (instancetype)messageWithCode:(NSString *)code text:(NSString *)text severity:(NSString *)severity target:(nullable NSString *)target;
+@property (nonatomic, copy) NSString *code;
+@property (nonatomic, copy) NSString *message;
+@property (nonatomic, copy) NSString *severity;  // success, info, warning, error
+@property (nonatomic, copy, nullable) NSString *target;
+@property (nonatomic, copy) NSArray<ODataMessage *> *details;
+// The messages an object of a JSON body carries: nil for none.
++ (nullable NSArray<ODataMessage *> *)messagesInJSON:(nullable id)json;
+- (NSDictionary *)JSONObject;
+@end
+
+FOUNDATION_EXPORT NSString * const ODataMessagesAnnotation;  // @"@Org.OData.Core.V1.Messages"
+
 // The same, for JSON already parsed, from a payload of this OData-Version.
 FOUNDATION_EXPORT id ODataNormalizedControlInformation(id json, NSString * _Nullable version);
 

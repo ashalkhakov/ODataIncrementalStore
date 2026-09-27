@@ -45,6 +45,24 @@
 @implementation ODataSchemaOperationImport
 @end
 
+@implementation ODataSchemaAuthorization
+- (BOOL)usesBearerToken
+{
+  if ([self.kind isEqualToString:@"Http"]) return [self.scheme caseInsensitiveCompare:@"bearer"] == NSOrderedSame;
+  return [self.kind isEqualToString:@"OpenIDConnect"] || [self.kind hasPrefix:@"OAuth2"];
+}
+
+- (NSString *)description
+{
+  NSMutableString *text = [NSMutableString stringWithString:self.kind];
+  if (self.issuerURL) [text appendFormat:@" (issuer %@)", self.issuerURL.absoluteString];
+  if (self.scheme) [text appendFormat:@" (%@)", self.scheme];
+  if (self.keyName) [text appendFormat:@" (%@ in the %@)", self.keyName, self.location ?: @"Header"];
+  if (self.requiredScopes.count) [text appendFormat:@", scopes %@", [self.requiredScopes componentsJoinedByString:@" "]];
+  return text;
+}
+@end
+
 // Reads CSDL XML into the schema's dictionaries. Element names are taken
 // without their prefix (edmx:Edmx, Edmx), so a document is read the same
 // with or without namespace prefixes.
@@ -57,7 +75,11 @@
 @property (nonatomic, strong) NSMutableDictionary *operations;        // qualified name -> NSMutableArray
 @property (nonatomic, strong) NSMutableDictionary *operationImports;  // name -> import
 @property (nonatomic, strong) NSMutableDictionary *aliases;  // alias -> namespace
-@property (nonatomic) BOOL keyAsSegmentSupported;
+// Each annotation as written: @[ target, term (Term#Qualifier, and
+// Outer@Inner for one of an annotation), value ], qualified once every
+// alias is known.
+@property (nonatomic, strong) NSMutableArray<NSArray *> *annotations;
+@property (nonatomic, copy) NSString *containerName;
 @property (nonatomic, copy) NSString *version;
 @end
 
@@ -75,6 +97,10 @@
   NSMutableDictionary *_memberValues;
   BOOL _inKey;
   BOOL _inContainer;
+  NSString *_container;        // qualified
+  NSString *_member;           // the property, set or enum member annotations inside it are of
+  NSString *_annotationsTarget;  // <Annotations Target="...">
+  NSMutableArray<NSMutableDictionary *> *_frames;  // an annotation's expression, being read
 }
 
 - (instancetype)init
@@ -89,7 +115,143 @@
   _operations = [NSMutableDictionary dictionary];
   _operationImports = [NSMutableDictionary dictionary];
   _aliases = [NSMutableDictionary dictionary];
+  _annotations = [NSMutableArray array];
+  _frames = [NSMutableArray array];
   return self;
+}
+
+#pragma mark Annotations
+
+// What an inline annotation is of: the element it is in.
+- (NSString *)currentTarget
+{
+  if (_annotationsTarget) return _annotationsTarget;
+  NSString *owner = _entityType.qualifiedName ?: _complexType.qualifiedName ?: _enumType.qualifiedName ?: (_inContainer ? _container : nil);
+  if (!owner) return nil;
+  return _member ? [NSString stringWithFormat:@"%@/%@", owner, _member] : owner;
+}
+
+static NSSet *OISConstantExpressions(void)
+{
+  static NSSet *names;
+  static dispatch_once_t once;
+  dispatch_once(&once, ^{
+    names = [NSSet setWithObjects:@"String", @"Bool", @"Int", @"Decimal", @"Float", @"Date", @"DateTimeOffset", @"Duration",
+                                  @"Guid", @"TimeOfDay", @"Binary", @"EnumMember", @"Path", @"PropertyPath",
+                                  @"NavigationPropertyPath", @"AnnotationPath", @"ModelElementPath", @"UrlRef", @"Null", nil];
+  });
+  return names;
+}
+
+// A constant as JSON CSDL writes it: a string, a number, a Boolean, an
+// enumeration's member names (Core.Permission/Read Core.Permission/Write
+// is "Read,Write"), a path as {"$Path": ...}.
+static id OISConstant(NSString *kind, NSString *text)
+{
+  if ([kind isEqualToString:@"Bool"]) return @([text isEqualToString:@"true"]);
+  if ([kind isEqualToString:@"Int"]) return @([text longLongValue]);
+  if ([kind isEqualToString:@"Decimal"]) return [NSDecimalNumber decimalNumberWithString:text];
+  if ([kind isEqualToString:@"Float"]) return @([text doubleValue]);
+  if ([kind isEqualToString:@"Null"]) return [NSNull null];
+  if ([kind isEqualToString:@"EnumMember"]) {
+    NSMutableArray *members = [NSMutableArray array];
+    for (NSString *part in [text componentsSeparatedByCharactersInSet:[NSCharacterSet whitespaceAndNewlineCharacterSet]]) {
+      if (!part.length) continue;
+      NSRange slash = [part rangeOfString:@"/" options:NSBackwardsSearch];
+      [members addObject:slash.location == NSNotFound ? part : [part substringFromIndex:slash.location + 1]];
+    }
+    return [members componentsJoinedByString:@","];
+  }
+  if ([@[ @"Path", @"PropertyPath", @"NavigationPropertyPath", @"AnnotationPath", @"ModelElementPath", @"UrlRef" ] containsObject:kind]) {
+    return @{ [@"$" stringByAppendingString:kind]: text };
+  }
+  return text;
+}
+
+// An annotation's or a property value's value given as an attribute.
+static id OISInlineValue(NSDictionary *attributes)
+{
+  for (NSString *kind in OISConstantExpressions()) {
+    NSString *text = attributes[kind];
+    if (text) return OISConstant(kind, text);
+  }
+  return nil;
+}
+
+- (void)startAnnotationElement:(NSString *)element attributes:(NSDictionary *)attributes
+{
+  NSMutableDictionary *frame = [@{ @"element": element, @"attributes": attributes ?: @{},
+                                   @"children": [NSMutableArray array], @"text": [NSMutableString string] } mutableCopy];
+  [_frames addObject:frame];
+}
+
+// The value of a frame now closed.
+- (id)valueOfFrame:(NSDictionary *)frame
+{
+  NSString *element = frame[@"element"];
+  NSDictionary *attributes = frame[@"attributes"];
+  NSArray *children = frame[@"children"];
+  if ([OISConstantExpressions() containsObject:element]) {
+    return OISConstant(element, [frame[@"text"] stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceAndNewlineCharacterSet]]);
+  }
+  if ([element isEqualToString:@"Collection"]) return [children copy];
+  if ([element isEqualToString:@"Record"]) {
+    NSMutableDictionary *record = [NSMutableDictionary dictionary];
+    if (attributes[@"Type"]) record[@"@type"] = attributes[@"Type"];
+    for (id child in children) {
+      if ([child isKindOfClass:[NSArray class]] && [child count] == 2) record[child[0]] = child[1];
+    }
+    return record;
+  }
+  if ([element isEqualToString:@"PropertyValue"]) {
+    id value = OISInlineValue(attributes) ?: children.firstObject ?: @YES;
+    return @[ attributes[@"Property"] ?: @"", value ];
+  }
+  // A dynamic expression: If, Eq, Not, Apply, Cast, IsOf, ... with its
+  // operands, and its attributes (Apply's Function, Cast's Type).
+  NSMutableDictionary *dynamic = [NSMutableDictionary dictionaryWithObject:[children copy] forKey:[@"$" stringByAppendingString:element]];
+  for (NSString *name in attributes) dynamic[[@"$" stringByAppendingString:name]] = attributes[name];
+  return dynamic;
+}
+
+- (void)endAnnotationElement
+{
+  NSMutableDictionary *frame = _frames.lastObject;
+  [_frames removeLastObject];
+  if ([frame[@"element"] isEqualToString:@"Annotation"]) {
+    NSDictionary *attributes = frame[@"attributes"];
+    NSString *term = attributes[@"Term"];
+    NSArray *children = frame[@"children"];
+    id value = OISInlineValue(attributes) ?: children.firstObject ?: @YES;  // a tag is true
+    NSString *keyed = term;
+    if ([attributes[@"Qualifier"] length]) keyed = [NSString stringWithFormat:@"%@#%@", term, attributes[@"Qualifier"]];
+    if (_frames.count) {
+      // An annotation of the annotation: Outer@Inner, as JSON CSDL keys
+      // it. One of a record inside it is read past.
+      NSMutableDictionary *parent = _frames.lastObject;
+      if (term && [parent[@"element"] isEqualToString:@"Annotation"] && parent[@"target"]) {
+        if (!parent[@"nested"]) parent[@"nested"] = [NSMutableArray array];
+        [parent[@"nested"] addObject:@[ keyed, value ]];
+      }
+      return;
+    }
+    NSString *target = frame[@"target"];
+    if (!target || !term) return;
+    [self.annotations addObject:@[ target, keyed, value ]];
+    for (NSArray *nested in frame[@"nested"]) {
+      [self.annotations addObject:@[ target, [NSString stringWithFormat:@"%@@%@", keyed, nested[0]], nested[1] ]];
+    }
+    return;
+  }
+  id value = [self valueOfFrame:frame];
+  NSMutableDictionary *parent = _frames.lastObject;
+  if (parent && value) [parent[@"children"] addObject:value];
+}
+
+- (void)parser:(NSXMLParser *)parser foundCharacters:(NSString *)string
+{
+  NSMutableDictionary *frame = _frames.lastObject;
+  if (frame) [frame[@"text"] appendString:string];
 }
 
 static NSString *OISLocalName(NSString *name)
@@ -110,8 +272,23 @@ static NSString *OISLocalName(NSString *name)
          attributes:(NSDictionary *)attributes
 {
   NSString *element = OISLocalName(elementName);
+  if (_frames.count) {
+    [self startAnnotationElement:element attributes:attributes];
+    return;
+  }
+  if ([element isEqualToString:@"Annotation"]) {
+    [self startAnnotationElement:element attributes:attributes];
+    NSString *target = [self currentTarget];
+    if (target) _frames.lastObject[@"target"] = target;
+    return;
+  }
   if ([element isEqualToString:@"Edmx"]) {
     self.version = attributes[@"Version"];
+  } else if ([element isEqualToString:@"Include"]) {
+    // <edmx:Reference><edmx:Include Namespace="Org.OData.Core.V1" Alias="Core"/>
+    if (attributes[@"Alias"] && attributes[@"Namespace"]) _aliases[attributes[@"Alias"]] = attributes[@"Namespace"];
+  } else if ([element isEqualToString:@"Annotations"]) {
+    _annotationsTarget = attributes[@"Target"];
   } else if ([element isEqualToString:@"Schema"]) {
     _namespace = attributes[@"Namespace"];
     if (attributes[@"Alias"] && _namespace) _aliases[attributes[@"Alias"]] = _namespace;
@@ -147,7 +324,10 @@ static NSString *OISLocalName(NSString *name)
     property.name = attributes[@"Name"] ?: @"";
     property.type = attributes[@"Type"] ?: @"Edm.String";
     property.nullable = ![attributes[@"Nullable"] isEqualToString:@"false"];
+    NSString *maxLength = attributes[@"MaxLength"];
+    if (maxLength.length && ![maxLength isEqualToString:@"max"]) property.maxLength = @([maxLength longLongValue]);
     _properties[property.name] = property;
+    _member = property.name;
   } else if (_entityType && [element isEqualToString:@"NavigationProperty"]) {
     ODataSchemaNavigationProperty *navigation = [[ODataSchemaNavigationProperty alloc] init];
     navigation.name = attributes[@"Name"] ?: @"";
@@ -160,6 +340,7 @@ static NSString *OISLocalName(NSString *name)
     navigation.containsTarget = [attributes[@"ContainsTarget"] isEqualToString:@"true"];
     navigation.partner = attributes[@"Partner"];
     _navigation[navigation.name] = navigation;
+    _member = navigation.name;
   } else if ([element isEqualToString:@"EnumType"]) {
     _enumType = [[ODataSchemaEnumType alloc] init];
     _enumType.name = attributes[@"Name"] ?: @"";
@@ -174,6 +355,7 @@ static NSString *OISLocalName(NSString *name)
       NSNumber *value = attributes[@"Value"] ? @([attributes[@"Value"] longLongValue]) : @(_memberNames.count);
       [_memberNames addObject:name];
       _memberValues[name] = value;
+      _member = name;
     }
   } else if ([element isEqualToString:@"Function"] || [element isEqualToString:@"Action"]) {
     _operation = [[ODataSchemaOperation alloc] init];
@@ -198,18 +380,15 @@ static NSString *OISLocalName(NSString *name)
     import.operation = (import.isAction ? attributes[@"Action"] : attributes[@"Function"]) ?: @"";
     import.entitySet = attributes[@"EntitySet"];
     if (import.name.length) _operationImports[import.name] = import;
-  } else if ([element isEqualToString:@"Annotation"]) {
-    // On the container, or in <Annotations Target="NS.Container">; the
-    // term under any alias of Org.OData.Capabilities.V1. A tag: true
-    // unless it says Bool="false".
-    NSString *term = attributes[@"Term"] ?: @"";
-    if ([term hasSuffix:@".KeyAsSegmentSupported"] && ![attributes[@"Bool"] isEqualToString:@"false"]) {
-      self.keyAsSegmentSupported = YES;
-    }
   } else if ([element isEqualToString:@"EntityContainer"]) {
     _inContainer = YES;
+    _container = [self qualify:attributes[@"Name"] ?: @""];
+    self.containerName = _container;
   } else if (_inContainer && [element isEqualToString:@"EntitySet"]) {
     if (attributes[@"Name"] && attributes[@"EntityType"]) _entitySets[attributes[@"Name"]] = attributes[@"EntityType"];
+    _member = attributes[@"Name"];
+  } else if (_inContainer && [element isEqualToString:@"Singleton"]) {
+    _member = attributes[@"Name"];
   }
 }
 
@@ -219,6 +398,15 @@ static NSString *OISLocalName(NSString *name)
     qualifiedName:(NSString *)qName
 {
   NSString *element = OISLocalName(elementName);
+  if (_frames.count) {
+    [self endAnnotationElement];
+    return;
+  }
+  if ([@[ @"Property", @"NavigationProperty", @"EntitySet", @"Singleton", @"Member" ] containsObject:element]) {
+    _member = nil;
+  } else if ([element isEqualToString:@"Annotations"]) {
+    _annotationsTarget = nil;
+  }
   if ([element isEqualToString:@"ComplexType"] && _complexType) {
     _complexType.declaredProperties = _properties;
     _complexTypes[_complexType.qualifiedName] = _complexType;
@@ -251,6 +439,22 @@ static NSString *OISLocalName(NSString *name)
 
 @implementation ODataSchema {
   NSDictionary *_aliases;
+}
+
+// The standard vocabularies' namespaces, by the names they go by.
+static NSDictionary<NSString *, NSString *> *OISStandardVocabularies(void)
+{
+  static NSDictionary *vocabularies;
+  static dispatch_once_t once;
+  dispatch_once(&once, ^{
+    NSMutableDictionary *all = [NSMutableDictionary dictionary];
+    for (NSString *name in @[ @"Core", @"Capabilities", @"Validation", @"Authorization", @"Measures", @"Aggregation",
+                              @"Temporal", @"JSON", @"Repeatability" ]) {
+      all[name] = [NSString stringWithFormat:@"Org.OData.%@.V1", name];
+    }
+    vocabularies = all;
+  });
+  return vocabularies;
 }
 
 + (instancetype)schemaWithData:(NSData *)csdl error:(NSError **)error
@@ -317,9 +521,125 @@ static NSString *OISLocalName(NSString *name)
   schema->_complexTypes = [reader.complexTypes copy];
   schema->_enumTypes = [reader.enumTypes copy];
   schema->_entitySets = [sets copy];
-  schema->_keyAsSegmentSupported = reader.keyAsSegmentSupported;
+  NSMutableDictionary *annotations = [NSMutableDictionary dictionary];
+  for (NSArray *annotation in reader.annotations) {
+    NSString *target = [schema qualifiedTarget:annotation[0]];
+    NSString *term = [schema qualifiedTerm:annotation[1]];
+    NSMutableDictionary *terms = annotations[target];
+    if (!terms) annotations[target] = terms = [NSMutableDictionary dictionary];
+    terms[term] = annotation[2];
+  }
+  schema->_annotations = [annotations copy];
+  schema->_containerName = [reader.containerName copy];
+  schema->_authorizations = [schema readAuthorizations];
+  // Capabilities.KeyAsSegmentSupported, on the container.
+  for (NSString *target in annotations) {
+    id value = annotations[target][@"Org.OData.Capabilities.V1.KeyAsSegmentSupported"];
+    if ([value isEqual:@YES] && [target rangeOfString:@"/"].location == NSNotFound) schema->_keyAsSegmentSupported = YES;
+  }
   schema->_version = [reader.version copy] ?: @"4.0";
   return schema;
+}
+
+// A target: its first segment qualified (Self.Product/Name is
+// NS.Product/Name).
+- (NSString *)qualifiedTarget:(NSString *)target
+{
+  NSRange slash = [target rangeOfString:@"/"];
+  NSString *head = slash.location == NSNotFound ? target : [target substringToIndex:slash.location];
+  NSRange paren = [head rangeOfString:@"("];
+  NSString *name = paren.location == NSNotFound ? head : [head substringToIndex:paren.location];
+  NSString *qualified = [self qualifiedName:name];
+  return [qualified stringByAppendingString:[target substringFromIndex:name.length]];
+}
+
+- (NSString *)qualifiedTerm:(NSString *)term
+{
+  if ([term rangeOfString:@"@"].location != NSNotFound) {
+    NSMutableArray *parts = [NSMutableArray array];
+    for (NSString *part in [term componentsSeparatedByString:@"@"]) [parts addObject:[self qualifiedTerm:part]];
+    return [parts componentsJoinedByString:@"@"];
+  }
+  NSRange hash = [term rangeOfString:@"#"];
+  NSString *name = hash.location == NSNotFound ? term : [term substringToIndex:hash.location];
+  NSString *qualifier = hash.location == NSNotFound ? @"" : [term substringFromIndex:hash.location];
+  NSString *qualified = [self qualifiedName:name];
+  if ([qualified isEqualToString:name]) {
+    NSRange dot = [name rangeOfString:@"." options:NSBackwardsSearch];
+    NSString *vocabulary = dot.location == NSNotFound ? nil : OISStandardVocabularies()[[name substringToIndex:dot.location]];
+    if (vocabulary) qualified = [vocabulary stringByAppendingString:[name substringFromIndex:dot.location]];
+  }
+  return [qualified stringByAppendingString:qualifier];
+}
+
+- (NSDictionary<NSString *, id> *)annotationsForTarget:(NSString *)target
+{
+  return self.annotations[[self qualifiedTarget:target]] ?: @{};
+}
+
+- (id)annotation:(NSString *)term forTarget:(NSString *)target
+{
+  return [self annotationsForTarget:target][[self qualifiedTerm:term]];
+}
+
+- (NSArray *)readAuthorizations
+{
+  if (!self.containerName) return @[];
+  NSArray *declared = [self annotation:@"Authorization.Authorizations" forTarget:self.containerName];
+  if (![declared isKindOfClass:[NSArray class]]) return @[];
+  NSMutableDictionary *byName = [NSMutableDictionary dictionary];
+  NSMutableArray *order = [NSMutableArray array];
+  for (NSDictionary *record in declared) {
+    if (![record isKindOfClass:[NSDictionary class]]) continue;
+    ODataSchemaAuthorization *authorization = [[ODataSchemaAuthorization alloc] init];
+    NSString *type = [record[@"@type"] isKindOfClass:[NSString class]] ? record[@"@type"] : @"";
+    authorization.kind = [type componentsSeparatedByString:@"."].lastObject;
+    authorization.name = [record[@"Name"] isKindOfClass:[NSString class]] ? record[@"Name"] : authorization.kind;
+    authorization.text = [record[@"Description"] isKindOfClass:[NSString class]] ? record[@"Description"] : nil;
+    NSURL * (^url)(NSString *) = ^NSURL *(NSString *key) {
+      return [record[key] isKindOfClass:[NSString class]] ? [NSURL URLWithString:record[key]] : nil;
+    };
+    authorization.issuerURL = url(@"IssuerUrl");
+    authorization.tokenURL = url(@"TokenUrl");
+    authorization.authorizationURL = url(@"AuthorizationUrl");
+    authorization.scheme = [record[@"Scheme"] isKindOfClass:[NSString class]] ? record[@"Scheme"] : nil;
+    authorization.keyName = [record[@"KeyName"] isKindOfClass:[NSString class]] ? record[@"KeyName"] : nil;
+    id location = record[@"Location"];
+    if ([location isKindOfClass:[NSDictionary class]]) location = [[location[@"$EnumMember"] description] componentsSeparatedByString:@"/"].lastObject;
+    authorization.location = [location isKindOfClass:[NSString class]] ? location : nil;
+    authorization.requiredScopes = @[];
+    byName[authorization.name] = authorization;
+    [order addObject:authorization];
+  }
+  NSMutableArray *ordered = [NSMutableArray array];
+  NSArray *schemes = [self annotation:@"Authorization.SecuritySchemes" forTarget:self.containerName];
+  for (NSDictionary *scheme in [schemes isKindOfClass:[NSArray class]] ? schemes : @[]) {
+    ODataSchemaAuthorization *authorization = [scheme isKindOfClass:[NSDictionary class]] ? byName[scheme[@"Authorization"]] : nil;
+    if (!authorization || [ordered containsObject:authorization]) continue;
+    id scopes = scheme[@"RequiredScopes"];
+    authorization.requiredScopes = [scopes isKindOfClass:[NSArray class]] ? scopes : @[];
+    [ordered addObject:authorization];
+  }
+  for (ODataSchemaAuthorization *authorization in order) {
+    if (![ordered containsObject:authorization]) [ordered addObject:authorization];
+  }
+  return ordered;
+}
+
+- (id)capability:(NSString *)term forEntitySet:(NSString *)set
+{
+  if (!self.containerName) return nil;
+  id value = set ? [self annotation:term forTarget:[NSString stringWithFormat:@"%@/%@", self.containerName, set]] : nil;
+  return value ?: [self annotation:term forTarget:self.containerName];
+}
+
+- (id)annotation:(NSString *)term forProperty:(NSString *)name ofEntityType:(ODataSchemaEntityType *)type
+{
+  for (ODataSchemaEntityType *t = type; t; t = t.baseType ? [self entityTypeNamed:t.baseType] : nil) {
+    id value = [self annotation:term forTarget:[NSString stringWithFormat:@"%@/%@", t.qualifiedName, name]];
+    if (value) return value;
+  }
+  return nil;
 }
 
 - (NSString *)qualifiedName:(NSString *)name
