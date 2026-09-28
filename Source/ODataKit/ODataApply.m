@@ -357,6 +357,62 @@ static NSUInteger OISLastTopWord(NSString *text, NSString *word)
   return t;
 }
 
++ (instancetype)orderByItems:(NSArray<ODataOrderItem *> *)items
+{
+  ODataApplyTransformation *t = [[self alloc] init];
+  t->_kind = ODataApplyOrderBy;
+  t->_groupPaths = @[];
+  t->_aggregates = @[];
+  t->_orderBy = [items copy];
+  return t;
+}
+
++ (instancetype)top:(NSUInteger)count
+{
+  ODataApplyTransformation *t = [[self alloc] init];
+  t->_kind = ODataApplyTop;
+  t->_groupPaths = @[];
+  t->_aggregates = @[];
+  t->_number = @(count);
+  return t;
+}
+
++ (instancetype)skip:(NSUInteger)count
+{
+  ODataApplyTransformation *t = [self top:count];
+  t->_kind = ODataApplySkip;
+  return t;
+}
+
++ (instancetype)hierarchical:(NSString *)method hierarchy:(NSArray<NSString *> *)hierarchy qualifier:(NSString *)qualifier
+                    nodePath:(NSArray<NSString *> *)nodePath sequence:(NSArray *)sequence
+                 maxDistance:(NSUInteger)maxDistance keepStart:(BOOL)keepStart
+{
+  ODataApplyTransformation *t = [[self alloc] init];
+  t->_kind = ODataApplyHierarchy;
+  t->_groupPaths = @[];
+  t->_aggregates = @[];
+  t->_method = [method copy];
+  t->_hierarchy = [hierarchy copy];
+  t->_qualifier = [qualifier copy];
+  t->_nodePath = [nodePath copy];
+  t->_sequence = [sequence copy];
+  t->_number = maxDistance ? @(maxDistance) : nil;
+  t->_keepStart = keepStart;
+  return t;
+}
+
++ (instancetype)traverseHierarchy:(NSArray<NSString *> *)hierarchy qualifier:(NSString *)qualifier
+                         nodePath:(NSArray<NSString *> *)nodePath postorder:(BOOL)postorder orderBy:(NSArray *)orderBy
+{
+  ODataApplyTransformation *t = [self hierarchical:@"traverse" hierarchy:hierarchy qualifier:qualifier nodePath:nodePath sequence:@[]
+                                       maxDistance:0 keepStart:NO];
+  t->_sequence = nil;
+  t->_traversal = postorder ? @"postorder" : @"preorder";
+  t->_orderBy = [orderBy copy];
+  return t;
+}
+
 // ancestors, descendants and traverse (section 6).
 + (instancetype)readHierarchical:(NSString *)name inside:(NSString *)inside text:(NSString *)text error:(NSError **)error
 {

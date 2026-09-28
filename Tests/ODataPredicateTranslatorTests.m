@@ -67,9 +67,9 @@
 - (void)testLogicalConnectives
 {
   [self assertPredicate:@"unitPrice > 20 AND discontinued == NO"
-                 filter:@"(UnitPrice gt 20) and (Discontinued eq false)"];
+                 filter:@"UnitPrice gt 20 and Discontinued eq false"];
   [self assertPredicate:@"unitPrice < 10 OR unitPrice > 100"
-                 filter:@"(UnitPrice lt 10) or (UnitPrice gt 100)"];
+                 filter:@"UnitPrice lt 10 or UnitPrice gt 100"];
   [self assertPredicate:@"NOT discontinued == YES" filter:@"not (Discontinued eq true)"];
 }
 
@@ -102,22 +102,16 @@
 {
   // 4.0 has no `in`: Northwind answers it with 400, TripPin with 500.
   [self assertPredicate:@"name IN {\"Chai\", \"Chang\"}"
-                 filter:@"(ProductName eq 'Chai' or ProductName eq 'Chang')"];
+                 filter:@"ProductName eq 'Chai' or ProductName eq 'Chang'"];
   [self assertPredicate:@"name IN %@" filter:@"ProductName eq 'Chai'" arguments:@[ @[ @"Chai" ] ]];
   [self assertPredicate:@"name IN %@" filter:@"false" arguments:@[ @[] ]];
   _translator.version = @"4.01";
   [self assertPredicate:@"name IN {\"Chai\", \"Chang\"}"
-                 filter:@"ProductName in ('Chai', 'Chang')"];
+                 filter:@"ProductName in ('Chai','Chang')"];
   _translator.version = @"4.0";
   // gnustep-base's parser rewrites BETWEEN as >= AND <= before the
-  // translator sees it. Both filters select the same rows.
-  NSError *error = nil;
-  NSPredicate *between = [NSPredicate predicateWithFormat:@"unitPrice BETWEEN {10, 20}"];
-  NSString *got = [_translator translatePredicate:between error:&error];
-  XCTAssertNil(error);
-  NSArray *accepted = @[ @"(UnitPrice ge 10 and UnitPrice le 20)",
-                         @"(UnitPrice ge 10) and (UnitPrice le 20)" ];
-  XCTAssertTrue([accepted containsObject:got], @"BETWEEN → %@", got);
+  // translator sees it; the tree, and so the filter, is the same.
+  [self assertPredicate:@"unitPrice BETWEEN {10, 20}" filter:@"UnitPrice ge 10 and UnitPrice le 20"];
 }
 
 - (void)assertPredicate:(NSString *)format filter:(NSString *)expected arguments:(NSArray *)arguments
@@ -217,7 +211,7 @@
   [self assertPredicate:@"SUBQUERY(suppliers, $s, NOT ($s.country == 'UK')).@count == 0"
                  filter:@"Suppliers/all(x0:x0/Country eq 'UK')"];
   [self assertPredicate:@"name.length > 10" filter:@"length(ProductName) gt 10"];
-  [self assertPredicate:@"unitPrice + 1 > 20" filter:@"(UnitPrice add 1) gt 20"];
+  [self assertPredicate:@"unitPrice + 1 > 20" filter:@"UnitPrice add 1 gt 20"];
 }
 
 // A collection operator after a to-many relationship is Data

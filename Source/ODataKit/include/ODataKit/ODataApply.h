@@ -74,6 +74,17 @@ typedef NS_ENUM(NSInteger, ODataApplyKind) {
 + (instancetype)groupByPaths:(NSArray<NSArray<NSString *> *> *)paths aggregates:(NSArray<ODataAggregate *> *)aggregates;
 + (instancetype)groupByPaths:(NSArray<NSArray<NSString *> *> *)paths sequence:(NSArray<ODataApplyTransformation *> *)sequence;
 + (instancetype)aggregateWith:(NSArray<ODataAggregate *> *)aggregates;
++ (instancetype)orderByItems:(NSArray<ODataOrderItem *> *)items;
++ (instancetype)top:(NSUInteger)count;
++ (instancetype)skip:(NSUInteger)count;
+// ancestors or descendants (method) of the nodes of $root/hierarchy, by
+// the qualifier, each input's node at nodePath; sequence picks the start.
++ (instancetype)hierarchical:(NSString *)method hierarchy:(NSArray<NSString *> *)hierarchy qualifier:(NSString *)qualifier
+                    nodePath:(NSArray<NSString *> *)nodePath sequence:(NSArray<ODataApplyTransformation *> *)sequence
+                 maxDistance:(NSUInteger)maxDistance keepStart:(BOOL)keepStart;
++ (instancetype)traverseHierarchy:(NSArray<NSString *> *)hierarchy qualifier:(NSString *)qualifier
+                         nodePath:(NSArray<NSString *> *)nodePath postorder:(BOOL)postorder
+                          orderBy:(nullable NSArray<ODataOrderItem *> *)orderBy;
 
 @property (nonatomic, readonly) ODataApplyKind kind;
 @property (nonatomic, readonly, strong, nullable) ODataExpression *filter;

@@ -3551,7 +3551,7 @@ static NSString *OISHTTPDate(NSDate *date)
   NSArray *large = [context executeFetchRequest:fetch error:&error];
   XCTAssertEqualObjects([large valueForKey:saleKey], @[ @4 ], @"%@", error);
   NSString *filter = [[[transport.requests.lastObject URL] query] stringByRemovingPercentEncoding];
-  XCTAssertTrue([filter containsString:@"$filter=((Amount mul 4 ge $these/aggregate(Amount with sum))) and ("], @"%@", filter);
+  XCTAssertTrue([filter containsString:@"$filter=Amount mul 4 ge $these/aggregate(Amount with sum) and ID gt 2"], @"%@", filter);
   XCTAssertFalse([fetch.predicate evaluateWithObject:large.firstObject], @"in memory, no object answers it");
   // The same, typed: $these as an expression, in memory too.
   NSString *(^named)(NSEntityDescription *, NSString *) = ^NSString *(NSEntityDescription *entity, NSString *name) {
@@ -3597,6 +3597,26 @@ static NSString *OISHTTPDate(NSDate *date)
   [query addTraversalOfHierarchy:@"Nope" nodeKeyPath:nil postorder:NO sortDescriptors:nil];
   XCTAssertNil([query execute:&error], @"no such hierarchy");
   XCTAssertTrue([error.localizedDescription containsString:@"Nope"], @"%@", error);
+
+  // A fetch request's query, typed: the store's own, to go on from.
+  NSFetchRequest *start = [NSFetchRequest fetchRequestWithEntityName:sale.name];
+  start.predicate = [NSPredicate predicateWithFormat:@"%K > 2", saleKey];
+  start.sortDescriptors = @[ [NSSortDescriptor sortDescriptorWithKey:saleKey ascending:YES] ];
+  query = [ODataQuery queryWithFetchRequest:start inContext:context error:&error];
+  XCTAssertEqualObjects(query.queryOptions.filter.description, @"ID gt 2", @"%@", error);
+  XCTAssertEqualObjects([query URL:&error], [(ODataIncrementalStore *)client.persistentStores.firstObject URLForFetchRequest:start error:NULL]);
+  ODataMutableQueryOptions *more = [query.queryOptions mutableCopy];
+  more.filter = [ODataExpression binary:@"and" left:more.filter
+                                   right:[ODataExpression binary:@"ge" left:[ODataExpression binary:@"mul" left:[ODataExpression member:@"Amount" of:nil]
+                                                                                              right:[ODataExpression literalWithValue:@4]]
+                                                            right:[ODataExpression aggregateOf:[ODataExpression variable:@"$these"] text:@"Amount with sum"]]];
+  query.queryOptions = more;
+  XCTAssertEqualObjects([[query execute:&error] valueForKey:saleKey], @[ @4 ], @"%@", error);
+  XCTAssertEqualObjects(query.options[@"$filter"], @"ID gt 2 and Amount mul 4 ge $these/aggregate(Amount with sum)");
+  XCTAssertNil([ODataQuery queryWithFetchRequest:[NSFetchRequest fetchRequestWithEntityName:@"Nope"] inContext:context error:&error]);
+  query.options = @{ @"$filter": @"ID eq (" };
+  XCTAssertNil([query execute:&error], @"options that are no OData");
+  XCTAssertNotNil(error);
 
   NSData *archived = [NSKeyedArchiver archivedDataWithRootObject:[ODataFilterPredicate predicateWithFilter:@"ID eq 1"] requiringSecureCoding:YES error:NULL];
   XCTAssertEqualObjects([NSKeyedUnarchiver unarchivedObjectOfClass:[ODataFilterPredicate class] fromData:archived error:NULL],
@@ -4209,7 +4229,7 @@ static NSDate *OISDay(NSString *day)
     XCTAssertEqualWithAccuracy([rows.firstObject[@"twice"] doubleValue], 36.0, 0.001, @"%@: %@", version, rows);
     XCTAssertEqualWithAccuracy([rows.lastObject[@"twice"] doubleValue], 38.0, 0.001, @"%@: %@", version, rows);
     NSString *sent = [[transport.requests.lastObject URL].absoluteString stringByRemovingPercentEncoding];
-    BOOL computed = [sent containsString:@"$compute=(UnitPrice mul 2) as twice"];
+    BOOL computed = [sent containsString:@"$compute=UnitPrice mul 2 as twice"];
     XCTAssertEqual(computed, [version isEqualToString:@"4.01"], @"%@: %@", version, sent);
   }
 }
@@ -4887,7 +4907,7 @@ static NSExpressionDescription *OISAggregateOf(NSString *function, NSString *key
     XCTAssertEqualObjects([rows valueForKey:@"category.name"], @[ @"Beverages" ], @"%@: %@", mode, error);
     query = [[[transport.requests.lastObject URL] query] stringByRemovingPercentEncoding] ?: @"";
     BOOL everything = [mode isEqualToString:@"all"];
-    XCTAssertEqual([query containsString:@"/filter((n ge 2) and (total ne null))"], applies.boolValue, @"%@: %@", mode, query);
+    XCTAssertEqual([query containsString:@"/filter(n ge 2 and total ne null)"], applies.boolValue, @"%@: %@", mode, query);
     XCTAssertEqual([query containsString:@"/orderby(total desc)/skip(1)/top(1)"], everything, @"%@: %@", mode, query);
 
     // A having predicate the rows' filter cannot say: here, and then the

@@ -5,6 +5,7 @@
 #import <Foundation/Foundation.h>
 #import <ODataKit/OISCoreData.h>
 #import <ODataKit/ODataPropertyMapper.h>
+#import <ODataKit/ODataExpression.h>
 
 NS_ASSUME_NONNULL_BEGIN
 
@@ -30,10 +31,14 @@ typedef NSDictionary * _Nullable (^ODataObjectKeysResolver)(NSManagedObjectID *o
 
 - (instancetype)initWithMapper:(ODataPropertyMapper *)mapper entity:(NSEntityDescription *)entity NS_DESIGNATED_INITIALIZER;
 - (instancetype)init NS_UNAVAILABLE;
+// A predicate as $filter's expression, typed (ODataKit's ODataExpression);
+// -translatePredicate: is its description.
+- (nullable ODataExpression *)expressionForPredicate:(NSPredicate *)predicate error:(NSError **)error;
 - (nullable NSString *)translatePredicate:(NSPredicate *)predicate error:(NSError **)error;
 // One expression, as a $filter or $orderby operand: a key path, a
 // constant, a function (lowercase:, an ODataFunctionExpression).
 - (nullable NSString *)translateExpression:(NSExpression *)expression error:(NSError **)error;
+- (nullable ODataExpression *)expressionForValue:(NSExpression *)expression error:(NSError **)error;
 @end
 
 NS_ASSUME_NONNULL_END

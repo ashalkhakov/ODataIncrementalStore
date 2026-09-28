@@ -42,6 +42,76 @@
   [self assertText:@"Flags has Zoo.Features'Mane'" reads:@"Flags has Zoo.Features'Mane'"];
 }
 
+// Expressions built, not read: each describes itself as $filter writes it,
+// in parentheses only where the precedence needs them.
+- (void)testExpressionsBuilt
+{
+  ODataExpression *price = [ODataExpression member:@"UnitPrice" of:nil];
+  ODataExpression *sum = [ODataExpression binary:@"add" left:price right:[ODataExpression literalWithValue:@1]];
+  ODataExpression *gt = [ODataExpression binary:@"gt" left:sum right:[ODataExpression literalWithValue:@20]];
+  XCTAssertEqualObjects(gt.description, @"UnitPrice add 1 gt 20");
+  ODataExpression *times = [ODataExpression binary:@"mul" left:sum right:[ODataExpression literalWithValue:@2]];
+  XCTAssertEqualObjects(times.description, @"(UnitPrice add 1) mul 2");
+  ODataExpression *either = [ODataExpression binary:@"or" left:gt right:[ODataExpression binary:@"eq" left:[ODataExpression memberPath:@[ @"Category", @"CategoryName" ] of:nil]
+                                                                                              right:[ODataExpression literalWithValue:@"it's"]]];
+  ODataExpression *both = [ODataExpression binary:@"and" left:either right:[ODataExpression unary:@"not" operand:[ODataExpression member:@"Discontinued" of:nil]]];
+  XCTAssertEqualObjects(both.description, @"(UnitPrice add 1 gt 20 or Category/CategoryName eq 'it''s') and not Discontinued");
+  ODataExpression *city = [ODataExpression binary:@"eq" left:[ODataExpression member:@"City" of:[ODataExpression variable:@"s"]]
+                                            right:[ODataExpression literalWithValue:@"London"]];
+  XCTAssertEqualObjects(([ODataExpression lambda:@"any" of:[ODataExpression member:@"Suppliers" of:nil] variable:@"s" body:city].description),
+                        @"Suppliers/any(s:s/City eq 'London')");
+  XCTAssertEqualObjects(([ODataExpression lambda:@"any" of:[ODataExpression member:@"Suppliers" of:nil] variable:nil body:nil].description), @"Suppliers/any()");
+  XCTAssertEqualObjects(([ODataExpression call:@"contains" arguments:@[ [ODataExpression member:@"Name" of:nil], [ODataExpression literalWithValue:@"x"] ]].description),
+                        @"contains(Name, 'x')");
+  XCTAssertEqualObjects(([ODataExpression call:@"Zoo.Age" of:nil namedArguments:@{ @"On": [ODataExpression literalWithText:@"2024-01-01"] }].description),
+                        @"Zoo.Age(On=2024-01-01)");
+  XCTAssertEqualObjects(([ODataExpression countOf:[ODataExpression member:@"Suppliers" of:nil]].description), @"Suppliers/$count");
+  XCTAssertEqualObjects(([ODataExpression member:@"Budget" of:[ODataExpression cast:@"NS.Manager" of:nil]].description), @"NS.Manager/Budget");
+  XCTAssertEqualObjects(([ODataExpression binary:@"in" left:price right:[ODataExpression list:@[ [ODataExpression literalWithValue:@1], [ODataExpression literalWithValue:@2] ]]].description),
+                        @"UnitPrice in (1,2)");
+  XCTAssertEqualObjects(([ODataExpression aggregateOf:[ODataExpression variable:@"$these"] text:@"Amount with sum"].description), @"$these/aggregate(Amount with sum)");
+  XCTAssertEqualObjects(([ODataExpression literalWithText:@"Zoo.Diet'Carnivore'"].description), @"Zoo.Diet'Carnivore'");
+  XCTAssertNil(([ODataExpression literalWithText:@"Name"]), @"no literal");
+  XCTAssertEqualObjects(([ODataExpression alias:@"p"].description), @"@p");
+}
+
+// Query options as a query string's items, and read back the same.
+- (void)testQueryOptionsWrittenAndReadBack
+{
+  NSDictionary *query = @{ @"$filter": @"UnitPrice gt 20", @"$orderby": @"Name desc,ID", @"$select": @"ID,Name", @"$top": @"5", @"$skip": @"10",
+                           @"$count": @"true", @"$expand": @"Category($select=Name;$expand=Products($filter=Price gt 1;$top=2))",
+                           @"$search": @"(tea OR coffee)", @"$apply": @"filter(Price gt 1)/groupby((Category/Name),aggregate(Price with sum as Total))",
+                           @"$compute": @"Price mul 2 as Twice", @"$at": @"2024-01-01", @"@p": @"5", @"custom": @"yes" };
+  NSError *error = nil;
+  ODataQueryOptions *options = [ODataQueryOptions optionsWithQuery:query error:&error];
+  XCTAssertNotNil(options, @"%@", error);
+  NSMutableDictionary *written = [NSMutableDictionary dictionary];
+  for (NSArray *item in options.queryItems) written[item[0]] = item[1];
+  XCTAssertEqualObjects(written, query);
+  NSMutableArray *names = [NSMutableArray array];
+  for (NSArray *item in options.queryItems) [names addObject:item[0]];
+  XCTAssertEqualObjects(names,
+                        (@[ @"$at", @"$filter", @"$search", @"$apply", @"$orderby", @"$top", @"$skip", @"$count", @"$compute", @"$select", @"$expand", @"@p", @"custom" ]));
+
+  ODataMutableQueryOptions *built = [[ODataMutableQueryOptions alloc] init];
+  built.filter = [ODataExpression binary:@"gt" left:[ODataExpression member:@"Price" of:nil] right:[ODataExpression literalWithValue:@1]];
+  built.orderBy = @[ [ODataOrderItem itemWithExpression:[ODataExpression member:@"Name" of:nil] descending:YES] ];
+  ODataMutableQueryOptions *nested = [[ODataMutableQueryOptions alloc] init];
+  nested.select = @[ [ODataSelectItem itemWithPath:@[ @"ID" ]] ];
+  built.expand = @[ [ODataExpandItem itemWithPath:@[ @"Category" ] options:nested] ];
+  built.searchExpression = [ODataSearchExpression searchWithString:@"tea" error:NULL];
+  built.temporalFrom = [ODataExpression literalWithText:@"2024-01-01"];
+  built.compute = @[ [ODataComputeItem itemWithExpression:[ODataExpression member:@"Price" of:nil] alias:@"P"] ];
+  XCTAssertEqualObjects(built.queryItems, (@[ @[ @"$from", @"2024-01-01" ], @[ @"$filter", @"Price gt 1" ], @[ @"$search", @"tea" ],
+                                              @[ @"$orderby", @"Name desc" ], @[ @"$compute", @"Price as P" ], @[ @"$expand", @"Category($select=ID)" ] ]));
+  XCTAssertEqualObjects(built.search, @"tea");
+  XCTAssertEqualObjects(built.temporalText, @{ @"$from": @"2024-01-01" });
+  ODataMutableQueryOptions *copy = [options mutableCopy];
+  copy.top = @1;
+  XCTAssertEqualObjects(options.top, @5, @"a copy of its own");
+  XCTAssertEqualObjects(copy.filter.description, @"UnitPrice gt 20");
+}
+
 - (void)testArithmeticBindsAsThePrecedenceTableSays
 {
   ODataExpression *e = [self parse:@"Price add 1 mul 2 gt 10"];

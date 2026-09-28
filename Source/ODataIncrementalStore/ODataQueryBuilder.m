@@ -117,7 +117,7 @@ static NSString *OISPercentEncode(NSString *value)
 // and a row does not name its related entities; without this, firing N
 // faults costs N more requests. A service that ignores the nested $select
 // sends the whole related entity, which is cached too.
-- (NSArray *)toOneKeyExpansionsForEntity:(NSEntityDescription *)entity except:(NSSet *)expanded
+- (NSArray<ODataExpandItem *> *)toOneKeyExpansionsForEntity:(NSEntityDescription *)entity except:(NSSet *)expanded
 {
   NSMutableArray *out = [NSMutableArray array];
   NSArray *names = [entity.relationshipsByName.allKeys sortedArrayUsingSelector:@selector(compare:)];
@@ -128,12 +128,22 @@ static NSString *OISPercentEncode(NSString *value)
     if ([expanded containsObject:wire] || ![self expands:wire entity:entity]) continue;
     NSMutableArray *keys = [NSMutableArray array];
     for (NSAttributeDescription *key in [self.mapper keyAttributesForEntity:rel.destinationEntity]) {
-      [keys addObject:[self.mapper propertyForAttribute:key]];
+      [keys addObject:[ODataSelectItem itemWithPath:@[ [self.mapper propertyForAttribute:key] ]]];
     }
     if (!keys.count) continue;
-    [out addObject:[NSString stringWithFormat:@"%@($select=%@)", wire, [keys componentsJoinedByString:@","]]];
+    ODataMutableQueryOptions *options = [[ODataMutableQueryOptions alloc] init];
+    options.select = keys;
+    [out addObject:[ODataExpandItem itemWithPath:@[ wire ] options:options]];
   }
   return out;
+}
+
+// $select items of paths as OData writes them (Name, Zoo.Lion/MaxRoar).
+static NSArray<ODataSelectItem *> *OISSelectItems(NSArray<NSString *> *paths)
+{
+  NSMutableArray *items = [NSMutableArray array];
+  for (NSString *path in paths) [items addObject:[ODataSelectItem itemWithPath:[path componentsSeparatedByString:@"/"]]];
+  return items;
 }
 
 // $select for rows read as objects: the attributes the model has that the
@@ -141,7 +151,7 @@ static NSString *OISPercentEncode(NSString *value)
 // (Zoo.Lion/MaxRoar), so a service sends nothing the store would drop.
 // nil, for every property, without $metadata, when a subentity names no
 // type, or when the set's Capabilities.SelectSupport says it has none.
-- (NSString *)selectForEntity:(NSEntityDescription *)entity
+- (NSArray<ODataSelectItem *> *)selectForEntity:(NSEntityDescription *)entity
 {
   ODataSchema *schema = self.mapper.schema;
   if (!schema) return nil;
@@ -151,7 +161,7 @@ static NSString *OISPercentEncode(NSString *value)
   if ([support isKindOfClass:[NSDictionary class]] && [support[@"Supported"] isEqual:@NO]) return nil;
   NSMutableArray *names = [NSMutableArray array];
   if (![self select:entity cast:nil into:names]) return nil;
-  return names.count ? [names componentsJoinedByString:@","] : nil;
+  return names.count ? OISSelectItems(names) : nil;
 }
 
 - (BOOL)select:(NSEntityDescription *)entity cast:(NSString *)cast into:(NSMutableArray *)names
@@ -183,20 +193,21 @@ static NSString *OISPercentEncode(NSString *value)
   return YES;
 }
 
-- (NSArray *)readingQueryForEntity:(NSEntityDescription *)entity
+- (ODataMutableQueryOptions *)readingOptionsForEntity:(NSEntityDescription *)entity
 {
-  NSMutableArray *items = [NSMutableArray array];
-  NSString *select = [self selectForEntity:entity];
-  if (select) [items addObject:@[ @"$select", select ]];
-  NSArray *expansions = [self toOneKeyExpansionsForEntity:entity except:[NSSet set]];
-  if (expansions.count) [items addObject:@[ @"$expand", [expansions componentsJoinedByString:@","] ]];
-  return items;
+  ODataMutableQueryOptions *options = [[ODataMutableQueryOptions alloc] init];
+  NSArray *select = [self selectForEntity:entity];
+  if (select) options.select = select;
+  options.expand = [self toOneKeyExpansionsForEntity:entity except:[NSSet set]];
+  return options;
 }
 
 static void OISCollectCalls(ODataExpression *e, NSMutableSet *into)
 {
   if (!e) return;
-  if (e.kind == ODataExpressionCall && [e.name rangeOfString:@"."].location == NSNotFound) [into addObject:e.name];
+  if (e.kind == ODataExpressionCall && !e.aggregate && [e.name rangeOfString:@"."].location == NSNotFound) [into addObject:e.name];
+  if (e.aggregate) [into addObject:@"aggregate"];
+  if (e.kind == ODataExpressionCall && [e.name hasPrefix:@"Org.OData.Aggregation.V1."]) [into addObject:e.name];
   OISCollectCalls(e.operand, into);
   OISCollectCalls(e.left, into);
   OISCollectCalls(e.right, into);
@@ -208,7 +219,7 @@ static void OISCollectCalls(ODataExpression *e, NSMutableSet *into)
 // A canonical function the set's Capabilities.FilterFunctions leaves out
 // (Part 1 section 13.3, item 20); nil when it lists none, which lets every
 // function be tried.
-- (NSString *)refusedFunctionIn:(NSString *)filter entity:(NSEntityDescription *)entity
+- (NSString *)refusedFunctionIn:(ODataExpression *)filter entity:(NSEntityDescription *)entity
 {
   ODataSchema *schema = self.mapper.schema;
   if (!schema) return nil;
@@ -217,7 +228,7 @@ static void OISCollectCalls(ODataExpression *e, NSMutableSet *into)
   id listed = [schema capability:@"Capabilities.FilterFunctions" forEntitySet:[self.mapper entitySetForEntity:root]];
   if (![listed isKindOfClass:[NSArray class]] || ![listed count]) return nil;
   NSMutableSet *used = [NSMutableSet set];
-  OISCollectCalls([ODataExpression expressionWithString:filter error:NULL], used);
+  OISCollectCalls(filter, used);
   for (NSString *name in [used.allObjects sortedArrayUsingSelector:@selector(compare:)]) {
     // A vocabulary's function by its namespace, or by the alias Aggregation.
     NSString *vocabulary = @"Org.OData.Aggregation.V1.";
@@ -227,8 +238,6 @@ static void OISCollectCalls(ODataExpression *e, NSMutableSet *into)
   return nil;
 }
 
-// The predicate without the searches ANDed at its top, which go into
-// searches; nil when nothing else is left.
 // The predicate without those of a class ANDed at its top (searches,
 // application time), which go into found: a search as its expression.
 static NSPredicate *OISWithout(NSPredicate *predicate, Class cls, NSMutableArray *found)
@@ -255,10 +264,26 @@ static NSPredicate *OISWithoutSearches(NSPredicate *predicate, NSMutableArray<OD
   return OISWithout(predicate, [ODataSearchPredicate class], searches);
 }
 
+static ODataSearchExpression *OISAllOf(NSArray<ODataSearchExpression *> *searches)
+{
+  ODataSearchExpression *search = searches.firstObject;
+  for (NSUInteger i = 1; i < searches.count; i++) search = [ODataSearchExpression searchWithKind:ODataSearchAnd text:nil left:search right:searches[i]];
+  return search;
+}
+
+- (ODataPredicateTranslator *)translatorFor:(NSEntityDescription *)entity
+{
+  ODataPredicateTranslator *t = [[ODataPredicateTranslator alloc] initWithMapper:self.mapper entity:entity];
+  t.keysForObjectID = self.keysForObjectID;
+  if (self.version) t.version = self.version;
+  t.writesAggregates = [self aggregates:entity];
+  return t;
+}
+
 // Application time as its query options: $at, or $from with $to or
 // $toInclusive, literals typed by the entity's period.
 - (BOOL)addApplicationTime:(NSArray<ODataTemporalPredicate *> *)temporal entity:(NSEntityDescription *)entity
-                        to:(NSMutableArray *)items error:(NSError **)error
+                        to:(ODataMutableQueryOptions *)options error:(NSError **)error
 {
   if (!temporal.count) return YES;
   NSEntityDescription *root = entity;
@@ -271,41 +296,50 @@ static NSPredicate *OISWithoutSearches(NSPredicate *predicate, NSMutableArray<OD
     return NO;
   }
   ODataTemporalPredicate *p = temporal.firstObject;
-  NSString *(^literal)(NSDate *) = ^NSString *(NSDate *date) { return [self.mapper.values literalForValue:date attribute:start]; };
+  ODataExpression *(^literal)(NSDate *) = ^ODataExpression *(NSDate *date) {
+    return [ODataExpression literalWithText:[self.mapper.values literalForValue:date attribute:start]];
+  };
   if (p.at) {
-    [items addObject:@[ @"$at", literal(p.at) ]];
+    options.temporalAt = literal(p.at);
   } else {
-    [items addObject:@[ @"$from", literal(p.from) ]];
-    if (p.to) [items addObject:@[ p.toInclusive ? @"$toInclusive" : @"$to", literal(p.to) ]];
+    options.temporalFrom = literal(p.from);
+    if (p.to && p.toInclusive) options.temporalToInclusive = literal(p.to);
+    else if (p.to) options.temporalTo = literal(p.to);
   }
   return YES;
 }
 
+- (NSURL *)URLForPath:(NSString *)path options:(ODataQueryOptions *)options error:(NSError **)error
+{
+  return [self composePath:path query:options.queryItems ?: @[] error:error];
+}
+
 - (NSURL *)URLForFetch:(NSFetchRequest *)fetch entity:(NSEntityDescription *)entity error:(NSError **)error
 {
+  ODataQueryOptions *options = [self optionsForFetch:fetch entity:entity error:error];
+  if (!options) return nil;
   // The entity set, with a type cast for a derived type (Animals/Zoo.Lion).
   NSString *set = [self.mapper collectionPathForEntity:entity];
-  NSMutableArray *items = [NSMutableArray array];
+  return [self URLForPath:fetch.resultType == NSCountResultType ? [set stringByAppendingString:@"/$count"] : set options:options error:error];
+}
 
+- (ODataMutableQueryOptions *)optionsForFetch:(NSFetchRequest *)fetch entity:(NSEntityDescription *)entity error:(NSError **)error
+{
+  ODataMutableQueryOptions *options = [[ODataMutableQueryOptions alloc] init];
   NSMutableArray *temporal = [NSMutableArray array];
   NSPredicate *timeless = OISWithout(fetch.predicate, [ODataTemporalPredicate class], temporal);
-  if (![self addApplicationTime:temporal entity:entity to:items error:error]) return nil;
+  if (![self addApplicationTime:temporal entity:entity to:options error:error]) return nil;
   NSMutableArray<ODataSearchExpression *> *searches = [NSMutableArray array];
   NSPredicate *predicate = OISWithoutSearches(timeless, searches);
   if (predicate) {
-    ODataPredicateTranslator *t = [[ODataPredicateTranslator alloc] initWithMapper:self.mapper entity:entity];
-    t.keysForObjectID = self.keysForObjectID;
-    if (self.version) t.version = self.version;
-    t.writesAggregates = [self aggregates:entity];
-    NSString *filter = [t translatePredicate:predicate error:error];
-    if (!filter) return nil;
-    NSString *refused = [self refusedFunctionIn:filter entity:entity];
+    options.filter = [[self translatorFor:entity] expressionForPredicate:predicate error:error];
+    if (!options.filter) return nil;
+    NSString *refused = [self refusedFunctionIn:options.filter entity:entity];
     if (refused) {
       if (error) *error = OISError(ODataIncrementalStoreErrorNotAllowedByService,
                                    [NSString stringWithFormat:@"%@: the service does not filter with %@ (Capabilities.FilterFunctions)", entity.name, refused]);
       return nil;
     }
-    [items addObject:@[ @"$filter", filter ]];
   }
   if (searches.count) {
     if (![self searches:entity]) {
@@ -313,54 +347,41 @@ static NSPredicate *OISWithoutSearches(NSPredicate *predicate, NSMutableArray<OD
                                    [NSString stringWithFormat:@"%@: the service does not search (Capabilities.SearchRestrictions)", entity.name]);
       return nil;
     }
-    ODataSearchExpression *search = searches.firstObject;
-    for (NSUInteger i = 1; i < searches.count; i++) {
-      search = [ODataSearchExpression searchWithKind:ODataSearchAnd text:nil left:search right:searches[i]];
-    }
-    [items addObject:@[ @"$search", search.description ]];
+    options.searchExpression = OISAllOf(searches);
   }
 
   // /$count takes $filter alone (Part 2 section 4.8): TripPin answers
   // 400 to $orderby there.
-  if (fetch.resultType == NSCountResultType) {
-    return [self composePath:[set stringByAppendingString:@"/$count"] query:items error:error];
-  }
+  if (fetch.resultType == NSCountResultType) return options;
 
   if (fetch.sortDescriptors.count) {
-    NSMutableArray *bits = [NSMutableArray array];
+    NSMutableArray *items = [NSMutableArray array];
+    NSMutableSet *sorted = [NSMutableSet set];
     for (NSSortDescriptor *desc in fetch.sortDescriptors) {
-      NSString *name;
+      ODataExpression *by;
       if ([desc isKindOfClass:[ODataSortDescriptor class]]) {
         // Any expression $filter could hold: a function's result, say.
-        ODataPredicateTranslator *t = [[ODataPredicateTranslator alloc] initWithMapper:self.mapper entity:entity];
-        if (self.version) t.version = self.version;
-    t.writesAggregates = [self aggregates:entity];
-        name = [t translateExpression:((ODataSortDescriptor *)desc).expression error:error];
-        if (!name) return nil;
+        by = [[self translatorFor:entity] expressionForValue:((ODataSortDescriptor *)desc).expression error:error];
       } else {
         // category.name is Category/CategoryName: a dot would be a type cast.
-        name = [self.mapper propertyPathForKeyPath:desc.key ?: @"" entity:entity];
+        by = [[self translatorFor:entity] expressionForValue:[NSExpression expressionForKeyPath:desc.key ?: @""] error:error];
       }
-      [bits addObject:desc.ascending ? name : [name stringByAppendingString:@" desc"]];
+      if (!by) return nil;
+      [sorted addObject:by.description];
+      [items addObject:[ODataOrderItem itemWithExpression:by descending:!desc.ascending]];
     }
     // The key breaks ties. Paging resumes after the last row of a page by
     // its sort values, so with ties a service can skip rows: Northwind
     // returns 60 of 77 products sorted by category name alone.
     for (NSAttributeDescription *key in [self.mapper keyAttributesForEntity:entity]) {
       NSString *name = [self.mapper propertyForAttribute:key];
-      if (![bits containsObject:name] && ![bits containsObject:[name stringByAppendingString:@" desc"]]) {
-        [bits addObject:name];
-      }
+      if (![sorted containsObject:name]) [items addObject:[ODataOrderItem itemWithExpression:[ODataExpression member:name of:nil] descending:NO]];
     }
-    [items addObject:@[ @"$orderby", [bits componentsJoinedByString:@","] ]];
+    options.orderBy = items;
   }
 
-  if (fetch.fetchLimit > 0) {
-    [items addObject:@[ @"$top", [NSString stringWithFormat:@"%lu", (unsigned long)fetch.fetchLimit] ]];
-  }
-  if (fetch.fetchOffset > 0) {
-    [items addObject:@[ @"$skip", [NSString stringWithFormat:@"%lu", (unsigned long)fetch.fetchOffset] ]];
-  }
+  if (fetch.fetchLimit > 0) options.top = @(fetch.fetchLimit);
+  if (fetch.fetchOffset > 0) options.skip = @(fetch.fetchOffset);
 
   // A dictionary's key paths through to-one relationships: $select cannot
   // follow a navigation property (services answer 400), so each is an
@@ -384,12 +405,9 @@ static NSPredicate *OISWithoutSearches(NSPredicate *predicate, NSMutableArray<OD
           continue;
         }
         // Computed by the service: $compute=<expression> as <name>.
-        ODataPredicateTranslator *t = [[ODataPredicateTranslator alloc] initWithMapper:self.mapper entity:entity];
-        if (self.version) t.version = self.version;
-    t.writesAggregates = [self aggregates:entity];
-        NSString *text = [t translateExpression:expression error:error];
-        if (!text) return nil;
-        [computed addObject:[NSString stringWithFormat:@"%@ as %@", text, [prop name]]];
+        ODataExpression *value = [[self translatorFor:entity] expressionForValue:expression error:error];
+        if (!value) return nil;
+        [computed addObject:[ODataComputeItem itemWithExpression:value alias:[prop name]]];
         [names addObject:[prop name]];
       } else if ([prop isKindOfClass:[NSAttributeDescription class]]) {
         [names addObject:[self.mapper propertyForAttribute:prop]];
@@ -398,16 +416,16 @@ static NSPredicate *OISWithoutSearches(NSPredicate *predicate, NSMutableArray<OD
         [names addObject:attr ? [self.mapper propertyForAttribute:attr] : [self.mapper wireName:prop]];
       }
     }
-    if (computed.count) [items addObject:@[ @"$compute", [computed componentsJoinedByString:@","] ]];
+    if (computed.count) options.compute = computed;
     // Only related values asked for: the key, not every property.
     if (!names.count && through.count) {
       for (NSAttributeDescription *key in [self.mapper keyAttributesForEntity:entity]) [names addObject:[self.mapper propertyForAttribute:key]];
     }
-    if (names.count) [items addObject:@[ @"$select", [names componentsJoinedByString:@","] ]];
+    if (names.count) options.select = OISSelectItems(names);
   } else if (fetch.resultType == NSManagedObjectResultType || fetch.resultType == NSManagedObjectIDResultType) {
     // Object IDs too: their rows are cached the same.
-    NSString *select = [self selectForEntity:entity];
-    if (select) [items addObject:@[ @"$select", select ]];
+    NSArray *select = [self selectForEntity:entity];
+    if (select) options.select = select;
   }
 
   NSMutableArray *expansions = [[self expansionsForKeyPaths:fetch.relationshipKeyPathsForPrefetching entity:entity] mutableCopy];
@@ -422,18 +440,15 @@ static NSPredicate *OISWithoutSearches(NSPredicate *predicate, NSMutableArray<OD
   }
   if (through.count) {
     // A relationship expanded for a value is not expanded again to prefetch it.
-    [expansions filterUsingPredicate:[NSPredicate predicateWithBlock:^BOOL(NSString *expansion, NSDictionary *bindings) {
-      return !through[[expansion componentsSeparatedByString:@"("].firstObject];
+    [expansions filterUsingPredicate:[NSPredicate predicateWithBlock:^BOOL(ODataExpandItem *item, NSDictionary *bindings) {
+      return !through[item.path.firstObject];
     }]];
     for (NSString *navigation in [through.allKeys sortedArrayUsingSelector:@selector(compare:)]) {
       [expansions addObject:[self expansion:navigation node:through[navigation]]];
     }
   }
-  if (expansions.count) {
-    [items addObject:@[ @"$expand", [expansions componentsJoinedByString:@","] ]];
-  }
-
-  return [self composePath:set query:items error:error];
+  options.expand = expansions;
+  return options;
 }
 
 // A key path through to-one relationships, into a tree of expansions:
@@ -467,18 +482,16 @@ static NSPredicate *OISWithoutSearches(NSPredicate *predicate, NSMutableArray<OD
   return YES;
 }
 
-- (NSString *)expansion:(NSString *)navigation node:(NSDictionary *)node
+- (ODataExpandItem *)expansion:(NSString *)navigation node:(NSDictionary *)node
 {
-  NSMutableArray *options = [NSMutableArray array];
+  ODataMutableQueryOptions *options = [[ODataMutableQueryOptions alloc] init];
   NSOrderedSet *select = node[@"select"];
-  if (select.count) [options addObject:[@"$select=" stringByAppendingString:[select.array componentsJoinedByString:@","]]];
+  if (select.count) options.select = OISSelectItems(select.array);
   NSDictionary *expand = node[@"expand"];
-  if (expand.count) {
-    NSMutableArray *nested = [NSMutableArray array];
-    for (NSString *name in [expand.allKeys sortedArrayUsingSelector:@selector(compare:)]) [nested addObject:[self expansion:name node:expand[name]]];
-    [options addObject:[@"$expand=" stringByAppendingString:[nested componentsJoinedByString:@","]]];
-  }
-  return options.count ? [NSString stringWithFormat:@"%@(%@)", navigation, [options componentsJoinedByString:@";"]] : navigation;
+  NSMutableArray *nested = [NSMutableArray array];
+  for (NSString *name in [expand.allKeys sortedArrayUsingSelector:@selector(compare:)]) [nested addObject:[self expansion:name node:expand[name]]];
+  options.expand = nested;
+  return [ODataExpandItem itemWithPath:@[ navigation ] options:options];
 }
 
 - (NSURL *)URLForAggregateFetch:(NSFetchRequest *)fetch
@@ -488,29 +501,28 @@ static NSPredicate *OISWithoutSearches(NSPredicate *predicate, NSMutableArray<OD
                            after:(NSArray *)after
                            error:(NSError **)error
 {
+  ODataQueryOptions *options = [self optionsForAggregateFetch:fetch entity:entity groupPaths:paths aggregates:aggregates after:after error:error];
+  return options ? [self URLForPath:[self.mapper collectionPathForEntity:entity] options:options error:error] : nil;
+}
+
+- (ODataMutableQueryOptions *)optionsForAggregateFetch:(NSFetchRequest *)fetch entity:(NSEntityDescription *)entity
+                                             groupPaths:(NSArray *)paths aggregates:(NSArray *)aggregates
+                                                  after:(NSArray *)after error:(NSError **)error
+{
+  ODataMutableQueryOptions *options = [[ODataMutableQueryOptions alloc] init];
   NSMutableArray<ODataSearchExpression *> *searches = [NSMutableArray array];
   NSPredicate *predicate = OISWithoutSearches(fetch.predicate, searches);
   NSMutableArray *steps = [NSMutableArray array];
   if (predicate) {
-    ODataPredicateTranslator *t = [[ODataPredicateTranslator alloc] initWithMapper:self.mapper entity:entity];
-    t.keysForObjectID = self.keysForObjectID;
-    if (self.version) t.version = self.version;
-    t.writesAggregates = [self aggregates:entity];
-    NSString *filter = [t translatePredicate:predicate error:error];
+    ODataExpression *filter = [[self translatorFor:entity] expressionForPredicate:predicate error:error];
     if (!filter) return nil;
-    [steps addObject:[NSString stringWithFormat:@"filter(%@)", filter]];
+    [steps addObject:[ODataApplyTransformation filterWithExpression:filter]];
   }
-  ODataApplyTransformation *grouping = paths.count ? [ODataApplyTransformation groupByPaths:paths aggregates:aggregates]
-                                                   : [ODataApplyTransformation aggregateWith:aggregates];
-  [steps addObject:grouping.description];
+  [steps addObject:paths.count ? [ODataApplyTransformation groupByPaths:paths aggregates:aggregates] : [ODataApplyTransformation aggregateWith:aggregates]];
   if (after.count) [steps addObjectsFromArray:after];
-  NSMutableArray *items = [NSMutableArray arrayWithObject:@[ @"$apply", [steps componentsJoinedByString:@"/"] ]];
-  if (searches.count) {
-    ODataSearchExpression *search = searches.firstObject;
-    for (NSUInteger i = 1; i < searches.count; i++) search = [ODataSearchExpression searchWithKind:ODataSearchAnd text:nil left:search right:searches[i]];
-    [items addObject:@[ @"$search", search.description ]];
-  }
-  return [self composePath:[self.mapper collectionPathForEntity:entity] query:items error:error];
+  options.apply = steps;
+  if (searches.count) options.searchExpression = OISAllOf(searches);
+  return options;
 }
 
 // A literal a grouped row's value is compared with: a number, a string, a
@@ -533,18 +545,30 @@ static NSString *OISGroupedLiteral(id value)
 
 - (NSString *)groupedFilterForPredicate:(NSPredicate *)predicate names:(NSDictionary *)names
 {
+  return [self groupedFilterExpressionForPredicate:predicate names:names].description;
+}
+
+- (ODataExpression *)groupedFilterExpressionForPredicate:(NSPredicate *)predicate names:(NSDictionary *)names
+{
   if ([predicate isKindOfClass:[NSCompoundPredicate class]]) {
     NSCompoundPredicate *compound = (NSCompoundPredicate *)predicate;
     NSMutableArray *parts = [NSMutableArray array];
     for (NSPredicate *sub in compound.subpredicates) {
-      NSString *part = [self groupedFilterForPredicate:sub names:names];
+      ODataExpression *part = [self groupedFilterExpressionForPredicate:sub names:names];
       if (!part) return nil;
-      [parts addObject:[NSString stringWithFormat:@"(%@)", part]];
+      [parts addObject:part];
     }
+    if (!parts.count) return nil;
     switch (compound.compoundPredicateType) {
-      case NSNotPredicateType: return parts.count == 1 ? [NSString stringWithFormat:@"not %@", parts[0]] : nil;
-      case NSAndPredicateType: return parts.count ? [parts componentsJoinedByString:@" and "] : nil;
-      case NSOrPredicateType: return parts.count ? [parts componentsJoinedByString:@" or "] : nil;
+      case NSNotPredicateType: return parts.count == 1 ? [ODataExpression unary:@"not" operand:parts[0]] : nil;
+      case NSAndPredicateType:
+      case NSOrPredicateType: {
+        ODataExpression *out = parts.firstObject;
+        for (NSUInteger i = 1; i < parts.count; i++) {
+          out = [ODataExpression binary:compound.compoundPredicateType == NSAndPredicateType ? @"and" : @"or" left:out right:parts[i]];
+        }
+        return out;
+      }
       default: return nil;
     }
   }
@@ -568,11 +592,18 @@ static NSString *OISGroupedLiteral(id value)
                                @(NSLessThanPredicateOperatorType): @"lt", @(NSLessThanOrEqualToPredicateOperatorType): @"le",
                                @(NSGreaterThanPredicateOperatorType): @"gt", @(NSGreaterThanOrEqualToPredicateOperatorType): @"ge" };
   NSString *op = operators[@(type)];
-  if (!path || !literal || !op) return nil;
-  return [NSString stringWithFormat:@"%@ %@ %@", path, op, literal];
+  ODataExpression *value = literal ? [ODataExpression literalWithText:literal] : nil;
+  if (!path || !value || !op) return nil;
+  return [ODataExpression binary:op left:[ODataExpression memberPath:[path componentsSeparatedByString:@"/"] of:nil] right:value];
 }
 
 - (NSString *)groupedOrderForSortDescriptors:(NSArray *)descriptors names:(NSDictionary *)names
+{
+  NSArray *items = [self groupedOrderItemsForSortDescriptors:descriptors names:names];
+  return items.count ? [[items valueForKey:@"description"] componentsJoinedByString:@","] : nil;
+}
+
+- (NSArray<ODataOrderItem *> *)groupedOrderItemsForSortDescriptors:(NSArray *)descriptors names:(NSDictionary *)names
 {
   NSMutableArray *items = [NSMutableArray array];
   for (NSSortDescriptor *descriptor in descriptors) {
@@ -584,15 +615,16 @@ static NSString *OISGroupedLiteral(id value)
     // compare: there either.)
     if (descriptor.comparator) return nil;
 #endif
-    [items addObject:descriptor.ascending ? path : [path stringByAppendingString:@" desc"]];
+    [items addObject:[ODataOrderItem itemWithExpression:[ODataExpression memberPath:[path componentsSeparatedByString:@"/"] of:nil]
+                                             descending:!descriptor.ascending]];
   }
-  return items.count ? [items componentsJoinedByString:@","] : nil;
+  return items.count ? items : nil;
 }
 
 // Prefetch key paths as $expand items, a path through relationships
 // nested (suppliers.products is Suppliers($expand=Products): 4.0 has no
 // paths in $expand), and paths that share a start merged under it.
-- (NSArray *)expansionsForKeyPaths:(NSArray *)paths entity:(NSEntityDescription *)entity
+- (NSArray<ODataExpandItem *> *)expansionsForKeyPaths:(NSArray *)paths entity:(NSEntityDescription *)entity
 {
   NSMutableArray *order = [NSMutableArray array];          // wire names, first seen first
   NSMutableDictionary *children = [NSMutableDictionary dictionary];  // wire name -> key paths beneath
@@ -613,11 +645,11 @@ static NSString *OISGroupedLiteral(id value)
   for (NSString *wire in order) {
     NSEntityDescription *destination = destinations[wire];
     NSMutableArray *nested = [[children[wire] count] && destination ? [self expansionsForKeyPaths:children[wire] entity:destination] : @[] mutableCopy];
-    NSMutableArray *options = [NSMutableArray array];
+    ODataMutableQueryOptions *options = [[ODataMutableQueryOptions alloc] init];
     if (destination) {
       // Its rows as a fetch's are: trimmed, and naming their to-ones.
-      NSString *select = [self selectForEntity:destination];
-      if (select) [options addObject:[@"$select=" stringByAppendingString:select]];
+      NSArray *select = [self selectForEntity:destination];
+      if (select) options.select = select;
       NSMutableSet *named = [NSMutableSet set];
       for (NSString *path in children[wire]) {
         NSRelationshipDescription *rel = destination.relationshipsByName[[path componentsSeparatedByString:@"."].firstObject];
@@ -625,8 +657,8 @@ static NSString *OISGroupedLiteral(id value)
       }
       [nested addObjectsFromArray:[self toOneKeyExpansionsForEntity:destination except:named]];
     }
-    if (nested.count) [options addObject:[@"$expand=" stringByAppendingString:[nested componentsJoinedByString:@","]]];
-    [items addObject:options.count ? [NSString stringWithFormat:@"%@(%@)", wire, [options componentsJoinedByString:@";"]] : wire];
+    options.expand = nested;
+    [items addObject:[ODataExpandItem itemWithPath:@[ wire ] options:options]];
   }
   return items;
 }
@@ -650,15 +682,14 @@ static NSString *OISGroupedLiteral(id value)
                       error:(NSError **)error
 {
   NSString *path = [NSString stringWithFormat:@"%@/%@", [identifier pathWithKeyAsSegment:self.keyAsSegment], [self.mapper propertyForRelationship:relationship]];
-  NSArray *query = relationship.destinationEntity ? [self readingQueryForEntity:relationship.destinationEntity] : @[];
-  return [self composePath:path query:query error:error];
+  return [self URLForPath:path options:relationship.destinationEntity ? [self readingOptionsForEntity:relationship.destinationEntity] : nil error:error];
 }
 
 - (NSURL *)URLForReadingIdentifier:(ODataResourceIdentifier *)identifier
                             entity:(NSEntityDescription *)entity
                              error:(NSError **)error
 {
-  return [self composePath:[identifier pathWithKeyAsSegment:self.keyAsSegment] query:[self readingQueryForEntity:entity] error:error];
+  return [self URLForPath:[identifier pathWithKeyAsSegment:self.keyAsSegment] options:[self readingOptionsForEntity:entity] error:error];
 }
 
 @end

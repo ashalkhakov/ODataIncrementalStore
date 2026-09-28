@@ -61,7 +61,7 @@
   XCTAssertNil(error);
   XCTAssertEqualObjects(url.path, @"/V4/Northwind.svc/Products");
   NSDictionary *q = [self queryFromURL:url];
-  XCTAssertEqualObjects(q[@"$filter"], @"(UnitPrice gt 20) and (Discontinued eq false)");
+  XCTAssertEqualObjects(q[@"$filter"], @"UnitPrice gt 20 and Discontinued eq false");
   XCTAssertEqualObjects(q[@"$orderby"], @"ProductName,ProductID");
   XCTAssertEqualObjects(q[@"$top"], @"25");
 }

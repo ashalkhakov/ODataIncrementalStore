@@ -187,6 +187,111 @@ static NSString *OISQuoted(NSString *text)
   return e;
 }
 
++ (instancetype)literalWithText:(NSString *)text
+{
+  ODataExpression *e = [ODataExpression expressionWithString:text error:NULL];
+  return e.kind == ODataExpressionLiteral || (e.kind == ODataExpressionUnary && e.operand.kind == ODataExpressionLiteral) ? e : nil;
+}
+
++ (instancetype)member:(NSString *)name of:(ODataExpression *)operand
+{
+  ODataExpression *e = [ODataExpression ofKind:ODataExpressionMember name:name];
+  e.operand = operand;
+  return e;
+}
+
++ (instancetype)memberPath:(NSArray<NSString *> *)path of:(ODataExpression *)operand
+{
+  ODataExpression *e = operand;
+  for (NSString *name in path) e = [self member:name of:e];
+  return e;
+}
+
++ (instancetype)variable:(NSString *)name
+{
+  return [ODataExpression ofKind:ODataExpressionVariable name:name];
+}
+
++ (instancetype)alias:(NSString *)name
+{
+  return [ODataExpression ofKind:ODataExpressionAlias name:[name hasPrefix:@"@"] ? [name substringFromIndex:1] : name];
+}
+
++ (instancetype)binary:(NSString *)op left:(ODataExpression *)left right:(ODataExpression *)right
+{
+  ODataExpression *e = [ODataExpression ofKind:ODataExpressionBinary name:op];
+  e.left = left;
+  e.right = right;
+  return e;
+}
+
++ (instancetype)unary:(NSString *)op operand:(ODataExpression *)operand
+{
+  ODataExpression *e = [ODataExpression ofKind:ODataExpressionUnary name:op];
+  e.operand = operand;
+  return e;
+}
+
++ (instancetype)call:(NSString *)name arguments:(NSArray<ODataExpression *> *)arguments
+{
+  ODataExpression *e = [ODataExpression ofKind:ODataExpressionCall name:name];
+  e.arguments = arguments ?: @[];
+  return e;
+}
+
++ (instancetype)call:(NSString *)name of:(ODataExpression *)operand namedArguments:(NSDictionary *)namedArguments
+{
+  ODataExpression *e = [ODataExpression ofKind:ODataExpressionCall name:name];
+  e.operand = operand;
+  e.arguments = @[];
+  e.namedArguments = namedArguments ?: @{};
+  return e;
+}
+
++ (instancetype)lambda:(NSString *)name of:(ODataExpression *)collection variable:(NSString *)variable body:(ODataExpression *)body
+{
+  ODataExpression *e = [ODataExpression ofKind:ODataExpressionLambda name:name];
+  e.operand = collection;
+  e.variable = body ? variable : nil;
+  e.body = body;
+  return e;
+}
+
++ (instancetype)countOf:(ODataExpression *)collection
+{
+  ODataExpression *e = [ODataExpression ofKind:ODataExpressionCount name:@"$count"];
+  e.operand = collection;
+  return e;
+}
+
++ (instancetype)cast:(NSString *)type of:(ODataExpression *)operand
+{
+  ODataExpression *e = [ODataExpression ofKind:ODataExpressionCast name:type];
+  e.operand = operand;
+  return e;
+}
+
++ (instancetype)list:(NSArray<ODataExpression *> *)items
+{
+  ODataExpression *e = [ODataExpression ofKind:ODataExpressionList name:@""];
+  e.arguments = items;
+  return e;
+}
+
++ (instancetype)aggregateOf:(ODataExpression *)collection text:(NSString *)text
+{
+  // The aggregate expression in $apply's syntax, as the parser reads one.
+  NSArray *transformations = [ODataApplyTransformation transformationsWithString:[NSString stringWithFormat:@"aggregate(%@ as value)", text] error:NULL];
+  ODataApplyTransformation *only = transformations.count == 1 ? transformations.firstObject : nil;
+  if (only.aggregates.count != 1) return nil;
+  ODataExpression *call = [ODataExpression ofKind:ODataExpressionCall name:@"aggregate"];
+  call.operand = collection;
+  call.arguments = @[];
+  call.aggregate = only.aggregates.firstObject;
+  call.aggregateText = text;
+  return call;
+}
+
 + (instancetype)expression:(ODataExpression *)e inValues:(NSArray *)values
 {
   if (!values.count) return [self literalWithValue:@NO];
@@ -249,6 +354,10 @@ static NSString *OISQuoted(NSString *text)
 @end
 
 @implementation ODataOrderItem
++ (instancetype)itemWithExpression:(ODataExpression *)expression descending:(BOOL)descending
+{
+  return [[self alloc] initWithExpression:expression descending:descending];
+}
 - (instancetype)initWithExpression:(ODataExpression *)expression descending:(BOOL)descending
 {
   self = [super init];
@@ -264,6 +373,10 @@ static NSString *OISQuoted(NSString *text)
 @end
 
 @implementation ODataSelectItem
++ (instancetype)itemWithPath:(NSArray<NSString *> *)path
+{
+  return [[self alloc] initWithPath:path star:[path isEqual:@[ @"*" ]]];
+}
 - (instancetype)initWithPath:(NSArray *)path star:(BOOL)star
 {
   self = [super init];
@@ -300,6 +413,7 @@ static NSString *OISQuoted(NSString *text)
 @property (nonatomic, copy) NSDictionary *aliases;
 @property (nonatomic, copy, nullable) NSString *format;
 @property (nonatomic, copy, nullable) NSString *skipToken;
+@property (nonatomic, copy) NSDictionary *customOptions;
 @end
 
 @interface ODataComputeItem ()
@@ -308,6 +422,13 @@ static NSString *OISQuoted(NSString *text)
 @end
 
 @implementation ODataComputeItem
++ (instancetype)itemWithExpression:(ODataExpression *)expression alias:(NSString *)alias
+{
+  ODataComputeItem *item = [[self alloc] init];
+  item.expression = expression;
+  item.alias = alias;
+  return item;
+}
 - (NSString *)description
 {
   return [NSString stringWithFormat:@"%@ as %@", self.expression, self.alias];
@@ -361,6 +482,14 @@ static NSArray *OISComputeItems(NSString *text, NSError **error)
 @end
 
 @implementation ODataExpandItem
++ (instancetype)itemWithPath:(NSArray<NSString *> *)path options:(ODataQueryOptions *)options
+{
+  ODataExpandItem *item = [[self alloc] init];
+  item.path = path;
+  item.isStar = [path isEqual:@[ @"*" ]];
+  item.options = options ?: [[ODataQueryOptions alloc] init];
+  return item;
+}
 - (NSString *)description
 {
   NSMutableString *text = [NSMutableString stringWithString:self.isStar ? @"*" : [self.path componentsJoinedByString:@"/"]];
@@ -1084,7 +1213,40 @@ static const NSInteger OISMaxNesting = 100;
   _compute = @[];
   _temporalText = @{};
   _aliases = @{};
+  _customOptions = @{};
   return self;
+}
+
+- (id)copyWithZone:(NSZone *)zone
+{
+  return [self mutableCopyWithZone:zone];
+}
+
+- (id)mutableCopyWithZone:(NSZone *)zone
+{
+  ODataMutableQueryOptions *copy = [[ODataMutableQueryOptions alloc] init];
+  copy.filter = self.filter;
+  copy.orderBy = self.orderBy;
+  copy.select = self.select;
+  copy.expand = self.expand;
+  copy.top = self.top;
+  copy.skip = self.skip;
+  copy.includeCount = self.includeCount;
+  copy.levels = self.levels;
+  ((ODataQueryOptions *)copy).search = self.search;
+  ((ODataQueryOptions *)copy).searchExpression = self.searchExpression;
+  copy.apply = self.apply;
+  copy.compute = self.compute;
+  ((ODataQueryOptions *)copy).temporalAt = self.temporalAt;
+  ((ODataQueryOptions *)copy).temporalFrom = self.temporalFrom;
+  ((ODataQueryOptions *)copy).temporalTo = self.temporalTo;
+  ((ODataQueryOptions *)copy).temporalToInclusive = self.temporalToInclusive;
+  ((ODataQueryOptions *)copy).temporalText = self.temporalText;
+  copy.aliases = self.aliases;
+  copy.format = self.format;
+  copy.skipToken = self.skipToken;
+  copy.customOptions = self.customOptions;
+  return copy;
 }
 
 + (instancetype)optionsWithQuery:(NSDictionary *)query error:(NSError **)error
@@ -1143,7 +1305,10 @@ static const NSInteger OISMaxNesting = 100;
       }
       ok = [parser parseOption:key into:options] && [parser atEnd];
     } else {
-      continue;  // a custom option
+      NSMutableDictionary *custom = [options.customOptions mutableCopy];
+      custom[key] = value;
+      options.customOptions = custom;
+      continue;
     }
     if (!ok) {
       if (error) *error = parser.error;
@@ -1156,13 +1321,45 @@ static const NSInteger OISMaxNesting = 100;
 
 - (void)setTemporal:(NSString *)option expression:(ODataExpression *)e text:(NSString *)text
 {
-  if ([option isEqualToString:@"$at"]) self.temporalAt = e;
-  else if ([option isEqualToString:@"$from"]) self.temporalFrom = e;
-  else if ([option isEqualToString:@"$to"]) self.temporalTo = e;
-  else self.temporalToInclusive = e;
+  // The ivars: a mutable copy's setters come back here.
+  if ([option isEqualToString:@"$at"]) _temporalAt = e;
+  else if ([option isEqualToString:@"$from"]) _temporalFrom = e;
+  else if ([option isEqualToString:@"$to"]) _temporalTo = e;
+  else _temporalToInclusive = e;
   NSMutableDictionary *texts = [self.temporalText mutableCopy];
-  texts[option] = text;
+  if (e && text) texts[option] = text;
+  else [texts removeObjectForKey:option];
   self.temporalText = texts;
+}
+
+- (NSArray<NSArray<NSString *> *> *)queryItems
+{
+  NSMutableArray *items = [NSMutableArray array];
+  void (^add)(NSString *, NSString *) = ^(NSString *name, NSString *value) {
+    if (value) [items addObject:@[ name, value ]];
+  };
+  add(@"$at", self.temporalAt.description);
+  add(@"$from", self.temporalFrom.description);
+  add(@"$to", self.temporalTo.description);
+  add(@"$toInclusive", self.temporalToInclusive.description);
+  add(@"$filter", self.filter.description);
+  add(@"$search", self.searchExpression ? self.searchExpression.description : self.search);
+  if (self.apply.count) add(@"$apply", [ODataApplyTransformation stringForTransformations:self.apply]);
+  if (self.orderBy.count) add(@"$orderby", [[self.orderBy valueForKey:@"description"] componentsJoinedByString:@","]);
+  if (self.top) add(@"$top", self.top.stringValue);
+  if (self.skip) add(@"$skip", self.skip.stringValue);
+  if (self.includeCount) add(@"$count", self.includeCount.boolValue ? @"true" : @"false");
+  if (self.compute.count) add(@"$compute", [[self.compute valueForKey:@"description"] componentsJoinedByString:@","]);
+  if (self.select.count) add(@"$select", [[self.select valueForKey:@"description"] componentsJoinedByString:@","]);
+  if (self.expand.count) add(@"$expand", [[self.expand valueForKey:@"description"] componentsJoinedByString:@","]);
+  if (self.levels) add(@"$levels", self.levels.integerValue < 0 ? @"max" : self.levels.stringValue);
+  add(@"$format", self.format);
+  add(@"$skiptoken", self.skipToken);
+  for (NSString *name in [self.aliases.allKeys sortedArrayUsingSelector:@selector(compare:)]) {
+    add([@"@" stringByAppendingString:name], [self.aliases[name] description]);
+  }
+  for (NSString *name in [self.customOptions.allKeys sortedArrayUsingSelector:@selector(compare:)]) add(name, self.customOptions[name]);
+  return items;
 }
 
 - (NSString *)description
@@ -1183,6 +1380,38 @@ static const NSInteger OISMaxNesting = 100;
 
 @end
 
+
+@implementation ODataMutableQueryOptions
+@dynamic filter, orderBy, select, expand, top, skip, includeCount, levels, apply, compute, aliases, format, skipToken, customOptions;
+@dynamic searchExpression, temporalAt, temporalFrom, temporalTo, temporalToInclusive;
+
+- (void)setSearchExpression:(ODataSearchExpression *)searchExpression
+{
+  ((ODataQueryOptions *)self).search = searchExpression.description;
+  [super setSearchExpression:searchExpression];
+}
+
+- (void)setTemporalAt:(ODataExpression *)e
+{
+  [self setTemporal:@"$at" expression:e text:e.description];
+}
+
+- (void)setTemporalFrom:(ODataExpression *)e
+{
+  [self setTemporal:@"$from" expression:e text:e.description];
+}
+
+- (void)setTemporalTo:(ODataExpression *)e
+{
+  [self setTemporal:@"$to" expression:e text:e.description];
+}
+
+- (void)setTemporalToInclusive:(ODataExpression *)e
+{
+  [self setTemporal:@"$toInclusive" expression:e text:e.description];
+}
+
+@end
 
 #pragma mark - $search
 

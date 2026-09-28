@@ -587,6 +587,32 @@ static void OISCollectKeyPaths(NSPredicate *predicate, NSMutableSet *into)
 
 #pragma mark - Fetch / save
 
+- (ODataQueryBuilder *)builder
+{
+  return _builder;
+}
+
+- (NSArray *)rowsForPath:(NSString *)path options:(ODataQueryOptions *)options limit:(NSUInteger)limit pageSize:(NSUInteger)pageSize
+                     URL:(NSURL **)urlp error:(NSError **)error
+{
+  NSURL *url = [_builder URLForPath:path options:options error:error];
+  if (urlp) *urlp = url;
+  return url ? [self rowsAtURL:url limit:limit pageSize:pageSize error:error] : nil;
+}
+
+- (NSArray *)objectIDsForRows:(NSArray *)rows entity:(NSEntityDescription *)entity URL:(NSURL *)url error:(NSError **)error
+{
+  NSMutableArray *objectIDs = [NSMutableArray array];
+  for (NSDictionary *row in rows) {
+    NSManagedObjectID *oid = [row isKindOfClass:[NSDictionary class]] ? [self objectIDFromPayload:row entity:entity error:error] : nil;
+    if (!oid) return nil;
+    [self cacheNodeForObjectID:oid entity:oid.entity payload:row error:nil];
+    if (url) [self noteMessagesIn:row URL:url objectID:oid];
+    [objectIDs addObject:oid];
+  }
+  return objectIDs;
+}
+
 - (id)executeFetch:(NSFetchRequest *)fetch context:(NSManagedObjectContext *)context error:(NSError **)error
 {
   NSEntityDescription *entity = [self resolvedEntity:fetch];
@@ -605,17 +631,21 @@ static void OISCollectKeyPaths(NSPredicate *predicate, NSMutableSet *into)
   NSFetchRequest *original = fetch;
   fetch = [self sendableFetch:original entity:entity sortLocally:&sortLocally skip:&skip limit:&limit count:&countLocally error:error];
   if (!fetch) return nil;
-  NSURL *url = [_builder URLForFetch:fetch entity:entity error:error];
-  if (!url) return nil;
+  // The fetch, typed: what the service is asked.
+  ODataQueryOptions *options = [_builder optionsForFetch:fetch entity:entity error:error];
+  if (!options) return nil;
+  NSString *set = [_mapper collectionPathForEntity:entity];
 
   if (fetch.resultType == NSCountResultType) {
-    NSString *text = [_client textAtURL:url error:error];
+    NSURL *url = [_builder URLForPath:[set stringByAppendingString:@"/$count"] options:options error:error];
+    NSString *text = url ? [_client textAtURL:url error:error] : nil;
     if (!text) return nil;
     NSInteger count = [text integerValue];
     return @[ @(count) ];
   }
 
-  NSArray *rows = [self rowsAtURL:url limit:fetch.fetchLimit pageSize:fetch.fetchBatchSize error:error];
+  NSURL *url = nil;
+  NSArray *rows = [self rowsForPath:set options:options limit:fetch.fetchLimit pageSize:fetch.fetchBatchSize URL:&url error:error];
   if (!rows) return nil;
 
   NSArray *sort = sortLocally ? original.sortDescriptors : nil;
@@ -630,12 +660,10 @@ static void OISCollectKeyPaths(NSPredicate *predicate, NSMutableSet *into)
   // Every row is a whole entity, so it is cached whether or not the fetch
   // returns faults: firing the fault then costs nothing, where it used to
   // cost one GET per object.
+  NSArray *kept = [self objectIDsForRows:rows entity:entity URL:url error:error];
+  if (!kept) return nil;
   NSMutableArray *objectIDs = [NSMutableArray array];
-  for (NSDictionary *row in rows) {
-    NSManagedObjectID *oid = [self objectIDFromPayload:row entity:entity error:error];
-    if (!oid) return nil;
-    [self cacheNodeForObjectID:oid entity:oid.entity payload:row error:nil];
-    [self noteMessagesIn:row URL:url objectID:oid];
+  for (NSManagedObjectID *oid in kept) {
     // A set of a base type holds its derived types too; a fetch that does
     // not include sub-entities leaves them out.
     if (!fetch.includesSubentities && oid.entity != entity && ![oid.entity.name isEqualToString:entity.name]) continue;
@@ -836,16 +864,18 @@ static NSAttributeDescription *OISAttributeAtKeyPath(NSEntityDescription *entity
   for (NSUInteger i = 0; i < keyPaths.count; i++) names[keyPaths[i]] = [paths[i] componentsJoinedByString:@"/"];
   for (ODataAggregate *aggregate in aggregates) names[aggregate.alias] = aggregate.alias;
   NSMutableArray *steps = [NSMutableArray array];
-  NSString *filter = fetch.havingPredicate && [supported containsObject:@"filter"] ? [_builder groupedFilterForPredicate:fetch.havingPredicate names:names] : nil;
-  if (filter) [steps addObject:[NSString stringWithFormat:@"filter(%@)", filter]];
+  ODataExpression *filter = fetch.havingPredicate && [supported containsObject:@"filter"]
+      ? [_builder groupedFilterExpressionForPredicate:fetch.havingPredicate names:names] : nil;
+  if (filter) [steps addObject:[ODataApplyTransformation filterWithExpression:filter]];
   *having = !fetch.havingPredicate || filter;
-  NSString *order = fetch.sortDescriptors.count && [supported containsObject:@"orderby"] ? [_builder groupedOrderForSortDescriptors:fetch.sortDescriptors names:names] : nil;
-  if (order) [steps addObject:[NSString stringWithFormat:@"orderby(%@)", order]];
+  NSArray *order = fetch.sortDescriptors.count && [supported containsObject:@"orderby"]
+      ? [_builder groupedOrderItemsForSortDescriptors:fetch.sortDescriptors names:names] : nil;
+  if (order) [steps addObject:[ODataApplyTransformation orderByItems:order]];
   *sort = !fetch.sortDescriptors.count || order;
   BOOL skip = !fetch.fetchOffset || [supported containsObject:@"skip"], top = !fetch.fetchLimit || [supported containsObject:@"top"];
   if (*having && *sort && skip && top) {
-    if (fetch.fetchOffset) [steps addObject:[NSString stringWithFormat:@"skip(%lu)", (unsigned long)fetch.fetchOffset]];
-    if (fetch.fetchLimit) [steps addObject:[NSString stringWithFormat:@"top(%lu)", (unsigned long)fetch.fetchLimit]];
+    if (fetch.fetchOffset) [steps addObject:[ODataApplyTransformation skip:fetch.fetchOffset]];
+    if (fetch.fetchLimit) [steps addObject:[ODataApplyTransformation top:fetch.fetchLimit]];
     *paging = YES;
   }
   return steps;
@@ -941,9 +971,8 @@ static NSAttributeDescription *OISAttributeAtKeyPath(NSEntityDescription *entity
   if (paths) {
     NSArray *after = [self stepsAfterGrouping:fetch entity:entity keyPaths:keyPaths paths:paths aggregates:wire
                                        having:&havingThere sort:&sortThere paging:&pagingThere];
-    NSURL *url = [_builder URLForAggregateFetch:fetch entity:entity groupPaths:paths aggregates:wire after:after error:error];
-    if (!url) return nil;
-    NSArray *answers = [self rowsAtURL:url limit:0 pageSize:0 error:error];
+    ODataQueryOptions *options = [_builder optionsForAggregateFetch:fetch entity:entity groupPaths:paths aggregates:wire after:after error:error];
+    NSArray *answers = options ? [self rowsForPath:[_mapper collectionPathForEntity:entity] options:options limit:0 pageSize:0 URL:NULL error:error] : nil;
     if (!answers) return nil;
     for (NSDictionary *answer in answers) {
       NSMutableDictionary *row = [NSMutableDictionary dictionary];

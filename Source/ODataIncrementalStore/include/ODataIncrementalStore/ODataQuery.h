@@ -35,19 +35,30 @@
 
 #pragma once
 #import <ODataKit/OISCoreData.h>
+#import <ODataKit/ODataExpression.h>
 
 NS_ASSUME_NONNULL_BEGIN
 
 @interface ODataQuery : NSObject
 
 + (instancetype)queryOfEntity:(NSString *)entityName inContext:(NSManagedObjectContext *)context;
+// What the store would ask the service for a fetch request, typed: a
+// start for what the fetch cannot say (its options to change or add to,
+// $apply steps to add). What the store would do here, beyond what it asks,
+// is not part of it. A grouping or counting fetch is no query: nil.
++ (nullable instancetype)queryWithFetchRequest:(NSFetchRequest *)fetch inContext:(NSManagedObjectContext *)context error:(NSError **)error;
 @property (nonatomic, readonly, copy) NSString *entityName;
 @property (nonatomic, readonly, strong) NSManagedObjectContext *context;
 
 // Query options by name ($filter, $apply, $orderby, $expand, $select,
 // $search, $compute, $top, $skip, or the service's own), written as OData
-// writes them; the store percent-encodes them.
+// writes them; the store percent-encodes them. Setting them reads them
+// into queryOptions (a mistake in them is the query's error); reading them
+// writes queryOptions.
 @property (nonatomic, copy, nullable) NSDictionary<NSString *, NSString *> *options;
+// The same, typed (ODataKit's ODataQueryOptions): an ODataExpression
+// filter, order and expand items, $apply's transformations.
+@property (nonatomic, copy, nullable) ODataQueryOptions *queryOptions;
 // NSManagedObjectResultType or NSDictionaryResultType.
 @property (nonatomic) NSFetchRequestResultType resultType;
 

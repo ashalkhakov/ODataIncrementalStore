@@ -15,7 +15,10 @@
   NSArray *_resultIDs;
   NSArray *_result;
   NSError *_error;
+  ODataQueryOptions *_sent;                  // what is sent: the options and the steps
+  NSString *_path;
   NSMutableArray<NSDictionary *> *_steps;  // $apply's, typed: kind and what it takes
+  NSError *_optionsError;                    // what the options set could not be read as
 }
 
 + (instancetype)queryOfEntity:(NSString *)entityName inContext:(NSManagedObjectContext *)context
@@ -25,6 +28,46 @@
   query->_context = context;
   query->_resultType = NSManagedObjectResultType;
   return query;
+}
+
++ (instancetype)queryWithFetchRequest:(NSFetchRequest *)fetch inContext:(NSManagedObjectContext *)context error:(NSError **)error
+{
+  NSString *name = fetch.entityName ?: fetch.entity.name;
+  ODataQuery *query = [self queryOfEntity:name inContext:context];
+  if (![query findStore]) {
+    if (error) *error = query->_error;
+    return nil;
+  }
+  if (fetch.propertiesToGroupBy.count || fetch.resultType == NSCountResultType) {
+    if (error) *error = OISError(ODataIncrementalStoreErrorUnsupportedRequest, @"A grouping or a count is no query of rows");
+    return nil;
+  }
+  ODataQueryOptions *options = [query->_store.builder optionsForFetch:fetch entity:query->_entity error:error];
+  if (!options) return nil;
+  query.queryOptions = options;
+  query.resultType = fetch.resultType == NSDictionaryResultType ? NSDictionaryResultType : NSManagedObjectResultType;
+  return query;
+}
+
+- (void)setOptions:(NSDictionary<NSString *, NSString *> *)options
+{
+  NSError *error = nil;
+  _queryOptions = options ? [ODataQueryOptions optionsWithQuery:options error:&error] : nil;
+  _optionsError = options && !_queryOptions ? error : nil;
+}
+
+- (NSDictionary<NSString *, NSString *> *)options
+{
+  if (!_queryOptions) return nil;
+  NSMutableDictionary *options = [NSMutableDictionary dictionary];
+  for (NSArray *item in _queryOptions.queryItems) options[item[0]] = item[1];
+  return options;
+}
+
+- (void)setQueryOptions:(ODataQueryOptions *)queryOptions
+{
+  _queryOptions = [queryOptions copy];
+  _optionsError = nil;
 }
 
 #pragma mark - $apply's steps, typed
@@ -61,19 +104,19 @@
                    @"sort": sortDescriptors ?: @[] }];
 }
 
-// A step as $apply writes it; nil and the error for one that cannot be.
-- (NSString *)applyStep:(NSDictionary *)step error:(NSError **)error
+// A step, typed; nil and the error for one that cannot be.
+- (ODataApplyTransformation *)applyStep:(NSDictionary *)step error:(NSError **)error
 {
   ODataPropertyMapper *mapper = _store.mapper;
   ODataPredicateTranslator *translator = [[ODataPredicateTranslator alloc] initWithMapper:mapper entity:_entity];
   translator.writesAggregates = YES;
   NSString *kind = step[@"kind"];
-  NSString *filter = nil;
+  ODataExpression *filter = nil;
   if (step[@"predicate"]) {
-    filter = [translator translatePredicate:step[@"predicate"] error:error];
+    filter = [translator expressionForPredicate:step[@"predicate"] error:error];
     if (!filter) return nil;
   }
-  if ([kind isEqualToString:@"filter"]) return [NSString stringWithFormat:@"filter(%@)", filter];
+  if ([kind isEqualToString:@"filter"]) return [ODataApplyTransformation filterWithExpression:filter];
 
   NSString *qualifier = step[@"qualifier"];
   NSString *nodeKeyPath = nil;
@@ -88,20 +131,20 @@
   }
   NSEntityDescription *root = nodes;
   while (root.superentity) root = root.superentity;
-  NSMutableArray *parts = [NSMutableArray arrayWithObjects:[@"$root/" stringByAppendingString:[mapper entitySetForEntity:root]], qualifier,
-                                                           [mapper propertyPathForKeyPath:given ?: nodeKeyPath entity:_entity], nil];
+  NSArray *hierarchy = @[ [mapper entitySetForEntity:root] ];
+  NSArray *nodePath = [[mapper propertyPathForKeyPath:given ?: nodeKeyPath entity:_entity] componentsSeparatedByString:@"/"];
   if ([kind isEqualToString:@"traverse"]) {
-    [parts addObject:[step[@"postorder"] boolValue] ? @"postorder" : @"preorder"];
+    NSMutableArray *order = [NSMutableArray array];
     for (NSSortDescriptor *sort in step[@"sort"]) {
-      NSString *path = [mapper propertyPathForKeyPath:sort.key ?: @"" entity:nodes];
-      [parts addObject:sort.ascending ? path : [path stringByAppendingString:@" desc"]];
+      NSArray *path = [[mapper propertyPathForKeyPath:sort.key ?: @"" entity:nodes] componentsSeparatedByString:@"/"];
+      [order addObject:[ODataOrderItem itemWithExpression:[ODataExpression memberPath:path of:nil] descending:!sort.ascending]];
     }
-  } else {
-    [parts addObject:[NSString stringWithFormat:@"filter(%@)", filter]];
-    if ([step[@"distance"] unsignedIntegerValue]) [parts addObject:[step[@"distance"] stringValue]];
-    if ([step[@"keep"] boolValue]) [parts addObject:@"keep start"];
+    return [ODataApplyTransformation traverseHierarchy:hierarchy qualifier:qualifier nodePath:nodePath
+                                             postorder:[step[@"postorder"] boolValue] orderBy:order];
   }
-  return [NSString stringWithFormat:@"%@(%@)", kind, [parts componentsJoinedByString:@","]];
+  return [ODataApplyTransformation hierarchical:kind hierarchy:hierarchy qualifier:qualifier nodePath:nodePath
+                                       sequence:@[ [ODataApplyTransformation filterWithExpression:filter] ]
+                                    maxDistance:[step[@"distance"] unsignedIntegerValue] keepStart:[step[@"keep"] boolValue]];
 }
 
 - (NSArray *)result
@@ -121,10 +164,9 @@
 
 #pragma mark - Before: the store and the URL
 
-- (BOOL)prepare
+// The model's entity, and the store of the context.
+- (BOOL)findStore
 {
-  _error = nil;
-  _result = nil;
   NSPersistentStoreCoordinator *coordinator = self.context.persistentStoreCoordinator;
   _entity = coordinator.managedObjectModel.entitiesByName[self.entityName];
   if (!_entity) {
@@ -142,31 +184,41 @@
     [self failWith:ODataIncrementalStoreErrorUnsupportedRequest message:@"No OData store to send the query to"];
     return NO;
   }
+  return YES;
+}
+
+- (BOOL)prepare
+{
+  _error = nil;
+  _result = nil;
+  if (![self findStore]) return NO;
+  if (_optionsError) {
+    _error = _optionsError;
+    return NO;
+  }
   if (self.resultType != NSManagedObjectResultType && self.resultType != NSDictionaryResultType) {
     [self failWith:ODataIncrementalStoreErrorUnsupportedRequest message:@"A query gives objects or dictionaries"];
     return NO;
   }
-  ODataQueryBuilder *builder = [[ODataQueryBuilder alloc] initWithMapper:_store.mapper serviceRoot:_store.URL];
-  NSMutableDictionary *options = [NSMutableDictionary dictionaryWithDictionary:self.options ?: @{}];
+  // The typed steps first, then the options' own $apply.
+  ODataMutableQueryOptions *options = _queryOptions ? [_queryOptions mutableCopy] : [[ODataMutableQueryOptions alloc] init];
   NSError *error = nil;
   if (_steps.count) {
     NSMutableArray *apply = [NSMutableArray array];
     for (NSDictionary *step in _steps) {
-      NSString *written = [self applyStep:step error:&error];
-      if (!written) {
+      ODataApplyTransformation *typed = [self applyStep:step error:&error];
+      if (!typed) {
         _error = error;
         return NO;
       }
-      [apply addObject:written];
+      [apply addObject:typed];
     }
-    if (options[@"$apply"]) [apply addObject:options[@"$apply"]];
-    options[@"$apply"] = [apply componentsJoinedByString:@"/"];
+    [apply addObjectsFromArray:options.apply ?: @[]];
+    options.apply = apply;
   }
-  NSMutableArray *items = [NSMutableArray array];
-  for (NSString *name in [options.allKeys sortedArrayUsingSelector:@selector(compare:)]) {
-    [items addObject:@[ name, options[name] ]];
-  }
-  _URL = [builder composePath:[_store.mapper collectionPathForEntity:_entity] query:items error:&error];
+  _sent = options;
+  _path = [_store.mapper collectionPathForEntity:_entity];
+  _URL = [_store.builder URLForPath:_path options:options error:&error];
   if (!_URL) _error = error;
   return _URL != nil;
 }
@@ -199,7 +251,7 @@ static id OISWithoutAnnotations(id json)
 - (BOOL)perform
 {
   NSError *error = nil;
-  NSArray *rows = [_store rowsAtURL:_URL limit:0 pageSize:0 error:&error];
+  NSArray *rows = [_store rowsForPath:_path options:_sent limit:0 pageSize:0 URL:NULL error:&error];
   if (!rows) {
     _error = error;
     return NO;
@@ -208,16 +260,11 @@ static id OISWithoutAnnotations(id json)
     _rows = OISWithoutAnnotations(rows);
     return YES;
   }
-  NSMutableArray *ids = [NSMutableArray array];
-  for (NSDictionary *row in rows) {
-    NSManagedObjectID *oid = [row isKindOfClass:[NSDictionary class]] ? [_store objectIDFromPayload:row entity:_entity error:&error] : nil;
-    if (!oid) {
-      [self failWith:ODataIncrementalStoreErrorDecoding
-             message:[NSString stringWithFormat:@"A row of %@ is no %@ (%@): ask for dictionaries", _URL, self.entityName, error.localizedDescription ?: row]];
-      return NO;
-    }
-    [_store cacheNodeForObjectID:oid entity:oid.entity payload:row error:NULL];
-    [ids addObject:oid];
+  NSArray *ids = [_store objectIDsForRows:rows entity:_entity URL:_URL error:&error];
+  if (!ids) {
+    [self failWith:ODataIncrementalStoreErrorDecoding
+           message:[NSString stringWithFormat:@"A row of %@ is no %@ (%@): ask for dictionaries", _URL, self.entityName, error.localizedDescription ?: @"no key"]];
+    return NO;
   }
   _resultIDs = ids;
   return YES;

@@ -73,7 +73,17 @@ something, the model's `userInfo` wins.
 
 ## Reading: a fetch request as a URL
 
-`ODataQueryBuilder` and `ODataPredicateTranslator`, on the client.
+`ODataQueryBuilder` and `ODataPredicateTranslator`, on the client. Every
+query is typed before it is written: the translator builds a predicate
+into an `ODataExpression` tree, and the builder makes a fetch request
+into ODataKit's `ODataQueryOptions` (order items, select and expand
+items with options of their own, `$apply`'s transformations), which the
+builder alone writes into a URL, and which the store sends through one
+reader for fetches, grouped fetches and `ODataQuery` alike.
+`+[ODataQuery queryWithFetchRequest:inContext:error:]` gives a fetch's
+query, typed, to go on from; the server parses a request into the same
+types. The URL is the tree's own writing, in parentheses only where
+precedence needs them: `UnitPrice gt 20 and Discontinued eq false`.
 
 | `NSFetchRequest` | Request |
 |---|---|
@@ -101,8 +111,8 @@ something, the model's `userInfo` wins.
 | `BEGINSWITH`, `ENDSWITH`, `CONTAINS` (with `[c]`) | `startswith`, `endswith`, `contains` (with `tolower`) |
 | `LIKE 'Ch?i*'` | `matchesPattern(Name, '^Ch.i.*$')`, 4.01 only, each wildcard written as any character including line breaks |
 | `MATCHES 're'` | `matchesPattern(Name, '^(?:re)$')`, 4.01 only, not `[c]`; a pattern ECMAScript reads differently from ICU is refused |
-| `x IN {a, b}` | `x in (a, b)` in 4.01; `(x eq a or x eq b)` in 4.0 |
-| `x BETWEEN {a, b}` | `(x ge a and x le b)` |
+| `x IN {a, b}` | `x in (a,b)` in 4.01; `x eq a or x eq b` in 4.0 |
+| `x BETWEEN {a, b}` | `x ge a and x le b` |
 | `category == %@` (an object or object ID) | `Category/CategoryID eq 1` |
 | `category.name == 'x'` | `Category/Name eq 'x'` |
 | `ANY products.price > 20`, `ALL …` | `Products/any(p:p/Price gt 20)`, `all(…)` |

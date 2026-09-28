@@ -312,7 +312,7 @@ static void WBCheck(BOOL ok, NSString *what, NSString *detail)
 {
   [self runPreset:[self presetLabelled:@"Computed:"]];
   NSString *wire = [self.wireURLField.stringValue stringByRemovingPercentEncoding];
-  WBCheck(!self.results.lastError && [wire rangeOfString:@"$compute=(UnitPrice mul 1.2) as withTax"].location != NSNotFound &&
+  WBCheck(!self.results.lastError && [wire rangeOfString:@"$compute=UnitPrice mul 1.2 as withTax"].location != NSNotFound &&
           [[self.results.rows.firstObject objectForKey:@"withTax"] doubleValue] > 0,
           @"compute: a value from each row ($compute)", self.results.lastError ?: [NSString stringWithFormat:@"%@ %@", wire, self.results.rows.firstObject]);
 
