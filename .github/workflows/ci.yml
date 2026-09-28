@@ -186,7 +186,7 @@ jobs:
       # from $metadata carry (#40).
       # #51: the SQL backends share one libCDSQLStore, so a process can load
       # both, and evaluate MATCHES in SQL.
-      FREECOREDATA_REF: b612b0a
+      FREECOREDATA_REF: b612b0a90fcae0b0fabcd1ff71442988eb67b518
     defaults:
       run:
         working-directory: ${{ github.workspace }}/source
