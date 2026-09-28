@@ -45,17 +45,20 @@ export XDG_CACHE_HOME="/tmp/fc-cache-odataworkbench-$$"
 mkdir -p "$XDG_CACHE_HOME"
 trap 'rm -rf "$XDG_CACHE_HOME" "$GNUSTEP_CONFIG_FILE"' EXIT
 
-# Fonts the image carries, and Ctrl as Command, as on any other Linux
+# The Eau theme and the Liberation fonts the image carries (as FreeCoreData's
+# Model Builder has them), and Ctrl as Command,
+# as on any other Linux
 # window: GNUstep's default is NeXT's, Alt as Command (see gnustep-gui's
 # KeyboardSetup). The left Control fires menu key equivalents; the right one
 # stays a Control for the text bindings.
 DEFAULTS_TOOL=$(find "$HERE" -name defaults -type f -perm -111 | head -n 1)
 if [ -n "$DEFAULTS_TOOL" ]; then
   for domain in Workbench io.github.ashalkhakov.ODataIncrementalStore.Workbench; do
-    "$DEFAULTS_TOOL" write "$domain" NSFont DejaVuSans
-    "$DEFAULTS_TOOL" write "$domain" NSBoldFont DejaVuSans-Bold
-    "$DEFAULTS_TOOL" write "$domain" NSUserFont DejaVuSans
-    "$DEFAULTS_TOOL" write "$domain" NSUserFixedPitchFont DejaVuSansMono
+    "$DEFAULTS_TOOL" write "$domain" GSTheme Eau
+    "$DEFAULTS_TOOL" write "$domain" NSFont LiberationSans
+    "$DEFAULTS_TOOL" write "$domain" NSBoldFont LiberationSans-Bold
+    "$DEFAULTS_TOOL" write "$domain" NSUserFont LiberationSans
+    "$DEFAULTS_TOOL" write "$domain" NSUserFixedPitchFont LiberationMono
     "$DEFAULTS_TOOL" write "$domain" GSFirstCommandKey Control_L
     "$DEFAULTS_TOOL" write "$domain" GSFirstControlKey NoSymbol
     "$DEFAULTS_TOOL" write "$domain" GSSecondControlKey Control_R

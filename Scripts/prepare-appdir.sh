@@ -76,3 +76,10 @@ if [ -z "$app" ]; then
   exit 1
 fi
 echo "  $app"
+# The theme AppRun selects: without it GNUstep falls back to its own look.
+theme=$(find AppDir/usr -maxdepth 5 -name "Eau.theme" -type d | head -n 1)
+if [ -z "$theme" ]; then
+  echo "MISSING: Eau.theme (is eau in the GNUstep stack's COMPONENTS?)" >&2
+  exit 1
+fi
+echo "  $theme"

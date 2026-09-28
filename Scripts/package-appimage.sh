@@ -39,6 +39,10 @@ done < <(find AppDir/usr/System/Library/Bundles AppDir/usr/Local/Library/Bundles
 export OUTPUT="ODataWorkbench-Linux-${APP_VERSION:-dev}-${arch}.AppImage"
 export APPIMAGE_EXTRACT_AND_RUN=1
 export NO_VALIDATE=1
+# Keep the symbol tables: Objective-C methods are named only in .symtab, which
+# linuxdeploy's strip would remove, and a backtrace from a user's crash is
+# worth far more with them.
+export NO_STRIP="${NO_STRIP:-1}"
 export LDAI_RUNTIME_FILE="${LDAI_RUNTIME_FILE:-/tmp/appimage-runtime/runtime-${arch}}"
 
 # Local before System, as GNUstep.sh orders them: a library installed in

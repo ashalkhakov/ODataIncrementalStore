@@ -169,9 +169,10 @@ jobs:
       CXX: clang++
       LIBRARY_COMBO: ng-gnu-gnu
       RUNTIME_VERSION: gnustep-2.0
-      # Foundation for the store, gui and back for the example apps,
-      # tools-xctest for the suite. No theme: nothing here is packaged.
-      COMPONENTS: libobjc2 libdispatch tools-make libs-base libs-gui libs-back tools-xctest
+      # Foundation for the store, gui and back for the example apps, the Eau
+      # theme the Workbench's AppImage ships with (as FreeCoreData's Model
+      # Builder does), tools-xctest for the suite.
+      COMPONENTS: libobjc2 libdispatch tools-make libs-base libs-gui libs-back eau tools-xctest
       # libobjc2 and libdispatch land in the prefix's plain lib/, which the
       # gnustep layout does not treat as a library root. GNUstep.sh prepends
       # the roots it does know about to this.
