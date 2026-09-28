@@ -46,6 +46,9 @@ NS_ASSUME_NONNULL_BEGIN
 // Its sort descriptors as an orderby of the grouped rows: each a name's
 // path, compared with compare:; nil for anything else.
 - (nullable NSString *)groupedOrderForSortDescriptors:(NSArray<NSSortDescriptor *> *)descriptors names:(NSDictionary<NSString *, NSString *> *)names;
+// The service root, a path from it, and query options by name, their
+// values percent-encoded; nil, and why, when that is no URL.
+- (nullable NSURL *)composePath:(NSString *)path query:(NSArray<NSArray<NSString *> *> *)items error:(NSError **)error;
 - (nullable NSURL *)URLForIdentifier:(ODataResourceIdentifier *)identifier error:(NSError **)error;
 // For reading one entity: the entity URL with its to-one keys expanded.
 - (nullable NSURL *)URLForReadingIdentifier:(ODataResourceIdentifier *)identifier

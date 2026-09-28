@@ -89,6 +89,7 @@ ODataIncrementalStore_OBJC_FILES = \
 	Source/ODataIncrementalStore/ODataSearchPredicate.m \
 	Source/ODataIncrementalStore/ODataTemporalPredicate.m \
 	Source/ODataIncrementalStore/ODataHierarchyPredicate.m \
+	Source/ODataIncrementalStore/ODataQuery.m \
 	Source/ODataIncrementalStore/ODataPredicateTranslator.m \
 	Source/ODataIncrementalStore/ODataQueryBuilder.m \
 	Source/ODataIncrementalStore/ODataResourceIdentifier.m
@@ -106,6 +107,7 @@ ODataIncrementalStore_HEADER_FILES = \
 	ODataSearchPredicate.h \
 	ODataTemporalPredicate.h \
 	ODataHierarchyPredicate.h \
+	ODataQuery.h \
 	ODataPredicateTranslator.h \
 	ODataQueryBuilder.h \
 	ODataResourceIdentifier.h

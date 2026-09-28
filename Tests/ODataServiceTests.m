@@ -610,6 +610,7 @@
   dispatch_semaphore_t _finished;
   NSMutableArray<NSURL *> *_storeFiles;
   ODataStreamTransfer *_finishedTransfer;
+  ODataQuery *_finishedQuery;
 }
 
 - (void)setUp
@@ -3466,6 +3467,140 @@ static NSString *OISHTTPDate(NSDate *date)
     XCTAssertEqual(([self get:@"SalesOrganizations?$apply=traverse($root/SalesOrganizations,SalesOrgHierarchy,Sales/ID,preorder)"].status), 501);
     XCTAssertEqual(([self get:@"SalesOrganizations?$apply=ancestors($root/SalesOrganizations,SalesOrgHierarchy,ID,groupby((Name)))"].status), 501);
   }
+}
+
+- (void)queryFinished:(ODataQuery *)query
+{
+  _finishedQuery = query;
+}
+
+// What a fetch request cannot say, sent as it is written: a query's rows
+// as the context's objects (or as dictionaries), and a $filter of one's
+// own within a fetch.
+- (void)testClientsSendQueriesAsWritten
+{
+  [self serveSalesOrganizationsInStoreOfType:NSInMemoryStoreType];
+  ODataSchema *schema = [ODataSchema schemaWithData:[self get:@"$metadata"].data error:NULL];
+  NSManagedObjectModel *model = [ODataModelBuilder modelWithSchema:schema];
+  [ODataIncrementalStore registerStore];
+  OISRecordingTransport *transport = [[OISRecordingTransport alloc] init];
+  transport.next = _service;
+  NSPersistentStoreCoordinator *client = [[NSPersistentStoreCoordinator alloc] initWithManagedObjectModel:model];
+  NSError *error = nil;
+  XCTAssertNotNil([client addPersistentStoreWithType:[ODataIncrementalStore storeType] configuration:nil URL:[NSURL URLWithString:@"http://example.test/odata/"]
+                                             options:@{ ODataIncrementalStoreTransportOption: transport } error:&error], @"%@", error);
+  NSManagedObjectContext *context = [[NSManagedObjectContext alloc] init];
+  context.persistentStoreCoordinator = client;
+  NSString *nodeKeyPath = nil;
+  NSRelationshipDescription *parent = nil;
+  NSEntityDescription *organization = [ODataHierarchyPredicate entityOfHierarchy:@"SalesOrgHierarchy" model:model mapper:[[ODataPropertyMapper alloc] init]
+                                                                     nodeKeyPath:&nodeKeyPath parent:&parent];
+
+  // Objects, in the service's order, the context's own, what $expand
+  // brought kept.
+  NSFetchRequest *all = [NSFetchRequest fetchRequestWithEntityName:organization.name];
+  NSArray *fetched = [context executeFetchRequest:all error:&error];
+  ODataQuery *query = [ODataQuery queryOfEntity:organization.name inContext:context];
+  query.options = @{ @"$apply": @"traverse($root/SalesOrganizations,SalesOrgHierarchy,ID,preorder)", @"$expand": @"Superordinate" };
+  NSString *sent = [[[query URL:&error] absoluteString] stringByRemovingPercentEncoding];
+  XCTAssertTrue([sent hasSuffix:@"SalesOrganizations?$apply=traverse($root/SalesOrganizations,SalesOrgHierarchy,ID,preorder)&$expand=Superordinate"], @"%@", sent);
+  NSArray *tree = [query execute:&error];
+  XCTAssertEqualObjects([tree valueForKeyPath:nodeKeyPath], (@[ @"Sales", @"EMEA", @"EMEA Central", @"US", @"US East", @"US West" ]), @"%@", error);
+  NSManagedObject *us = tree[3];
+  XCTAssertTrue([fetched indexOfObjectIdenticalTo:us] != NSNotFound, @"one object per entity");
+  NSUInteger requests = transport.requests.count;
+  XCTAssertEqualObjects([[us valueForKey:parent.name] valueForKeyPath:nodeKeyPath], @"Sales");
+  XCTAssertEqual(transport.requests.count, requests, @"the expanded parent came with it");
+
+  // Dictionaries, for rows that are no objects; which objects cannot be.
+  NSEntityDescription *sale = model.entitiesByName[@"Sale"];
+  query = [ODataQuery queryOfEntity:sale.name inContext:context];
+  query.options = @{ @"$apply": @"groupby((SalesOrganization/ID),aggregate(Amount with sum as Total))"
+                                 @"/traverse($root/SalesOrganizations,SalesOrgHierarchy,SalesOrganization/ID,preorder)" };
+  query.resultType = NSDictionaryResultType;
+  NSArray *totals = [query execute:&error];
+  XCTAssertEqualObjects([totals valueForKeyPath:@"SalesOrganization.ID"], (@[ @"EMEA Central", @"US East", @"US West" ]), @"%@", error);
+  XCTAssertEqualObjects([totals valueForKey:@"Total"], (@[ @5, @12, @7 ]));
+  XCTAssertNil(totals.firstObject[@"@odata.id"], @"no annotations");
+  query.resultType = NSManagedObjectResultType;
+  XCTAssertNil([query execute:&error], @"grouped rows are no objects");
+  XCTAssertTrue([error.localizedDescription containsString:@"ask for dictionaries"], @"%@", error);
+  query.options = @{ @"$apply": @"nonsense(1)" };
+  XCTAssertNil([query execute:&error]);
+  XCTAssertNotNil(error, @"the service's refusal");
+
+  // Without waiting.
+  query = [ODataQuery queryOfEntity:organization.name inContext:context];
+  query.options = @{ @"$filter": [NSString stringWithFormat:@"Aggregation.isleaf(HierarchyNodes=$root/SalesOrganizations,"
+                                                               "HierarchyQualifier='SalesOrgHierarchy',Node=ID)"], @"$orderby": @"ID desc" };
+  [query executeWithTarget:self action:@selector(queryFinished:)];
+  NSDate *deadline = [NSDate dateWithTimeIntervalSinceNow:10];
+  while (!_finishedQuery && [deadline timeIntervalSinceNow] > 0) {
+    [[NSRunLoop currentRunLoop] runMode:NSDefaultRunLoopMode beforeDate:[NSDate dateWithTimeIntervalSinceNow:0.05]];
+  }
+  XCTAssertEqualObjects([_finishedQuery.result valueForKeyPath:nodeKeyPath], (@[ @"US West", @"US East", @"EMEA Central" ]), @"%@", _finishedQuery.error);
+
+  // A $filter of one's own in a fetch: $these, with the rest translated.
+  NSString *saleKey = nil;
+  for (NSString *name in sale.attributesByName) if ([name caseInsensitiveCompare:@"id"] == NSOrderedSame) saleKey = name;
+  NSFetchRequest *fetch = [NSFetchRequest fetchRequestWithEntityName:sale.name];
+  fetch.sortDescriptors = @[ [NSSortDescriptor sortDescriptorWithKey:saleKey ascending:YES] ];
+  fetch.predicate = [NSCompoundPredicate andPredicateWithSubpredicates:@[
+    [ODataFilterPredicate predicateWithFilter:@"Amount mul 4 ge $these/aggregate(Amount with sum)"],
+    [NSPredicate predicateWithFormat:@"%K > 2", saleKey] ]];
+  NSArray *large = [context executeFetchRequest:fetch error:&error];
+  XCTAssertEqualObjects([large valueForKey:saleKey], @[ @4 ], @"%@", error);
+  NSString *filter = [[[transport.requests.lastObject URL] query] stringByRemovingPercentEncoding];
+  XCTAssertTrue([filter containsString:@"$filter=((Amount mul 4 ge $these/aggregate(Amount with sum))) and ("], @"%@", filter);
+  XCTAssertFalse([fetch.predicate evaluateWithObject:large.firstObject], @"in memory, no object answers it");
+  // The same, typed: $these as an expression, in memory too.
+  NSString *(^named)(NSEntityDescription *, NSString *) = ^NSString *(NSEntityDescription *entity, NSString *name) {
+    for (NSString *property in entity.propertiesByName) if ([property caseInsensitiveCompare:name] == NSOrderedSame) return property;
+    return nil;
+  };
+  NSString *amount = named(sale, @"amount"), *seller = named(sale, @"salesOrganization"), *orgName = named(organization, @"name");
+  NSExpression *total = [ODataTheseExpression expressionForAggregate:@"sum" keyPath:amount];
+  NSPredicate *third = [NSComparisonPredicate predicateWithLeftExpression:[NSExpression expressionWithFormat:@"%K * 4", amount]
+                                                          rightExpression:total modifier:NSDirectPredicateModifier
+                                                                     type:NSGreaterThanOrEqualToPredicateOperatorType options:0];
+  fetch.predicate = [NSCompoundPredicate andPredicateWithSubpredicates:@[ third, [NSPredicate predicateWithFormat:@"%K > 2", saleKey] ]];
+  XCTAssertEqualObjects([[context executeFetchRequest:fetch error:&error] valueForKey:saleKey], @[ @4 ], @"%@", error);
+  filter = [[[transport.requests.lastObject URL] query] stringByRemovingPercentEncoding];
+  XCTAssertTrue([filter containsString:@"ge $these/aggregate(Amount with sum)"], @"%@", filter);
+  XCTAssertTrue([third evaluateWithObject:large.firstObject], @"in memory: 8 * 4 >= 24");
+#ifdef __APPLE__
+  NSString *subtract = @"from:subtract:";
+#else
+  NSString *subtract = @"_sub";  // gnustep-base's name for Apple's from:subtract:
+#endif
+  NSExpression *lastThree = [NSExpression expressionForFunction:subtract arguments:@[ [ODataTheseExpression expressionForCount],
+                                                                                               [NSExpression expressionForConstantValue:@3] ]];
+  fetch.predicate = [NSComparisonPredicate predicateWithLeftExpression:[NSExpression expressionForKeyPath:saleKey] rightExpression:lastThree
+                                                              modifier:NSDirectPredicateModifier type:NSGreaterThanPredicateOperatorType options:0];
+  XCTAssertEqualObjects([[context executeFetchRequest:fetch error:&error] valueForKey:saleKey], (@[ @6, @7, @8 ]), @"%@", error);
+
+  // $apply's steps, typed.
+  query = [ODataQuery queryOfEntity:organization.name inContext:context];
+  [query addDescendantsInHierarchy:@"SalesOrgHierarchy" nodeKeyPath:nil of:[NSPredicate predicateWithFormat:@"%K == 'US'", orgName]
+                       maxDistance:0 keepStart:YES];
+  [query addTraversalOfHierarchy:@"SalesOrgHierarchy" nodeKeyPath:nil postorder:NO
+                 sortDescriptors:@[ [NSSortDescriptor sortDescriptorWithKey:orgName ascending:NO] ]];
+  sent = [[[query URL:&error] absoluteString] stringByRemovingPercentEncoding];
+  XCTAssertTrue([sent hasSuffix:@"$apply=descendants($root/SalesOrganizations,SalesOrgHierarchy,ID,filter(Name eq 'US'),keep start)"
+                                 @"/traverse($root/SalesOrganizations,SalesOrgHierarchy,ID,preorder,Name desc)"], @"%@ %@", sent, error);
+  XCTAssertEqualObjects([[query execute:&error] valueForKeyPath:nodeKeyPath], (@[ @"US", @"US West", @"US East" ]), @"%@", error);
+  query = [ODataQuery queryOfEntity:sale.name inContext:context];
+  [query addAncestorsInHierarchy:@"SalesOrgHierarchy" nodeKeyPath:[NSString stringWithFormat:@"%@.%@", seller, nodeKeyPath]
+                              of:[NSPredicate predicateWithFormat:@"%K.%K CONTAINS 'East'", seller, orgName] maxDistance:0 keepStart:YES];
+  query.options = @{ @"$orderby": @"ID" };
+  XCTAssertEqualObjects([[query execute:&error] valueForKey:saleKey], (@[ @4, @5 ]), @"%@", error);
+  [query addTraversalOfHierarchy:@"Nope" nodeKeyPath:nil postorder:NO sortDescriptors:nil];
+  XCTAssertNil([query execute:&error], @"no such hierarchy");
+  XCTAssertTrue([error.localizedDescription containsString:@"Nope"], @"%@", error);
+
+  NSData *archived = [NSKeyedArchiver archivedDataWithRootObject:[ODataFilterPredicate predicateWithFilter:@"ID eq 1"] requiringSecureCoding:YES error:NULL];
+  XCTAssertEqualObjects([NSKeyedUnarchiver unarchivedObjectOfClass:[ODataFilterPredicate class] fromData:archived error:NULL],
+                        [ODataFilterPredicate predicateWithFilter:@"ID eq 1"]);
 }
 
 // A client asks where nodes are in a hierarchy, with a model from

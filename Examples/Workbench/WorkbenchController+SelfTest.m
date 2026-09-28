@@ -335,6 +335,16 @@ static void WBCheck(BOOL ok, NSString *what, NSString *detail)
             self.results.lastError ?: [NSString stringWithFormat:@"%@ %@", wire, ids]);
   }
 
+  // A query as written: objects in the service's order, or dictionaries.
+  [self runPreset:[self presetLabelled:@"As written: the tree"]];
+  NSArray *tree = [self.results.rows valueForKey:@"id"];
+  WBCheck(!self.results.lastError && [tree isEqual:(@[ @"Sales", @"EMEA", @"EMEA Central", @"US", @"US East", @"US West" ])],
+          @"a query as written: $apply=traverse, objects", self.results.lastError ?: tree.description);
+  [self runPreset:[self presetLabelled:@"As written: totals"]];
+  NSArray *totals = [self.results.rows valueForKey:@"Total"];
+  WBCheck(!self.results.lastError && [totals isEqual:(@[ @5, @12, @7 ])] && [self.tableView columnWithIdentifier:@"SalesOrganization/ID"] >= 0,
+          @"a query as written: grouped rows, dictionaries", self.results.lastError ?: totals.description);
+
   [self runPreset:[self presetLabelled:@"Budgets on 2024-10-01"]];
   wire = [self.wireURLField.stringValue stringByRemovingPercentEncoding];
   NSArray *amounts = [[self.results.rows valueForKey:@"amount"] valueForKey:@"stringValue"];

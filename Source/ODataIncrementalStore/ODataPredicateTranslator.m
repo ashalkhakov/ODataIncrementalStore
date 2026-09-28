@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: LGPL-2.1-or-later
 
 #import "ODataHierarchyPredicate.h"
+#import "ODataQuery.h"
 #import "ODataPredicateTranslator.h"
 #import "ODataError.h"
 #import "ODataFunctionExpression.h"
@@ -96,6 +97,10 @@ static NSArray<NSEntityDescription *> *OISEntitiesIn(NSExpression *expression)
   }
   if ([predicate isKindOfClass:[NSComparisonPredicate class]]) {
     return [self translateComparison:(NSComparisonPredicate *)predicate error:error];
+  }
+  if ([predicate isKindOfClass:[ODataFilterPredicate class]]) {
+    // As it is written: the caller's OData, in parentheses of its own.
+    return [NSString stringWithFormat:@"(%@)", ((ODataFilterPredicate *)predicate).filter];
   }
   if ([predicate isKindOfClass:[ODataHierarchyPredicate class]]) {
     return [self translateHierarchy:(ODataHierarchyPredicate *)predicate error:error];
@@ -445,8 +450,30 @@ static NSString *OISECMAScriptPatternFromICU(NSString *pattern, NSString **why)
   }
 }
 
+// $these/aggregate(Amount with sum), $these/$count.
+- (NSString *)translateThese:(ODataTheseExpression *)expression error:(NSError **)error
+{
+  if (!self.writesAggregates || self.lambdaVariable) {
+    if (error) *error = OISError(ODataIncrementalStoreErrorUnsupportedExpression,
+                                 [NSString stringWithFormat:@"%@: %@", expression,
+                                  self.lambdaVariable ? @"only of the collection the fetch filters, not inside ANY or ALL"
+                                                      : @"the service has no Data Aggregation (Aggregation.ApplySupported)"]);
+    return nil;
+  }
+  if (!expression.method) return @"$these/$count";
+  if (![@[ @"sum", @"average", @"min", @"max", @"countdistinct" ] containsObject:expression.method] ||
+      ![self attributeAtKeyPath:expression.aggregatedKeyPath entity:self.entity]) {
+    if (error) *error = OISError(ODataIncrementalStoreErrorUnsupportedExpression,
+                                 [NSString stringWithFormat:@"%@: sum, average, min, max or countdistinct of an attribute of %@", expression, self.entity.name]);
+    return nil;
+  }
+  return [NSString stringWithFormat:@"$these/aggregate(%@ with %@)", [self.mapper propertyPathForKeyPath:expression.aggregatedKeyPath entity:self.entity],
+                                    expression.method];
+}
+
 - (NSString *)translateFunction:(NSExpression *)expression error:(NSError **)error
 {
+  if ([expression isKindOfClass:[ODataTheseExpression class]]) return [self translateThese:(ODataTheseExpression *)expression error:error];
   if ([expression isKindOfClass:[ODataFunctionExpression class]]) {
     return [self translateODataFunction:(ODataFunctionExpression *)expression type:NULL attribute:NULL error:error];
   }
@@ -1128,6 +1155,13 @@ static NSArray *OISObjectsInExpression(NSExpression *expression)
     NSAttributeDescription *attribute = nil;
     [self translateODataFunction:(ODataFunctionExpression *)expression type:NULL attribute:&attribute error:NULL];
     return attribute;
+  }
+  if ([expression isKindOfClass:[ODataTheseExpression class]]) {
+    // What a sum, min or max of an attribute compares as; an average or a
+    // count is a number of its own.
+    ODataTheseExpression *these = (ODataTheseExpression *)expression;
+    BOOL same = [@[ @"sum", @"min", @"max" ] containsObject:these.method ?: @""];
+    return same ? [self attributeAtKeyPath:these.aggregatedKeyPath entity:self.entity] : nil;
   }
   if (expression.expressionType != NSKeyPathExpressionType || self.elementType) return nil;
   return [self attributeAtKeyPath:expression.keyPath entity:self.entity];

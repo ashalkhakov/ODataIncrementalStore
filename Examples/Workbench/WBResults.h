@@ -32,6 +32,9 @@ NS_ASSUME_NONNULL_BEGIN
 // A request's answer: its count, or its first page of so many rows. NO,
 // with lastError, when it fails.
 - (BOOL)fetch:(NSFetchRequest *)request pageSize:(NSUInteger)pageSize;
+// A query sent as written (ODataQuery): all its rows at once, objects or
+// dictionaries, a dictionary's nested paths flattened (SalesOrganization/ID).
+- (BOOL)runQuery:(ODataQuery *)query;
 // The next page, after the rows there are.
 - (BOOL)loadPageOfSize:(NSUInteger)pageSize;
 // 20 of 77 Product — scroll for more; count = 3.

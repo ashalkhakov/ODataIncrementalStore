@@ -40,7 +40,10 @@ What you can do:
   `ISANCESTOR(SalesOrgHierarchy, 'US East', SELF)`, with a distance
   (`'Sales', 1`), or a related node's key path (`'US',
   salesOrganization.id`); `ISNODE`, `ISROOT`, `ISLEAF` and `ISSIBLING`
-  too), `$top`, `$skip`, a page size, sub-entities or not, and a result
+  too; or, beginning with `$`, OData query options sent as they are
+  written, by an `ODataQuery`: `$apply=traverse(…)&$expand=Superordinate`,
+  objects, or dictionaries for that result type, the other fields unused),
+  `$top`, `$skip`, a page size, sub-entities or not, and a result
   type (objects, object IDs, dictionaries, a count). The panel below holds
   the rest of what a fetch request can say: sort keys, as many as you like,
   through to-one relationships (`$orderby`); relationships to prefetch,

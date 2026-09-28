@@ -181,6 +181,11 @@ static NSArray *WBKnownPresets(WBService service)
                  nil, nil, nil),
         WBPreset(@"Hierarchy: sales anywhere below US (a related node)", @"Sale",
                  @"ISDESCENDANT(SalesOrgHierarchy, 'US', salesOrganization.id)", @"id", YES, @"salesOrganization", nil, nil),
+        WBPreset(@"As written: the tree in preorder ($apply=traverse)", @"SalesOrganization",
+                 @"$apply=traverse($root/SalesOrganizations,SalesOrgHierarchy,ID,preorder,Name asc)&$expand=Superordinate", nil, YES, nil, nil, nil),
+        WBPreset(@"As written: totals in tree order (dictionaries)", @"Sale",
+                 @"$apply=groupby((SalesOrganization/ID),aggregate(Amount with sum as Total))"
+                 @"/traverse($root/SalesOrganizations,SalesOrgHierarchy,SalesOrganization/ID,preorder)", nil, YES, nil, @"dictionary", nil),
         WBPresetWith(WBPreset(@"Sales by organization (grouped)", @"Sale", nil, @"salesOrganization.name", YES, nil, @"dictionary", nil),
                      nil, @"salesOrganization.name", @"sum:(amount) as total, count:(id) as sales"),
       ];
@@ -464,6 +469,46 @@ static NSArray *WBItems(NSString *text)
 }
 
 #pragma mark The request
+
+- (BOOL)isVerbatim
+{
+  return [[_predicateText stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceAndNewlineCharacterSet]] hasPrefix:@"$"];
+}
+
+// name=value&name=value, split where & is outside quotes and parentheses.
+- (ODataQuery *)verbatimQueryInContext:(NSManagedObjectContext *)context error:(NSError **)error
+{
+  NSString *text = [_predicateText stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceAndNewlineCharacterSet]];
+  NSMutableArray *parts = [NSMutableArray array];
+  NSInteger depth = 0;
+  BOOL quoted = NO;
+  NSUInteger start = 0;
+  for (NSUInteger i = 0; i <= text.length; i++) {
+    unichar c = i < text.length ? [text characterAtIndex:i] : '&';
+    if (c == '\'') quoted = !quoted;
+    if (quoted) continue;
+    if (c == '(') depth++;
+    if (c == ')') depth--;
+    if (c == '&' && depth == 0) {
+      [parts addObject:[text substringWithRange:NSMakeRange(start, i - start)]];
+      start = i + 1;
+    }
+  }
+  NSMutableDictionary *options = [NSMutableDictionary dictionary];
+  for (NSString *part in parts) {
+    NSRange equals = [part rangeOfString:@"="];
+    NSString *name = equals.location == NSNotFound ? nil : [part substringToIndex:equals.location];
+    if (!name.length) {
+      if (error) *error = WBError(10, [NSString stringWithFormat:@"\"%@\" is no query option: $name=value", part]);
+      return nil;
+    }
+    options[[name stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceCharacterSet]]] = [part substringFromIndex:NSMaxRange(equals)];
+  }
+  ODataQuery *query = [ODataQuery queryOfEntity:[self entity].name inContext:context];
+  query.options = options;
+  query.resultType = _resultType == NSDictionaryResultType ? NSDictionaryResultType : NSManagedObjectResultType;
+  return query;
+}
 
 - (NSFetchRequest *)fetchRequestError:(NSError **)error
 {

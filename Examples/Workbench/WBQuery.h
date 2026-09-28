@@ -61,6 +61,13 @@ NS_ASSUME_NONNULL_BEGIN
 - (nullable NSArray<NSExpressionDescription *> *)aggregateDescriptionsError:(NSError **)error;
 - (nullable NSArray<NSExpressionDescription *> *)computedDescriptionsError:(NSError **)error;
 
+// A predicate that begins with $ is OData query options, sent as they are
+// written ($apply=traverse(...)&$expand=Superordinate), by an ODataQuery of
+// the entity: objects, or dictionaries for that result type. The panel's
+// other fields are not used.
+- (BOOL)isVerbatim;
+- (nullable ODataQuery *)verbatimQueryInContext:(NSManagedObjectContext *)context error:(NSError **)error;
+
 // The fetch request the query makes; nil, and why, for one it cannot.
 - (nullable NSFetchRequest *)fetchRequestError:(NSError **)error;
 

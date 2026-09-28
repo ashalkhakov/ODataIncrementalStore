@@ -330,6 +330,11 @@ static NSTextField *WBLabel(NSString *text, NSRect frame)
   WBQuery *query = [self currentQuery];
   if (!query) return;
   NSError *error = nil;
+  if ([query isVerbatim]) {
+    NSURL *url = _connection.context ? [[query verbatimQueryInContext:_connection.context error:&error] URL:&error] : nil;
+    self.wireURLField.stringValue = url.absoluteString ?: (error.localizedDescription ?: @"");
+    return;
+  }
   NSFetchRequest *request = [query fetchRequestError:&error];
   if (!request) {
     self.wireURLField.stringValue = error.localizedDescription ?: @"bad predicate";
@@ -419,6 +424,35 @@ static NSTextField *WBLabel(NSString *text, NSRect frame)
     return;
   }
   NSError *error = nil;
+  if ([[self currentQuery] isVerbatim]) {
+    // As it is written: every row at once, the columns what they have.
+    ODataQuery *verbatim = [[self currentQuery] verbatimQueryInContext:_connection.context error:&error];
+    if (!verbatim) {
+      self.statusField.stringValue = error.localizedDescription;
+      return;
+    }
+    [self refreshTranslation];
+    [self.tableView deselectAll:nil];
+    [_results runQuery:verbatim];
+    [self rebuildColumns];
+    if ([_results.rows.firstObject isKindOfClass:[NSDictionary class]]) {
+      NSMutableArray *keys = [NSMutableArray array];
+      for (NSDictionary *row in _results.rows) {
+        for (NSString *key in [row.allKeys sortedArrayUsingSelector:@selector(compare:)]) if (![keys containsObject:key]) [keys addObject:key];
+      }
+      for (NSTableColumn *column in [self.tableView.tableColumns copy]) [self.tableView removeTableColumn:column];
+      for (NSString *key in keys) {
+        NSTableColumn *column = [[NSTableColumn alloc] initWithIdentifier:key];
+        column.title = key;
+        column.width = key.length > 6 ? 150 : 90;
+        [self.tableView addTableColumn:column];
+      }
+    }
+    [self.tableView reloadData];
+    self.statusField.stringValue = _results.lastError ?: [_results statusFor:[_query entity].name];
+    [self selectionChanged];
+    return;
+  }
   NSFetchRequest *request = [[self currentQuery] fetchRequestError:&error];
   if (!request) {
     self.statusField.stringValue = error.localizedDescription;

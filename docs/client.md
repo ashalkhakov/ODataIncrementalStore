@@ -164,6 +164,29 @@ fetch.predicate = [ODataHierarchyPredicate predicateWithTest:ODataHierarchyIsDes
                                                  maxDistance:0 includeSelf:NO];
 ```
 
+- **What a fetch request cannot say**, in OData's own syntax, sent as it
+  is: `ODataQuery` reads an entity's set with query options as written
+  (`$apply=traverse(…)`, `$these`, any function the service has) and gives
+  the rows as the context's objects, one per entity, their rows and
+  expansions kept, as a fetch would; or as dictionaries, for grouped rows.
+  `ODataFilterPredicate` is a `$filter` expression of one's own inside an
+  ordinary fetch's predicate, the rest of which is translated as ever.
+  Typed, in the model's terms: `ODataTheseExpression` is `$these/aggregate(…)`
+  or `$these/$count` as a value in a predicate, and `ODataQuery`'s
+  `-addAncestorsInHierarchy:…`, `-addDescendantsInHierarchy:…`,
+  `-addTraversalOfHierarchy:…` and `-addFilter:` are `$apply` steps from
+  predicates, key paths and sort descriptors.
+
+```objc
+ODataQuery *query = [ODataQuery queryOfEntity:@"SalesOrganization" inContext:context];
+query.options = @{ @"$apply": @"traverse($root/SalesOrganizations,SalesOrgHierarchy,ID,preorder)" };
+NSArray *inTreeOrder = [query execute:&error];   // or -executeWithTarget:action:
+
+fetch.predicate = [NSCompoundPredicate andPredicateWithSubpredicates:@[
+  [ODataFilterPredicate predicateWithFilter:@"Amount mul 3 ge $these/aggregate(Amount with sum)"],
+  [NSPredicate predicateWithFormat:@"id > 2"] ]];
+```
+
 - **Computed values**: a dictionary fetch's non-aggregate expression
   descriptions (`unitPrice * 2`) are `$compute`, with a 4.01 service.
 - **Application time**: `ODataTemporalPredicate` is `$at` or `$from`/`$to`;
