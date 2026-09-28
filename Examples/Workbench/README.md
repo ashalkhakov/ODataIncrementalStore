@@ -13,7 +13,9 @@ Pick a service at the top:
   suppliers, stock at locations), seeded with a few of Northwind's rows,
   and what the Catalog does not show (`WorkbenchBuiltInModel`): products
   with a version (ETags, so conflicts), budgets over time (application
-  time), and pictures (a media entity). Its store is SQLite with
+  time), pictures (a media entity), and the Data Aggregation spec's sales
+  organizations, a recursive hierarchy (`SalesOrgHierarchy`), with their
+  sales. Its store is SQLite with
   persistent history, in a temporary file, so its sets have delta links.
   Its operations are declared in protocols in `WorkbenchEngine.m`:
   `DiscountedPriceByPercent` and `RaisePriceByPercent` on a product,
@@ -32,7 +34,13 @@ runtime: nothing is known about the service in advance.
 What you can do:
 
 - Choose a preset, or build the query: an entity, a predicate (`NSPredicate`
-  syntax), `$top`, `$skip`, a page size, sub-entities or not, and a result
+  syntax: `products.@sum.unitPrice > 90` is `aggregate()` where the service
+  has it; and a hierarchy's tests, `ODataHierarchyPredicate`, as functions
+  of their own: `ISDESCENDANT(SalesOrgHierarchy, 'EMEA')`,
+  `ISANCESTOR(SalesOrgHierarchy, 'US East', SELF)`, with a distance
+  (`'Sales', 1`), or a related node's key path (`'US',
+  salesOrganization.id`); `ISNODE`, `ISROOT`, `ISLEAF` and `ISSIBLING`
+  too), `$top`, `$skip`, a page size, sub-entities or not, and a result
   type (objects, object IDs, dictionaries, a count). The panel below holds
   the rest of what a fetch request can say: sort keys, as many as you like,
   through to-one relationships (`$orderby`); relationships to prefetch,

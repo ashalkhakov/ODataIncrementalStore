@@ -40,6 +40,18 @@
   return YES;
 }
 
+// Archived as itself: gnustep-base's NSPredicate archives its subclasses
+// as NSPredicate, as a class cluster would.
+- (Class)classForCoder
+{
+  return [self class];
+}
+
+- (Class)classForKeyedArchiver
+{
+  return [self class];
+}
+
 - (instancetype)initWithCoder:(NSCoder *)coder
 {
   self = [super init];

@@ -146,6 +146,24 @@ once, for your own code.
   expressions is `$apply`, where the service has it, and its
   `havingPredicate`, sort, offset and limit follow the grouping there as
   `filter`, `orderby`, `skip` and `top`, as far as the service lists them.
+- **Aggregates of a relationship**: `products.@sum.unitPrice > 40` (and
+  `@avg`, `@min`, `@max`) is `Products/aggregate(UnitPrice with sum) gt 40`,
+  where the service has Data Aggregation (`Aggregation.ApplySupported`);
+  elsewhere the fetch fails, rather than reading every row to compute it.
+- **Recursive hierarchies**: `ODataHierarchyPredicate` asks where a node is
+  in a hierarchy the model declares (`Aggregation.RecursiveHierarchy`, which
+  a model from `$metadata` keeps): a node, a root, a leaf, an ancestor or a
+  descendant of another (within a distance), a sibling. Anywhere in a
+  predicate it is the Aggregation function in `$filter`; in memory it walks
+  the parent relationship.
+
+```objc
+// Sales booked anywhere below EMEA.
+fetch.predicate = [ODataHierarchyPredicate predicateWithTest:ODataHierarchyIsDescendant hierarchy:@"SalesOrgHierarchy"
+                                                        node:@"EMEA" nodeKeyPath:@"salesOrganization.id"
+                                                 maxDistance:0 includeSelf:NO];
+```
+
 - **Computed values**: a dictionary fetch's non-aggregate expression
   descriptions (`unitPrice * 2`) are `$compute`, with a 4.01 service.
 - **Application time**: `ODataTemporalPredicate` is `$at` or `$from`/`$to`;

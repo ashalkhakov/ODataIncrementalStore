@@ -316,6 +316,25 @@ static void WBCheck(BOOL ok, NSString *what, NSString *detail)
           [[self.results.rows.firstObject objectForKey:@"withTax"] doubleValue] > 0,
           @"compute: a value from each row ($compute)", self.results.lastError ?: [NSString stringWithFormat:@"%@ %@", wire, self.results.rows.firstObject]);
 
+  // Data Aggregation: a relationship's aggregate, and the hierarchy tests.
+  [self runPreset:[self presetLabelled:@"Categories over 90"]];
+  wire = [self.wireURLField.stringValue stringByRemovingPercentEncoding];
+  NSArray *names = [self.results.rows valueForKey:@"name"];
+  WBCheck(!self.results.lastError && [wire rangeOfString:@"$filter=Products/aggregate(UnitPrice with sum) gt 90"].location != NSNotFound &&
+          [names isEqual:(@[ @"Beverages", @"Confections" ])],
+          @"aggregate(): products.@sum.unitPrice", self.results.lastError ?: [NSString stringWithFormat:@"%@ %@", wire, names]);
+  NSDictionary *hierarchies = @{ @"Hierarchy: below EMEA": @[ @"EMEA Central" ], @"Hierarchy: US East and above": @[ @"Sales", @"US", @"US East" ],
+                                 @"Hierarchy: the leaves in the US": @[ @"US East", @"US West" ],
+                                 @"Hierarchy: sales anywhere below US": @[ @1, @2, @3, @4, @5 ] };
+  for (NSString *label in [hierarchies.allKeys sortedArrayUsingSelector:@selector(compare:)]) {
+    [self runPreset:[self presetLabelled:label]];
+    wire = [self.wireURLField.stringValue stringByRemovingPercentEncoding];
+    NSArray *ids = [self.results.rows valueForKey:@"id"];
+    WBCheck(!self.results.lastError && [wire rangeOfString:@"Org.OData.Aggregation.V1.is"].location != NSNotFound && [ids isEqual:hierarchies[label]],
+            [NSString stringWithFormat:@"hierarchy: %@", [label substringFromIndex:11]],
+            self.results.lastError ?: [NSString stringWithFormat:@"%@ %@", wire, ids]);
+  }
+
   [self runPreset:[self presetLabelled:@"Budgets on 2024-10-01"]];
   wire = [self.wireURLField.stringValue stringByRemovingPercentEncoding];
   NSArray *amounts = [[self.results.rows valueForKey:@"amount"] valueForKey:@"stringValue"];

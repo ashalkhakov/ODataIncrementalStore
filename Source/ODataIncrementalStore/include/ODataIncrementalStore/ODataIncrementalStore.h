@@ -20,6 +20,7 @@
 #import "ODataSearchPredicate.h"
 #import "ODataTemporalPredicate.h"
 #import "ODataFunctionExpression.h"
+#import "ODataHierarchyPredicate.h"
 #import "ODataHistory.h"
 
 NS_ASSUME_NONNULL_BEGIN

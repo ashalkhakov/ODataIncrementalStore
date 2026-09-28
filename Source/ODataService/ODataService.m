@@ -6037,7 +6037,11 @@ static NSNumber *OISScalarReturnValue(NSInvocation *invocation, char type)
   annotations[[capabilities stringByAppendingString:@"DeepUpdateSupport"]] = @{ @"Supported": @YES, @"ContentIDSupported": @YES };
   annotations[[capabilities stringByAppendingString:@"FilterFunctions"]] = @[ @"contains", @"startswith", @"endswith", @"tolower", @"toupper",
                                                                                 @"length", @"substring", @"indexof", @"trim", @"concat", @"year", @"month", @"day", @"hour", @"minute", @"second", @"date", @"floor", @"ceiling", @"round",
-                                                                                @"now", @"cast", @"isof", @"matchesPattern" ];
+                                                                                @"now", @"cast", @"isof", @"matchesPattern",
+                                                                                // Data Aggregation's (sections 3.6.1 and 5.5.1.1)
+                                                                                @"aggregate", @"Org.OData.Aggregation.V1.isnode", @"Org.OData.Aggregation.V1.isroot",
+                                                                                @"Org.OData.Aggregation.V1.isleaf", @"Org.OData.Aggregation.V1.isancestor",
+                                                                                @"Org.OData.Aggregation.V1.isdescendant", @"Org.OData.Aggregation.V1.issibling" ];
   // Repeatable requests, remembered repeatabilityDuration.
   if (self.repeatabilityDuration > 0) annotations[@"Org.OData.Repeatability.V1.Supported"] = @YES;
   // Prefer: respond-async, where a request takes its time.

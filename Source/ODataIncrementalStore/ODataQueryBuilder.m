@@ -78,6 +78,21 @@ static NSString *OISPercentEncode(NSString *value)
   return !([restrictions isKindOfClass:[NSDictionary class]] && [restrictions[@"Searchable"] isEqual:@NO]);
 }
 
+// Whether the service has Data Aggregation for the entity's set
+// (Aggregation.ApplySupported, or the container's ApplySupportedDefaults;
+// null for either is none), and so aggregate() in $filter and $orderby.
+- (BOOL)aggregates:(NSEntityDescription *)entity
+{
+  ODataSchema *schema = self.mapper.schema;
+  if (!schema) return NO;
+  NSEntityDescription *root = entity;
+  while (root.superentity) root = root.superentity;
+  id apply = [schema capability:@"Aggregation.ApplySupported" forEntitySet:[self.mapper entitySetForEntity:root]];
+  id defaults = schema.containerName ? [schema annotation:@"Aggregation.ApplySupportedDefaults" forTarget:schema.containerName] : nil;
+  if (apply == [NSNull null] || defaults == [NSNull null]) return NO;
+  return apply != nil || defaults != nil;
+}
+
 // Whether the service expands this navigation property of the entity's
 // set (Capabilities.ExpandRestrictions): an expansion only saves requests,
 // so one it refuses is left out.
@@ -204,7 +219,10 @@ static void OISCollectCalls(ODataExpression *e, NSMutableSet *into)
   NSMutableSet *used = [NSMutableSet set];
   OISCollectCalls([ODataExpression expressionWithString:filter error:NULL], used);
   for (NSString *name in [used.allObjects sortedArrayUsingSelector:@selector(compare:)]) {
-    if (![listed containsObject:name]) return name;
+    // A vocabulary's function by its namespace, or by the alias Aggregation.
+    NSString *vocabulary = @"Org.OData.Aggregation.V1.";
+    NSString *aliased = [name hasPrefix:vocabulary] ? [@"Aggregation." stringByAppendingString:[name substringFromIndex:vocabulary.length]] : nil;
+    if (![listed containsObject:name] && !(aliased && [listed containsObject:aliased])) return name;
   }
   return nil;
 }
@@ -278,6 +296,7 @@ static NSPredicate *OISWithoutSearches(NSPredicate *predicate, NSMutableArray<OD
     ODataPredicateTranslator *t = [[ODataPredicateTranslator alloc] initWithMapper:self.mapper entity:entity];
     t.keysForObjectID = self.keysForObjectID;
     if (self.version) t.version = self.version;
+    t.writesAggregates = [self aggregates:entity];
     NSString *filter = [t translatePredicate:predicate error:error];
     if (!filter) return nil;
     NSString *refused = [self refusedFunctionIn:filter entity:entity];
@@ -315,6 +334,7 @@ static NSPredicate *OISWithoutSearches(NSPredicate *predicate, NSMutableArray<OD
         // Any expression $filter could hold: a function's result, say.
         ODataPredicateTranslator *t = [[ODataPredicateTranslator alloc] initWithMapper:self.mapper entity:entity];
         if (self.version) t.version = self.version;
+    t.writesAggregates = [self aggregates:entity];
         name = [t translateExpression:((ODataSortDescriptor *)desc).expression error:error];
         if (!name) return nil;
       } else {
@@ -366,6 +386,7 @@ static NSPredicate *OISWithoutSearches(NSPredicate *predicate, NSMutableArray<OD
         // Computed by the service: $compute=<expression> as <name>.
         ODataPredicateTranslator *t = [[ODataPredicateTranslator alloc] initWithMapper:self.mapper entity:entity];
         if (self.version) t.version = self.version;
+    t.writesAggregates = [self aggregates:entity];
         NSString *text = [t translateExpression:expression error:error];
         if (!text) return nil;
         [computed addObject:[NSString stringWithFormat:@"%@ as %@", text, [prop name]]];
@@ -474,6 +495,7 @@ static NSPredicate *OISWithoutSearches(NSPredicate *predicate, NSMutableArray<OD
     ODataPredicateTranslator *t = [[ODataPredicateTranslator alloc] initWithMapper:self.mapper entity:entity];
     t.keysForObjectID = self.keysForObjectID;
     if (self.version) t.version = self.version;
+    t.writesAggregates = [self aggregates:entity];
     NSString *filter = [t translatePredicate:predicate error:error];
     if (!filter) return nil;
     [steps addObject:[NSString stringWithFormat:@"filter(%@)", filter]];

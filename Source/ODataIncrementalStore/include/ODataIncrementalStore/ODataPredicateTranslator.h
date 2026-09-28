@@ -23,6 +23,10 @@ typedef NSDictionary * _Nullable (^ODataObjectKeysResolver)(NSManagedObjectID *o
 // and a chain of `eq … or eq …` in 4.0; LIKE and MATCHES are
 // matchesPattern in 4.01 and an error in 4.0, which has no such function.
 @property (nonatomic, copy) NSString *version;
+// Whether the service has Data Aggregation's aggregate() (section 3.6.1):
+// then products.@sum.unitPrice (@avg, @min, @max) is
+// Products/aggregate(UnitPrice with sum); else an error. NO by default.
+@property (nonatomic) BOOL writesAggregates;
 
 - (instancetype)initWithMapper:(ODataPropertyMapper *)mapper entity:(NSEntityDescription *)entity NS_DESIGNATED_INITIALIZER;
 - (instancetype)init NS_UNAVAILABLE;

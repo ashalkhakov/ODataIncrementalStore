@@ -220,6 +220,36 @@
   [self assertPredicate:@"unitPrice + 1 > 20" filter:@"(UnitPrice add 1) gt 20"];
 }
 
+// A collection operator after a to-many relationship is Data
+// Aggregation's aggregate(), where the service has it; else refused.
+- (void)testCollectionOperatorsAreAggregates
+{
+  ODataPredicateTranslator *categories = [[ODataPredicateTranslator alloc] initWithMapper:[[ODataPropertyMapper alloc] init]
+                                                                                  entity:OISCatalogEntity(@"Category")];
+  NSPredicate *sum = [NSPredicate predicateWithFormat:@"products.@sum.unitPrice > 40"];
+  NSError *error = nil;
+  XCTAssertNil([categories translatePredicate:sum error:&error]);
+  XCTAssertEqual(error.code, ODataIncrementalStoreErrorUnsupportedExpression);
+  XCTAssertTrue([error.localizedDescription containsString:@"ApplySupported"], @"%@", error);
+
+  categories.writesAggregates = YES;
+  NSDictionary *cases = @{
+    @"products.@sum.unitPrice > 40": @"Products/aggregate(UnitPrice with sum) gt 40",
+    @"products.@avg.unitPrice < 20": @"Products/aggregate(UnitPrice with average) lt 20",
+    @"products.@max.unitPrice >= products.@min.unitPrice": @"Products/aggregate(UnitPrice with max) ge Products/aggregate(UnitPrice with min)",
+    @"products.@count > 2": @"Products/$count gt 2",
+  };
+  for (NSString *format in cases) {
+    error = nil;
+    NSString *got = [categories translatePredicate:[NSPredicate predicateWithFormat:format] error:&error];
+    XCTAssertEqualObjects(got, cases[format], @"%@: %@", format, error);
+    [self assertParses:got];
+  }
+  error = nil;
+  XCTAssertNil([categories translatePredicate:[NSPredicate predicateWithFormat:@"products.@sum.suppliers > 1"] error:&error], @"not an attribute");
+  XCTAssertNotNil(error);
+}
+
 - (void)testUnknownNamesAreErrorsNotGuesses
 {
   NSError *error = nil;

@@ -1,6 +1,7 @@
 // Copyright (C) 2026 OIS contributors
 // SPDX-License-Identifier: LGPL-2.1-or-later
 
+#import "ODataHierarchyPredicate.h"
 #import "ODataPredicateTranslator.h"
 #import "ODataError.h"
 #import "ODataFunctionExpression.h"
@@ -96,10 +97,64 @@ static NSArray<NSEntityDescription *> *OISEntitiesIn(NSExpression *expression)
   if ([predicate isKindOfClass:[NSComparisonPredicate class]]) {
     return [self translateComparison:(NSComparisonPredicate *)predicate error:error];
   }
+  if ([predicate isKindOfClass:[ODataHierarchyPredicate class]]) {
+    return [self translateHierarchy:(ODataHierarchyPredicate *)predicate error:error];
+  }
   if ([predicate.predicateFormat isEqualToString:@"TRUEPREDICATE"]) return @"true";
   if ([predicate.predicateFormat isEqualToString:@"FALSEPREDICATE"]) return @"false";
   if (error) *error = OISError(ODataIncrementalStoreErrorUnsupportedPredicate, predicate.description);
   return nil;
+}
+
+// Aggregation.isdescendant(HierarchyNodes=$root/Set,HierarchyQualifier='Q',
+// Node=path,Ancestor=...) and the rest (Data Aggregation section 5.5.1.1).
+- (NSString *)translateHierarchy:(ODataHierarchyPredicate *)h error:(NSError **)error
+{
+  if (!self.writesAggregates) {
+    if (error) *error = OISError(ODataIncrementalStoreErrorUnsupportedPredicate,
+                                 [NSString stringWithFormat:@"%@: the service has no Data Aggregation (Aggregation.ApplySupported)", h]);
+    return nil;
+  }
+  NSString *nodeKeyPath = nil;
+  NSEntityDescription *entity = [ODataHierarchyPredicate entityOfHierarchy:h.qualifier model:self.entity.managedObjectModel
+                                                                    mapper:self.mapper nodeKeyPath:&nodeKeyPath parent:NULL];
+  if (!entity || (!h.nodeKeyPath && ![self.entity isKindOfEntity:entity])) {
+    if (error) *error = OISError(ODataIncrementalStoreErrorUnsupportedPredicate,
+                                 entity ? [NSString stringWithFormat:@"%@: %@ is no node of it; say which key path leads to one", h, self.entity.name]
+                                        : [NSString stringWithFormat:@"%@: no entity has the recursive hierarchy %@ (Aggregation.RecursiveHierarchy)", h, h.qualifier]);
+    return nil;
+  }
+  NSString *node = [self mapKeyPath:h.nodeKeyPath ?: nodeKeyPath error:error];
+  if (!node) return nil;
+  NSEntityDescription *root = entity;
+  while (root.superentity) root = root.superentity;
+  NSMutableArray *parameters = [NSMutableArray arrayWithObjects:
+      [@"HierarchyNodes=$root/" stringByAppendingString:[self.mapper entitySetForEntity:root]],
+      [NSString stringWithFormat:@"HierarchyQualifier=%@", [self.mapper.values literalForValue:h.qualifier attribute:nil]],
+      [@"Node=" stringByAppendingString:node], nil];
+  NSString *other = h.test == ODataHierarchyIsAncestor ? @"Descendant" : h.test == ODataHierarchyIsDescendant ? @"Ancestor"
+                  : h.test == ODataHierarchyIsSibling ? @"Other" : nil;
+  if (other) {
+    if (!h.node) {
+      if (error) *error = OISError(ODataIncrementalStoreErrorUnsupportedPredicate, [NSString stringWithFormat:@"%@: which node?", h]);
+      return nil;
+    }
+    NSAttributeDescription *identifier = (NSAttributeDescription *)[self propertyAtKeyPath:nodeKeyPath of:entity];
+    [parameters addObject:[NSString stringWithFormat:@"%@=%@", other, [self.mapper.values literalForValue:h.node attribute:identifier]]];
+    if (h.maxDistance && h.test != ODataHierarchyIsSibling) [parameters addObject:[NSString stringWithFormat:@"MaxDistance=%lu", (unsigned long)h.maxDistance]];
+    if (h.includeSelf && h.test != ODataHierarchyIsSibling) [parameters addObject:@"IncludeSelf=true"];
+  }
+  return [NSString stringWithFormat:@"Org.OData.Aggregation.V1.%@(%@)", h.functionName, [parameters componentsJoinedByString:@","]];
+}
+
+- (NSPropertyDescription *)propertyAtKeyPath:(NSString *)keyPath of:(NSEntityDescription *)entity
+{
+  NSPropertyDescription *property = nil;
+  for (NSString *name in [keyPath componentsSeparatedByString:@"."]) {
+    property = entity.propertiesByName[name];
+    entity = [property isKindOfClass:[NSRelationshipDescription class]] ? ((NSRelationshipDescription *)property).destinationEntity : nil;
+  }
+  return property;
 }
 
 - (NSString *)translateCompound:(NSCompoundPredicate *)compound error:(NSError **)error
@@ -421,8 +476,10 @@ static NSString *OISECMAScriptPatternFromICU(NSString *pattern, NSString **why)
 // lambda: relationships and attributes (a complex value's members after
 // its attribute) as the mapper names them, a subentity's property after a
 // cast to it (Default.Manager/Budget), @count after a to-many relationship
-// as $count, length after a string attribute as length(). Anything else is
-// no property of the model, and an error, not a guess.
+// as $count, @sum, @avg, @min and @max after one as aggregate() where the
+// service has it (Products/aggregate(UnitPrice with sum)), length after a
+// string attribute as length(). Anything else is no property of the model,
+// and an error, not a guess.
 - (NSString *)mapKeyPath:(NSString *)path error:(NSError **)error
 {
   NSMutableArray *mapped = [NSMutableArray array];
@@ -440,6 +497,31 @@ static NSString *OISECMAScriptPatternFromICU(NSString *pattern, NSString **why)
     if ([part isEqualToString:@"@count"] && last && collection) {
       [mapped addObject:@"$count"];
       return [mapped componentsJoinedByString:@"/"];
+    }
+    NSString *method = @{ @"@sum": @"sum", @"@avg": @"average", @"@min": @"min", @"@max": @"max" }[part];
+    if (method && collection && !last) {
+      if (!self.writesAggregates) {
+        if (error) *error = OISError(ODataIncrementalStoreErrorUnsupportedExpression,
+                                     [NSString stringWithFormat:@"%@: the service has no aggregate() (Aggregation.ApplySupported)", path]);
+        return nil;
+      }
+      NSString *rest = [[parts subarrayWithRange:NSMakeRange(i + 1, parts.count - i - 1)] componentsJoinedByString:@"."];
+      NSPropertyDescription *end = nil;
+      NSEntityDescription *at = current;
+      for (NSString *name in [rest componentsSeparatedByString:@"."]) {
+        end = at.propertiesByName[name];
+        NSRelationshipDescription *through = [end isKindOfClass:[NSRelationshipDescription class]] ? (NSRelationshipDescription *)end : nil;
+        if (through.isToMany) end = nil;
+        if (!end) break;
+        at = through.destinationEntity;
+      }
+      if (![end isKindOfClass:[NSAttributeDescription class]]) {
+        if (error) *error = OISError(ODataIncrementalStoreErrorUnsupportedExpression,
+                                     [NSString stringWithFormat:@"%@: %@ is no attribute of %@ through to-one relationships", path, rest, current.name]);
+        return nil;
+      }
+      return [NSString stringWithFormat:@"%@/aggregate(%@ with %@)", [mapped componentsJoinedByString:@"/"],
+                                        [self.mapper propertyPathForKeyPath:rest entity:current], method];
     }
     if (collection) break;
     NSPropertyDescription *property = current.propertiesByName[part];
@@ -650,6 +732,7 @@ static NSString *OISECMAScriptPatternFromICU(NSString *pattern, NSString **why)
   inner.subqueryVariable = counted.variable;
   inner.keysForObjectID = self.keysForObjectID;
   inner.version = self.version;
+  inner.writesAggregates = self.writesAggregates;
   NSString *test = [inner translatePredicate:body error:error];
   if (!test) return nil;
   NSString *lambda = [NSString stringWithFormat:@"%@/%@(%@:%@)", path, function, inner.lambdaVariable, test];
@@ -838,6 +921,7 @@ static NSString *OISECMAScriptPatternFromICU(NSString *pattern, NSString **why)
   inner.lambdaDepth = self.lambdaDepth + 1;
   inner.keysForObjectID = self.keysForObjectID;
   inner.version = self.version;
+  inner.writesAggregates = self.writesAggregates;
   NSExpression *innerLeft = rest.count
       ? [NSExpression expressionForKeyPath:[rest componentsJoinedByString:@"."]]
       : [NSExpression expressionForEvaluatedObject];
