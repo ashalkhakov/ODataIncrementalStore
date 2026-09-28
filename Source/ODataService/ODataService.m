@@ -212,6 +212,20 @@ NSString * const ODataUserInfoETag = @"OData.etag";
 @property (nonatomic, readwrite, weak, nullable) ODataService *service;
 @end
 
+// A fetch, and what a store refuses to evaluate (Apple's SQLite store
+// raises for arithmetic on a key path's collection operator,
+// products.@count * 20) as 501, not as the service failing.
+static NSArray *OISFetch(NSManagedObjectContext *context, NSFetchRequest *fetchRequest, NSError **error)
+{
+  @try {
+    return [context executeFetchRequest:fetchRequest error:error];
+  } @catch (NSException *exception) {
+    if (![exception.name isEqualToString:NSInvalidArgumentException]) @throw;
+    if (error) *error = ODataServiceError(501, [NSString stringWithFormat:@"The store cannot evaluate this: %@", exception.reason]);
+    return nil;
+  }
+}
+
 @implementation ODataEntitySetHandler
 
 - (instancetype)initWithEntity:(NSEntityDescription *)entity
@@ -221,6 +235,8 @@ NSString * const ODataUserInfoETag = @"OData.etag";
   _entity = entity;
   _allowsInsert = YES;
   _nonFilterableProperties = [NSSet set];
+  _customAggregationMethods = [NSSet set];
+  _customAggregates = @{};
   _nonSortableProperties = [NSSet set];
   _allowsUpdate = YES;
   _allowsDelete = YES;
@@ -236,15 +252,25 @@ NSString * const ODataUserInfoETag = @"OData.etag";
 - (NSArray *)objectsForFetchRequest:(NSFetchRequest *)fetchRequest request:(ODataRequest *)request reply:(ODataReply *)reply
 {
   NSError *error = nil;
-  NSArray *objects = [request.context executeFetchRequest:fetchRequest error:&error];
+  NSArray *objects = OISFetch(request.context, fetchRequest, &error);
   if (!objects) [reply failWithError:error];
   return objects;
+}
+
+- (id)valueOfAggregationMethod:(NSString *)method values:(NSArray *)values request:(ODataRequest *)request
+{
+  return nil;
+}
+
+- (id)valueOfCustomAggregate:(NSString *)name objects:(NSArray *)objects request:(ODataRequest *)request
+{
+  return nil;
 }
 
 - (NSArray *)groupedRowsForFetchRequest:(NSFetchRequest *)fetchRequest request:(ODataRequest *)request reply:(ODataReply *)reply
 {
   NSError *error = nil;
-  NSArray *rows = [request.context executeFetchRequest:fetchRequest error:&error];
+  NSArray *rows = OISFetch(request.context, fetchRequest, &error);
   if (!rows) [reply failWithError:error];
   return rows;
 }
@@ -252,7 +278,13 @@ NSString * const ODataUserInfoETag = @"OData.etag";
 - (NSNumber *)countForFetchRequest:(NSFetchRequest *)fetchRequest request:(ODataRequest *)request reply:(ODataReply *)reply
 {
   NSError *error = nil;
-  NSUInteger count = [request.context countForFetchRequest:fetchRequest error:&error];
+  NSUInteger count = NSNotFound;
+  @try {
+    count = [request.context countForFetchRequest:fetchRequest error:&error];
+  } @catch (NSException *exception) {
+    if (![exception.name isEqualToString:NSInvalidArgumentException]) @throw;
+    error = ODataServiceError(501, [NSString stringWithFormat:@"The store cannot evaluate this: %@", exception.reason]);
+  }
   if (count == NSNotFound) {
     [reply failWithError:error];
     return nil;
@@ -501,6 +533,138 @@ static NSString *OISHelperName(NSString *alias, NSString *what)
 
 @end
 
+// The $apply transformations the service has (Data Aggregation sections 3
+// and 6), as $metadata lists them.
+static NSArray<NSString *> *OISApplyTransformations(void)
+{
+  return @[ @"filter", @"groupby", @"aggregate", @"identity", @"search", @"compute", @"orderby", @"top", @"skip",
+            @"topcount", @"topsum", @"toppercent", @"bottomcount", @"bottomsum", @"bottompercent", @"concat", @"join", @"outerjoin",
+            @"ancestors", @"descendants", @"traverse" ];
+}
+
+// A recursive hierarchy (Data Aggregation section 5.5.1), as the caller
+// sees it: the nodes of a set (Aggregation.RecursiveHierarchy#Q on its
+// entity type: NodeProperty, the node identifier, q; and
+// ParentNavigationProperty), read once per request. Core Data has no
+// recursive query: the service reads each node's identifier and its
+// parents' and walks the tree here, and what it finds is a set of
+// identifiers, which a store tests with IN.
+@interface OISHierarchy : NSObject
+@property (nonatomic, strong) NSEntityDescription *entity;
+@property (nonatomic, copy) NSString *qualifier;
+@property (nonatomic, copy) NSString *nodeKeyPath;   // q, as a Core Data key path
+@property (nonatomic, copy) NSString *parentKey;     // the parent relationship's name
+@property (nonatomic) BOOL parentsAreMany;
+@property (nonatomic, strong) NSMutableArray *nodes;  // identifiers, in key order
+@property (nonatomic, strong) NSMutableDictionary<id<NSCopying>, NSManagedObject *> *objects;
+@property (nonatomic, strong) NSMutableDictionary<id<NSCopying>, NSArray *> *parents;
+@property (nonatomic, strong) NSMutableDictionary<id<NSCopying>, NSMutableArray *> *children;
+- (void)readObjects:(NSArray<NSManagedObject *> *)objects;
+- (NSArray *)roots;
+- (NSArray *)leaves;
+// Within distance (0: any), and the node itself where includeSelf.
+- (NSArray *)ancestorsOf:(id)node distance:(NSInteger)distance includeSelf:(BOOL)includeSelf;
+- (NSArray *)descendantsOf:(id)node distance:(NSInteger)distance includeSelf:(BOOL)includeSelf;
+- (NSArray *)siblingsOf:(id)node;
+@end
+
+@implementation OISHierarchy
+
+- (void)readObjects:(NSArray<NSManagedObject *> *)objects
+{
+  self.nodes = [NSMutableArray array];
+  self.objects = [NSMutableDictionary dictionary];
+  self.parents = [NSMutableDictionary dictionary];
+  self.children = [NSMutableDictionary dictionary];
+  for (NSManagedObject *object in objects) {
+    id node = [object valueForKeyPath:self.nodeKeyPath];
+    if (!node || node == [NSNull null] || self.objects[node]) continue;  // not a node, or not the first with it
+    [self.nodes addObject:node];
+    self.objects[node] = object;
+  }
+  // Parents among the nodes: one outside the set the caller sees is none.
+  for (id node in self.nodes) {
+    id related = [self.objects[node] valueForKey:self.parentKey];
+    NSMutableArray *parents = [NSMutableArray array];
+    for (NSManagedObject *parent in (self.parentsAreMany ? related : (related ? @[ related ] : @[]))) {
+      id identifier = [parent valueForKeyPath:self.nodeKeyPath];
+      if (identifier && self.objects[identifier] == parent && ![parents containsObject:identifier]) [parents addObject:identifier];
+    }
+    self.parents[node] = parents;
+    for (id parent in parents) {
+      if (!self.children[parent]) self.children[parent] = [NSMutableArray array];
+      [self.children[parent] addObject:node];
+    }
+  }
+}
+
+- (NSArray *)roots
+{
+  NSMutableArray *roots = [NSMutableArray array];
+  for (id node in self.nodes) if (![self.parents[node] count]) [roots addObject:node];
+  return roots;
+}
+
+- (NSArray *)leaves
+{
+  NSMutableArray *leaves = [NSMutableArray array];
+  for (id node in self.nodes) if (![self.children[node] count]) [leaves addObject:node];
+  return leaves;
+}
+
+// Breadth first along parents or children, each node once (a cycle, which
+// the spec forbids, ends there).
+- (NSArray *)reachedFrom:(id)node along:(NSDictionary *)links distance:(NSInteger)distance includeSelf:(BOOL)includeSelf
+{
+  NSMutableArray *found = [NSMutableArray array];
+  NSMutableSet *seen = [NSMutableSet setWithObject:node];
+  if (includeSelf) [found addObject:node];
+  NSArray *level = @[ node ];
+  for (NSInteger step = 1; level.count && (distance <= 0 || step <= distance); step++) {
+    NSMutableArray *next = [NSMutableArray array];
+    for (id at in level) {
+      for (id linked in links[at]) {
+        if ([seen containsObject:linked]) continue;
+        [seen addObject:linked];
+        [found addObject:linked];
+        [next addObject:linked];
+      }
+    }
+    level = next;
+  }
+  return found;
+}
+
+- (NSArray *)ancestorsOf:(id)node distance:(NSInteger)distance includeSelf:(BOOL)includeSelf
+{
+  return [self reachedFrom:node along:self.parents distance:distance includeSelf:includeSelf];
+}
+
+- (NSArray *)descendantsOf:(id)node distance:(NSInteger)distance includeSelf:(BOOL)includeSelf
+{
+  return [self reachedFrom:node along:self.children distance:distance includeSelf:includeSelf];
+}
+
+// Two nodes with a parent in common, or two roots.
+- (NSArray *)siblingsOf:(id)node
+{
+  if (!self.objects[node]) return @[];
+  NSMutableArray *siblings = [NSMutableArray array];
+  NSArray *parents = self.parents[node];
+  NSArray *candidates = parents.count ? nil : [self roots];
+  if (!candidates) {
+    NSMutableArray *all = [NSMutableArray array];
+    for (id parent in parents) [all addObjectsFromArray:self.children[parent]];
+    candidates = all;
+  }
+  for (id other in candidates) {
+    if (![other isEqual:node] && ![siblings containsObject:other]) [siblings addObject:other];
+  }
+  return siblings;
+}
+
+@end
+
 @interface OISServiceCall : NSObject <OISTimelineWriting>
 // A repeatable request's: where its answer is remembered, and what it was.
 @property (nonatomic, copy, nullable) NSString *repeatabilityKey;
@@ -577,6 +741,14 @@ static NSString *OISHelperName(NSString *alias, NSString *what)
 @property (nonatomic) BOOL pagedByPreference;
 // $orderby by what $compute computes: sorted, then paged, here.
 @property (nonatomic, copy, nullable) NSArray<NSSortDescriptor *> *memorySort;
+// The values of the collection the request's $filter and $compute ask for
+// ($these/aggregate(...)), by their descriptions, once read.
+@property (nonatomic, copy, nullable) NSDictionary<NSString *, id> *theseValues;
+// The recursive hierarchies the request names, read once ($root/Set#Q), and
+// what each hierarchy function in it stands for (Node in (...)), by the
+// call's description.
+@property (nonatomic, strong, nullable) NSMutableDictionary<NSString *, OISHierarchy *> *hierarchies;
+@property (nonatomic, copy, nullable) NSDictionary<NSString *, ODataExpression *> *hierarchyCalls;
 @property (nonatomic) NSUInteger memoryOffset;
 @property (nonatomic) NSUInteger memoryLimit;
 // Slices a temporal action changed: their versions moved on once.
@@ -1333,6 +1505,7 @@ static NSUInteger OISExpandDepth(ODataQueryOptions *options)
 - (void)dispatch
 {
   if (![self negotiateFormat]) return;
+  if (![self resolveHierarchyCalls]) return;
   NSString *method = self.request.method;
   self.request.entity = self.entity;
   switch (self.kind) {
@@ -1876,7 +2049,7 @@ static const NSInteger OISMaxLevels = 32;
     NSPredicate *visible = [handler predicateForVisibleObjectsInRequest:self.request];
     NSPredicate *filter = nil;
     if (options.filter) {
-      filter = [self.service.predicates predicateForExpression:options.filter entity:destination aliases:self.request.options.aliases
+      filter = [self.service.predicates predicateForExpression:[self hierarchical:options.filter] entity:destination aliases:self.request.options.aliases
                                                       computed:[self computedNamesOf:options] context:self.request.context error:error];
       if (!filter) return NO;
     }
@@ -2041,7 +2214,7 @@ static const NSInteger OISMaxLevels = 32;
 {
   NSMutableArray *parts = [NSMutableArray array];
   if (withFilter && self.request.options.filter) {
-    NSPredicate *filter = [self.service.predicates predicateForExpression:self.request.options.filter
+    NSPredicate *filter = [self.service.predicates predicateForExpression:[self resolved:self.request.options.filter options:self.request.options]
                                                                    entity:self.entity
                                                                   aliases:self.request.options.aliases
                                                                  computed:[self computedNamesOf:self.request.options]
@@ -2052,7 +2225,7 @@ static const NSInteger OISMaxLevels = 32;
   }
   if (withFilter && [self applyIsFiltersOnly]) {
     for (ODataApplyTransformation *t in self.request.options.apply) {
-      NSPredicate *filter = [self.service.predicates predicateForExpression:t.filter entity:self.entity
+      NSPredicate *filter = [self.service.predicates predicateForExpression:[self hierarchical:t.filter] entity:self.entity
                                                                    aliases:self.request.options.aliases
                                                                   computed:[self computedNamesOf:self.request.options]
                                                                    context:self.request.context error:error];
@@ -2185,7 +2358,7 @@ static NSPredicate *OISEquals(NSString *keyPath, id value, NSComparisonPredicate
   NSArray *apply = self.request.options.apply;
   if (!apply.count) return NO;
   for (ODataApplyTransformation *t in apply) {
-    if (t.kind != ODataApplyFilter) return NO;
+    if (t.kind != ODataApplyFilter || [t.filter aggregatesOfThese].count) return NO;
   }
   return YES;
 }
@@ -2212,8 +2385,11 @@ static NSPredicate *OISEquals(NSString *keyPath, id value, NSComparisonPredicate
     [parts addObject:search];
   }
   NSUInteger first = 0;
-  for (; first < options.apply.count && ((ODataApplyTransformation *)options.apply[first]).kind == ODataApplyFilter; first++) {
-    NSPredicate *filter = [self.service.predicates predicateForExpression:((ODataApplyTransformation *)options.apply[first]).filter entity:self.entity
+  // Leading filters in the store; not one of the collection's values
+  // ($these/aggregate(...)), which are of the rows before it.
+  for (; first < options.apply.count && ((ODataApplyTransformation *)options.apply[first]).kind == ODataApplyFilter
+         && ![((ODataApplyTransformation *)options.apply[first]).filter aggregatesOfThese].count; first++) {
+    NSPredicate *filter = [self.service.predicates predicateForExpression:[self hierarchical:((ODataApplyTransformation *)options.apply[first]).filter] entity:self.entity
                                                                  aliases:options.aliases context:self.request.context error:&error];
     if (!filter) {
       [self respondError:error];
@@ -2234,6 +2410,13 @@ static NSPredicate *OISEquals(NSString *keyPath, id value, NSComparisonPredicate
   }
   NSFetchRequest *fetch = [NSFetchRequest fetchRequestWithEntityName:self.entity.name];
   fetch.predicate = predicate;
+  // In key order, so that what $apply makes of them comes out the same way
+  // each time (the input set's order is the service's to choose).
+  NSMutableArray *byKey = [NSMutableArray array];
+  for (NSAttributeDescription *attribute in [self.mapper keyAttributesForEntity:OISRootEntity(self.entity)]) {
+    [byKey addObject:[NSSortDescriptor sortDescriptorWithKey:attribute.name ascending:YES]];
+  }
+  fetch.sortDescriptors = byKey;
   // One more than the service works on in memory, to know it is too many.
   if (self.service.maxRowsInMemory) fetch.fetchLimit = self.service.maxRowsInMemory + 1;
   self.fetch = fetch;
@@ -2303,7 +2486,9 @@ static NSExpressionDescription *OISAggregateDescription(NSString *name, NSString
 - (OISStoreGrouping *)storeGroupingOf:(ODataApplyTransformation *)t predicate:(NSPredicate *)predicate
 {
   if (t.kind != ODataApplyGroupBy && t.kind != ODataApplyAggregate) return nil;
-  if (!OISStoresGroup(self.request.context)) return nil;
+  if (t.sequence.count || !OISStoresGroup(self.request.context)) return nil;
+  // What the handler does not allow is refused where the grouping is done.
+  if ([self refusalOfGrouping:t computed:@{}]) return nil;
   Class base = [ODataEntitySetHandler class];
   Class handler = [self.handler class];
   SEL objects = @selector(objectsForFetchRequest:request:reply:), grouped = @selector(groupedRowsForFetchRequest:request:reply:);
@@ -2327,6 +2512,8 @@ static NSExpressionDescription *OISAggregateDescription(NSString *name, NSString
   NSString *someKey = [self.mapper keyAttributesForEntity:self.entity].firstObject.name;
   for (ODataAggregate *aggregate in t.aggregates) {
     NSString *alias = aggregate.alias;
+    // An expression, a collection's $count, a custom one: grouped here.
+    if (aggregate.expression || aggregate.isCustom || (aggregate.path && aggregate.isCount)) return nil;
     if (!aggregate.path) {
       if (!someKey) return nil;
       [fetched addObject:OISAggregateDescription(alias, @"count:", someKey, NSInteger64AttributeType)];
@@ -2375,22 +2562,117 @@ static NSExpressionDescription *OISAggregateDescription(NSString *name, NSString
   return grouping;
 }
 
+// Whether a name is one compute gave (the dictionary also holds a join's
+// aliases, each to the entity its members are).
+static BOOL OISIsComputed(NSDictionary *computed, NSString *name)
+{
+  return [computed[name] isKindOfClass:[ODataExpression class]];
+}
+
+// A path of wire names as a key path: through a join's alias (Sale/Amount
+// is the joined sale's amount), else from the set's entity; through
+// collection-valued navigation where through says so (an aggregate's
+// path). nil, and a 400, for a name that is not there.
+- (NSString *)keyPathForPath:(NSArray *)path computed:(NSDictionary *)computed property:(NSPropertyDescription **)property
+          throughCollections:(BOOL)through error:(NSError **)error
+{
+  id joined = path.count ? computed[path[0]] : nil;
+  if (![joined isKindOfClass:[NSEntityDescription class]]) {
+    return through ? [self keyPathThroughCollections:path property:property error:error]
+                   : [self.service.predicates keyPathForPath:path entity:self.entity property:property error:error];
+  }
+  NSMutableArray *keys = [NSMutableArray arrayWithObject:path[0]];
+  NSEntityDescription *current = joined;
+  NSPropertyDescription *found = nil;
+  for (NSUInteger i = 1; i < path.count; i++) {
+    found = current ? [self.mapper propertyForWireName:path[i] entity:current] : nil;
+    NSRelationshipDescription *relationship = [found isKindOfClass:[NSRelationshipDescription class]] ? (NSRelationshipDescription *)found : nil;
+    if (!found || (relationship.isToMany && !through && i + 1 < path.count)) {
+      if (error) *error = ODataServiceError(400, [NSString stringWithFormat:@"%@ has no property %@", current.name ?: @"A value", path[i]]);
+      return nil;
+    }
+    [keys addObject:found.name];
+    current = relationship.destinationEntity;
+  }
+  if (!found) {
+    if (error) *error = ODataServiceError(501, [NSString stringWithFormat:@"%@ is a join's alias: name its properties", path[0]]);
+    return nil;
+  }
+  if (property) *property = found;
+  return [keys componentsJoinedByString:@"."];
+}
+
+// Whether a path (wire names) is among those listed: it, or where it
+// starts (Category allows Category/CategoryName).
+static BOOL OISPathListed(NSArray<NSString *> *path, id listed)
+{
+  for (NSUInteger n = path.count; n > 0; n--) {
+    if ([listed containsObject:[[path subarrayWithRange:NSMakeRange(0, n)] componentsJoinedByString:@"/"]]) return YES;
+  }
+  return NO;
+}
+
+// A grouping of the set's entities as the handler allows it (Data
+// Aggregation section 5.1): its groupable and aggregatable properties, and
+// the custom aggregates and methods it declares. nil, or a 400.
+- (NSError *)refusalOfGrouping:(ODataApplyTransformation *)t computed:(NSDictionary *)computed
+{
+  ODataEntitySetHandler *handler = self.handler;
+  for (NSArray *path in t.groupPaths) {
+    if (path.count == 1 && OISIsComputed(computed, path[0])) continue;
+    if (handler.groupableProperties && !OISPathListed(path, handler.groupableProperties)) {
+      return ODataServiceError(400, [NSString stringWithFormat:@"%@ cannot be grouped by (Aggregation.ApplySupported/GroupableProperties)",
+                                                                [path componentsJoinedByString:@"/"]]);
+    }
+  }
+  for (ODataAggregate *aggregate in t.aggregates) {
+    if (aggregate.custom) {
+      if (!handler.customAggregates[aggregate.custom]) {
+        return ODataServiceError(400, [NSString stringWithFormat:@"%@ is not a custom aggregate of %@", aggregate.custom, [self setName]]);
+      }
+      continue;
+    }
+    if (aggregate.method && [aggregate.method rangeOfString:@"."].location != NSNotFound && ![handler.customAggregationMethods containsObject:aggregate.method]) {
+      return ODataServiceError(400, [NSString stringWithFormat:@"%@ is not an aggregation method of %@", aggregate.method, [self setName]]);
+    }
+    if (!handler.aggregatableProperties || !aggregate.path || aggregate.isCount) continue;
+    if (aggregate.path.count == 1 && OISIsComputed(computed, aggregate.path[0])) continue;
+    NSString *listed = nil;
+    for (NSUInteger n = aggregate.path.count; n > 0 && !listed; n--) {
+      NSString *prefix = [[aggregate.path subarrayWithRange:NSMakeRange(0, n)] componentsJoinedByString:@"/"];
+      if (handler.aggregatableProperties[prefix]) listed = prefix;
+    }
+    NSArray *methods = listed ? handler.aggregatableProperties[listed] : nil;
+    if (!listed || (methods.count && ![methods containsObject:aggregate.method])) {
+      return ODataServiceError(400, [NSString stringWithFormat:@"%@ cannot be aggregated%@ (Aggregation.ApplySupported/AggregatableProperties)",
+                                                                [aggregate.path componentsJoinedByString:@"/"],
+                                                                listed ? [@" with " stringByAppendingString:aggregate.method] : @""]);
+    }
+  }
+  return nil;
+}
+
 // The rows of a groupby or aggregate, as the response has them: each
 // grouped path nested (Category/CategoryName is {"Category": {"CategoryName": ...}}),
 // each aggregate by its alias.
 - (NSArray *)rowsOfGrouping:(ODataApplyTransformation *)t over:(NSArray *)objects computed:(NSDictionary *)computed error:(NSError **)error
 {
+  NSError *refusal = [self refusalOfGrouping:t computed:computed];
+  if (refusal) {
+    if (error) *error = refusal;
+    return nil;
+  }
   NSMutableArray *keyPaths = [NSMutableArray array];
   NSMutableArray *groupAttributes = [NSMutableArray array];
   for (NSArray *path in t.groupPaths) {
-    if (path.count == 1 && computed[path[0]]) {
+    if (path.count == 1 && OISIsComputed(computed, path[0])) {
       // A value compute gave: by its name, typed by what it is.
       [keyPaths addObject:path[0]];
       [groupAttributes addObject:[NSNull null]];
       continue;
     }
     NSPropertyDescription *property = nil;
-    NSString *keyPath = [self.service.predicates keyPathForPath:path entity:self.entity property:&property error:error];
+    NSString *keyPath = [self keyPathForPath:path computed:computed property:&property throughCollections:NO error:error];
     if (!keyPath) return nil;
     if (![property isKindOfClass:[NSAttributeDescription class]]) {
       if (error) *error = ODataServiceError(501, [NSString stringWithFormat:@"groupby by %@, a navigation property", [path componentsJoinedByString:@"/"]]);
@@ -2401,23 +2683,93 @@ static NSExpressionDescription *OISAggregateDescription(NSString *name, NSString
   }
   NSMutableArray *aggregates = [NSMutableArray array];
   NSMutableDictionary *aggregateAttributes = [NSMutableDictionary dictionary];
+  NSMutableDictionary *expressions = [NSMutableDictionary dictionary];  // hidden name -> each object's value
   for (ODataAggregate *aggregate in t.aggregates) {
-    if (!aggregate.path || (aggregate.path.count == 1 && computed[aggregate.path[0]])) {
+    if (aggregate.expression) {
+      // An expression with a method: its value with each object, under a
+      // name of its own, aggregated as a path is.
+      NSExpression *value = [self.service.predicates valueExpressionForExpression:aggregate.expression entity:self.entity
+                                                                          aliases:self.request.options.aliases computed:computed error:error];
+      if (!value) return nil;
+      NSString *hidden = [@"__ois_aggregate_" stringByAppendingString:aggregate.alias];
+      expressions[hidden] = value;
+      [aggregates addObject:[ODataAggregate aggregateOfPath:@[ hidden ] method:aggregate.method alias:aggregate.alias]];
+      continue;
+    }
+    if (aggregate.custom || !aggregate.path || (aggregate.path.count == 1 && OISIsComputed(computed, aggregate.path[0]))) {
       [aggregates addObject:aggregate];
       continue;
     }
+    // Through collection-valued navigation too: Sales/Amount is every sale's.
     NSPropertyDescription *property = nil;
-    NSString *keyPath = [self.service.predicates keyPathForPath:aggregate.path entity:self.entity property:&property error:error];
+    NSString *keyPath = [self keyPathForPath:aggregate.path computed:computed property:&property throughCollections:YES error:error];
     if (!keyPath) return nil;
-    if (![property isKindOfClass:[NSAttributeDescription class]]) {
+    if (aggregate.isCount) {
+      if (![property isKindOfClass:[NSRelationshipDescription class]]) {
+        if (error) *error = ODataServiceError(400, [NSString stringWithFormat:@"%@/$count: not a collection", [aggregate.path componentsJoinedByString:@"/"]]);
+        return nil;
+      }
+    } else if (![property isKindOfClass:[NSAttributeDescription class]]) {
       if (error) *error = ODataServiceError(400, [NSString stringWithFormat:@"%@ is not a property to aggregate", [aggregate.path componentsJoinedByString:@"/"]]);
       return nil;
+    } else if (!aggregate.isCustom) {
+      aggregateAttributes[aggregate.alias] = property;
     }
-    aggregateAttributes[aggregate.alias] = property;
     [aggregates addObject:[ODataAggregate aggregateOfPath:[keyPath componentsSeparatedByString:@"."] method:aggregate.method alias:aggregate.alias]];
   }
-  NSArray *raw = [ODataAggregation groupObjects:objects byKeyPaths:keyPaths aggregates:aggregates];
+  if (expressions.count) {
+    NSMutableArray *valued = [NSMutableArray array];
+    for (id object in objects) {
+      OISComputedRow *given = [object isKindOfClass:[OISComputedRow class]] ? object : nil;
+      OISComputedRow *row = [[OISComputedRow alloc] init];
+      row.object = given ? given.object : object;
+      row.computed = given ? [given.computed mutableCopy] : [NSMutableDictionary dictionary];
+      for (NSString *hidden in expressions) {
+        id value = nil;
+        @try {
+          value = [expressions[hidden] expressionValueWithObject:object context:nil];
+        } @catch (NSException *exception) {
+          value = nil;
+        }
+        row.computed[hidden] = value ?: [NSNull null];
+      }
+      [valued addObject:row];
+    }
+    objects = valued;
+  }
+  // Custom aggregates and methods: the handler's.
+  ODataEntitySetHandler *handler = self.handler;
+  ODataRequest *request = self.request;
+  NSArray *raw = [ODataAggregation groupObjects:objects byKeyPaths:keyPaths aggregates:aggregates
+                                         custom:^id(ODataAggregate *aggregate, NSArray *members) {
+    NSMutableArray *entities = [NSMutableArray array];
+    for (id member in members) [entities addObject:[member isKindOfClass:[OISComputedRow class]] ? ((OISComputedRow *)member).object : member];
+    if (aggregate.custom) return [handler valueOfCustomAggregate:aggregate.custom objects:entities request:request];
+    NSArray *values = [ODataAggregation valuesAtKeyPath:[aggregate.path componentsJoinedByString:@"."] inObjects:members];
+    return [handler valueOfAggregationMethod:aggregate.method values:values request:request];
+  }];
   return [self rowsOfGroups:raw grouping:t keyPaths:keyPaths groupAttributes:groupAttributes aggregateAttributes:aggregateAttributes];
+}
+
+// A path of wire names as a key path, through navigation of either
+// cardinality (an aggregate's: Sales/Amount), to a property; nil, and a 400,
+// for a name that is not there.
+- (NSString *)keyPathThroughCollections:(NSArray *)path property:(NSPropertyDescription **)property error:(NSError **)error
+{
+  NSMutableArray *keys = [NSMutableArray array];
+  NSEntityDescription *current = self.entity;
+  NSPropertyDescription *found = nil;
+  for (NSString *name in path) {
+    found = current ? [self.mapper propertyForWireName:name entity:current] : nil;
+    if (!found) {
+      if (error) *error = ODataServiceError(400, [NSString stringWithFormat:@"%@ has no property %@", current.name ?: @"A value", name]);
+      return nil;
+    }
+    [keys addObject:found.name];
+    current = [found isKindOfClass:[NSRelationshipDescription class]] ? ((NSRelationshipDescription *)found).destinationEntity : nil;
+  }
+  if (property) *property = found;
+  return [keys componentsJoinedByString:@"."];
 }
 
 // Groups (a dictionary each, by key path and by alias, as ODataAggregation
@@ -2480,12 +2832,20 @@ static NSExpressionDescription *OISAggregateDescription(NSString *name, NSString
 {
   ODataQueryOptions *options = self.request.options;
   NSError *error = nil;
+  // A join's aliases: written where $expand names them, as their entity.
+  NSMutableDictionary *joinedExpansions = [NSMutableDictionary dictionary];  // alias -> its $expand item
+  NSMutableArray *ownExpand = [NSMutableArray array];
+  for (ODataExpandItem *item in options.expand) {
+    if (item.path.count == 1 && [computed[item.path[0]] isKindOfClass:[NSEntityDescription class]]) joinedExpansions[item.path[0]] = item;
+    else [ownExpand addObject:item.description];
+  }
   // What expand asked for, with the query's own $expand and $select.
   ODataQueryOptions *written = options;
-  if (expansions.count) {
+  if (expansions.count || joinedExpansions.count) {
     NSMutableArray *all = [expansions mutableCopy];
-    for (ODataExpandItem *item in options.expand) [all addObject:item.description];
-    NSMutableDictionary *query = [NSMutableDictionary dictionaryWithObject:[all componentsJoinedByString:@","] forKey:@"$expand"];
+    [all addObjectsFromArray:ownExpand];
+    NSMutableDictionary *query = [NSMutableDictionary dictionary];
+    if (all.count) query[@"$expand"] = [all componentsJoinedByString:@","];
     if (options.select.count) query[@"$select"] = [[options.select valueForKey:@"description"] componentsJoinedByString:@","];
     written = [ODataQueryOptions optionsWithQuery:query error:&error];
     if (!written) {
@@ -2494,7 +2854,7 @@ static NSExpressionDescription *OISAggregateDescription(NSString *name, NSString
     }
   }
   if (options.filter) {
-    NSPredicate *filter = [self.service.predicates predicateForExpression:options.filter entity:self.entity aliases:options.aliases
+    NSPredicate *filter = [self.service.predicates predicateForExpression:[self resolved:options.filter options:options] entity:self.entity aliases:options.aliases
                                                                  computed:computed context:self.request.context error:&error];
     if (!filter) {
       [self respondError:error];
@@ -2527,7 +2887,26 @@ static NSExpressionDescription *OISAggregateDescription(NSString *name, NSString
       [self respondError:error];
       return;
     }
-    for (NSString *name in more.computed) json[name] = [self JSONForComputedValue:more.computed[name]];
+    for (NSString *name in more.computed) {
+      id value = more.computed[name];
+      if (![computed[name] isKindOfClass:[NSEntityDescription class]]) {
+        json[name] = [self JSONForComputedValue:value];
+        continue;
+      }
+      // A joined member: only where $expand names it.
+      ODataExpandItem *item = joinedExpansions[name];
+      if (!item) continue;
+      if (![value isKindOfClass:[NSManagedObject class]]) {
+        json[name] = [NSNull null];
+        continue;
+      }
+      NSMutableDictionary *member = [self JSONForObject:value options:item.options expected:computed[name] error:&error];
+      if (!member) {
+        [self respondError:error];
+        return;
+      }
+      json[name] = member;
+    }
     [values addObject:json];
   }
   NSMutableDictionary *body = [NSMutableDictionary dictionary];
@@ -2539,11 +2918,42 @@ static NSExpressionDescription *OISAggregateDescription(NSString *name, NSString
 
 // A grouping of grouped rows: their paths are the key paths, and their
 // values are JSON already.
-- (NSArray *)rowsOfGroupingRows:(ODataApplyTransformation *)t over:(NSArray *)rows
+- (NSArray *)rowsOfGroupingRows:(ODataApplyTransformation *)t over:(NSArray *)rows error:(NSError **)error
 {
   NSMutableArray *keyPaths = [NSMutableArray array];
   for (NSArray *path in t.groupPaths) [keyPaths addObject:[path componentsJoinedByString:@"."]];
-  NSArray *raw = [ODataAggregation groupObjects:rows byKeyPaths:keyPaths aggregates:t.aggregates];
+  // An expression with a method: its value with each row, under a name of
+  // its own, aggregated as a path is.
+  NSMutableArray *aggregates = [NSMutableArray array];
+  NSMutableArray *valued = [rows mutableCopy];
+  for (ODataAggregate *aggregate in t.aggregates) {
+    if (!aggregate.expression) {
+      [aggregates addObject:aggregate];
+      continue;
+    }
+    NSString *hidden = [@"__ois_aggregate_" stringByAppendingString:aggregate.alias];
+    for (NSUInteger i = 0; i < valued.count; i++) {
+      NSMutableDictionary *row = [valued[i] mutableCopy];
+      id value = [ODataAggregation valueOfExpression:aggregate.expression inRow:valued[i] error:error];
+      if (!value) return nil;
+      row[hidden] = value;
+      valued[i] = row;
+    }
+    [aggregates addObject:[ODataAggregate aggregateOfPath:@[ hidden ] method:aggregate.method alias:aggregate.alias]];
+  }
+  for (ODataAggregate *aggregate in aggregates) {
+    if (aggregate.custom) {
+      if (error) *error = OISError(ODataIncrementalStoreErrorUnsupportedExpression, [NSString stringWithFormat:@"the custom aggregate %@ of grouped rows", aggregate.custom]);
+      return nil;
+    }
+  }
+  ODataEntitySetHandler *handler = self.handler;
+  ODataRequest *request = self.request;
+  NSArray *raw = [ODataAggregation groupObjects:valued byKeyPaths:keyPaths aggregates:aggregates custom:^id(ODataAggregate *aggregate, NSArray *members) {
+    if (![handler.customAggregationMethods containsObject:aggregate.method]) return nil;
+    NSArray *values = [ODataAggregation valuesAtKeyPath:[aggregate.path componentsJoinedByString:@"."] inObjects:members];
+    return [handler valueOfAggregationMethod:aggregate.method values:values request:request];
+  }];
   NSMutableArray *out = [NSMutableArray array];
   for (NSDictionary *group in raw) {
     NSMutableDictionary *row = [NSMutableDictionary dictionaryWithObject:[NSNull null] forKey:@"@odata.id"];
@@ -2578,6 +2988,535 @@ static NSString *OISSelectListOfPaths(NSArray<NSArray<NSString *> *> *paths)
   return [items componentsJoinedByString:@","];
 }
 
+// A row, and the rows nested in it, as mutable dictionaries: a partition's
+// result, to be given its partition's values.
+static NSMutableDictionary *OISMutableRow(NSDictionary *row)
+{
+  NSMutableDictionary *copy = [NSMutableDictionary dictionary];
+  for (NSString *key in row) {
+    id value = row[key];
+    copy[key] = [value isKindOfClass:[NSDictionary class]] ? OISMutableRow(value) : value;
+  }
+  return copy;
+}
+
+// groupby with transformations of its own (Data Aggregation section 3.2.3):
+// the rows partitioned by the grouping paths' values, the transformations
+// applied to each partition, and each result given its partition's values.
+// The transformations have to leave grouped rows (aggregate, or groupby).
+- (BOOL)groupRows:(NSArray **)rowsp shape:(NSMutableArray **)shapep by:(ODataApplyTransformation *)t
+         computed:(NSMutableDictionary *)computed expansions:(NSMutableArray *)expansions
+{
+  NSArray *rows = *rowsp;
+  NSMutableArray *shape = *shapep;
+  NSError *error = nil;
+  // Each grouping path's key path, and how its value is written.
+  NSMutableArray *keyPaths = [NSMutableArray array], *attributes = [NSMutableArray array];
+  for (NSArray *path in t.groupPaths) {
+    if (shape || (path.count == 1 && OISIsComputed(computed, path[0]))) {
+      // Grouped rows' values are JSON already; compute's are written as it writes them.
+      [keyPaths addObject:[path componentsJoinedByString:@"."]];
+      [attributes addObject:shape ? @"row" : @"computed"];
+      continue;
+    }
+    NSPropertyDescription *property = nil;
+    NSString *keyPath = [self keyPathForPath:path computed:computed property:&property throughCollections:NO error:&error];
+    if (!keyPath) {
+      [self respondError:error];
+      return NO;
+    }
+    if (![property isKindOfClass:[NSAttributeDescription class]]) {
+      [self fail:501 message:[NSString stringWithFormat:@"groupby by %@, a navigation property", [path componentsJoinedByString:@"/"]]];
+      return NO;
+    }
+    [keyPaths addObject:keyPath];
+    [attributes addObject:property];
+  }
+  // The partitions, first seen first.
+  NSMutableArray *order = [NSMutableArray array];
+  NSMutableDictionary *partitions = [NSMutableDictionary dictionary];
+  for (id row in rows) {
+    NSMutableArray *key = [NSMutableArray array];
+    for (NSString *keyPath in keyPaths) [key addObject:[row valueForKeyPath:keyPath] ?: [NSNull null]];
+    if (!partitions[key]) {
+      partitions[key] = [NSMutableArray array];
+      [order addObject:key];
+    }
+    [partitions[key] addObject:row];
+  }
+  NSMutableArray *out = [NSMutableArray array];
+  NSMutableArray *outShape = [t.groupPaths mutableCopy];
+  for (NSArray *key in order) {
+    NSArray *partRows = partitions[key];
+    NSMutableArray *partShape = shape ? [shape mutableCopy] : nil;
+    NSMutableDictionary *partComputed = [computed mutableCopy];
+    if (![self applyTransformations:t.sequence rows:&partRows shape:&partShape computed:partComputed expansions:expansions]) return NO;
+    if (!partShape) {
+      [self fail:501 message:@"$apply: groupby's transformations have to aggregate (end in aggregate or groupby)"];
+      return NO;
+    }
+    for (NSDictionary *result in partRows) {
+      NSMutableDictionary *row = OISMutableRow(result);
+      for (NSUInteger i = 0; i < key.count; i++) {
+        id value = key[i] == [NSNull null] ? nil : key[i];
+        id attribute = attributes[i];
+        if (value && [attribute isKindOfClass:[NSAttributeDescription class]]) value = [self.coder JSONForCoreDataValue:value attribute:attribute];
+        else if (value && [attribute isEqual:@"computed"]) value = [self JSONForComputedValue:value];
+        OISSetAtPath(row, t.groupPaths[i], value);
+      }
+      [out addObject:row];
+    }
+    for (NSArray *path in partShape) if (![outShape containsObject:path]) [outShape addObject:path];
+  }
+  *rowsp = out;
+  *shapep = outShape;
+  return YES;
+}
+
+// join and outerjoin (Data Aggregation section 3.5.1): each row once for
+// each member of its collection at the path (after the join's own
+// transformations, if any), with the member under the alias; an outerjoin's
+// row with no members, once, with null. The alias is then a navigation
+// property of the rows, to the members' entity. nil once answered.
+- (NSArray *)rowsJoining:(ODataApplyTransformation *)t over:(NSArray *)rows computed:(NSMutableDictionary *)computed
+              expansions:(NSMutableArray *)expansions
+{
+  NSError *error = nil;
+  NSPropertyDescription *property = nil;
+  NSString *keyPath = [self keyPathForPath:t.joinPath computed:computed property:&property throughCollections:YES error:&error];
+  if (!keyPath) {
+    [self respondError:error];
+    return nil;
+  }
+  NSRelationshipDescription *relationship = [property isKindOfClass:[NSRelationshipDescription class]] ? (NSRelationshipDescription *)property : nil;
+  if (!relationship.isToMany) {
+    // A collection of complex values is one, but not joined here.
+    BOOL complex = [property isKindOfClass:[NSAttributeDescription class]] &&
+                   ((NSAttributeDescription *)property).attributeType == NSTransformableAttributeType;
+    [self fail:complex ? 501 : 400 message:[NSString stringWithFormat:@"$apply: %@ is not a collection of entities to join",
+                                                                            [t.joinPath componentsJoinedByString:@"/"]]];
+    return nil;
+  }
+  NSEntityDescription *destination = relationship.destinationEntity;
+  if (computed[t.alias] || [self.mapper propertyForWireName:t.alias entity:self.entity]) {
+    [self fail:400 message:[NSString stringWithFormat:@"$apply: %@ is a name the rows have already", t.alias]];
+    return nil;
+  }
+  ODataEntitySetHandler *handler = [self.service handlerForEntity:destination];
+  NSPredicate *visible = [handler predicateForVisibleObjectsInRequest:self.request];
+  NSMutableArray *sort = [NSMutableArray array];
+  for (NSAttributeDescription *attribute in [self.mapper keyAttributesForEntity:OISRootEntity(destination)]) {
+    [sort addObject:[NSSortDescriptor sortDescriptorWithKey:attribute.name ascending:YES]];
+  }
+  NSMutableArray *out = [NSMutableArray array];
+  for (id row in rows) {
+    NSArray *members = [[ODataAggregation valuesAtKeyPath:keyPath inObjects:@[ row ]] sortedArrayUsingDescriptors:sort];
+    if (visible) members = [members filteredArrayUsingPredicate:visible];
+    if (t.sequence.count && members.count) {
+      // The join's transformations, on the members: as the set of their own.
+      NSEntityDescription *entity = self.entity;
+      ODataEntitySetHandler *own = self.handler;
+      self.entity = destination;
+      self.handler = handler ?: own;
+      NSMutableArray *memberShape = nil;
+      BOOL done = [self applyTransformations:t.sequence rows:&members shape:&memberShape computed:[NSMutableDictionary dictionary] expansions:[NSMutableArray array]];
+      self.entity = entity;
+      self.handler = own;
+      if (!done) return nil;
+      if (memberShape) {
+        [self fail:501 message:@"$apply: a join's transformations have to leave entities"];
+        return nil;
+      }
+    }
+    if (!members.count && t.outer) members = @[ [NSNull null] ];
+    OISComputedRow *given = [row isKindOfClass:[OISComputedRow class]] ? row : nil;
+    for (id member in members) {
+      OISComputedRow *joined = [[OISComputedRow alloc] init];
+      joined.object = given ? given.object : row;
+      joined.computed = given ? [given.computed mutableCopy] : [NSMutableDictionary dictionary];
+      joined.computed[t.alias] = [member isKindOfClass:[OISComputedRow class]] ? ((OISComputedRow *)member).object : member;
+      [out addObject:joined];
+    }
+  }
+  computed[t.alias] = destination;
+  return out;
+}
+
+// An expression with the values of the current collection it asks for
+// ($these/$count, $these/aggregate(Amount with sum)) as literals: each the
+// value aggregate(... as D) gives over the rows (entities, or grouped rows
+// with shape); nil once answered, with the error.
+- (ODataExpression *)expression:(ODataExpression *)e over:(NSArray *)rows shape:(NSArray *)shape computed:(NSDictionary *)computed
+{
+  NSArray<ODataExpression *> *asked = [e aggregatesOfThese];
+  if (!asked.count) return e;
+  NSDictionary *values = [self valuesOf:asked over:rows shape:shape computed:computed];
+  return values ? [e expressionReplacing:values] : nil;
+}
+
+- (NSDictionary *)valuesOf:(NSArray<ODataExpression *> *)asked over:(NSArray *)rows shape:(NSArray *)shape computed:(NSDictionary *)computed
+{
+  NSMutableArray *aggregates = [NSMutableArray array];
+  for (NSUInteger i = 0; i < asked.count; i++) {
+    NSString *alias = [NSString stringWithFormat:@"__ois_these_%lu", (unsigned long)i];
+    ODataAggregate *a = asked[i].aggregate;
+    [aggregates addObject:!a ? [ODataAggregate aggregateOfPath:nil method:nil alias:alias]
+                          : a.isCustom ? [ODataAggregate aggregateOfCustom:a.custom alias:alias]
+                          : a.expression ? [ODataAggregate aggregateOfExpression:a.expression method:a.method alias:alias]
+                          : [ODataAggregate aggregateOfPath:a.path method:a.method alias:alias]];
+  }
+  ODataApplyTransformation *t = [ODataApplyTransformation aggregateWith:aggregates];
+  NSError *error = nil;
+  NSArray *out = shape ? [self rowsOfGroupingRows:t over:rows error:&error] : [self rowsOfGrouping:t over:rows computed:computed error:&error];
+  if (!out) {
+    [self respondError:shape ? ODataServiceError(501, error.localizedDescription) : error];
+    return nil;
+  }
+  NSDictionary *row = out.firstObject;
+  NSMutableDictionary *values = [NSMutableDictionary dictionary];
+  for (NSUInteger i = 0; i < asked.count; i++) values[asked[i].description] = row[[aggregates[i] alias]] ?: [NSNull null];
+  return values;
+}
+
+// What the request's own $filter and $compute ask of the collection.
+- (NSArray<ODataExpression *> *)theseAskedByRequest
+{
+  NSMutableArray *asked = [NSMutableArray array];
+  ODataQueryOptions *options = self.request.options;
+  NSMutableArray *expressions = [NSMutableArray array];
+  if (options.filter) [expressions addObject:options.filter];
+  for (ODataComputeItem *item in options.compute) [expressions addObject:item.expression];
+  for (ODataExpression *e in expressions) {
+    for (ODataExpression *one in [e aggregatesOfThese]) {
+      if (![[asked valueForKey:@"description"] containsObject:one.description]) [asked addObject:one];
+    }
+  }
+  return asked;
+}
+
+// An expression of the request's options with what the hierarchy
+// functions stand for, and the collection's values, in.
+- (ODataExpression *)resolved:(ODataExpression *)e options:(ODataQueryOptions *)options
+{
+  e = [self hierarchical:e];
+  return self.theseValues && options == self.request.options ? [e expressionReplacing:self.theseValues] : e;
+}
+
+- (ODataExpression *)hierarchical:(ODataExpression *)e
+{
+  return e && self.hierarchyCalls.count ? [e expressionReplacing:self.hierarchyCalls] : e;
+}
+
+#pragma mark Recursive hierarchies
+
+// isnode, isroot, isleaf, isancestor, isdescendant, issibling, of the
+// Aggregation vocabulary (section 5.5.1.1), by its alias or its namespace.
+static NSString *OISHierarchyFunction(NSString *name)
+{
+  for (NSString *prefix in @[ @"Aggregation.", @"Org.OData.Aggregation.V1." ]) {
+    if (![name hasPrefix:prefix]) continue;
+    NSString *function = [name substringFromIndex:prefix.length];
+    return [@[ @"isnode", @"isroot", @"isleaf", @"isancestor", @"isdescendant", @"issibling" ] containsObject:function] ? function : nil;
+  }
+  return nil;
+}
+
+static void OISAddExpressionsOfTransformations(NSArray<ODataApplyTransformation *> *transformations, NSMutableArray *into)
+{
+  for (ODataApplyTransformation *t in transformations) {
+    if (t.filter) [into addObject:t.filter];
+    if (t.expression) [into addObject:t.expression];
+    if (t.numberExpression) [into addObject:t.numberExpression];
+    for (ODataComputeItem *item in t.compute) [into addObject:item.expression];
+    for (ODataOrderItem *item in t.orderBy) [into addObject:item.expression];
+    OISAddExpressionsOfTransformations(t.sequence, into);
+    for (NSArray *branch in t.branches) OISAddExpressionsOfTransformations(branch, into);
+  }
+}
+
+static void OISAddExpressionsOfOptions(ODataQueryOptions *options, NSMutableArray *into)
+{
+  if (!options) return;
+  if (options.filter) [into addObject:options.filter];
+  for (ODataComputeItem *item in options.compute) [into addObject:item.expression];
+  for (ODataOrderItem *item in options.orderBy) [into addObject:item.expression];
+  OISAddExpressionsOfTransformations(options.apply, into);
+  for (ODataExpandItem *item in options.expand) OISAddExpressionsOfOptions(item.options, into);
+}
+
+// Each hierarchy function the request calls, as Node in (identifiers):
+// the store tests that. NO once answered, with the error.
+- (BOOL)resolveHierarchyCalls
+{
+  NSMutableArray *expressions = [NSMutableArray array];
+  OISAddExpressionsOfOptions(self.request.options, expressions);
+  NSMutableDictionary *calls = [NSMutableDictionary dictionary];
+  for (ODataExpression *e in expressions) {
+    NSArray *found = [e partsPassingTest:^BOOL(ODataExpression *part) {
+      return part.kind == ODataExpressionCall && OISHierarchyFunction(part.name) != nil;
+    }];
+    for (ODataExpression *call in found) {
+      if (calls[call.description]) continue;
+      ODataExpression *resolved = [self resolvedHierarchyCall:call];
+      if (!resolved) return NO;
+      calls[call.description] = resolved;
+    }
+  }
+  self.hierarchyCalls = calls;
+  return YES;
+}
+
+- (ODataExpression *)resolvedHierarchyCall:(ODataExpression *)call
+{
+  NSString *function = OISHierarchyFunction(call.name);
+  NSDictionary<NSString *, ODataExpression *> *named = call.namedArguments;
+  ODataExpression *nodes = named[@"HierarchyNodes"], *qualifier = named[@"HierarchyQualifier"], *node = named[@"Node"];
+  NSString *nodesText = nodes.description;
+  if (!nodes || ![nodesText hasPrefix:@"$root/"] || qualifier.kind != ODataExpressionLiteral || ![qualifier.value isKindOfClass:[NSString class]] || !node) {
+    [self fail:400 message:[NSString stringWithFormat:@"%@ takes HierarchyNodes=$root/set, HierarchyQualifier='qualifier' and Node=path", call.name]];
+    return nil;
+  }
+  OISHierarchy *hierarchy = [self hierarchyOfNodes:[[nodesText substringFromIndex:6] componentsSeparatedByString:@"/"] qualifier:qualifier.value];
+  if (!hierarchy) return nil;
+  id (^literal)(NSString *) = ^id(NSString *name) {
+    ODataExpression *argument = named[name];
+    return argument.kind == ODataExpressionLiteral ? (argument.value ?: [NSNull null]) : nil;
+  };
+  NSInteger distance = 0;
+  if (named[@"MaxDistance"]) {
+    id value = literal(@"MaxDistance");
+    if (![value isKindOfClass:[NSNumber class]] || [value integerValue] < 1 || [value doubleValue] != [value integerValue]) {
+      [self fail:400 message:[NSString stringWithFormat:@"%@: MaxDistance is a whole number, 1 or more", call.name]];
+      return nil;
+    }
+    distance = [value integerValue];
+  }
+  BOOL includeSelf = NO;
+  if (named[@"IncludeSelf"]) {
+    id value = literal(@"IncludeSelf");
+    if (![value isKindOfClass:[NSNumber class]]) {
+      [self fail:400 message:[NSString stringWithFormat:@"%@: IncludeSelf is true or false", call.name]];
+      return nil;
+    }
+    includeSelf = [value boolValue];
+  }
+  NSArray *identifiers = nil;
+  if ([function isEqualToString:@"isnode"]) {
+    identifiers = hierarchy.nodes;
+  } else if ([function isEqualToString:@"isroot"]) {
+    identifiers = [hierarchy roots];
+  } else if ([function isEqualToString:@"isleaf"]) {
+    identifiers = [hierarchy leaves];
+  } else {
+    NSString *parameter = [function isEqualToString:@"isdescendant"] ? @"Ancestor" : [function isEqualToString:@"isancestor"] ? @"Descendant" : @"Other";
+    if (!named[parameter]) {
+      [self fail:400 message:[NSString stringWithFormat:@"%@ takes %@", call.name, parameter]];
+      return nil;
+    }
+    id given = literal(parameter);
+    if (!given || given == [NSNull null]) {
+      [self fail:given ? 400 : 501 message:[NSString stringWithFormat:@"%@: %@ is taken as a literal node identifier", call.name, parameter]];
+      return nil;
+    }
+    identifiers = [function isEqualToString:@"isdescendant"] ? [hierarchy descendantsOf:given distance:distance includeSelf:includeSelf]
+                : [function isEqualToString:@"isancestor"] ? [hierarchy ancestorsOf:given distance:distance includeSelf:includeSelf]
+                : [hierarchy siblingsOf:given];
+  }
+  return [ODataExpression expression:node inValues:identifiers];
+}
+
+// The nodes of a set that the caller can see, as a recursive hierarchy:
+// the RecursiveHierarchy annotation of the set's entity type with the
+// qualifier. nil once answered, with the error.
+- (OISHierarchy *)hierarchyOfNodes:(NSArray<NSString *> *)setPath qualifier:(NSString *)qualifier
+{
+  NSString *key = [NSString stringWithFormat:@"%@#%@", [setPath componentsJoinedByString:@"/"], qualifier];
+  if (self.hierarchies[key]) return self.hierarchies[key];
+  ODataEntitySetHandler *handler = setPath.count == 1 ? [self.service handlerForEntitySet:setPath[0]] : nil;
+  if (!handler) {
+    [self fail:setPath.count == 1 ? 400 : 501 message:[NSString stringWithFormat:@"$root/%@: %@", [setPath componentsJoinedByString:@"/"],
+                                                       setPath.count == 1 ? @"no such entity set" : @"only an entity set is taken as a hierarchy's nodes"]];
+    return nil;
+  }
+  NSEntityDescription *entity = handler.entity;
+  NSString *term = [@"Org.OData.Aggregation.V1.RecursiveHierarchy#" stringByAppendingString:qualifier];
+  NSDictionary *record = [self.mapper annotationsOfProperty:nil entity:entity][term];
+  if (![record isKindOfClass:[NSDictionary class]]) {
+    [self fail:400 message:[NSString stringWithFormat:@"%@ has no recursive hierarchy %@", setPath[0], qualifier]];
+    return nil;
+  }
+  id node = record[@"NodeProperty"], parent = record[@"ParentNavigationProperty"];
+  NSString *nodePath = [node isKindOfClass:[NSDictionary class]] ? node[@"$PropertyPath"] : node;
+  NSString *parentPath = [parent isKindOfClass:[NSDictionary class]] ? (parent[@"$NavigationPropertyPath"] ?: parent[@"$PropertyPath"]) : parent;
+  NSPropertyDescription *nodeProperty = nil;
+  NSString *nodeKeyPath = [nodePath isKindOfClass:[NSString class]]
+      ? [self.service.predicates keyPathForPath:[nodePath componentsSeparatedByString:@"/"] entity:entity property:&nodeProperty error:NULL] : nil;
+  NSRelationshipDescription *relationship = [parentPath isKindOfClass:[NSString class]]
+      ? (NSRelationshipDescription *)[self.mapper propertyForWireName:parentPath entity:entity] : nil;
+  if (!nodeKeyPath || ![nodeProperty isKindOfClass:[NSAttributeDescription class]] || ![relationship isKindOfClass:[NSRelationshipDescription class]]
+      || ![entity isKindOfEntity:relationship.destinationEntity]) {
+    [self fail:500 message:[NSString stringWithFormat:@"The recursive hierarchy %@ of %@ names no node property, or no parent navigation property to %@ itself",
+                                                      qualifier, setPath[0], setPath[0]]];
+    return nil;
+  }
+  OISHierarchy *hierarchy = [[OISHierarchy alloc] init];
+  hierarchy.entity = entity;
+  hierarchy.qualifier = qualifier;
+  hierarchy.nodeKeyPath = nodeKeyPath;
+  hierarchy.parentKey = relationship.name;
+  hierarchy.parentsAreMany = relationship.isToMany;
+  NSFetchRequest *fetch = [NSFetchRequest fetchRequestWithEntityName:entity.name];
+  fetch.predicate = [handler predicateForVisibleObjectsInRequest:self.request];
+  NSMutableArray *byKey = [NSMutableArray array];
+  for (NSAttributeDescription *attribute in [self.mapper keyAttributesForEntity:OISRootEntity(entity)]) {
+    [byKey addObject:[NSSortDescriptor sortDescriptorWithKey:attribute.name ascending:YES]];
+  }
+  fetch.sortDescriptors = byKey;
+  fetch.relationshipKeyPathsForPrefetching = @[ relationship.name ];
+  if (self.service.maxRowsInMemory) fetch.fetchLimit = self.service.maxRowsInMemory + 1;
+  NSError *error = nil;
+  NSArray *objects = OISFetch(self.request.context, fetch, &error);
+  if (!objects) {
+    [self respondError:error];
+    return nil;
+  }
+  if (![self withinRowsInMemory:objects.count]) return nil;
+  [hierarchy readObjects:objects];
+  if (!self.hierarchies) self.hierarchies = [NSMutableDictionary dictionary];
+  self.hierarchies[key] = hierarchy;
+  return hierarchy;
+}
+
+// Where a row's node identifier is: p, through single-valued segments (a
+// path in a grouped row as it nests). nil once answered, with the error.
+- (NSString *)nodeKeyPathOf:(ODataApplyTransformation *)t shape:(NSArray *)shape computed:(NSDictionary *)computed
+{
+  if (shape) return [t.nodePath componentsJoinedByString:@"."];
+  NSError *error = nil;
+  NSString *keyPath = [self keyPathForPath:t.nodePath computed:computed property:NULL throughCollections:NO error:&error];
+  if (keyPath) return keyPath;
+  if ([self keyPathForPath:t.nodePath computed:computed property:NULL throughCollections:YES error:NULL]) {
+    [self fail:501 message:[NSString stringWithFormat:@"$apply: %@ through a collection is not supported", t.method]];
+  } else {
+    [self respondError:error];
+  }
+  return nil;
+}
+
+// ancestors and descendants (section 6.2.1): of the input, those related
+// to an ancestor (a descendant) of a start node, the nodes of what T
+// picks; the start nodes too with keep start. traverse (section 6.2.2):
+// the input related to each node, the nodes in preorder or postorder.
+- (BOOL)applyHierarchical:(ODataApplyTransformation *)t rows:(NSArray **)rowsp shape:(NSMutableArray *)shape
+                 computed:(NSMutableDictionary *)computed expansions:(NSMutableArray *)expansions
+{
+  OISHierarchy *hierarchy = [self hierarchyOfNodes:t.hierarchy qualifier:t.qualifier];
+  if (!hierarchy) return NO;
+  NSString *keyPath = [self nodeKeyPathOf:t shape:shape computed:computed];
+  if (!keyPath) return NO;
+  NSArray *rows = *rowsp;
+  id (^nodeOf)(id) = ^id(id row) {
+    id value = nil;
+    @try {
+      value = [row valueForKeyPath:keyPath];
+    } @catch (NSException *exception) {
+      value = nil;
+    }
+    return value == [NSNull null] ? nil : value;
+  };
+  if (t.traversal) {
+    if (hierarchy.parentsAreMany) {
+      [self fail:501 message:@"$apply: traverse of a hierarchy whose nodes have many parents is not supported (section 6.2.2)"];
+      return NO;
+    }
+    // The roots stable-sorted by the ordering; each node's children too
+    // (their order is the service's to choose).
+    NSArray *descriptors = nil;
+    if (t.orderBy.count) {
+      NSError *error = nil;
+      BOOL inMemory = NO;
+      descriptors = [self.service.predicates sortDescriptorsForOrderBy:t.orderBy entity:hierarchy.entity computed:nil inMemory:&inMemory error:&error];
+      if (!descriptors) {
+        [self respondError:error];
+        return NO;
+      }
+    }
+    NSMutableDictionary *byNode = [NSMutableDictionary dictionary];
+    for (id row in rows) {
+      id node = nodeOf(row);
+      if (!node) continue;
+      if (!byNode[node]) byNode[node] = [NSMutableArray array];
+      [byNode[node] addObject:row];
+    }
+    NSMutableArray *out = [NSMutableArray array];
+    [self traverse:[self nodes:[hierarchy roots] of:hierarchy sortedBy:descriptors] hierarchy:hierarchy sortedBy:descriptors
+         postorder:[t.traversal isEqualToString:@"postorder"] rows:byNode seen:[NSMutableSet set] into:out];
+    *rowsp = out;
+    return YES;
+  }
+  NSArray *start = rows;
+  NSMutableArray *startShape = shape ? [shape mutableCopy] : nil;
+  if (![self applyTransformations:t.sequence rows:&start shape:&startShape computed:[computed mutableCopy] expansions:[expansions mutableCopy]]) return NO;
+  if ((startShape == nil) != (shape == nil) || (shape && ![startShape isEqual:shape])) {
+    [self fail:501 message:[NSString stringWithFormat:@"$apply: %@'s transformations have to pick among its input", t.method]];
+    return NO;
+  }
+  BOOL ancestors = [t.method isEqualToString:@"ancestors"];
+  NSMutableSet *targets = [NSMutableSet set];
+  for (id row in start) {
+    id node = nodeOf(row);
+    if (!node) continue;
+    [targets addObjectsFromArray:ancestors ? [hierarchy ancestorsOf:node distance:t.number.integerValue includeSelf:t.keepStart]
+                                           : [hierarchy descendantsOf:node distance:t.number.integerValue includeSelf:t.keepStart]];
+  }
+  NSMutableArray *out = [NSMutableArray array];
+  for (id row in rows) {
+    id node = nodeOf(row);
+    if (node && [targets containsObject:node]) [out addObject:row];
+  }
+  *rowsp = out;
+  return YES;
+}
+
+- (NSArray *)nodes:(NSArray *)nodes of:(OISHierarchy *)hierarchy sortedBy:(NSArray<NSSortDescriptor *> *)descriptors
+{
+  if (!descriptors.count) return nodes;
+  return [nodes sortedArrayWithOptions:NSSortStable usingComparator:^NSComparisonResult(id a, id b) {
+    for (NSSortDescriptor *descriptor in descriptors) {
+      NSComparisonResult order = [descriptor compareObject:hierarchy.objects[a] toObject:hierarchy.objects[b]];
+      if (order != NSOrderedSame) return order;
+    }
+    return NSOrderedSame;
+  }];
+}
+
+- (void)traverse:(NSArray *)nodes hierarchy:(OISHierarchy *)hierarchy sortedBy:(NSArray *)descriptors postorder:(BOOL)postorder
+            rows:(NSDictionary *)byNode seen:(NSMutableSet *)seen into:(NSMutableArray *)out
+{
+  for (id node in nodes) {
+    if ([seen containsObject:node]) continue;  // a cycle, which the spec forbids
+    [seen addObject:node];
+    if (!postorder) [out addObjectsFromArray:byNode[node] ?: @[]];
+    [self traverse:[self nodes:hierarchy.children[node] ?: @[] of:hierarchy sortedBy:descriptors] hierarchy:hierarchy sortedBy:descriptors
+         postorder:postorder rows:byNode seen:seen into:out];
+    if (postorder) [out addObjectsFromArray:byNode[node] ?: @[]];
+  }
+}
+
+- (void)didFetchForThese:(ODataReply *)reply
+{
+  if (reply.error) {
+    [self respondError:reply.error];
+    return;
+  }
+  NSArray *rows = reply.result ?: @[];
+  if (![self withinRowsInMemory:rows.count]) return;
+  NSDictionary *values = [self valuesOf:[self theseAskedByRequest] over:rows shape:nil computed:@{}];
+  if (!values) return;
+  self.theseValues = values;
+  [self readCollection];
+}
+
 // $apply's transformations, in order, on the rows (entities, or grouped
 // rows once shape is set); NO once answered, with the error.
 - (BOOL)applyTransformations:(NSArray<ODataApplyTransformation *> *)transformations rows:(NSArray **)rowsp shape:(NSMutableArray **)shapep
@@ -2591,9 +3530,14 @@ static NSString *OISSelectListOfPaths(NSArray<NSArray<NSString *> *> *paths)
     switch (t.kind) {
       case ODataApplyIdentity:
         continue;
+      case ODataApplyHierarchy:
+        if (![self applyHierarchical:t rows:&rows shape:shape computed:computed expansions:expansions]) return NO;
+        continue;
       case ODataApplyFilter: {
-        NSPredicate *filter = shape ? [ODataAggregation predicateForExpression:t.filter error:&error]
-                                    : [self.service.predicates predicateForExpression:t.filter entity:self.entity aliases:options.aliases
+        ODataExpression *condition = [self expression:[self hierarchical:t.filter] over:rows shape:shape computed:computed];
+        if (!condition) return NO;
+        NSPredicate *filter = shape ? [ODataAggregation predicateForExpression:condition error:&error]
+                                    : [self.service.predicates predicateForExpression:condition entity:self.entity aliases:options.aliases
                                                                              computed:computed context:self.request.context error:&error];
         if (!filter) {
           [self respondError:error.code == ODataIncrementalStoreErrorUnsupportedExpression ? ODataServiceError(501, error.localizedDescription) : error];
@@ -2613,11 +3557,18 @@ static NSString *OISSelectListOfPaths(NSArray<NSArray<NSString *> *> *paths)
       }
       case ODataApplyCompute: {
         NSMutableArray *out = [NSMutableArray array];
+        NSMutableArray *itemExpressions = [NSMutableArray array];
+        for (ODataComputeItem *item in t.compute) {
+          ODataExpression *expression = [self expression:[self hierarchical:item.expression] over:rows shape:shape computed:computed];
+          if (!expression) return NO;
+          [itemExpressions addObject:expression];
+        }
         if (shape) {
           for (NSDictionary *row in rows) {
             NSMutableDictionary *more = [row mutableCopy];
-            for (ODataComputeItem *item in t.compute) {
-              id value = [ODataAggregation valueOfExpression:item.expression inRow:more error:&error];
+            for (NSUInteger i = 0; i < t.compute.count; i++) {
+              ODataComputeItem *item = t.compute[i];
+              id value = [ODataAggregation valueOfExpression:itemExpressions[i] inRow:more error:&error];
               if (!value) {
                 [self respondError:ODataServiceError(501, error.localizedDescription)];
                 return NO;
@@ -2629,15 +3580,15 @@ static NSString *OISSelectListOfPaths(NSArray<NSArray<NSString *> *> *paths)
           for (ODataComputeItem *item in t.compute) [shape addObject:@[ item.alias ]];
         } else {
           NSMutableArray *expressions = [NSMutableArray array];
-          for (ODataComputeItem *item in t.compute) {
-            NSExpression *expression = [self.service.predicates valueExpressionForExpression:item.expression entity:self.entity
+          for (NSUInteger i = 0; i < t.compute.count; i++) {
+            NSExpression *expression = [self.service.predicates valueExpressionForExpression:itemExpressions[i] entity:self.entity
                                                                                      aliases:options.aliases computed:computed error:&error];
             if (!expression) {
               [self respondError:error];
               return NO;
             }
             [expressions addObject:expression];
-            computed[item.alias] = item.expression;
+            computed[t.compute[i].alias] = itemExpressions[i];
           }
           for (id row in rows) {
             OISComputedRow *more = [row isKindOfClass:[OISComputedRow class]] ? row : [[OISComputedRow alloc] init];
@@ -2679,8 +3630,23 @@ static NSString *OISSelectListOfPaths(NSArray<NSArray<NSString *> *> *paths)
       }
       case ODataApplyTopBottom: {
         NSMutableArray *values = [NSMutableArray array];
+        ODataExpression *of = [self expression:[self hierarchical:t.expression] over:rows shape:shape computed:computed];
+        if (!of) return NO;
+        double number = t.number.doubleValue;
+        if (t.numberExpression) {
+          // topcount($these/$count div 3,Amount): a number of the input.
+          ODataExpression *count = [self expression:t.numberExpression over:rows shape:shape computed:computed];
+          if (!count) return NO;
+          id value = [ODataAggregation valueOfExpression:count inRow:@{} error:NULL];
+          if (![value isKindOfClass:[NSNumber class]] || [value doubleValue] < 0) {
+            [self fail:400 message:[NSString stringWithFormat:@"$apply: %@ of %@ is not a number of none or more", t.method, t.numberExpression]];
+            return NO;
+          }
+          number = [value doubleValue];
+          if ([t.method hasSuffix:@"count"]) number = floor(number);
+        }
         NSExpression *expression = shape ? nil
-            : [self.service.predicates valueExpressionForExpression:t.expression entity:self.entity aliases:options.aliases computed:computed error:&error];
+            : [self.service.predicates valueExpressionForExpression:of entity:self.entity aliases:options.aliases computed:computed error:&error];
         if (!shape && !expression) {
           [self respondError:error];
           return NO;
@@ -2688,7 +3654,7 @@ static NSString *OISSelectListOfPaths(NSArray<NSArray<NSString *> *> *paths)
         for (id row in rows) {
           id value = nil;
           if (shape) {
-            value = [ODataAggregation valueOfExpression:t.expression inRow:row error:&error];
+            value = [ODataAggregation valueOfExpression:of inRow:row error:&error];
             if (!value) {
               [self respondError:ODataServiceError(501, error.localizedDescription)];
               return NO;
@@ -2702,7 +3668,7 @@ static NSString *OISSelectListOfPaths(NSArray<NSArray<NSString *> *> *paths)
           }
           [values addObject:value ?: [NSNull null]];
         }
-        rows = [ODataAggregation rows:rows values:values method:t.method number:t.number.doubleValue];
+        rows = [ODataAggregation rows:rows values:values method:t.method number:number];
         continue;
       }
       case ODataApplyConcat: {
@@ -2741,13 +3707,29 @@ static NSString *OISSelectListOfPaths(NSArray<NSArray<NSString *> *> *paths)
         }
         [expansions addObject:t.expansion];
         continue;
+      case ODataApplyJoin:
+        if (shape) {
+          [self fail:501 message:@"$apply: join of grouped rows is not supported"];
+          return NO;
+        }
+        rows = [self rowsJoining:t over:rows computed:computed expansions:expansions];
+        if (!rows) return NO;
+        continue;
       case ODataApplyGroupBy:
       case ODataApplyAggregate:
         break;
     }
+    if (t.sequence.count) {
+      if (![self groupRows:&rows shape:&shape by:t computed:computed expansions:expansions]) return NO;
+      continue;
+    }
     if (shape) {
       // Grouped again: by the paths of the rows as they are.
-      rows = [self rowsOfGroupingRows:t over:rows];
+      rows = [self rowsOfGroupingRows:t over:rows error:&error];
+      if (!rows) {
+        [self respondError:ODataServiceError(501, error.localizedDescription)];
+        return NO;
+      }
       shape = [t.groupPaths mutableCopy];
       for (ODataAggregate *aggregate in t.aggregates) [shape addObject:@[ aggregate.alias ]];
       continue;
@@ -2810,7 +3792,7 @@ static NSString *OISSelectListOfPaths(NSArray<NSArray<NSString *> *> *paths)
     return;
   }
   if (options.filter) {
-    NSPredicate *filter = [ODataAggregation predicateForExpression:options.filter error:&error];
+    NSPredicate *filter = [ODataAggregation predicateForExpression:[self hierarchical:options.filter] error:&error];
     if (!filter) {
       [self respondError:ODataServiceError(501, error.localizedDescription)];
       return;
@@ -2873,6 +3855,20 @@ static NSString *OISSelectListOfPaths(NSArray<NSArray<NSString *> *> *paths)
     return;
   }
   NSError *error = nil;
+  if (!self.theseValues && [self theseAskedByRequest].count) {
+    // $filter=Amount mul 3 ge $these/aggregate(Amount with sum): the
+    // collection's values first, over the rows the caller can see.
+    NSFetchRequest *all = [NSFetchRequest fetchRequestWithEntityName:self.entity.name];
+    all.predicate = [self collectionPredicateWithFilter:NO error:&error];
+    if (!all.predicate) {
+      [self respondError:error];
+      return;
+    }
+    if (self.service.maxRowsInMemory) all.fetchLimit = self.service.maxRowsInMemory + 1;
+    ODataReply *reply = [self replyWithAction:@selector(didFetchForThese:)];
+    [reply returned:[self.handler objectsForFetchRequest:all request:self.request reply:reply]];
+    return;
+  }
   NSFetchRequest *fetch = [NSFetchRequest fetchRequestWithEntityName:self.entity.name];
   fetch.predicate = [self collectionPredicateWithFilter:YES error:&error];
   if (!fetch.predicate) {
@@ -3282,7 +4278,7 @@ static NSString *OISSelectListOfPaths(NSArray<NSArray<NSString *> *> *paths)
 - (NSDictionary<NSString *, ODataExpression *> *)computedNamesOf:(ODataQueryOptions *)options
 {
   NSMutableDictionary *names = [NSMutableDictionary dictionary];
-  for (ODataComputeItem *item in options.compute) names[item.alias] = item.expression;
+  for (ODataComputeItem *item in options.compute) names[item.alias] = [self resolved:item.expression options:options];
   return names;
 }
 
@@ -3294,7 +4290,7 @@ static NSString *OISSelectListOfPaths(NSArray<NSArray<NSString *> *> *paths)
   NSString *key = [NSString stringWithFormat:@"%p/%@/%@", options, object.entity.name, item.alias];
   NSExpression *expression = self.computedExpressions[key];
   if (!expression) {
-    expression = [self.service.predicates valueExpressionForExpression:item.expression entity:object.entity
+    expression = [self.service.predicates valueExpressionForExpression:[self resolved:item.expression options:options] entity:object.entity
                                                                aliases:self.request.options.aliases computed:[self computedNamesOf:options] error:error];
     if (!expression) return nil;
     self.computedExpressions[key] = expression;
@@ -5048,11 +6044,9 @@ static NSNumber *OISScalarReturnValue(NSInvocation *invocation, char type)
   if (self.asyncResultDuration > 0) annotations[@"Org.OData.Capabilities.V1.AsynchronousRequestsSupported"] = @YES;
   // The versions it speaks: 4.0 alone for a service that speaks no 4.01.
   if ([self.maxVersion isEqualToString:@"4.0"]) annotations[@"Org.OData.Core.V1.ODataVersions"] = @"4.0";
-  // $apply, as far as it goes (Data Aggregation section 6.1).
-  annotations[@"Org.OData.Aggregation.V1.ApplySupported"] = @{
-    @"Transformations": @[ @"filter", @"groupby", @"aggregate", @"identity", @"search", @"compute", @"orderby", @"top", @"skip",
-                           @"topcount", @"topsum", @"toppercent", @"bottomcount", @"bottomsum", @"bottompercent" ],
-    @"Rollup": @{ @"$EnumMember": @"Org.OData.Aggregation.V1.RollupType/None" } };
+  // $apply, as far as it goes, for every set (Data Aggregation section 5.1:
+  // ApplySupportedDefaults on the container, ApplySupported on each set).
+  annotations[@"Org.OData.Aggregation.V1.ApplySupportedDefaults"] = @{ @"Transformations": OISApplyTransformations() };
   for (NSString *term in self.containerAnnotations) annotations[[ODataMetadataWriter fullTerm:term]] = self.containerAnnotations[term];
   id<ODataAuthenticator> authenticator = self.authenticator;
   NSDictionary *authorization = [authenticator respondsToSelector:@selector(authorizationDescription)] ? [authenticator authorizationDescription] : nil;
@@ -5125,6 +6119,33 @@ static NSNumber *OISScalarReturnValue(NSInvocation *invocation, char type)
         capabilities[@"Org.OData.Capabilities.V1.SortRestrictions"] = @{ @"NonSortableProperties": paths(handler.nonSortableProperties) };
         [signature appendFormat:@";%@ sort:%@", set, [paths(handler.nonSortableProperties) valueForKey:@"$PropertyPath"]];
       }
+      // $apply: what the handler allows of it, and its custom aggregates.
+      NSMutableDictionary *apply = [NSMutableDictionary dictionary];
+      if (handler.groupableProperties) {
+        NSMutableArray *groupable = [NSMutableArray array];
+        for (NSString *path in [handler.groupableProperties.allObjects sortedArrayUsingSelector:@selector(compare:)]) {
+          [groupable addObject:@{ @"$PropertyPath": path }];
+        }
+        apply[@"GroupableProperties"] = groupable;
+      }
+      if (handler.aggregatableProperties) {
+        NSMutableArray *aggregatable = [NSMutableArray array];
+        for (NSString *path in [handler.aggregatableProperties.allKeys sortedArrayUsingSelector:@selector(compare:)]) {
+          NSMutableDictionary *record = [NSMutableDictionary dictionaryWithObject:@{ @"$PropertyPath": path } forKey:@"Property"];
+          NSArray *methods = handler.aggregatableProperties[path];
+          if (methods.count) record[@"SupportedAggregationMethods"] = methods;
+          [aggregatable addObject:record];
+        }
+        apply[@"AggregatableProperties"] = aggregatable;
+      }
+      if (handler.customAggregationMethods.count) {
+        apply[@"CustomAggregationMethods"] = [handler.customAggregationMethods.allObjects sortedArrayUsingSelector:@selector(compare:)];
+      }
+      capabilities[@"Org.OData.Aggregation.V1.ApplySupported"] = apply;
+      for (NSString *name in [handler.customAggregates.allKeys sortedArrayUsingSelector:@selector(compare:)]) {
+        capabilities[[@"Org.OData.Aggregation.V1.CustomAggregate#" stringByAppendingString:name]] = handler.customAggregates[name];
+      }
+      [signature appendFormat:@";%@ apply:%lu", set, (unsigned long)apply.description.hash + handler.customAggregates.description.hash];
       // Delta links, where the stores keep history.
       if ([self tracksChangesOfEntity:OISRootEntity(handler.entity)]) {
         capabilities[@"Org.OData.Capabilities.V1.ChangeTracking"] = @{ @"Supported": @YES };

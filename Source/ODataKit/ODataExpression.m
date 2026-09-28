@@ -32,6 +32,8 @@
 @property (nonatomic, copy, nullable) NSDictionary<NSString *, ODataExpression *> *namedArguments;
 @property (nonatomic, copy, nullable) NSString *variable;
 @property (nonatomic, strong, nullable) ODataExpression *body;
+@property (nonatomic, strong, nullable) id aggregate;
+@property (nonatomic, copy, nullable) NSString *aggregateText;  // as written, for its description
 @end
 
 // Precedence, loosest first (Part 2 section 5.1.1.14).
@@ -112,7 +114,8 @@ static NSString *OISQuoted(NSString *text)
       } else {
         for (ODataExpression *argument in self.arguments) [parts addObject:argument.description];
       }
-      NSString *call = [NSString stringWithFormat:@"%@(%@)", self.name, [parts componentsJoinedByString:self.namedArguments ? @"," : @", "]];
+      NSString *call = self.aggregate ? [NSString stringWithFormat:@"aggregate(%@)", self.aggregateText]
+                                      : [NSString stringWithFormat:@"%@(%@)", self.name, [parts componentsJoinedByString:self.namedArguments ? @"," : @", "]];
       return self.operand ? [NSString stringWithFormat:@"%@/%@", self.operand, call] : call;
     }
     case ODataExpressionLambda: {
@@ -130,6 +133,100 @@ static NSString *OISQuoted(NSString *text)
     }
   }
   return @"";
+}
+
+- (void)addPartsPassingTest:(BOOL (^)(ODataExpression *))test to:(NSMutableArray *)found
+{
+  if (test(self)) {
+    if (![[found valueForKey:@"description"] containsObject:self.description]) [found addObject:self];
+    return;
+  }
+  [self.operand addPartsPassingTest:test to:found];
+  [self.left addPartsPassingTest:test to:found];
+  [self.right addPartsPassingTest:test to:found];
+  [self.body addPartsPassingTest:test to:found];
+  for (ODataExpression *argument in self.arguments) [argument addPartsPassingTest:test to:found];
+  for (NSString *name in [self.namedArguments.allKeys sortedArrayUsingSelector:@selector(compare:)]) {
+    [self.namedArguments[name] addPartsPassingTest:test to:found];
+  }
+}
+
+- (NSArray *)partsPassingTest:(BOOL (^)(ODataExpression *))test
+{
+  NSMutableArray *found = [NSMutableArray array];
+  [self addPartsPassingTest:test to:found];
+  return found;
+}
+
+- (NSArray *)aggregatesOfThese
+{
+  return [self partsPassingTest:^BOOL(ODataExpression *part) {
+    BOOL these = part.operand.kind == ODataExpressionVariable && [part.operand.name isEqualToString:@"$these"];
+    return these && (part.kind == ODataExpressionCount || part.aggregate);
+  }];
+}
+
++ (instancetype)literalWithValue:(id)value
+{
+  ODataExpression *e = [ODataExpression ofKind:ODataExpressionLiteral name:@""];
+  if (!value || value == [NSNull null]) return e;
+  e.value = value;
+  if ([value isKindOfClass:[NSString class]]) {
+    e.literalType = @"Edm.String";
+  } else if ([value isKindOfClass:[NSNumber class]]) {
+    const char *type = [value objCType];
+#ifdef __APPLE__
+    BOOL boolean = CFGetTypeID((__bridge CFTypeRef)value) == CFBooleanGetTypeID();
+#else
+    BOOL boolean = strcmp(type, @encode(BOOL)) == 0 || strcmp(type, @encode(bool)) == 0;
+#endif
+    e.literalType = boolean ? @"Edm.Boolean"
+                  : [value isKindOfClass:[NSDecimalNumber class]] ? @"Edm.Decimal"
+                  : (strcmp(type, @encode(double)) == 0 || strcmp(type, @encode(float)) == 0) ? @"Edm.Double" : @"Edm.Int64";
+  }
+  return e;
+}
+
++ (instancetype)expression:(ODataExpression *)e inValues:(NSArray *)values
+{
+  if (!values.count) return [self literalWithValue:@NO];
+  ODataExpression *list = [ODataExpression ofKind:ODataExpressionList name:@""];
+  NSMutableArray *items = [NSMutableArray array];
+  for (id value in values) [items addObject:[self literalWithValue:value]];
+  list.arguments = items;
+  ODataExpression *in = [ODataExpression ofKind:ODataExpressionBinary name:@"in"];
+  in.left = e;
+  in.right = list;
+  return in;
+}
+
+- (ODataExpression *)expressionReplacing:(NSDictionary *)values
+{
+  id value = values[self.description];
+  if ([value isKindOfClass:[ODataExpression class]]) return value;
+  if (value) return [ODataExpression literalWithValue:value];
+  ODataExpression *e = [ODataExpression ofKind:self.kind name:self.name];
+  e.value = self.value;
+  e.literalType = self.literalType;
+  e.raw = self.raw;
+  e.operand = [self.operand expressionReplacing:values];
+  e.left = [self.left expressionReplacing:values];
+  e.right = [self.right expressionReplacing:values];
+  e.variable = self.variable;
+  e.body = [self.body expressionReplacing:values];
+  e.aggregate = self.aggregate;
+  e.aggregateText = self.aggregateText;
+  if (self.arguments) {
+    NSMutableArray *arguments = [NSMutableArray array];
+    for (ODataExpression *argument in self.arguments) [arguments addObject:[argument expressionReplacing:values]];
+    e.arguments = arguments;
+  }
+  if (self.namedArguments) {
+    NSMutableDictionary *named = [NSMutableDictionary dictionary];
+    for (NSString *key in self.namedArguments) named[key] = [self.namedArguments[key] expressionReplacing:values];
+    e.namedArguments = named;
+  }
+  return e;
 }
 
 + (instancetype)expressionWithString:(NSString *)text error:(NSError **)error
@@ -575,7 +672,7 @@ static const NSInteger OISMaxNesting = 100;
   ODataExpression *e;
   if (_token.kind == OISTokenLParen) {
     e = [self parseCallNamed:name];
-  } else if ([_variables containsObject:name] || [name isEqualToString:@"$root"]) {
+  } else if ([_variables containsObject:name] || [name isEqualToString:@"$root"] || [name isEqualToString:@"$these"]) {
     e = [ODataExpression ofKind:ODataExpressionVariable name:name];
   } else if ([name rangeOfString:@"."].location != NSNotFound) {
     e = [ODataExpression ofKind:ODataExpressionCast name:name];
@@ -632,6 +729,8 @@ static const NSInteger OISMaxNesting = 100;
     } else if ([name isEqualToString:@"$count"]) {
       next = [ODataExpression ofKind:ODataExpressionCount name:name];
       next.operand = current;
+    } else if ([name isEqualToString:@"aggregate"] && _token.kind == OISTokenLParen) {
+      next = [self parseAggregateOf:current];
     } else if (_token.kind == OISTokenLParen) {
       next = [self parseCallNamed:name];
       next.operand = current;
@@ -642,6 +741,36 @@ static const NSInteger OISMaxNesting = 100;
     current = next;
   }
   return current;
+}
+
+// collection/aggregate(aggregate expression): the argument is $apply's
+// syntax (Amount with sum), not an expression's, and is read as that.
+- (ODataExpression *)parseAggregateOf:(ODataExpression *)collection
+{
+  NSUInteger start = NSMaxRange(_token.range);
+  NSInteger depth = 0;
+  while (_token.kind != OISTokenEnd) {
+    if (_token.kind == OISTokenLParen) depth++;
+    if (_token.kind == OISTokenRParen && --depth == 0) break;
+    [self advance];
+  }
+  if (_token.kind != OISTokenRParen) return [self fail:@"')' expected after aggregate("];
+  NSString *text = [[_lexer.string substringWithRange:NSMakeRange(start, _token.range.location - start)]
+                    stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceCharacterSet]];
+  [self advance];  // )
+  NSError *error = nil;
+  NSArray *transformations = [ODataApplyTransformation transformationsWithString:[NSString stringWithFormat:@"aggregate(%@ as value)", text] error:&error];
+  ODataApplyTransformation *only = transformations.count == 1 ? transformations.firstObject : nil;
+  if (only.aggregates.count != 1) {
+    if (!self.error) self.error = error ?: OISError(ODataIncrementalStoreErrorSyntax, [NSString stringWithFormat:@"aggregate(%@): one aggregate expression", text]);
+    return nil;
+  }
+  ODataExpression *call = [ODataExpression ofKind:ODataExpressionCall name:@"aggregate"];
+  call.operand = collection;
+  call.arguments = @[];
+  call.aggregate = only.aggregates.firstObject;
+  call.aggregateText = text;
+  return call;
 }
 
 - (ODataExpression *)parseLambda:(NSString *)name over:(ODataExpression *)collection

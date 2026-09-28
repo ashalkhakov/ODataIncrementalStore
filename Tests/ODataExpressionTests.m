@@ -215,7 +215,7 @@
   XCTAssertEqualObjects(groupBy.groupPaths, (@[ @[ @"Category", @"CategoryName" ] ]));
   XCTAssertEqualObjects([groupBy.aggregates.firstObject alias], @"Total");
   NSDictionary *codes = @{ @"nest(groupby((Name)) as Grouped)": @(ODataIncrementalStoreErrorUnsupportedExpression),
-                           @"aggregate(UnitPrice with Custom.concat as X)": @(ODataIncrementalStoreErrorUnsupportedExpression),
+                           @"aggregate(Sales/Forecast)": @(ODataIncrementalStoreErrorUnsupportedExpression),
                            @"groupby((rollup($all,Category)))": @(ODataIncrementalStoreErrorUnsupportedExpression),
                            @"aggregate(UnitPrice sum)": @(ODataIncrementalStoreErrorSyntax),
                            @"nonsense": @(ODataIncrementalStoreErrorSyntax), @"": @(ODataIncrementalStoreErrorSyntax) };

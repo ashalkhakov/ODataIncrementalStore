@@ -254,3 +254,13 @@ and anchors the patterns. `substring`, `trim` and `concat` are compared with
 | `sum` and `average` of decimals, `min` and `max` of strings, `countdistinct` | SQLite sums decimals as doubles, and SQL orders strings by collation rather than as `NSString` does; Core Data has no count of distinct values |
 | An expanded to-many's `$top` and `$skip` | Per parent: one fetch for every parent cannot page each one |
 | `$apply` after the first grouping, and `compute` and the top and bottom kin | Over grouped rows, which are the service's, not the store's |
+| A recursive hierarchy's nodes and parents, and `ancestors`, `descendants` and `traverse` | Core Data has no recursive query; the functions (`isdescendant`, …) are then `IN` a set of identifiers, in the store |
+
+What neither the store nor the service does: arithmetic on a
+collection's aggregate or count (`Products/$count mul 20 gt 50`,
+`Products/aggregate(UnitPrice with sum) div 2 gt 20`). The service reads
+each as a key path's collection operator (`products.@count * 20`), which
+Apple's SQLite store refuses to evaluate; the answer is `501`, with the
+store's reason. FreeCoreData's stores evaluate it. Compared as they are (`Products/aggregate(UnitPrice with
+sum) gt 40`, or with another aggregate), they are evaluated in every
+store.

@@ -827,9 +827,11 @@ static NSAttributeDescription *OISAttributeAtKeyPath(NSEntityDescription *entity
                          having:(BOOL *)having sort:(BOOL *)sort paging:(BOOL *)paging
 {
   *having = *sort = *paging = NO;
-  id apply = [self capability:@"Aggregation.ApplySupported" forEntity:entity];
-  NSArray *listed = [apply isKindOfClass:[NSDictionary class]] ? apply[@"Transformations"] : nil;
-  NSSet *supported = [listed isKindOfClass:[NSArray class]] ? [NSSet setWithArray:listed] : [NSSet set];
+  NSDictionary *apply = [self applySupportFor:entity];
+  NSArray *listed = apply[@"Transformations"];
+  // No list: every transformation (Data Aggregation section 5.1).
+  NSSet *supported = [listed isKindOfClass:[NSArray class]] ? [NSSet setWithArray:listed]
+                                                            : [NSSet setWithObjects:@"filter", @"orderby", @"skip", @"top", nil];
   NSMutableDictionary *names = [NSMutableDictionary dictionary];
   for (NSUInteger i = 0; i < keyPaths.count; i++) names[keyPaths[i]] = [paths[i] componentsJoinedByString:@"/"];
   for (ODataAggregate *aggregate in aggregates) names[aggregate.alias] = aggregate.alias;
@@ -849,12 +851,26 @@ static NSAttributeDescription *OISAttributeAtKeyPath(NSEntityDescription *entity
   return steps;
 }
 
+// What $apply the service has for an entity's set: its ApplySupported
+// over the container's ApplySupportedDefaults (Data Aggregation section
+// 5.1), the one replacing the other's properties; nil for none. Either
+// said null is none.
+- (NSDictionary *)applySupportFor:(NSEntityDescription *)entity
+{
+  id apply = [self capability:@"Aggregation.ApplySupported" forEntity:entity];
+  id defaults = _schema.containerName ? [_schema annotation:@"Aggregation.ApplySupportedDefaults" forTarget:_schema.containerName] : nil;
+  if (apply == [NSNull null] || defaults == [NSNull null] || (!apply && !defaults)) return nil;
+  NSMutableDictionary *merged = [NSMutableDictionary dictionary];
+  if ([defaults isKindOfClass:[NSDictionary class]]) [merged addEntriesFromDictionary:defaults];
+  if ([apply isKindOfClass:[NSDictionary class]]) [merged addEntriesFromDictionary:apply];
+  return merged;
+}
+
 // $apply where the service says it has it (Aggregation.ApplySupported);
 // nil where the rows are grouped here.
 - (NSArray *)applyPathsFor:(NSArray *)keyPaths entity:(NSEntityDescription *)entity
 {
-  id apply = [self capability:@"Aggregation.ApplySupported" forEntity:entity];
-  if (!apply || apply == [NSNull null]) return nil;
+  if (![self applySupportFor:entity]) return nil;
   NSMutableArray *paths = [NSMutableArray array];
   for (NSString *keyPath in keyPaths) [paths addObject:[[_mapper propertyPathForKeyPath:keyPath entity:entity] componentsSeparatedByString:@"/"]];
   return paths;

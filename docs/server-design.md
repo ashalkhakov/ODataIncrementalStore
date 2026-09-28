@@ -439,20 +439,113 @@ is `Edm.String`.
 
 ### `$apply`
 
-`$apply` (OData Data Aggregation 4.0) is read by `ODataApplyTransformation`
-in ODataKit: `filter(…)`, `groupby((paths),aggregate(…))` and
-`aggregate(…)`, of paths `with sum`, `min`, `max`, `average` or
-`countdistinct`, and `$count`, each `as` an alias; `identity`,
-`search(…)`, `compute(… as …)`, `orderby(…)`, `top(n)`, `skip(n)`, and
-`topcount`, `topsum`, `toppercent` and their `bottom` kin, each
-`(n,value)`; `concat(sequence,sequence,…)`, each sequence on the same
-input and their rows one after the other (entities, or grouped rows, not
-both); and `expand(Nav)` or `expand(Nav,filter(…))`, which the entities
-are written with, as `$expand=Nav($filter=…)`. A `groupby` or
-`aggregate` of grouped rows groups them again, by their paths. After
-`$apply`, `$select` and `$expand` work on entities as ever; on grouped
-rows `$select` keeps what it names, and `$expand` is `400`. The rest (`nest`, the
-hierarchy transformations, rollup, custom methods, `from`) is `501`.
+`$apply` (OData Data Aggregation 4.0, Committee Specification 04) is read
+by `ODataApplyTransformation` in ODataKit:
+
+- `aggregate(…)`, each aggregate expression `as` an alias:
+  - a path `with sum`, `min`, `max`, `average` or `countdistinct`, the
+    path through navigation properties of either cardinality
+    (`Products/UnitPrice with sum` is every product's price);
+  - an expression with a method (`UnitPrice mul Quantity with sum`);
+  - `$count`, or a collection's (`Products/$count`);
+  - a custom aggregate the set declares, alone (`Forecast`, or
+    `Forecast as F`), whose value the handler gives
+    (`-valueOfCustomAggregate:objects:request:`), and a custom aggregation
+    method, namespace-qualified (`ProductName with Custom.concat`), whose
+    value the handler gives too (`-valueOfAggregationMethod:values:request:`).
+- `groupby((paths))`, and `groupby((paths),transformations)`: each group's
+  rows through the transformations (`filter(…)/aggregate(…)`, say), which
+  have to aggregate, then given the group's values. Grouping paths go
+  through to-one navigation.
+- `filter(…)`, with `isdefined(path)` among its functions (true of a
+  declared or computed property of an entity, null or not; of a grouped
+  row, of what the grouping kept); `identity`; `search(…)`;
+  `compute(… as …)`; `orderby(…)`; `top(n)`; `skip(n)`; `topcount`,
+  `topsum`, `toppercent` and their `bottom` kin, each `(n,value)`, `n`
+  a number or an expression of the input (`topcount($these/$count div 3,Amount)`).
+- `join(Nav as Alias)` and `outerjoin(…)`, with transformations of their
+  own after the alias (`join(Products as P,filter(UnitPrice gt 20))`):
+  each row once per member of the collection, the member under the alias,
+  a navigation property written where `$expand` names it; an outerjoin
+  keeps a row with none, the alias null.
+- `concat(sequence,sequence,…)`, each sequence on the same input and
+  their rows one after the other (entities, or grouped rows, not both).
+- `expand(Nav)` or `expand(Nav,filter(…))`, from earlier drafts, which the
+  entities are written with, as `$expand=Nav($filter=…)`.
+
+A `groupby` or `aggregate` of grouped rows groups them again, by their
+paths. After `$apply`, `$select` and `$expand` work on entities as ever;
+on grouped rows `$select` keeps what it names, and `$expand` is `400`.
+Aggregates are values in expressions too (section 3.6), in `$filter`,
+`$compute` and `$apply`'s `filter`, `compute` and top and bottom kin:
+
+- `$these/aggregate(UnitPrice with sum)` and `$these/$count`, of the
+  current collection: in `$apply`, the transformation's input; in the
+  query's `$filter` and `$compute`, the rows the caller can see, read once
+  first, the values then literals in what is read after.
+- `Products/aggregate(UnitPrice with sum)`, of a collection-valued
+  navigation, a path through to-one navigation to an attribute of the
+  members with `sum`, `min`, `max` or `average`, or `$count`: a key path's
+  collection operator (`products.@sum.unitPrice`), which each store
+  evaluates (`testAggregatesOfNavigations`). An expression, `countdistinct`
+  or a custom method there is `501`, as is `$these` within `$expand`. Apple's SQLite store refuses arithmetic
+  on one (`products.@count * 20`; FreeCoreData's stores do not): `501`,
+  as any fetch the store raises for (docs/how-it-works.md, "What stays in memory, and why").
+
+Recursive hierarchies (sections 5.5 and 6) are declared in the model, as
+any annotation is: the entity's userInfo `OData.annotations` holds
+`Aggregation.RecursiveHierarchy#Qualifier`, a `NodeProperty` (a path
+through to-one relationships to an attribute) and a
+`ParentNavigationProperty` to the entity itself, to-one or to-many:
+
+```json
+{"Aggregation.RecursiveHierarchy#SalesOrgHierarchy":
+  {"NodeProperty": {"$PropertyPath": "ID"},
+   "ParentNavigationProperty": {"$NavigationPropertyPath": "Superordinate"}}}
+```
+
+`$metadata` has it as ever, and a model built from `$metadata` has it
+back. Core Data has no recursive query, so a request that names a
+hierarchy (`HierarchyNodes=$root/SalesOrganizations`) reads its nodes
+once, those the caller can see, and walks the parents here; a parent the
+caller cannot see is none, and its children are roots.
+
+- The functions `Aggregation.isnode`, `isroot`, `isleaf`, `isancestor`,
+  `isdescendant` (with `MaxDistance` and `IncludeSelf`) and `issibling`,
+  in `$filter`, in `$expand`'s, in lambdas and in `$apply`'s `filter`,
+  are each read as `Node in (the identifiers that pass)`, which the store
+  evaluates. `Ancestor`, `Descendant` and `Other` are literals; anything
+  else there is `501`.
+- `ancestors(H,Q,p,T[,d][,keep start])` and `descendants(…)`: of the
+  input, what is related to an ancestor (a descendant) of the nodes T
+  picks, within d, and those nodes with keep start. T is transformations
+  that pick among the input, or a bare condition (`Name eq 'US'`, as
+  example 56 has it).
+- `traverse(H,Q,p,preorder|postorder[,o])`: the input related to each
+  node, the nodes in that order; the roots sorted by o, stable, and each
+  node's children too (their order is the service's to choose), else in
+  key order. Over a hierarchy whose parents are single-valued, as the spec
+  defines it.
+
+All three work on entities or grouped rows, with p through single-valued
+segments; p through a collection is `501`.
+
+`501`: what CS04 removed (`from`, `rollup`, `nest`). CS04 groups by
+single-valued paths only; a collection-valued one is `400`.
+
+`$metadata` says what a set can do: the container's
+`ApplySupportedDefaults` lists the transformations, and each set's
+`ApplySupported` the handler's `groupableProperties`,
+`aggregatableProperties` (each with its methods) and
+`customAggregationMethods`, with a `CustomAggregate` term per custom
+aggregate. Aggregating or grouping by what the handler leaves out is
+`400`.
+
+| Conformance level (section 8) | What it asks | |
+|---|---|---|
+| Minimal | `aggregate`, `groupby`, `sum`, `min`, `max`, `average`, `$count` | ✅ |
+| Intermediate | and `filter`, `orderby`, `search`, `topcount`, `bottomcount`, `compute`, `concat`, `isdefined` | ✅ |
+| Advanced | and the rest | Partly: aggregating expressions and collection-valued paths, custom aggregates and methods, `groupby` with transformations of its own, the top and bottom kin, `join` and `outerjoin`, aggregates in expressions, the capability terms, and recursive hierarchies (p through a collection aside) |
 
 Each works in order on what the one before left: before a grouping on
 the entities (`compute` gives each object values by name, which later
@@ -481,7 +574,10 @@ ways to the same rows over each store. A filter after the grouping, and then `$f
 `$skip`, `$top` and `$count`, work on the grouped rows, whose paths are
 nested as the response has them (`{"Category": {"CategoryName": …},
 "Total": …}`). The container says `Aggregation.ApplySupported` with
-those transformations.
+those transformations, `concat` among them. The store's grouping takes
+only a `groupby` of plain aggregates: aggregating an expression or a
+collection's values, and a `groupby` with transformations of its own,
+are grouped here.
 
 ### `$compute`
 

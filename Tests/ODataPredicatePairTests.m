@@ -478,6 +478,20 @@ static id OISPairGET(ODataService *service, NSString *path)
   } entity:@"Product" contexts:[self catalogs]];
 }
 
+// A navigation's aggregate (Data Aggregation section 3.6.1): a key path's
+// collection operator, products.@sum.unitPrice, in each store.
+- (void)testAggregatesOfNavigations
+{
+  NSString *gap = @"the client writes no aggregate()";
+  [self assertServiceFilters:@[ @"Products/aggregate($count) gt 2" ] clientCannotWrite:@{
+    @"Products/aggregate(UnitPrice with sum) gt 40": gap,
+    @"Products/aggregate(UnitPrice with average) lt 20": gap,
+    @"Products/aggregate(UnitPrice with max) ge 30": gap,
+    @"Products/aggregate(UnitPrice with min) le 10": gap,
+    @"Products/aggregate(UnitPrice with max) gt Products/aggregate(UnitPrice with min)": gap,
+  } entity:@"Category" contexts:[self catalogs]];
+}
+
 // substring, trim, indexof and concat compared with a literal: each read
 // as a pattern the property matches (which the client writes back as
 // matchesPattern, 4.01 only), or, for concat, as equality.

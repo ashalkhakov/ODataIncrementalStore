@@ -4,6 +4,7 @@
 #import "ODataPredicateBuilder.h"
 #import "ODataError.h"
 #import "ODataValue.h"
+#import <ODataKit/ODataApply.h>
 #include <math.h>
 
 typedef NS_ENUM(NSInteger, OISTermKind) {
@@ -401,6 +402,24 @@ static NSString *OISICUPatternFromECMAScript(NSString *pattern)
   return [self guarded:[self nullSafe:p terms:@[ x ] type:NSMatchesPredicateOperatorType] terms:@[ x ] whenNull:NO];
 }
 
+// isdefined(path) (Data Aggregation section 3.2.1): whether the instance
+// has the property at all, null or not. Of an entity, a declared property
+// or a computed one is defined, whatever its value; a name the type does
+// not have is not. Known before any row is read.
+- (NSPredicate *)isDefined:(ODataExpression *)e
+{
+  NSArray<NSString *> *path = e.arguments.count == 1 ? e.arguments[0].memberPath : nil;
+  if (!path.count) return [self fail:400 message:@"isdefined takes a property path"];
+  if (path.count == 1 && self.computed[path[0]]) return [NSPredicate predicateWithValue:YES];
+  NSEntityDescription *entity = self.root;
+  for (NSString *name in path) {
+    NSPropertyDescription *property = entity ? [self.mapper propertyForWireName:name entity:entity] : nil;
+    if (!property) return [NSPredicate predicateWithValue:NO];
+    entity = [property isKindOfClass:[NSRelationshipDescription class]] ? ((NSRelationshipDescription *)property).destinationEntity : nil;
+  }
+  return [NSPredicate predicateWithValue:YES];
+}
+
 // isof(Type), of $it, or isof(expression, Type).
 - (NSPredicate *)isOf:(ODataExpression *)e
 {
@@ -570,7 +589,7 @@ static NSString *OISICUPatternFromECMAScript(NSString *pattern)
       }
       return [self fail:400 message:[NSString stringWithFormat:@"%@ is not a value", e]];
     case ODataExpressionCall:
-      return [self callTerm:e];
+      return e.aggregate ? [self aggregateTerm:e] : [self callTerm:e];
     case ODataExpressionCast: {
       OISTerm *base = e.operand ? [self term:e.operand] : [self itTerm];
       if (!base) return nil;
@@ -584,7 +603,18 @@ static NSString *OISICUPatternFromECMAScript(NSString *pattern)
 
 - (OISTerm *)memberTerm:(ODataExpression *)e
 {
-  ODataExpression *computed = e.operand ? nil : self.computed[e.name];
+  id named = e.operand ? nil : self.computed[e.name];
+  if ([named isKindOfClass:[NSEntityDescription class]]) {
+    // A join's alias: a navigation property to the joined member, which may
+    // be null (an outerjoin's).
+    OISTerm *t = [[OISTerm alloc] init];
+    t.kind = OISTermEntity;
+    t.entity = named;
+    t.keyPath = e.name;
+    t.wireName = e.name;
+    return t;
+  }
+  ODataExpression *computed = [named isKindOfClass:[ODataExpression class]] ? named : nil;
   if (computed) {
     if (self.computeDepth > 8) return [self fail:400 message:[NSString stringWithFormat:@"$compute: %@ stands for itself", e.name]];
     self.computeDepth++;
@@ -661,6 +691,61 @@ static NSString *OISICUPatternFromECMAScript(NSString *pattern)
   t.guard = OISAnd(l.guard, r.guard);
   t.computed = YES;
   t.nullables = [(l.nullables ?: @[]) arrayByAddingObjectsFromArray:r.nullables ?: @[]];
+  return t;
+}
+
+// Products/aggregate(UnitPrice with sum): a key path's collection operator
+// (products.@sum.unitPrice), for a path through to-one relationships to an
+// attribute of the members, with sum, min, max or average, or $count.
+- (OISTerm *)aggregateTerm:(ODataExpression *)e
+{
+  ODataAggregate *a = e.aggregate;
+  if (e.operand.kind == ODataExpressionVariable && [e.operand.name isEqualToString:@"$these"]) {
+    return [self unsupported:[NSString stringWithFormat:@"%@ here", e]];
+  }
+  OISTerm *collection = [self term:e.operand];
+  if (!collection) return nil;
+  if (collection.kind != OISTermCollection) {
+    return [self fail:400 message:[NSString stringWithFormat:@"%@: not a collection", e]];
+  }
+  NSDictionary *operators = @{ @"sum": @"@sum", @"min": @"@min", @"max": @"@max", @"average": @"@avg" };
+  if (collection.elementType || !collection.entity || a.expression || a.isCustom || (!a.isCount && !operators[a.method]) || (a.isCount && a.path)) {
+    return [self unsupported:[NSString stringWithFormat:@"%@", e]];
+  }
+  OISTerm *t = [[OISTerm alloc] init];
+  t.kind = OISTermValue;
+  t.guard = collection.guard;
+  t.variable = collection.variable;
+  t.wireName = e.description;
+  t.computed = YES;
+  if (a.isCount) {
+    t.keyPath = [NSString stringWithFormat:@"%@.@count", collection.keyPath];
+    return t;
+  }
+  NSEntityDescription *entity = collection.entity;
+  NSMutableArray *names = [NSMutableArray array];
+  NSAttributeDescription *attribute = nil;
+  for (NSUInteger i = 0; i < a.path.count; i++) {
+    NSPropertyDescription *property = [self.mapper propertyForWireName:a.path[i] entity:entity];
+    if (!property) return [self fail:400 message:[NSString stringWithFormat:@"%@ has no property %@", entity.name, a.path[i]]];
+    [names addObject:property.name];
+    BOOL last = i + 1 == a.path.count;
+    if (last && [property isKindOfClass:[NSAttributeDescription class]]) {
+      attribute = (NSAttributeDescription *)property;
+    } else if (!last && [property isKindOfClass:[NSRelationshipDescription class]] && !((NSRelationshipDescription *)property).isToMany) {
+      entity = ((NSRelationshipDescription *)property).destinationEntity;
+    } else {
+      return [self unsupported:[NSString stringWithFormat:@"%@", e]];
+    }
+  }
+  BOOL numeric = attribute.attributeType == NSInteger16AttributeType || attribute.attributeType == NSInteger32AttributeType
+              || attribute.attributeType == NSInteger64AttributeType || attribute.attributeType == NSDecimalAttributeType
+              || attribute.attributeType == NSDoubleAttributeType || attribute.attributeType == NSFloatAttributeType;
+  if (!numeric && ([a.method isEqualToString:@"sum"] || [a.method isEqualToString:@"average"])) {
+    return [self fail:400 message:[NSString stringWithFormat:@"%@: %@ is not a number", e, [a.path componentsJoinedByString:@"/"]]];
+  }
+  if (![a.method isEqualToString:@"average"]) t.attribute = attribute;
+  t.keyPath = [NSString stringWithFormat:@"%@.%@.%@", collection.keyPath, operators[a.method], [names componentsJoinedByString:@"."]];
   return t;
 }
 
@@ -793,6 +878,7 @@ static NSString *OISICUPatternFromECMAScript(NSString *pattern)
       return [self fail:400 message:[NSString stringWithFormat:@"%@ is not a condition", e]];
     case ODataExpressionCall:
       if (!e.operand && !e.namedArguments && [e.name isEqualToString:@"isof"]) return [self isOf:e];
+      if (!e.operand && !e.namedArguments && [e.name isEqualToString:@"isdefined"]) return [self isDefined:e];
       if (!e.operand && !e.namedArguments && [e.name isEqualToString:@"matchesPattern"]) return [self matchesPattern:e];
       if (!e.operand && !e.namedArguments) {
         NSDictionary *operators = @{ @"contains": @(NSContainsPredicateOperatorType),

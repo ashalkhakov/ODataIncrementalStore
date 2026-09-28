@@ -142,7 +142,7 @@ NSString * const ODataUserInfoClosedClosedPeriods = @"OData.closedClosedPeriods"
   if (![local isKindOfClass:[NSDictionary class]]) return found;
   for (NSString *term in local) {
     NSString *full = term;
-    for (NSString *vocabulary in @[ @"Core", @"Validation", @"Capabilities" ]) {
+    for (NSString *vocabulary in @[ @"Core", @"Validation", @"Capabilities", @"Aggregation" ]) {
       NSString *prefix = [vocabulary stringByAppendingString:@"."];
       if ([term hasPrefix:prefix]) full = [NSString stringWithFormat:@"Org.OData.%@.V1.%@", vocabulary, [term substringFromIndex:prefix.length]];
     }

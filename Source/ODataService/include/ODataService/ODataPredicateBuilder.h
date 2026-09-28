@@ -73,6 +73,8 @@ NS_ASSUME_NONNULL_BEGIN
                                                               error:(NSError **)error;
 
 // $compute (Part 2 section 5.1.3): its names stand for their expressions,
+// and a join's alias ($apply's join, as an NSEntityDescription) for the
+// joined member, an entity of that type,
 // by alias, in the filter and the ordering. A value's expression, to be
 // evaluated with each object (in memory); and an ordering, as key paths
 // where each item is one, else (*inMemory YES) as descriptors that compare

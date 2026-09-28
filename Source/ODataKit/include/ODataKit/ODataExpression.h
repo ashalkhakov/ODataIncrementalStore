@@ -55,6 +55,26 @@ typedef NS_ENUM(NSInteger, ODataExpressionKind) {
 @property (nonatomic, readonly, copy, nullable) NSString *variable;
 @property (nonatomic, readonly, strong, nullable) ODataExpression *body;
 
+// A collection's aggregate (Data Aggregation section 3.6.1): a call named
+// aggregate, of operand (a collection-valued path, or $these, the current
+// collection), its argument an aggregate expression (an ODataAggregate:
+// Amount with sum), aggregated as the value; nil for any other call.
+@property (nonatomic, readonly, strong, nullable) id aggregate;
+// The values of the current collection it asks for: each $these/$count
+// and $these/aggregate(...) in it, first first, each once.
+- (NSArray<ODataExpression *> *)aggregatesOfThese;
+// Its parts that pass the test, outermost first, each description once;
+// the parts of one that passes are not looked into.
+- (NSArray<ODataExpression *> *)partsPassingTest:(BOOL (^)(ODataExpression *part))test;
+// The same with some of its parts replaced: each part whose description
+// is a key, by its value, an expression, or a literal of a value (a
+// number, a string, or NSNull).
+- (ODataExpression *)expressionReplacing:(NSDictionary<NSString *, id> *)values;
+// A literal: a number, a string, a boolean NSNumber, or NSNull.
++ (instancetype)literalWithValue:(id)value;
+// e in (values...), literals; false for no values.
++ (instancetype)expression:(ODataExpression *)e inValues:(NSArray *)values;
+
 // The member names along a path of members from $it (Category/Name is
 // Category, Name); nil when this is not such a path.
 @property (nonatomic, readonly, nullable) NSArray<NSString *> *memberPath;

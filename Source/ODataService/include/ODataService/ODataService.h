@@ -177,6 +177,30 @@ FOUNDATION_EXPORT NSString * const ODataUserInfoETag;  // @"OData.etag"
 // every string property. Empty: the set cannot be searched (501), as
 // $metadata says (Capabilities.SearchRestrictions).
 @property (nonatomic, copy, nullable) NSSet<NSString *> *searchableProperties;
+// $apply (Data Aggregation section 5.1), said in $metadata as the set's
+// Aggregation.ApplySupported. The properties (wire names, or paths
+// through to-one navigation: Category, Category/CategoryName) groupby may
+// use, and aggregate may, each with the methods it may be aggregated with
+// (sum, …, or a custom one; none listed: any); nil, the default: every
+// property. A path is allowed when it, or where it starts, is listed.
+@property (nonatomic, copy, nullable) NSSet<NSString *> *groupableProperties;
+@property (nonatomic, copy, nullable) NSDictionary<NSString *, NSArray<NSString *> *> *aggregatableProperties;
+// Aggregation methods of the handler's own, namespace-qualified
+// (Custom.concat): aggregate(Name with Custom.concat as Names). Each is
+// computed by -valueOfAggregationMethod:values:request:. Empty by default.
+@property (nonatomic, copy) NSSet<NSString *> *customAggregationMethods;
+// Custom aggregates (Aggregation.CustomAggregate): name to the Edm type of
+// its value (@"Forecast": @"Edm.Decimal"); aggregate(Forecast) or
+// aggregate(Forecast as F), each computed by
+// -valueOfCustomAggregate:objects:request:. Empty by default.
+@property (nonatomic, copy) NSDictionary<NSString *, NSString *> *customAggregates;
+
+// A custom aggregation method's value over a group's values (nulls left
+// out); a custom aggregate's over a group's objects. nil for null. The
+// defaults answer nil.
+- (nullable id)valueOfAggregationMethod:(NSString *)method values:(NSArray *)values request:(ODataRequest *)request;
+- (nullable id)valueOfCustomAggregate:(NSString *)name objects:(NSArray<NSManagedObject *> *)objects request:(ODataRequest *)request;
+
 // Whether a read of the set may ask to follow its changes (Prefer:
 // odata.track-changes, Part 1 section 11.3): a delta link, answered from
 // the store's persistent history. Also needs every store to keep history
