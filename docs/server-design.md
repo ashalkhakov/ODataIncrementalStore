@@ -477,18 +477,24 @@ A `groupby` or `aggregate` of grouped rows groups them again, by their
 paths. After `$apply`, `$select` and `$expand` work on entities as ever;
 on grouped rows `$select` keeps what it names, and `$expand` is `400`.
 Aggregates are values in expressions too (section 3.6), in `$filter`,
-`$compute` and `$apply`'s `filter`, `compute` and top and bottom kin:
+`$compute`, `$orderby` (an expression `$orderby` is sorted here), within
+`$expand` as well, and in `$apply`'s `filter`, `compute`, `orderby` and
+top and bottom kin:
 
 - `$these/aggregate(UnitPrice with sum)` and `$these/$count`, of the
-  current collection: in `$apply`, the transformation's input; in the
-  query's `$filter` and `$compute`, the rows the caller can see, read once
-  first, the values then literals in what is read after.
+  current collection, each option's own: in `$apply`, the
+  transformation's input; for the query's `$filter` and `$compute`, the
+  rows the caller can see (after `$apply`, what it made), read once
+  first; for `$orderby`, what the `$filter` leaves of them; within
+  `$expand`, the parent's members, each parent's (whose members are then
+  read one parent at a time, not with the others'). The values are then
+  literals in what is read after.
 - `Products/aggregate(UnitPrice with sum)`, of a collection-valued
   navigation, a path through to-one navigation to an attribute of the
   members with `sum`, `min`, `max` or `average`, or `$count`: a key path's
   collection operator (`products.@sum.unitPrice`), which each store
   evaluates (`testAggregatesOfNavigations`). An expression, `countdistinct`
-  or a custom method there is `501`, as is `$these` within `$expand`. Apple's SQLite store refuses arithmetic
+  or a custom method there is `501`. Apple's SQLite store refuses arithmetic
   on one (`products.@count * 20`; FreeCoreData's stores do not): `501`,
   as any fetch the store raises for (docs/how-it-works.md, "What stays in memory, and why").
 
@@ -527,8 +533,12 @@ caller cannot see is none, and its children are roots.
   key order. Over a hierarchy whose parents are single-valued, as the spec
   defines it.
 
-All three work on entities or grouped rows, with p through single-valued
-segments; p through a collection is `501`.
+All three work on entities or grouped rows. Where p goes through a
+collection (`Sales/SalesOrganization/ID` of a product), an instance's
+nodes are the values along it: ancestors and descendants keep it once if
+any is one; traverse writes it once per node, with that node at p (a
+collection of one where p's segment is one: example 88's
+`{"Sales": [{"SalesOrganization": {"ID": "US"}}]}`).
 
 `501`: what CS04 removed (`from`, `rollup`, `nest`). CS04 groups by
 single-valued paths only; a collection-valued one is `400`.

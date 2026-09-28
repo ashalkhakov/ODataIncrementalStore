@@ -744,6 +744,8 @@ static NSArray<NSString *> *OISApplyTransformations(void)
 // The values of the collection the request's $filter and $compute ask for
 // ($these/aggregate(...)), by their descriptions, once read.
 @property (nonatomic, copy, nullable) NSDictionary<NSString *, id> *theseValues;
+// The same for $orderby, whose collection is what the $filter left.
+@property (nonatomic, copy, nullable) NSDictionary<NSString *, id> *theseOrderValues;
 // The recursive hierarchies the request names, read once ($root/Set#Q), and
 // what each hierarchy function in it stands for (Node in (...)), by the
 // call's description.
@@ -2042,11 +2044,53 @@ static const NSInteger OISMaxLevels = 32;
     [relationships addObject:(NSRelationshipDescription *)property];
   }
 
+  ODataQueryOptions *given = options;
   for (NSRelationshipDescription *relationship in relationships) {
     NSString *wire = [self.mapper propertyForRelationship:relationship];
     NSEntityDescription *destination = relationship.destinationEntity;
     ODataEntitySetHandler *handler = [self.service handlerForEntity:destination];
     NSPredicate *visible = [handler predicateForVisibleObjectsInRequest:self.request];
+    // $these: this object's own members, which the caller can see, for the
+    // $filter and $compute; what the $filter leaves of them, for the
+    // $orderby. Each parent's own, so its members are read here.
+    options = given;
+    BOOL ownMembers = NO;
+    NSArray *askedByFilter = OISTheseOfFilter(options), *askedByOrder = OISTheseOfOrder(options);
+    if (askedByFilter.count || askedByOrder.count) {
+      ownMembers = YES;
+      id related = [object valueForKey:relationship.name];
+      NSArray *all = relationship.isToMany ? [related allObjects] : (related ? @[ related ] : @[]);
+      if (visible) all = [all filteredArrayUsingPredicate:visible];
+      NSEntityDescription *entity = self.entity;
+      ODataEntitySetHandler *own = self.handler;
+      self.entity = destination;
+      self.handler = handler ?: own;
+      NSDictionary *filterValues = askedByFilter.count ? [self valuesOf:askedByFilter over:all shape:nil computed:@{}] : @{};
+      NSDictionary *orderValues = nil;
+      if (filterValues && askedByOrder.count) {
+        options = OISOptionsReplacing(options, filterValues, nil);
+        NSArray *left = all;
+        if (options.filter) {
+          NSPredicate *leftFilter = [self.service.predicates predicateForExpression:[self hierarchical:options.filter] entity:destination
+                                                                            aliases:self.request.options.aliases computed:[self computedNamesOf:options]
+                                                                            context:self.request.context error:error];
+          if (!leftFilter) {
+            self.entity = entity;
+            self.handler = own;
+            return NO;
+          }
+          left = [all filteredArrayUsingPredicate:leftFilter];
+        }
+        orderValues = [self valuesOf:askedByOrder over:left shape:nil computed:@{}];
+      }
+      self.entity = entity;
+      self.handler = own;
+      if (!filterValues || (askedByOrder.count && !orderValues)) {
+        if (error) *error = ODataServiceError(501, [NSString stringWithFormat:@"$expand=%@: $these of its members", wire]);
+        return NO;
+      }
+      options = OISOptionsReplacing(given, filterValues, orderValues);
+    }
     NSPredicate *filter = nil;
     if (options.filter) {
       filter = [self.service.predicates predicateForExpression:[self hierarchical:options.filter] entity:destination aliases:self.request.options.aliases
@@ -2087,7 +2131,7 @@ static const NSInteger OISMaxLevels = 32;
       for (NSAttributeDescription *attribute in [self.mapper keyAttributesForEntity:OISRootEntity(destination)]) {
         [sort addObject:[NSSortDescriptor sortDescriptorWithKey:attribute.name ascending:YES]];
       }
-      if (!options.compute.count) {
+      if (!options.compute.count && !ownMembers) {
         NSMutableArray *where = [NSMutableArray array];
         if (visible) [where addObject:visible];
         if (filter) [where addObject:filter];
@@ -2811,8 +2855,22 @@ static BOOL OISPathListed(NSArray<NSString *> *path, id listed)
   for (ODataOrderItem *item in items) {
     NSArray *path = item.expression.memberPath;
     if (item.expression.kind != ODataExpressionMember || !path.count) {
-      [self fail:501 message:[NSString stringWithFormat:@"Ordering grouped rows by %@", item.expression]];
-      return nil;
+      // An expression of the row's values: its value with each row.
+      NSError *error = nil;
+      if (![ODataAggregation valueOfExpression:item.expression inRow:@{} error:&error] && error.code == ODataIncrementalStoreErrorUnsupportedExpression &&
+          [error.localizedDescription rangeOfString:@"over aggregated rows"].location != NSNotFound) {
+        [self fail:501 message:[NSString stringWithFormat:@"Ordering grouped rows by %@", item.expression]];
+        return nil;
+      }
+      ODataExpression *expression = item.expression;
+      // (@self: a dictionary's valueForKey: takes a key without @ as its own.)
+      [descriptors addObject:[NSSortDescriptor sortDescriptorWithKey:@"@self" ascending:!item.descending comparator:^NSComparisonResult(id a, id b) {
+        id x = [ODataAggregation valueOfExpression:expression inRow:a error:NULL], y = [ODataAggregation valueOfExpression:expression inRow:b error:NULL];
+        BOOL noX = !x || x == [NSNull null], noY = !y || y == [NSNull null];
+        if (noX || noY) return noX == noY ? NSOrderedSame : noX ? NSOrderedAscending : NSOrderedDescending;
+        return [x compare:y];
+      }]];
+      continue;
     }
     [descriptors addObject:[NSSortDescriptor sortDescriptorWithKey:[path componentsJoinedByString:@"."] ascending:!item.descending
                                                          comparator:^NSComparisonResult(id a, id b) {
@@ -2831,6 +2889,12 @@ static BOOL OISPathListed(NSArray<NSString *> *path, id listed)
 - (void)writeAppliedEntities:(NSArray *)rows computed:(NSDictionary *)computed expansions:(NSArray *)expansions
 {
   ODataQueryOptions *options = self.request.options;
+  // $these: of what $apply made, for the $filter; of what it leaves, for
+  // the $orderby.
+  NSArray *asked = OISTheseOfFilter(options);
+  NSDictionary *filterValues = asked.count ? [self valuesOf:asked over:rows shape:nil computed:computed] : @{};
+  if (!filterValues) return;
+  options = OISOptionsReplacing(options, filterValues, nil);
   NSError *error = nil;
   // A join's aliases: written where $expand names them, as their entity.
   NSMutableDictionary *joinedExpansions = [NSMutableDictionary dictionary];  // alias -> its $expand item
@@ -2862,9 +2926,13 @@ static BOOL OISPathListed(NSArray<NSString *> *path, id listed)
     }
     rows = [rows filteredArrayUsingPredicate:filter];
   }
+  asked = OISTheseOfOrder(options);
+  NSDictionary *orderValues = asked.count ? [self valuesOf:asked over:rows shape:nil computed:computed] : @{};
+  if (!orderValues) return;
+  options = OISOptionsReplacing(options, nil, orderValues);
   if (options.orderBy.count) {
     BOOL inMemory = NO;
-    NSArray *descriptors = [self.service.predicates sortDescriptorsForOrderBy:options.orderBy entity:self.entity computed:computed
+    NSArray *descriptors = [self.service.predicates sortDescriptorsForOrderBy:[self resolvedOrder:options.orderBy options:options] entity:self.entity computed:computed
                                                                      inMemory:&inMemory error:&error];
     if (!descriptors) {
       [self respondError:error];
@@ -3183,14 +3251,8 @@ static NSMutableDictionary *OISMutableRow(NSDictionary *row)
 {
   NSMutableArray *asked = [NSMutableArray array];
   ODataQueryOptions *options = self.request.options;
-  NSMutableArray *expressions = [NSMutableArray array];
-  if (options.filter) [expressions addObject:options.filter];
-  for (ODataComputeItem *item in options.compute) [expressions addObject:item.expression];
-  for (ODataExpression *e in expressions) {
-    for (ODataExpression *one in [e aggregatesOfThese]) {
-      if (![[asked valueForKey:@"description"] containsObject:one.description]) [asked addObject:one];
-    }
-  }
+  [asked addObjectsFromArray:OISTheseOfFilter(options)];
+  [asked addObjectsFromArray:OISTheseOfOrder(options)];
   return asked;
 }
 
@@ -3205,6 +3267,71 @@ static NSMutableDictionary *OISMutableRow(NSDictionary *row)
 - (ODataExpression *)hierarchical:(ODataExpression *)e
 {
   return e && self.hierarchyCalls.count ? [e expressionReplacing:self.hierarchyCalls] : e;
+}
+
+// The request's $orderby with what the hierarchy functions stand for, and
+// the values of the collection it orders, in.
+- (NSArray<ODataOrderItem *> *)resolvedOrder:(NSArray<ODataOrderItem *> *)items options:(ODataQueryOptions *)options
+{
+  NSDictionary *values = options == self.request.options ? self.theseOrderValues : nil;
+  if (!values.count && !self.hierarchyCalls.count) return items;
+  NSMutableArray *out = [NSMutableArray array];
+  for (ODataOrderItem *item in items) {
+    ODataExpression *e = [self hierarchical:item.expression];
+    if (values.count) e = [e expressionReplacing:values];
+    [out addObject:[ODataOrderItem itemWithExpression:e descending:item.descending]];
+  }
+  return out;
+}
+
+static NSArray<ODataExpression *> *OISTheseIn(NSArray<ODataExpression *> *expressions)
+{
+  NSMutableArray *asked = [NSMutableArray array];
+  for (ODataExpression *e in expressions) {
+    for (ODataExpression *one in [e aggregatesOfThese]) {
+      if (![[asked valueForKey:@"description"] containsObject:one.description]) [asked addObject:one];
+    }
+  }
+  return asked;
+}
+
+// What $filter and $compute of options ask of their collection, and what
+// $orderby asks of its own.
+static NSArray<ODataExpression *> *OISTheseOfFilter(ODataQueryOptions *options)
+{
+  NSMutableArray *expressions = [NSMutableArray array];
+  if (options.filter) [expressions addObject:options.filter];
+  for (ODataComputeItem *item in options.compute) [expressions addObject:item.expression];
+  return OISTheseIn(expressions);
+}
+
+static NSArray<ODataExpression *> *OISTheseOfOrder(ODataQueryOptions *options)
+{
+  return OISTheseIn([options.orderBy valueForKey:@"expression"] ?: @[]);
+}
+
+// Options with some of their values in: $filter's and $compute's, and
+// $orderby's.
+static ODataQueryOptions *OISOptionsReplacing(ODataQueryOptions *options, NSDictionary *filterValues, NSDictionary *orderValues)
+{
+  if (!filterValues.count && !orderValues.count) return options;
+  ODataMutableQueryOptions *copy = [options mutableCopy];
+  if (filterValues.count) {
+    copy.filter = [options.filter expressionReplacing:filterValues];
+    NSMutableArray *compute = [NSMutableArray array];
+    for (ODataComputeItem *item in options.compute) {
+      [compute addObject:[ODataComputeItem itemWithExpression:[item.expression expressionReplacing:filterValues] alias:item.alias]];
+    }
+    copy.compute = compute;
+  }
+  if (orderValues.count) {
+    NSMutableArray *order = [NSMutableArray array];
+    for (ODataOrderItem *item in options.orderBy) {
+      [order addObject:[ODataOrderItem itemWithExpression:[item.expression expressionReplacing:orderValues] descending:item.descending]];
+    }
+    copy.orderBy = order;
+  }
+  return copy;
 }
 
 #pragma mark Recursive hierarchies
@@ -3390,17 +3517,39 @@ static void OISAddExpressionsOfOptions(ODataQueryOptions *options, NSMutableArra
 // Where a row's node identifier is: p, through single-valued segments (a
 // path in a grouped row as it nests). nil once answered, with the error.
 - (NSString *)nodeKeyPathOf:(ODataApplyTransformation *)t shape:(NSArray *)shape computed:(NSDictionary *)computed
+                  collections:(NSArray<NSNumber *> **)collections
 {
   if (shape) return [t.nodePath componentsJoinedByString:@"."];
   NSError *error = nil;
   NSString *keyPath = [self keyPathForPath:t.nodePath computed:computed property:NULL throughCollections:NO error:&error];
   if (keyPath) return keyPath;
-  if ([self keyPathForPath:t.nodePath computed:computed property:NULL throughCollections:YES error:NULL]) {
-    [self fail:501 message:[NSString stringWithFormat:@"$apply: %@ through a collection is not supported", t.method]];
-  } else {
+  // Through collection-valued segments (p1/.../pk/r, section 6.1): each
+  // row's node identifiers are the values along it.
+  keyPath = [self keyPathForPath:t.nodePath computed:computed property:NULL throughCollections:YES error:NULL];
+  if (!keyPath) {
     [self respondError:error];
+    return nil;
   }
-  return nil;
+  NSMutableArray *many = [NSMutableArray array];
+  NSEntityDescription *at = self.entity;
+  for (NSString *name in [keyPath componentsSeparatedByString:@"."]) {
+    NSRelationshipDescription *relationship = at.relationshipsByName[name];
+    [many addObject:@(relationship.isToMany)];
+    at = relationship.destinationEntity;
+  }
+  if (collections) *collections = many;
+  return keyPath;
+}
+
+// sigma(x) of section 6.2.2 where p goes through collections: a sparse
+// instance with only x's identifier at p, each collection-valued segment a
+// collection of one (Sales/SalesOrganization/ID of US is
+// {"Sales": [{"SalesOrganization": {"ID": "US"}}]}), under p's first name.
+static id OISSparseAtPath(NSArray<NSString *> *path, NSArray<NSNumber *> *collections, NSUInteger from, id value)
+{
+  if (from + 1 >= path.count) return value;
+  id inner = @{ path[from + 1]: OISSparseAtPath(path, collections, from + 1, value) };
+  return [collections[from + 1] boolValue] ? @[ inner ] : inner;
 }
 
 // ancestors and descendants (section 6.2.1): of the input, those related
@@ -3412,17 +3561,22 @@ static void OISAddExpressionsOfOptions(ODataQueryOptions *options, NSMutableArra
 {
   OISHierarchy *hierarchy = [self hierarchyOfNodes:t.hierarchy qualifier:t.qualifier];
   if (!hierarchy) return NO;
-  NSString *keyPath = [self nodeKeyPathOf:t shape:shape computed:computed];
+  NSArray<NSNumber *> *collections = nil;
+  NSString *keyPath = [self nodeKeyPathOf:t shape:shape computed:computed collections:&collections];
   if (!keyPath) return NO;
+  BOOL many = [collections containsObject:@YES];
   NSArray *rows = *rowsp;
-  id (^nodeOf)(id) = ^id(id row) {
-    id value = nil;
+  // A row's node identifiers: one, or through collections, any number.
+  NSArray *(^nodesOf)(id) = ^NSArray *(id row) {
+    NSArray *values = nil;
     @try {
-      value = [row valueForKeyPath:keyPath];
+      values = many ? [ODataAggregation valuesAtKeyPath:keyPath inObjects:@[ row ]] : @[ [row valueForKeyPath:keyPath] ?: [NSNull null] ];
     } @catch (NSException *exception) {
-      value = nil;
+      values = @[];
     }
-    return value == [NSNull null] ? nil : value;
+    NSMutableArray *nodes = [NSMutableArray array];
+    for (id value in values) if (value != [NSNull null] && ![nodes containsObject:value]) [nodes addObject:value];
+    return nodes;
   };
   if (t.traversal) {
     if (hierarchy.parentsAreMany) {
@@ -3442,11 +3596,24 @@ static void OISAddExpressionsOfOptions(ODataQueryOptions *options, NSMutableArra
       }
     }
     NSMutableDictionary *byNode = [NSMutableDictionary dictionary];
+    NSString *first = t.nodePath.firstObject;
     for (id row in rows) {
-      id node = nodeOf(row);
-      if (!node) continue;
-      if (!byNode[node]) byNode[node] = [NSMutableArray array];
-      [byNode[node] addObject:row];
+      for (id node in nodesOf(row)) {
+        if (!byNode[node]) byNode[node] = [NSMutableArray array];
+        id written = row;
+        if (many) {
+          // The row once per node it is related to, with that node's
+          // identifier at p (sigma(x), section 6.2.2).
+          OISComputedRow *given = [row isKindOfClass:[OISComputedRow class]] ? row : nil;
+          OISComputedRow *one = [[OISComputedRow alloc] init];
+          one.object = given ? given.object : row;
+          one.computed = given ? [given.computed mutableCopy] : [NSMutableDictionary dictionary];
+          id sparse = OISSparseAtPath(t.nodePath, collections, 0, node);
+          one.computed[first] = [collections.firstObject boolValue] ? @[ sparse ] : sparse;
+          written = one;
+        }
+        [byNode[node] addObject:written];
+      }
     }
     NSMutableArray *out = [NSMutableArray array];
     [self traverse:[self nodes:[hierarchy roots] of:hierarchy sortedBy:descriptors] hierarchy:hierarchy sortedBy:descriptors
@@ -3464,15 +3631,19 @@ static void OISAddExpressionsOfOptions(ODataQueryOptions *options, NSMutableArra
   BOOL ancestors = [t.method isEqualToString:@"ancestors"];
   NSMutableSet *targets = [NSMutableSet set];
   for (id row in start) {
-    id node = nodeOf(row);
-    if (!node) continue;
-    [targets addObjectsFromArray:ancestors ? [hierarchy ancestorsOf:node distance:t.number.integerValue includeSelf:t.keepStart]
-                                           : [hierarchy descendantsOf:node distance:t.number.integerValue includeSelf:t.keepStart]];
+    for (id node in nodesOf(row)) {
+      [targets addObjectsFromArray:ancestors ? [hierarchy ancestorsOf:node distance:t.number.integerValue includeSelf:t.keepStart]
+                                             : [hierarchy descendantsOf:node distance:t.number.integerValue includeSelf:t.keepStart]];
+    }
   }
   NSMutableArray *out = [NSMutableArray array];
   for (id row in rows) {
-    id node = nodeOf(row);
-    if (node && [targets containsObject:node]) [out addObject:row];
+    // Any of its nodes: the union has each row once (section 6.2.1).
+    for (id node in nodesOf(row)) {
+      if (![targets containsObject:node]) continue;
+      [out addObject:row];
+      break;
+    }
   }
   *rowsp = out;
   return YES;
@@ -3511,9 +3682,32 @@ static void OISAddExpressionsOfOptions(ODataQueryOptions *options, NSMutableArra
   }
   NSArray *rows = reply.result ?: @[];
   if (![self withinRowsInMemory:rows.count]) return;
-  NSDictionary *values = [self valuesOf:[self theseAskedByRequest] over:rows shape:nil computed:@{}];
+  ODataQueryOptions *options = self.request.options;
+  NSArray *asked = OISTheseOfFilter(options);
+  NSDictionary *values = asked.count ? [self valuesOf:asked over:rows shape:nil computed:@{}] : @{};
   if (!values) return;
   self.theseValues = values;
+  asked = OISTheseOfOrder(options);
+  if (asked.count) {
+    // $orderby's collection: what the $filter leaves of them.
+    NSArray *ordered = rows;
+    if (options.filter) {
+      NSError *error = nil;
+      NSPredicate *filter = [self.service.predicates predicateForExpression:[self resolved:options.filter options:options] entity:self.entity
+                                                                    aliases:options.aliases computed:[self computedNamesOf:options]
+                                                                    context:self.request.context error:&error];
+      if (!filter) {
+        [self respondError:error];
+        return;
+      }
+      ordered = [rows filteredArrayUsingPredicate:filter];
+    }
+    NSDictionary *orderValues = [self valuesOf:asked over:ordered shape:nil computed:@{}];
+    if (!orderValues) return;
+    self.theseOrderValues = orderValues;
+  } else {
+    self.theseOrderValues = @{};
+  }
   [self readCollection];
 }
 
@@ -3612,8 +3806,15 @@ static void OISAddExpressionsOfOptions(ODataQueryOptions *options, NSMutableArra
         continue;
       }
       case ODataApplyOrderBy: {
-        NSArray *descriptors = shape ? [self descriptorsForGroupedOrder:t.orderBy]
-                                     : [self.service.predicates sortDescriptorsForOrderBy:t.orderBy entity:self.entity computed:computed
+        // Each item with the values of the input it asks for.
+        NSMutableArray *items = [NSMutableArray array];
+        for (ODataOrderItem *item in t.orderBy) {
+          ODataExpression *e = [self expression:[self hierarchical:item.expression] over:rows shape:shape computed:computed];
+          if (!e) return NO;
+          [items addObject:[ODataOrderItem itemWithExpression:e descending:item.descending]];
+        }
+        NSArray *descriptors = shape ? [self descriptorsForGroupedOrder:items]
+                                     : [self.service.predicates sortDescriptorsForOrderBy:items entity:self.entity computed:computed
                                                                                  inMemory:&(BOOL){ NO } error:&error];
         if (!descriptors) {
           if (error) [self respondError:error];
@@ -3791,6 +3992,10 @@ static void OISAddExpressionsOfOptions(ODataQueryOptions *options, NSMutableArra
     [self writeAppliedEntities:rows computed:computed expansions:expansions];
     return;
   }
+  NSArray *asked = OISTheseOfFilter(options);
+  NSDictionary *filterValues = asked.count ? [self valuesOf:asked over:rows shape:shape computed:computed] : @{};
+  if (!filterValues) return;
+  options = OISOptionsReplacing(options, filterValues, nil);
   if (options.filter) {
     NSPredicate *filter = [ODataAggregation predicateForExpression:[self hierarchical:options.filter] error:&error];
     if (!filter) {
@@ -3799,8 +4004,12 @@ static void OISAddExpressionsOfOptions(ODataQueryOptions *options, NSMutableArra
     }
     rows = [rows filteredArrayUsingPredicate:filter];
   }
+  asked = OISTheseOfOrder(options);
+  NSDictionary *orderValues = asked.count ? [self valuesOf:asked over:rows shape:shape computed:computed] : @{};
+  if (!orderValues) return;
+  options = OISOptionsReplacing(options, nil, orderValues);
   if (options.orderBy.count) {
-    NSArray *descriptors = [self descriptorsForGroupedOrder:options.orderBy];
+    NSArray *descriptors = [self descriptorsForGroupedOrder:[self resolvedOrder:options.orderBy options:options]];
     if (!descriptors) return;
     rows = [rows sortedArrayUsingDescriptors:descriptors];
   }
@@ -3855,7 +4064,7 @@ static void OISAddExpressionsOfOptions(ODataQueryOptions *options, NSMutableArra
     return;
   }
   NSError *error = nil;
-  if (!self.theseValues && [self theseAskedByRequest].count) {
+  if (!self.theseValues && !self.theseOrderValues && [self theseAskedByRequest].count) {
     // $filter=Amount mul 3 ge $these/aggregate(Amount with sum): the
     // collection's values first, over the rows the caller can see.
     NSFetchRequest *all = [NSFetchRequest fetchRequestWithEntityName:self.entity.name];
@@ -3863,6 +4072,21 @@ static void OISAddExpressionsOfOptions(ODataQueryOptions *options, NSMutableArra
     if (!all.predicate) {
       [self respondError:error];
       return;
+    }
+    // After $apply's filters, their output.
+    if ([self applyIsFiltersOnly]) {
+      NSMutableArray *parts = [NSMutableArray arrayWithObject:all.predicate];
+      for (ODataApplyTransformation *t in self.request.options.apply) {
+        NSPredicate *filter = [self.service.predicates predicateForExpression:[self hierarchical:t.filter] entity:self.entity
+                                                                     aliases:self.request.options.aliases computed:@{}
+                                                                     context:self.request.context error:&error];
+        if (!filter) {
+          [self respondError:error];
+          return;
+        }
+        [parts addObject:filter];
+      }
+      all.predicate = [NSCompoundPredicate andPredicateWithSubpredicates:parts];
     }
     if (self.service.maxRowsInMemory) all.fetchLimit = self.service.maxRowsInMemory + 1;
     ODataReply *reply = [self replyWithAction:@selector(didFetchForThese:)];
@@ -3878,7 +4102,7 @@ static void OISAddExpressionsOfOptions(ODataQueryOptions *options, NSMutableArra
   NSMutableArray *sort = [NSMutableArray array];
   BOOL inMemory = NO;
   if (options.orderBy.count) {
-    NSArray *descriptors = [self.service.predicates sortDescriptorsForOrderBy:options.orderBy entity:self.entity
+    NSArray *descriptors = [self.service.predicates sortDescriptorsForOrderBy:[self resolvedOrder:options.orderBy options:options] entity:self.entity
                                                                      computed:[self computedNamesOf:self.request.options] inMemory:&inMemory error:&error];
     if (!descriptors) {
       [self respondError:error];
@@ -4308,6 +4532,8 @@ static void OISAddExpressionsOfOptions(ODataQueryOptions *options, NSMutableArra
 - (id)JSONForComputedValue:(id)value
 {
   if (!value || value == [NSNull null]) return [NSNull null];
+  // JSON already: a traversal's sparse instance (section 6.2.2).
+  if ([value isKindOfClass:[NSArray class]] || [value isKindOfClass:[NSDictionary class]]) return value;
   NSString *type = @"Edm.String";
   if ([value isKindOfClass:[NSDecimalNumber class]]) type = @"Edm.Decimal";
   else if ([value isKindOfClass:[NSNumber class]]) {

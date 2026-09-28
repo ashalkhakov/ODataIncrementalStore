@@ -1698,12 +1698,13 @@ static const NSUInteger OISMaxDateRanges = 200;
   *inMemory = NO;
   NSError *keyPathError = nil;
   // A computed name that stands for a property path is that path: the
-  // store sorts by it. Anything computed beyond a path is sorted here: a
-  // store sorts by key paths only.
+  // store sorts by it. Anything beyond a path (a computed value, an
+  // arithmetic expression) is sorted here: a store sorts by key paths only.
   NSArray *keyPaths = [self keyPathSortForOrderBy:items entity:entity computed:computed error:&keyPathError];
-  if (keyPaths || !computed.count) {
-    if (!keyPaths && error) *error = keyPathError;
-    return keyPaths;
+  if (keyPaths) return keyPaths;
+  if (!computed.count && keyPathError.code != 501) {
+    if (error) *error = keyPathError;
+    return nil;
   }
   *inMemory = YES;
   // Each item's value with each object, compared: nulls first, as OData

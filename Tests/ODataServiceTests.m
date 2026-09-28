@@ -1955,7 +1955,16 @@
     OISServiceResponse *expanded = [self get:@"Employees(1)?$expand=Reports($filter=isof(Default.Executive))"];
     XCTAssertEqualObjects([expanded.json[@"Reports"] valueForKey:@"Name"], @[ @"Zed" ], @"%@: %@", storeType, expanded.text);
 
-    XCTAssertEqual([self get:@"Employees?$orderby=Default.Manager/Budget"].status, 501, @"a store that sorts objects cannot ask an Employee for its budget");
+    // Sorted here: the cast is null for an Employee that is no Manager,
+    // and nulls come first.
+    OISServiceResponse *byBudget = [self get:@"Employees?$orderby=Default.Manager/Budget"];
+    XCTAssertEqual(byBudget.status, 200, @"%@: %@", storeType, byBudget.text);
+    NSArray *managers = [self sortedEmployeeNames:@"Employees?$filter=isof(Default.Manager)"];
+    NSArray *names = [byBudget.json[@"value"] valueForKey:@"Name"];
+    XCTAssertEqual(names.count, 5u, @"%@", byBudget.text);
+    for (NSUInteger i = 0; i < names.count; i++) {
+      XCTAssertEqual([managers containsObject:names[i]], i >= names.count - managers.count, @"%@: %@", storeType, names);
+    }
     XCTAssertEqualObjects([self get:@"Employees/$count?$filter=isof(Name,Edm.String)"].text, @"5", @"%@: its own type", storeType);
     XCTAssertEqual([self get:@"Employees?$filter=isof(Default.Nobody)"].status, 400);
     XCTAssertEqual([self get:@"Employees?$filter=Default.Manager/Nothing eq 1"].status, 400);
@@ -3339,11 +3348,20 @@ static NSString *OISHTTPDate(NSDate *date)
   NSRelationshipDescription *seller = relationship(@"salesOrganization", @"SalesOrganization", organization, NO);
   sales.inverseRelationship = seller;
   seller.inverseRelationship = sales;
+  NSEntityDescription *product = [[NSEntityDescription alloc] init];
+  product.name = @"Product";
+  product.managedObjectClassName = @"NSManagedObject";
+  product.userInfo = @{ @"OData.entitySet": @"Products" };
+  NSRelationshipDescription *productSales = relationship(@"sales", @"Sales", sale, YES);
+  NSRelationshipDescription *sold = relationship(@"product", @"Product", product, NO);
+  productSales.inverseRelationship = sold;
+  sold.inverseRelationship = productSales;
+  product.properties = @[ attribute(@"id", NSStringAttributeType, @"ID"), attribute(@"name", NSStringAttributeType, @"Name"), productSales ];
   organization.properties = @[ attribute(@"id", NSStringAttributeType, @"ID"), attribute(@"name", NSStringAttributeType, @"Name"),
                                superordinate, subordinates, sales ];
-  sale.properties = @[ attribute(@"id", NSInteger32AttributeType, @"ID"), attribute(@"amount", NSDecimalAttributeType, @"Amount"), seller ];
+  sale.properties = @[ attribute(@"id", NSInteger32AttributeType, @"ID"), attribute(@"amount", NSDecimalAttributeType, @"Amount"), seller, sold ];
   NSManagedObjectModel *model = [[NSManagedObjectModel alloc] init];
-  model.entities = @[ organization, sale ];
+  model.entities = @[ organization, sale, product ];
   _coordinator = [[NSPersistentStoreCoordinator alloc] initWithManagedObjectModel:model];
   NSURL *url = nil;
   if (![storeType isEqualToString:NSInMemoryStoreType]) {
@@ -3361,10 +3379,14 @@ static NSString *OISHTTPDate(NSDate *date)
     if ([row[2] length]) [o setValue:organizations[row[2]] forKey:@"superordinate"];
     organizations[row[0]] = o;
   }
-  NSArray *rows = @[ @[ @1, @"US West", @1 ], @[ @2, @"US West", @2 ], @[ @3, @"US West", @4 ], @[ @4, @"US East", @8 ],
-                     @[ @5, @"US East", @4 ], @[ @6, @"EMEA Central", @2 ], @[ @7, @"EMEA Central", @1 ], @[ @8, @"EMEA Central", @2 ] ];
+  NSMutableDictionary *products = [NSMutableDictionary dictionary];
+  for (NSArray *row in @[ @[ @"P1", @"Sugar" ], @[ @"P2", @"Coffee" ], @[ @"P3", @"Paper" ], @[ @"P4", @"Pencil" ] ]) {
+    products[row[0]] = [self insert:@"Product" into:context values:@{ @"id": row[0], @"name": row[1] }];
+  }
+  NSArray *rows = @[ @[ @1, @"US West", @1, @"P3" ], @[ @2, @"US West", @2, @"P1" ], @[ @3, @"US West", @4, @"P2" ], @[ @4, @"US East", @8, @"P2" ],
+                     @[ @5, @"US East", @4, @"P3" ], @[ @6, @"EMEA Central", @2, @"P1" ], @[ @7, @"EMEA Central", @1, @"P3" ], @[ @8, @"EMEA Central", @2, @"P3" ] ];
   for (NSArray *row in rows) {
-    [self insert:@"Sale" into:context values:@{ @"id": row[0], @"salesOrganization": organizations[row[1]],
+    [self insert:@"Sale" into:context values:@{ @"id": row[0], @"salesOrganization": organizations[row[1]], @"product": products[row[3]],
                                                   @"amount": [NSDecimalNumber decimalNumberWithDecimal:[row[2] decimalValue]] }];
   }
   XCTAssertTrue([context save:&error], @"%@", error);
@@ -3464,7 +3486,20 @@ static NSString *OISHTTPDate(NSDate *date)
     XCTAssertEqual(([self get:[NSString stringWithFormat:@"SalesOrganizations?$filter=Aggregation.isroot(HierarchyNodes=$root/Nope,"
                                                         "HierarchyQualifier='SalesOrgHierarchy',Node=ID)"]].status), 400);
     XCTAssertEqual(([self get:[NSString stringWithFormat:@"SalesOrganizations?$filter=Aggregation.isdescendant(%@,Node=ID,Ancestor=Name)", h]].status), 501);
-    XCTAssertEqual(([self get:@"SalesOrganizations?$apply=traverse($root/SalesOrganizations,SalesOrgHierarchy,Sales/ID,preorder)"].status), 501);
+    // Through a collection (section 6.1): a product's nodes are those of
+    // its sales; example 88, each product once per node, with it.
+    r = [self get:@"Products?$apply=traverse($root/SalesOrganizations,SalesOrgHierarchy,Sales/SalesOrganization/ID,preorder,Name asc)&$select=ID"];
+    XCTAssertEqual(r.status, 200, @"%@", r.text);
+    XCTAssertEqualObjects([r.json[@"value"] valueForKey:@"ID"], (@[ @"P1", @"P3", @"P2", @"P3", @"P1", @"P2", @"P3" ]), @"%@", r.text);
+    XCTAssertEqualObjects([r.json[@"value"] valueForKey:@"Sales"],
+                          (@[ @[ @{ @"SalesOrganization": @{ @"ID": @"EMEA Central" } } ], @[ @{ @"SalesOrganization": @{ @"ID": @"EMEA Central" } } ],
+                              @[ @{ @"SalesOrganization": @{ @"ID": @"US East" } } ], @[ @{ @"SalesOrganization": @{ @"ID": @"US East" } } ],
+                              @[ @{ @"SalesOrganization": @{ @"ID": @"US West" } } ], @[ @{ @"SalesOrganization": @{ @"ID": @"US West" } } ],
+                              @[ @{ @"SalesOrganization": @{ @"ID": @"US West" } } ] ]), @"%@", r.text);
+    XCTAssertEqualObjects(ids(@"Products?$apply=descendants($root/SalesOrganizations,SalesOrgHierarchy,Sales/SalesOrganization/ID,"
+                               "filter(Name eq 'Coffee'),keep start)&$orderby=ID"), (@[ @"P1", @"P2", @"P3" ]), @"no Pencil: no sales");
+    XCTAssertEqualObjects(ids(@"Products?$apply=ancestors($root/SalesOrganizations,SalesOrgHierarchy,Sales/SalesOrganization/ID,"
+                               "filter(Name eq 'Coffee'))"), @[], @"none sold at US or Sales");
     XCTAssertEqual(([self get:@"SalesOrganizations?$apply=ancestors($root/SalesOrganizations,SalesOrgHierarchy,ID,groupby((Name)))"].status), 501);
   }
 }
@@ -3730,6 +3765,35 @@ static NSString *OISHTTPDate(NSDate *date)
                  "/compute(Total div $these/aggregate(Total with sum) as Share)&$orderby=Category/CategoryName"];
   XCTAssertEqual(r.status, 200, @"%@", r.text);
   XCTAssertEqualWithAccuracy([r.json[@"value"][0][@"Share"] doubleValue], 37.0 / 90.35, 0.0001, @"%@", r.text);
+
+  // In an expansion: each category's own products (Beverages average
+  // 18.5, Condiments 17.78).
+  r = [self get:@"Categories?$expand=Products($filter=UnitPrice gt $these/aggregate(UnitPrice with average);$select=ProductName;$orderby=ProductName)"
+                 "&$select=CategoryName&$orderby=CategoryName"];
+  XCTAssertEqual(r.status, 200, @"%@", r.text);
+  XCTAssertEqualObjects([r.json[@"value"] valueForKeyPath:@"Products.ProductName"],
+                        (@[ @[ @"Chang" ], @[ @"Chef Anton's Cajun Seasoning", @"Chef Anton's Gumbo Mix" ] ]), @"%@", r.text);
+  r = [self get:@"Categories?$expand=Products($orderby=UnitPrice sub $these/aggregate(UnitPrice with max);$select=ProductName;$top=1)&$orderby=CategoryName"];
+  XCTAssertEqualObjects([r.json[@"value"] valueForKeyPath:@"Products.ProductName"], (@[ @[ @"Chai" ], @[ @"Aniseed Syrup" ] ]), @"%@", r.text);
+
+  // In $orderby: of what the $filter leaves.
+  r = [self get:@"Products?$filter=UnitPrice gt 15&$orderby=UnitPrice sub $these/aggregate(UnitPrice with min) desc&$select=ProductName&$top=2"];
+  XCTAssertEqual(r.status, 200, @"%@", r.text);
+  XCTAssertEqualObjects([r.json[@"value"] valueForKey:@"ProductName"], (@[ @"Chef Anton's Cajun Seasoning", @"Chef Anton's Gumbo Mix" ]), @"%@", r.text);
+  r = [self get:@"Products?$apply=orderby(UnitPrice sub $these/aggregate(UnitPrice with average) desc)/top(1)&$select=ProductName"];
+  XCTAssertEqualObjects([r.json[@"value"] valueForKey:@"ProductName"], @[ @"Chef Anton's Cajun Seasoning" ], @"%@", r.text);
+
+  // After $apply: of what it made (18, 19, 22, 21.35: the least is 18).
+  r = [self get:@"Products?$apply=filter(UnitPrice gt 15)&$filter=UnitPrice gt $these/aggregate(UnitPrice with min)&$select=ProductName&$orderby=ProductID"];
+  XCTAssertEqual(r.status, 200, @"%@", r.text);
+  XCTAssertEqualObjects([r.json[@"value"] valueForKey:@"ProductName"], (@[ @"Chang", @"Chef Anton's Cajun Seasoning", @"Chef Anton's Gumbo Mix" ]), @"%@", r.text);
+  r = [self get:@"Products?$apply=groupby((Category/CategoryName),aggregate(UnitPrice with sum as Total))"
+                 "&$filter=Total gt $these/aggregate(Total with average)"];
+  XCTAssertEqualObjects([r.json[@"value"] valueForKeyPath:@"Category.CategoryName"], @[ @"Condiments" ], @"%@", r.text);
+  r = [self get:@"Products?$apply=groupby((Category/CategoryName),aggregate(UnitPrice with sum as Total))"
+                 "&$orderby=Total sub $these/aggregate(Total with min) desc"];
+  XCTAssertEqual(r.status, 200, @"%@", r.text);
+  XCTAssertEqualObjects([r.json[@"value"] valueForKeyPath:@"Category.CategoryName"], (@[ @"Condiments", @"Beverages" ]), @"%@", r.text);
 
   // Of a navigation: in the store, as a key path's collection operator.
   r = [self get:@"Categories?$filter=Products/aggregate(UnitPrice with sum) gt 40&$select=CategoryName"];
