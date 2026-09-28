@@ -12,7 +12,8 @@ CC = clang
 OBJC = clang
 
 APP_NAME = Workbench
-Workbench_OBJC_FILES = main.m WorkbenchController.m WorkbenchEngine.m
+Workbench_OBJC_FILES = main.m WorkbenchController.m WorkbenchController+SelfTest.m WBConnection.m WBQuery.m WBResults.m \
+	WorkbenchSupport.m WorkbenchEngine.m
 Workbench_INCLUDE_DIRS = -I../../Source/ODataKit/include -I../../Source/ODataIncrementalStore/include -I../../Source/ODataService/include -I../../Source/ODataKit/include/ODataKit -I../../Source/ODataIncrementalStore/include/ODataIncrementalStore -I../../Source/ODataService/include/ODataService
 Workbench_LIB_DIRS = -L../../obj -L../..
 Workbench_OBJC_LIBS += -lODataService -lODataIncrementalStore -lODataKit -lCoreData -ldispatch

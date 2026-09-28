@@ -120,6 +120,15 @@ The window is `WorkbenchWindow.xib` (File's Owner `WorkbenchController`),
 Xcode 5 format, springs and struts, no Auto Layout; GNUstep loads it with
 `GSXib5Loader`.
 
+The code follows the screen, which is three things, each without views:
+`WBConnection` (the service, the store over it, the Store menu's choices),
+`WBQuery` (everything the query panel says, and the fetch request it makes)
+and `WBResults` (the rows, a screenful at a time, and what is done with
+them: edits and saves, operations, Temporal's actions, streams, the
+service's changes). `WorkbenchController` is the window: it shows the
+three, copies the panel's values into the query, and hands the query's
+request to the results. The self-test is `WorkbenchController+SelfTest.m`.
+
 GNUstep (clang, libobjc2, FreeCoreData, gnustep-gui):
 
 ```

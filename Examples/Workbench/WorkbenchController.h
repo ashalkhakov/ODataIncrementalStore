@@ -39,6 +39,8 @@
 - (IBAction)connect:(id)sender;
 - (IBAction)applyPreset:(id)sender;
 - (IBAction)entityChanged:(id)sender;
+// A switch of the query's: result type, sub-entities, faults.
+- (IBAction)queryChanged:(id)sender;
 - (IBAction)runFetch:(id)sender;
 - (IBAction)resetStore:(id)sender;
 - (IBAction)insertObject:(id)sender;
@@ -50,9 +52,15 @@
 - (IBAction)invokeOperation:(id)sender;
 - (IBAction)fetchRemoteChanges:(id)sender;
 - (void)refreshTranslation;
-// Workbench --self-test [builtin]: see WorkbenchController.m. builtin
-// tests the built-in service alone, with no network: a package's smoke test.
+// Workbench --self-test [builtin]: builtin tests the built-in service
+// alone, with no network: a package's smoke test.
 @property (nonatomic) BOOL selfTestOffline;
-- (void)runSelfTest;
 
+@end
+
+// The self-test, in WorkbenchController+SelfTest.m: the window driven as a
+// person would drive it; a line per check, and the exit status the number
+// of failures.
+@interface WorkbenchController (SelfTest)
+- (void)runSelfTest;
 @end

@@ -147,7 +147,7 @@
                             </menu>
                         </popUpButtonCell>
                         <connections>
-                            <action selector="refreshTranslation" target="-2" id="ARES"/>
+                            <action selector="queryChanged:" target="-2" id="ARES"/>
                         </connections>
                     </popUpButton>
                     <textField id="LLIM">
@@ -185,7 +185,7 @@
                         <autoresizingMask key="autoresizingMask" flexibleMinY="YES"/>
                         <buttonCell key="cell" type="check" title="sub-entities" bezelStyle="regularSquare" state="on" inset="2" id="SUBC"/>
                         <connections>
-                            <action selector="refreshTranslation" target="-2" id="ASUB"/>
+                            <action selector="queryChanged:" target="-2" id="ASUB"/>
                         </connections>
                     </button>
                     <button id="FLT">
@@ -193,7 +193,7 @@
                         <autoresizingMask key="autoresizingMask" flexibleMinY="YES"/>
                         <buttonCell key="cell" type="check" title="return as faults" bezelStyle="regularSquare" state="on" inset="2" id="FLTC"/>
                         <connections>
-                            <action selector="refreshTranslation" target="-2" id="AFLT"/>
+                            <action selector="queryChanged:" target="-2" id="AFLT"/>
                         </connections>
                     </button>
                     <button id="GO">

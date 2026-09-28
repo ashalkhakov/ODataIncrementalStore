@@ -1,0 +1,215 @@
+// Copyright (C) 2026 OIS contributors
+// SPDX-License-Identifier: LGPL-2.1-or-later
+
+#import "WBConnection.h"
+#import "WorkbenchSupport.h"
+
+static NSString * const WBBuiltInRoot = @"http://workbench.local/odata/";
+static NSString * const WBNorthwindRoot = @"https://services.odata.org/V4/Northwind/Northwind.svc/";
+static NSString * const WBTripPinRoot = @"https://services.odata.org/V4/TripPinServiceRW/";
+
+static NSURL *WorkbenchModelURL(void)
+{
+  NSBundle *bundle = [NSBundle mainBundle];
+  for (NSString *ext in @[ @"momd", @"xcdatamodeld" ]) {
+    NSURL *url = [bundle URLForResource:@"Catalog" withExtension:ext];
+    if (url) return url;
+  }
+#ifdef WORKBENCH_MODEL_DIR
+  NSString *src = [@(WORKBENCH_MODEL_DIR) stringByAppendingPathComponent:@"Catalog.xcdatamodeld"];
+  if ([[NSFileManager defaultManager] fileExistsAtPath:src]) return [NSURL fileURLWithPath:src];
+  src = [@(WORKBENCH_MODEL_DIR) stringByAppendingPathComponent:@"../Catalog/Catalog.xcdatamodeld"];
+  if ([[NSFileManager defaultManager] fileExistsAtPath:src]) return [NSURL fileURLWithPath:src];
+#endif
+  return nil;
+}
+
+// TripPin keeps what a client writes in a session of its own, named in
+// the URL; a new one starts from TripPin's sample data.
+static NSURL *WBTripPinSession(void)
+{
+  NSMutableString *key = [NSMutableString stringWithString:@"oiswb"];
+  const char *alphabet = "abcdefghijklmnopqrstuvwxyz012345";
+  while (key.length < 24) [key appendFormat:@"%c", alphabet[arc4random_uniform(32)]];
+  return [NSURL URLWithString:[NSString stringWithFormat:@"https://services.odata.org/V4/(S(%@))/TripPinServiceRW/", key]];
+}
+
+@implementation WBConnection {
+  id _wire;  // the transport in use: the engine, or a network transport
+}
+
++ (NSString *)rootOfService:(WBService)service
+{
+  switch (service) {
+    case WBServiceBuiltIn: return WBBuiltInRoot;
+    case WBServiceNorthwind: return WBNorthwindRoot;
+    case WBServiceTripPin: return WBTripPinRoot;
+    case WBServiceOther: return nil;
+  }
+  return nil;
+}
+
++ (WBService)serviceOfRoot:(NSString *)root
+{
+  NSUInteger index = [@[ WBBuiltInRoot, WBNorthwindRoot, WBTripPinRoot ] indexOfObject:root];
+  return index == NSNotFound ? WBServiceOther : (WBService)index;
+}
+
+- (instancetype)init
+{
+  if ((self = [super init])) _JSONBatch = YES;
+  return self;
+}
+
+- (void)dealloc
+{
+  _engine.didHandle = nil;
+}
+
+- (NSUInteger)exchangesStarted
+{
+  return [[_wire valueForKey:@"started"] unsignedIntegerValue];
+}
+
+- (NSDictionary *)storeOptionsWithTransport:(id)transport
+{
+  return @{ ODataIncrementalStoreTransportOption: transport, NSPersistentHistoryTrackingKey: @YES,
+            ODataIncrementalStoreRespondAsyncOption: @(_respondAsync), ODataIncrementalStoreJSONBatchOption: @(_JSONBatch) };
+}
+
+// Each exchange, to the target, on the main thread.
+- (void)logEntry:(WorkbenchLogEntry *)entry
+{
+  WBSend(_target, _logAction, entry);
+}
+
+- (NSString *)connectToService:(WBService)service root:(NSString *)root
+{
+  if (_connecting) return @"Still connecting.";
+  _service = service;
+  _failure = nil;
+  if (service == WBServiceBuiltIn) {
+    [self openBuiltIn];
+    return nil;
+  }
+  NSString *typed = [root stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceCharacterSet]];
+  if (typed.length && ![typed hasSuffix:@"/"]) typed = [typed stringByAppendingString:@"/"];
+  NSURL *url = service == WBServiceTripPin ? WBTripPinSession() : [NSURL URLWithString:typed];
+  if (!url.scheme.length || !url.host.length) return @"That is not a service root URL (https://host/path/).";
+  _connecting = YES;
+  WorkbenchNetworkTransport *transport = [[WorkbenchNetworkTransport alloc] init];
+  __weak WBConnection *weak = self;
+  transport.didHandle = ^(WorkbenchLogEntry *entry) {
+    [weak logEntry:entry];
+  };
+  _wire = transport;
+  _engine = nil;
+  [NSThread detachNewThreadSelector:@selector(connectInBackground:) toTarget:self withObject:@{ @"url": url, @"transport": transport }];
+  return nil;
+}
+
+- (void)openBuiltIn
+{
+  NSURL *root = [NSURL URLWithString:WBBuiltInRoot];
+  NSURL *modelURL = WorkbenchModelURL();
+  NSManagedObjectModel *model = modelURL ? WorkbenchBuiltInModel(modelURL) : nil;
+  if (!model) {
+    [self finishWithModel:nil coordinator:nil store:nil root:root error:WBError(9, @"Catalog.xcdatamodeld not found.")];
+    return;
+  }
+  // A picture's content and its type are its media resource's, not
+  // properties: the client reads them as a stream.
+  NSEntityDescription *picture = model.entitiesByName[@"Picture"];
+  NSMutableArray *kept = [NSMutableArray array];
+  for (NSPropertyDescription *property in picture.properties) {
+    if (![@[ @"content", @"contentType" ] containsObject:property.name]) [kept addObject:property];
+  }
+  picture.properties = kept;
+  _engine = [[WorkbenchEngine alloc] initWithServiceRoot:root modelURL:modelURL];
+  if (!_engine) {
+    [self finishWithModel:nil coordinator:nil store:nil root:root error:WBError(9, @"The built-in service did not start.")];
+    return;
+  }
+  __weak WBConnection *weak = self;
+  _engine.didHandle = ^(WorkbenchLogEntry *entry) {
+    [weak logEntry:entry];
+  };
+  _wire = _engine;
+  NSPersistentStoreCoordinator *psc = [[NSPersistentStoreCoordinator alloc] initWithManagedObjectModel:model];
+  NSError *error = nil;
+  ODataIncrementalStore *store = (ODataIncrementalStore *)[psc addPersistentStoreWithType:[ODataIncrementalStore storeType]
+                                                                             configuration:nil URL:root
+                                                                                   options:[self storeOptionsWithTransport:_engine] error:&error];
+  [self finishWithModel:model coordinator:psc store:store root:root error:error];
+}
+
+// Connecting reads $metadata twice (for the model, then for the store), so
+// it happens away from the main thread.
+- (void)connectInBackground:(NSDictionary *)job
+{
+  @autoreleasepool {
+    NSURL *url = job[@"url"];
+    NSDictionary *options = [self storeOptionsWithTransport:job[@"transport"]];
+    NSError *error = nil;
+    NSMutableDictionary *result = [NSMutableDictionary dictionaryWithObject:url forKey:@"url"];
+    NSManagedObjectModel *model = [ODataIncrementalStore modelForServiceAtURL:url options:options error:&error];
+    if (model) {
+      NSPersistentStoreCoordinator *psc = [[NSPersistentStoreCoordinator alloc] initWithManagedObjectModel:model];
+      ODataIncrementalStore *store = (ODataIncrementalStore *)[psc addPersistentStoreWithType:[ODataIncrementalStore storeType]
+                                                                                 configuration:nil URL:url options:options error:&error];
+      result[@"model"] = model;
+      result[@"coordinator"] = psc;
+      if (store) result[@"store"] = store;
+    }
+    if (error) result[@"error"] = error;
+    [self performSelectorOnMainThread:@selector(connected:) withObject:result waitUntilDone:NO];
+  }
+}
+
+- (void)connected:(NSDictionary *)result
+{
+  _connecting = NO;
+  [self finishWithModel:result[@"model"] coordinator:result[@"coordinator"] store:result[@"store"] root:result[@"url"] error:result[@"error"]];
+}
+
+- (void)finishWithModel:(NSManagedObjectModel *)model coordinator:(NSPersistentStoreCoordinator *)psc
+                  store:(ODataIncrementalStore *)store root:(NSURL *)root error:(NSError *)error
+{
+  _serviceRoot = root;
+  if (!store) {
+    NSString *why = error.localizedDescription ?: @"the store could not be opened";
+    NSError *cause = error.userInfo[NSUnderlyingErrorKey];
+    if (cause.localizedDescription.length) why = [NSString stringWithFormat:@"%@ (%@)", why, cause.localizedDescription];
+    _failure = why;
+    WBSend(_target, _connectedAction, self);
+    return;
+  }
+  _model = model;
+  _store = store;
+  _context = [[NSManagedObjectContext alloc] initWithConcurrencyType:NSMainQueueConcurrencyType];
+  _context.persistentStoreCoordinator = psc;
+  _context.transactionAuthor = @"Workbench";
+  self.mergePolicy = _mergePolicy;
+  WBSend(_target, _connectedAction, self);
+}
+
+- (void)setMergePolicy:(NSInteger)mergePolicy
+{
+  _mergePolicy = mergePolicy;
+  _context.mergePolicy = mergePolicy == 1 ? NSMergeByPropertyObjectTrumpMergePolicy
+                       : mergePolicy == 2 ? NSMergeByPropertyStoreTrumpMergePolicy : NSErrorMergePolicy;
+}
+
+- (NSString *)summary
+{
+  NSUInteger operations = 0;
+  for (NSArray *overloads in _store.schema.operations.allValues) operations += overloads.count;
+  NSMutableString *summary = [NSMutableString stringWithFormat:@"%@: %lu entities, %lu operations, OData %@.",
+                              _service == WBServiceBuiltIn ? @"Built-in service" : _serviceRoot.absoluteString,
+                              (unsigned long)_model.entities.count, (unsigned long)operations, _store.schema.version ?: @"4.0"];
+  if (_service == WBServiceTripPin) [summary appendString:@" A session of its own: write freely."];
+  if (_service == WBServiceNorthwind) [summary appendString:@" Read-only."];
+  return summary;
+}
+
+@end

@@ -2,6 +2,10 @@
 // SPDX-License-Identifier: LGPL-2.1-or-later
 
 #import "WorkbenchEngine.h"
+// Only the bitmap: all of AppKit after CoreData redefines, on GNUstep, the
+// attribute types NSPredicateEditorRowTemplate.h declares as well.
+#import <AppKit/NSBitmapImageRep.h>
+#import <AppKit/NSGraphics.h>
 
 @implementation WorkbenchLogEntry
 @end
@@ -177,8 +181,24 @@ NSManagedObjectModel *WorkbenchBuiltInModel(NSURL *catalogURL)
 // A picture to download: 4x4 pixels, a PNG.
 static NSData *WBPicturePNG(void)
 {
-  static const char *base64 = "iVBORw0KGgoAAAANSUhEUgAAAAQAAAAECAIAAAAmkwkpAAAANUlEQVR4nA3H0QAAQAhEwcAeRBBBLEQQQSxEEMHczd/EJSduuCWcWHjwTycteuifSkrUUMsDbtIWgbAlENEAAAAASUVORK5CYII=";
-  return [[NSData alloc] initWithBase64EncodedString:@(base64) options:0];
+  // Four colours blending across, drawn pixel by pixel: no drawing context
+  // needed, so the same on Apple and GNUstep, headless or not.
+  NSInteger width = 96, height = 64;
+  NSBitmapImageRep *bitmap = [[NSBitmapImageRep alloc] initWithBitmapDataPlanes:NULL pixelsWide:width pixelsHigh:height
+                                                                  bitsPerSample:8 samplesPerPixel:3 hasAlpha:NO isPlanar:NO
+                                                                 colorSpaceName:NSDeviceRGBColorSpace bytesPerRow:width * 3 bitsPerPixel:24];
+  unsigned char *pixels = bitmap.bitmapData;
+  const double corners[4][3] = { { 230, 80, 60 }, { 250, 200, 60 }, { 60, 120, 220 }, { 70, 190, 120 } };
+  for (NSInteger y = 0; y < height; y++) {
+    for (NSInteger x = 0; x < width; x++) {
+      double u = (double)x / (width - 1), v = (double)y / (height - 1);
+      for (int c = 0; c < 3; c++) {
+        double top = corners[0][c] * (1 - u) + corners[1][c] * u, bottom = corners[2][c] * (1 - u) + corners[3][c] * u;
+        pixels[y * width * 3 + x * 3 + c] = (unsigned char)(top * (1 - v) + bottom * v);
+      }
+    }
+  }
+  return [bitmap representationUsingType:NSPNGFileType properties:@{}];
 }
 
 static NSDate *WBDay(NSString *day)

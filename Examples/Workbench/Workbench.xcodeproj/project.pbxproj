@@ -20,6 +20,11 @@
 		AA0000000000000000000094 /* Cocoa.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = AA0000000000000000000095 /* Cocoa.framework */; };
 		AA0000000000000000000096 /* CoreData.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = AA000000000000000000003D /* CoreData.framework */; };
 		AA0000000000000000000097 /* ODataIncrementalStore.framework in Embed Frameworks */ = {isa = PBXBuildFile; fileRef = AA0000000000000000000093 /* ODataIncrementalStore.framework */; settings = {ATTRIBUTES = (CodeSignOnCopy, RemoveHeadersOnCopy, ); }; };
+		AA00000000000000000000C1 /* WorkbenchController+SelfTest.m in Sources */ = {isa = PBXBuildFile; fileRef = AA00000000000000000000C2 /* WorkbenchController+SelfTest.m */; };
+		AA00000000000000000000C3 /* WBConnection.m in Sources */ = {isa = PBXBuildFile; fileRef = AA00000000000000000000C4 /* WBConnection.m */; };
+		AA00000000000000000000C5 /* WBQuery.m in Sources */ = {isa = PBXBuildFile; fileRef = AA00000000000000000000C6 /* WBQuery.m */; };
+		AA00000000000000000000C7 /* WBResults.m in Sources */ = {isa = PBXBuildFile; fileRef = AA00000000000000000000C8 /* WBResults.m */; };
+		AA00000000000000000000C9 /* WorkbenchSupport.m in Sources */ = {isa = PBXBuildFile; fileRef = AA00000000000000000000CA /* WorkbenchSupport.m */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXContainerItemProxy section */
@@ -98,6 +103,16 @@
 		AA0000000000000000000091 /* Catalog.xcdatamodeld */ = {isa = PBXFileReference; lastKnownFileType = wrapper.xcdatamodeld; name = Catalog.xcdatamodeld; path = ../Catalog/Catalog.xcdatamodeld; sourceTree = "<group>"; };
 		AA00000000000000000000B1 /* WorkbenchWindow.xib */ = {isa = PBXFileReference; lastKnownFileType = file.xib; path = WorkbenchWindow.xib; sourceTree = "<group>"; };
 		AB00000000000000000000C1 /* Assets.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; path = Assets.xcassets; sourceTree = "<group>"; };
+		AA00000000000000000000C2 /* WorkbenchController+SelfTest.m */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.objc; path = "WorkbenchController+SelfTest.m"; sourceTree = "<group>"; };
+		AA00000000000000000000C4 /* WBConnection.m */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.objc; path = "WBConnection.m"; sourceTree = "<group>"; };
+		AA00000000000000000000C6 /* WBQuery.m */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.objc; path = "WBQuery.m"; sourceTree = "<group>"; };
+		AA00000000000000000000C8 /* WBResults.m */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.objc; path = "WBResults.m"; sourceTree = "<group>"; };
+		AA00000000000000000000CA /* WorkbenchSupport.m */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.objc; path = "WorkbenchSupport.m"; sourceTree = "<group>"; };
+		AA00000000000000000000D1 /* WBConnection.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = "WBConnection.h"; sourceTree = "<group>"; };
+		AA00000000000000000000D2 /* WBQuery.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = "WBQuery.h"; sourceTree = "<group>"; };
+		AA00000000000000000000D3 /* WBResults.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = "WBResults.h"; sourceTree = "<group>"; };
+		AA00000000000000000000D4 /* WorkbenchSupport.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = "WorkbenchSupport.h"; sourceTree = "<group>"; };
+		AA00000000000000000000D5 /* WorkbenchController+Private.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = "WorkbenchController+Private.h"; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -134,6 +149,16 @@
 				AA000000000000000000008D /* WorkbenchController.m */,
 				AA000000000000000000009E /* WorkbenchController.h */,
 				AA000000000000000000008F /* WorkbenchEngine.m */,
+				AA00000000000000000000C2 /* WorkbenchController+SelfTest.m */,
+				AA00000000000000000000C4 /* WBConnection.m */,
+				AA00000000000000000000C6 /* WBQuery.m */,
+				AA00000000000000000000C8 /* WBResults.m */,
+				AA00000000000000000000CA /* WorkbenchSupport.m */,
+				AA00000000000000000000D1 /* WBConnection.h */,
+				AA00000000000000000000D2 /* WBQuery.h */,
+				AA00000000000000000000D3 /* WBResults.h */,
+				AA00000000000000000000D4 /* WorkbenchSupport.h */,
+				AA00000000000000000000D5 /* WorkbenchController+Private.h */,
 				AA000000000000000000009F /* WorkbenchEngine.h */,
 				AA00000000000000000000B1 /* WorkbenchWindow.xib */,
 				AB00000000000000000000C1 /* Assets.xcassets */,
@@ -286,6 +311,11 @@
 				AA000000000000000000008A /* main.m in Sources */,
 				AA000000000000000000008C /* WorkbenchController.m in Sources */,
 				AA000000000000000000008E /* WorkbenchEngine.m in Sources */,
+				AA00000000000000000000C1 /* WorkbenchController+SelfTest.m in Sources */,
+				AA00000000000000000000C3 /* WBConnection.m in Sources */,
+				AA00000000000000000000C5 /* WBQuery.m in Sources */,
+				AA00000000000000000000C7 /* WBResults.m in Sources */,
+				AA00000000000000000000C9 /* WorkbenchSupport.m in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
