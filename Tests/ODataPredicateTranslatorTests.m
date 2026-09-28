@@ -132,12 +132,23 @@
 - (void)testPatternsAreMatchesPatternIn401
 {
   _translator.version = @"4.01";
-  [self assertPredicate:@"name LIKE %@" filter:@"matchesPattern(ProductName, '^Ch.*a.$')" arguments:@[ @"Ch*a?" ]];
-  [self assertPredicate:@"name LIKE[c] %@" filter:@"matchesPattern(tolower(ProductName), '^o''b\\..*$')" arguments:@[ @"O'B.*" ]];
+  // A wildcard is any character, a line terminator too, and \r\n as one.
+  NSString *any = @"(?:\\r\\n|\\r(?!\\n)|[^\\r])";
+  [self assertPredicate:@"name LIKE %@" filter:[NSString stringWithFormat:@"matchesPattern(ProductName, '^Ch%@*a%@$')", any, any] arguments:@[ @"Ch*a?" ]];
+  [self assertPredicate:@"name LIKE[c] %@" filter:[NSString stringWithFormat:@"matchesPattern(tolower(ProductName), '^o''b\\.%@*$')", any] arguments:@[ @"O'B.*" ]];
   [self assertPredicate:@"name MATCHES %@" filter:@"matchesPattern(ProductName, '^(?:C[a-z]+)$')" arguments:@[ @"C[a-z]+" ]];
+  [self assertPredicate:@"name MATCHES %@" filter:[NSString stringWithFormat:@"matchesPattern(ProductName, '^(?:^C%@\\.(?:x|y)$)$')", any] arguments:@[ @"\\AC.\\.(?:x|y)\\z" ]];
   NSError *error = nil;
   XCTAssertNil([_translator translatePredicate:[NSPredicate predicateWithFormat:@"name MATCHES[c] 'c.*'"] error:&error]);
   XCTAssertEqual(error.code, ODataIncrementalStoreErrorUnsupportedPredicate);
+  // What ICU and ECMAScript read differently is refused, not guessed.
+  for (NSString *pattern in @[ @"^C.*", @"C.*$", @"\\d+", @"\\w+", @"(?i)chai", @"[[a-z]]" ]) {
+    error = nil;
+    NSPredicate *refused = [NSPredicate predicateWithFormat:@"name MATCHES %@", pattern];
+    NSString *written = [_translator translatePredicate:refused error:&error];
+    XCTAssertNil(written, @"%@", pattern);
+    XCTAssertEqual(error.code, ODataIncrementalStoreErrorUnsupportedPredicate, @"%@", pattern);
+  }
 }
 
 - (void)assertPredicate:(NSString *)format on:(NSString *)entityName filter:(NSString *)expected

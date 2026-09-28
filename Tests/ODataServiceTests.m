@@ -3208,6 +3208,10 @@ static NSString *OISHTTPDate(NSDate *date)
   XCTAssertEqual([self get:@"Products?$apply=filter(UnitPrice gt 20)/aggregate(UnitPrice with sum as Total)"].status, 200);
   XCTAssertEqual([self get:@"Products?$compute=UnitPrice mul 2 as Twice&$orderby=Twice"].status, 400);
   XCTAssertEqual([self get:@"Products?$orderby=UnitPrice"].status, 200, @"the store sorts that");
+  // A computed name that stands for a path is that path: the store sorts by it.
+  r = [self get:@"Products?$compute=Category/CategoryName as C&$orderby=C desc,ProductID&$select=ProductName"];
+  XCTAssertEqual(r.status, 200, @"%@", r.text);
+  XCTAssertEqualObjects([self names:r], (@[ @"Aniseed Syrup", @"Chef Anton's Cajun Seasoning", @"Chef Anton's Gumbo Mix", @"Chai", @"Chang" ]));
 
   // A store's failure: a 500 that does not say what the store said.
   [_service setHandler:[[OISFailingStoreHandler alloc] initWithEntity:OISCatalogEntity(@"Category")] forEntitySet:@"Categories"];
@@ -4175,8 +4179,14 @@ static NSExpressionDescription *OISAggregateOf(NSString *function, NSString *key
 // has it, here where it does not; the same rows either way.
 - (void)testClientsGroupAndAggregate
 {
-  for (NSNumber *applies in @[ @YES, @NO ]) {
-    if (!applies.boolValue) _service.containerAnnotations = @{ @"Aggregation.ApplySupported": [NSNull null] };
+  // Every transformation; groupby, aggregate and filter only; none.
+  NSArray *modes = @[ @"all", @"some", @"none" ];
+  for (NSString *mode in modes) {
+    NSNumber *applies = @(![mode isEqualToString:@"none"]);
+    if ([mode isEqualToString:@"some"]) {
+      _service.containerAnnotations = @{ @"Aggregation.ApplySupported": @{ @"Transformations": @[ @"filter", @"groupby", @"aggregate" ] } };
+    }
+    if ([mode isEqualToString:@"none"]) _service.containerAnnotations = @{ @"Aggregation.ApplySupported": [NSNull null] };
     OISRecordingTransport *transport = [[OISRecordingTransport alloc] init];
     transport.next = _service;
     NSError *error = nil;
@@ -4196,7 +4206,7 @@ static NSExpressionDescription *OISAggregateOf(NSString *function, NSString *key
     XCTAssertEqualObjects([rows valueForKey:@"n"], (@[ @2, @3 ]), @"%@", applies);
     XCTAssertEqualObjects(rows[1][@"total"], [NSDecimalNumber decimalNumberWithString:@"53.35"], @"%@", applies);
     XCTAssertEqualObjects(rows[1][@"top"], [NSDecimalNumber decimalNumberWithString:@"22"], @"%@", applies);
-    NSString *query = [[transport.requests.lastObject URL] query] ?: @"";
+    NSString *query = [[[transport.requests.lastObject URL] query] stringByRemovingPercentEncoding] ?: @"";
     XCTAssertEqual([query containsString:@"$apply="], applies.boolValue, @"%@: %@", applies, query);
 
     // Filtered first, then kept or not by the having predicate.
@@ -4204,6 +4214,35 @@ static NSExpressionDescription *OISAggregateOf(NSString *function, NSString *key
     fetch.havingPredicate = [NSPredicate predicateWithFormat:@"total > 35"];
     rows = [context executeFetchRequest:fetch error:&error];
     XCTAssertEqualObjects([rows valueForKey:@"category.name"], @[ @"Beverages" ], @"%@: %@", applies, error);
+    query = [[[transport.requests.lastObject URL] query] stringByRemovingPercentEncoding] ?: @"";
+    XCTAssertEqual([query containsString:@"/filter(total gt 35)"], applies.boolValue, @"%@: %@", mode, query);
+
+    // After the grouping, as far as the service lists the transformations:
+    // the having predicate, the sort, the offset and the limit.
+    fetch.predicate = nil;
+    fetch.havingPredicate = [NSPredicate predicateWithFormat:@"n >= 2 AND total != nil"];
+    fetch.sortDescriptors = @[ [NSSortDescriptor sortDescriptorWithKey:@"total" ascending:NO] ];
+    fetch.fetchOffset = 1;
+    fetch.fetchLimit = 1;
+    rows = [context executeFetchRequest:fetch error:&error];
+    XCTAssertEqualObjects([rows valueForKey:@"category.name"], @[ @"Beverages" ], @"%@: %@", mode, error);
+    query = [[[transport.requests.lastObject URL] query] stringByRemovingPercentEncoding] ?: @"";
+    BOOL everything = [mode isEqualToString:@"all"];
+    XCTAssertEqual([query containsString:@"/filter((n ge 2) and (total ne null))"], applies.boolValue, @"%@: %@", mode, query);
+    XCTAssertEqual([query containsString:@"/orderby(total desc)/skip(1)/top(1)"], everything, @"%@: %@", mode, query);
+
+    // A having predicate the rows' filter cannot say: here, and then the
+    // offset and the limit here too, after it.
+    fetch.havingPredicate = [NSPredicate predicateWithFormat:@"category.name BEGINSWITH 'C' OR n == 2"];
+    rows = [context executeFetchRequest:fetch error:&error];
+    XCTAssertEqualObjects([rows valueForKey:@"category.name"], @[ @"Beverages" ], @"%@: %@", mode, error);
+    query = [[[transport.requests.lastObject URL] query] stringByRemovingPercentEncoding] ?: @"";
+    XCTAssertFalse([query containsString:@"top("], @"%@: %@", mode, query);
+    XCTAssertEqual([query containsString:@"/orderby(total desc)"], everything, @"%@: %@", mode, query);
+    fetch.havingPredicate = nil;
+    fetch.sortDescriptors = @[ [NSSortDescriptor sortDescriptorWithKey:@"category.name" ascending:YES] ];
+    fetch.fetchOffset = 0;
+    fetch.fetchLimit = 0;
 
     // No grouping: one row for them all.
     NSFetchRequest *all = [NSFetchRequest fetchRequestWithEntityName:@"Product"];

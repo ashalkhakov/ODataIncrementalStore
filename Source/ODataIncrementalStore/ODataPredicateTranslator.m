@@ -243,6 +243,59 @@ static NSArray<NSEntityDescription *> *OISEntitiesIn(NSExpression *expression)
   return literals;
 }
 
+// Any one character as NSPredicate's LIKE and MATCHES (ICU) take it, in
+// ECMAScript: line terminators included, and \r\n as one - both halves or
+// neither ("a?\n" does not match "a\r\n").
+static NSString * const OISAnyCharacter = @"(?:\\r\\n|\\r(?!\\n)|[^\\r])";
+
+// An ICU pattern, as MATCHES reads it, in ECMAScript, which matchesPattern
+// reads; nil, with why, for what the two do not read alike: ^ and $ (at
+// line boundaries in Apple's MATCHES, not in ECMAScript), \d \w \s \b and
+// the other letter escapes (Unicode in ICU, ASCII in ECMAScript), and
+// inline flags. "." is any character, as OISAnyCharacter; \A and \z are
+// ECMAScript's ^ and $.
+static NSString *OISECMAScriptPatternFromICU(NSString *pattern, NSString **why)
+{
+  NSMutableString *out = [NSMutableString string];
+  BOOL inBrackets = NO;
+  for (NSUInteger i = 0; i < pattern.length; i++) {
+    unichar c = [pattern characterAtIndex:i];
+    if (c == '\\' && i + 1 < pattern.length) {
+      unichar next = [pattern characterAtIndex:++i];
+      if (!inBrackets && next == 'A') { [out appendString:@"^"]; continue; }
+      if (!inBrackets && next == 'z') { [out appendString:@"$"]; continue; }
+      BOOL letter = (next >= 'a' && next <= 'z') || (next >= 'A' && next <= 'Z') || (next >= '0' && next <= '9');
+      if (letter && next != 'n' && next != 't' && next != 'r' && next != 'f') {
+        *why = [NSString stringWithFormat:@"\\%C means something else in OData's ECMAScript patterns", next];
+        return nil;
+      }
+      [out appendFormat:@"\\%C", next];
+      continue;
+    }
+    if (inBrackets) {
+      if (c == '[') { *why = @"a set inside a set is ICU's alone"; return nil; }
+      if (c == ']') inBrackets = NO;
+      [out appendFormat:@"%C", c];
+    } else if (c == '[') {
+      inBrackets = YES;
+      [out appendString:@"["];
+      if (i + 1 < pattern.length && [pattern characterAtIndex:i + 1] == '^') [out appendFormat:@"%C", [pattern characterAtIndex:++i]];
+    } else if (c == '^' || c == '$') {
+      *why = @"^ and $ match at line boundaries in MATCHES, and at the ends only in OData's ECMAScript patterns: use \\A and \\z";
+      return nil;
+    } else if (c == '(' && i + 2 < pattern.length && [pattern characterAtIndex:i + 1] == '?') {
+      unichar kind = [pattern characterAtIndex:i + 2];
+      if (kind != ':' && kind != '=' && kind != '!' && kind != '<') { *why = @"inline flags are ICU's alone"; return nil; }
+      [out appendString:@"("];
+    } else if (c == '.') {
+      [out appendString:OISAnyCharacter];
+    } else {
+      [out appendFormat:@"%C", c];
+    }
+  }
+  return out;
+}
+
 // LIKE and MATCHES: matchesPattern with an ECMAScript regular expression,
 // anchored, since both match the whole string (Part 2 section
 // 5.1.1.5.4, 4.01 only).
@@ -255,6 +308,8 @@ static NSArray<NSEntityDescription *> *OISEntitiesIn(NSExpression *expression)
   if (!self.speaks401) why = @"needs OData 4.01 (matchesPattern), and the service speaks 4.0";
   else if (![pattern isKindOfClass:[NSString class]]) why = @"needs a constant pattern";
   else if (ci && !like) why = @"cannot be case-insensitive: a regular expression cannot be lowercased safely";
+  NSString *converted = nil;
+  if (!why && !like) converted = OISECMAScriptPatternFromICU(pattern, &why);
   if (why) {
     if (error) *error = OISError(ODataIncrementalStoreErrorUnsupportedPredicate,
                                  [NSString stringWithFormat:@"%@ %@: %@", like ? @"LIKE" : @"MATCHES", why, cmp]);
@@ -270,15 +325,15 @@ static NSArray<NSEntityDescription *> *OISEntitiesIn(NSExpression *expression)
     for (NSUInteger i = 0; i < source.length; i++) {
       unichar c = [source characterAtIndex:i];
       if (c == '\\' && i + 1 < source.length) c = [source characterAtIndex:++i];
-      else if (c == '*') { [out appendString:@".*"]; continue; }
-      else if (c == '?') { [out appendString:@"."]; continue; }
+      else if (c == '*') { [out appendFormat:@"%@*", OISAnyCharacter]; continue; }
+      else if (c == '?') { [out appendString:OISAnyCharacter]; continue; }
       if (c < 128 && strchr("\\^$.|?*+()[]{}/", (int)c)) [out appendString:@"\\"];
       [out appendFormat:@"%C", c];
     }
     [out appendString:@"$"];
     regex = out;
   } else {
-    regex = [NSString stringWithFormat:@"^(?:%@)$", pattern];
+    regex = [NSString stringWithFormat:@"^(?:%@)$", converted];
   }
   NSString *literal = [NSString stringWithFormat:@"'%@'", [regex stringByReplacingOccurrencesOfString:@"'" withString:@"''"]];
   return [NSString stringWithFormat:@"matchesPattern(%@, %@)", ci ? [NSString stringWithFormat:@"tolower(%@)", lhs] : lhs, literal];

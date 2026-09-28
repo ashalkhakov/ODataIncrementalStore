@@ -241,6 +241,14 @@ NSString * const ODataUserInfoETag = @"OData.etag";
   return objects;
 }
 
+- (NSArray *)groupedRowsForFetchRequest:(NSFetchRequest *)fetchRequest request:(ODataRequest *)request reply:(ODataReply *)reply
+{
+  NSError *error = nil;
+  NSArray *rows = [request.context executeFetchRequest:fetchRequest error:&error];
+  if (!rows) [reply failWithError:error];
+  return rows;
+}
+
 - (NSNumber *)countForFetchRequest:(NSFetchRequest *)fetchRequest request:(ODataRequest *)request reply:(ODataReply *)reply
 {
   NSError *error = nil;
@@ -431,6 +439,68 @@ typedef NS_ENUM(NSInteger, OISTargetKind) {
 
 // One request, from the URL to the response. Each step that asks a handler
 // for something goes on in the method its reply names.
+// $apply's first groupby or aggregate, done by the store: a fetch of
+// dictionaries grouped by Core Data, and how to turn them into the groups
+// ODataAggregation would have made in memory from the same rows. Only
+// what the store computes exactly as ODataAggregation does is asked of it
+// (see -storeGroupingOf:predicate:); the rest is helpers:
+//   sum and average leave out nulls and are null over none: a count of
+//   the values beside each, and null where it is 0;
+//   sum of integers is a decimal, and average of integers the exact
+//   quotient of their sum and their count.
+@interface OISStoreGrouping : NSObject
+@property (nonatomic, strong) ODataApplyTransformation *transformation;
+@property (nonatomic, strong) NSFetchRequest *fetch;
+@property (nonatomic, copy) NSArray<NSString *> *keyPaths;
+@property (nonatomic, copy) NSArray *groupAttributes;
+@property (nonatomic, copy) NSDictionary *aggregateAttributes;
+// By alias: how each aggregate is read from a fetched row.
+@property (nonatomic, strong) NSMutableDictionary<NSString *, NSString *> *methods;  // count, sum, decimalSum, average, exactAverage, value
+- (NSArray<NSDictionary *> *)groupsOfRows:(NSArray<NSDictionary *> *)rows;
+@end
+
+@implementation OISStoreGrouping
+
+static NSString *OISHelperName(NSString *alias, NSString *what)
+{
+  return [NSString stringWithFormat:@"__ois_%@_%@", what, alias];
+}
+
+- (NSArray<NSDictionary *> *)groupsOfRows:(NSArray<NSDictionary *> *)rows
+{
+  // An aggregate over no rows at all is still one row, as in memory.
+  if (!rows.count && !self.keyPaths.count) rows = @[ @{} ];
+  NSMutableArray *groups = [NSMutableArray array];
+  for (NSDictionary *row in rows) {
+    NSMutableDictionary *group = [NSMutableDictionary dictionary];
+    for (NSString *keyPath in self.keyPaths) group[keyPath] = row[keyPath] ?: [NSNull null];
+    for (ODataAggregate *aggregate in self.transformation.aggregates) {
+      NSString *alias = aggregate.alias, *method = self.methods[alias];
+      id value = row[alias];
+      if (value == [NSNull null]) value = nil;
+      NSNumber *n = row[OISHelperName(alias, @"n")];
+      BOOL none = [n isKindOfClass:[NSNumber class]] && n.longLongValue == 0;
+      if ([method isEqualToString:@"count"]) {
+        group[alias] = @([value longLongValue]);
+      } else if ([method isEqualToString:@"decimalSum"]) {
+        group[alias] = none || !value ? [NSNull null] : [NSDecimalNumber decimalNumberWithDecimal:[value decimalValue]];
+      } else if ([method isEqualToString:@"exactAverage"]) {
+        NSNumber *sum = row[OISHelperName(alias, @"sum")];
+        group[alias] = none || ![sum isKindOfClass:[NSNumber class]] || ![n isKindOfClass:[NSNumber class]] ? [NSNull null]
+            : [[NSDecimalNumber decimalNumberWithDecimal:sum.decimalValue] decimalNumberByDividingBy:[NSDecimalNumber decimalNumberWithDecimal:n.decimalValue]];
+      } else if ([method isEqualToString:@"sum"] || [method isEqualToString:@"average"]) {
+        group[alias] = none || !value ? [NSNull null] : @([value doubleValue]);
+      } else {
+        group[alias] = value ?: [NSNull null];
+      }
+    }
+    [groups addObject:group];
+  }
+  return groups;
+}
+
+@end
+
 @interface OISServiceCall : NSObject <OISTimelineWriting>
 // A repeatable request's: where its answer is remembered, and what it was.
 @property (nonatomic, copy, nullable) NSString *repeatabilityKey;
@@ -491,6 +561,14 @@ typedef NS_ENUM(NSInteger, OISTargetKind) {
 @property (nonatomic) BOOL metadataAsJSON;
 // $apply's transformations still to do on the rows fetched.
 @property (nonatomic, copy, nullable) NSArray<ODataApplyTransformation *> *applied;
+// The grouping the store did, when it did the first one.
+@property (nonatomic, strong, nullable) OISStoreGrouping *storeGrouping;
+// Objects written side by side (a page, or the members of an expansion), by
+// object ID: whose to-many expansions are fetched together.
+@property (nonatomic, strong, nullable) NSMutableDictionary<NSManagedObjectID *, NSArray *> *siblings;
+// Expanded members fetched together: by expand item (identity), then by
+// relationship name, then by the parent's object ID.
+@property (nonatomic, strong, nullable) NSMapTable *expandedMembers;
 @property (nonatomic, strong, nullable) NSArray *objects;
 @property (nonatomic, strong, nullable) NSNumber *count;
 @property (nonatomic, copy, nullable) NSString *nextLink;
@@ -1630,6 +1708,116 @@ static NSUInteger OISExpandDepth(ODataQueryOptions *options)
   return json;
 }
 
+// Objects written side by side: each one's to-many expansions are fetched
+// with the others' (membersOf:).
+- (void)noteSiblings:(NSArray *)objects
+{
+  if (objects.count < 2) return;
+  if (!self.siblings) self.siblings = [NSMutableDictionary dictionary];
+  for (id object in objects) {
+    if ([object isKindOfClass:[NSManagedObject class]]) self.siblings[((NSManagedObject *)object).objectID] = objects;
+  }
+}
+
+// How many parents one fetch of their members names (an IN list of bound
+// parameters, which SQLite and FreeCoreData's SQL stores limit).
+static const NSUInteger OISExpandBatch = 500;
+
+// The members of a to-many expansion of an object, as the store selects
+// them: fetched with those of the objects written beside it, with what the
+// caller may see, the expansion's filter and its ordering (then the key),
+// and split among the parents. Where the inverse is to-one, one fetch
+// (inverse IN the parents), split by the inverse. Otherwise (a
+// many-to-many, or no inverse), two: the parents again with the
+// relationship prefetched (the join, at once), then the related rows
+// (SELF IN them all), each parent given those in its own set. NSNull when
+// they are more than one fetch should name, which leaves them to the
+// caller; nil, with the error, when the filter or a fetch fails.
+- (id)membersOf:(NSManagedObject *)object item:(ODataExpandItem *)item relationship:(NSRelationshipDescription *)relationship
+                  where:(NSPredicate *)predicate sort:(NSArray<NSSortDescriptor *> *)sort error:(NSError **)error
+{
+  if (!self.expandedMembers) {
+    self.expandedMembers = [NSMapTable mapTableWithKeyOptions:NSPointerFunctionsObjectPointerPersonality | NSPointerFunctionsStrongMemory
+                                                 valueOptions:NSPointerFunctionsStrongMemory];
+  }
+  NSMutableDictionary *byRelationship = [self.expandedMembers objectForKey:item];
+  if (!byRelationship) {
+    byRelationship = [NSMutableDictionary dictionary];
+    [self.expandedMembers setObject:byRelationship forKey:item];
+  }
+  NSMutableDictionary *byParent = byRelationship[relationship.name];
+  if (!byParent) {
+    byParent = [NSMutableDictionary dictionary];
+    byRelationship[relationship.name] = byParent;
+  }
+  NSArray *found = byParent[object.objectID];
+  if (found) return found;
+
+  // The parents not yet fetched for, this object first; of its entity.
+  NSMutableArray *parents = [NSMutableArray arrayWithObject:object];
+  for (NSManagedObject *sibling in self.siblings[object.objectID]) {
+    if (sibling == object || byParent[sibling.objectID] || ![sibling.entity isKindOfEntity:relationship.entity]) continue;
+    if (parents.count >= OISExpandBatch) break;
+    [parents addObject:sibling];
+  }
+  NSRelationshipDescription *inverse = relationship.inverseRelationship;
+  BOOL byInverse = inverse && !inverse.isToMany;
+  NSMutableDictionary<NSManagedObjectID *, NSSet *> *sets = nil;
+  id among = parents;
+  NSString *through = inverse.name;
+  if (!byInverse) {
+    // The parents' sets, the join read at once.
+    NSFetchRequest *again = [NSFetchRequest fetchRequestWithEntityName:object.entity.name];
+    again.predicate = [NSComparisonPredicate predicateWithLeftExpression:[NSExpression expressionForEvaluatedObject]
+                                                         rightExpression:[NSExpression expressionForConstantValue:parents]
+                                                                modifier:NSDirectPredicateModifier
+                                                                    type:NSInPredicateOperatorType
+                                                                 options:0];
+    again.relationshipKeyPathsForPrefetching = @[ relationship.name ];
+    if (![self.request.context executeFetchRequest:again error:error]) return nil;
+    sets = [NSMutableDictionary dictionary];
+    NSMutableSet *related = [NSMutableSet set];
+    for (NSManagedObject *parent in parents) {
+      NSSet *set = [parent valueForKey:relationship.name] ?: [NSSet set];
+      sets[parent.objectID] = set;
+      [related unionSet:set];
+    }
+    if (related.count > OISExpandBatch) {
+      // Too many to name: each parent's own, here (said once for them all).
+      for (NSManagedObject *parent in parents) byParent[parent.objectID] = [NSNull null];
+      return [NSNull null];
+    }
+    among = related.allObjects;
+    through = nil;
+  }
+  NSFetchRequest *fetch = [NSFetchRequest fetchRequestWithEntityName:relationship.destinationEntity.name];
+  NSPredicate *mine = [NSComparisonPredicate predicateWithLeftExpression:through ? [NSExpression expressionForKeyPath:through]
+                                                                                 : [NSExpression expressionForEvaluatedObject]
+                                                         rightExpression:[NSExpression expressionForConstantValue:among]
+                                                                modifier:NSDirectPredicateModifier
+                                                                    type:NSInPredicateOperatorType
+                                                                 options:0];
+  fetch.predicate = predicate ? [NSCompoundPredicate andPredicateWithSubpredicates:@[ mine, predicate ]] : mine;
+  fetch.sortDescriptors = sort;
+  NSArray *rows = [self.request.context executeFetchRequest:fetch error:error];
+  if (!rows) return nil;
+  for (NSManagedObject *parent in parents) byParent[parent.objectID] = [NSMutableArray array];
+  if (byInverse) {
+    for (NSManagedObject *row in rows) {
+      NSManagedObject *parent = [row valueForKey:through];
+      [byParent[parent.objectID] addObject:row];
+    }
+  } else {
+    for (NSManagedObject *parent in parents) {
+      NSSet *set = sets[parent.objectID];
+      for (NSManagedObject *row in rows) if ([set containsObject:row]) [byParent[parent.objectID] addObject:row];
+    }
+  }
+  // Written side by side in turn: their own expansions together.
+  [self noteSiblings:rows];
+  return byParent[object.objectID];
+}
+
 // $levels=max is taken as this deep, and no object is expanded inside
 // itself (Part 2 section 5.1.3.1).
 static const NSInteger OISMaxLevels = 32;
@@ -1706,15 +1894,47 @@ static const NSInteger OISMaxLevels = 32;
       }
       filter = filter ? [NSCompoundPredicate andPredicateWithSubpredicates:@[ filter, search ]] : search;
     }
-    NSArray *members;
+    // A to-many with no $compute of its own: its members as the store
+    // selects and orders them, fetched with those of the objects written
+    // beside this one. Otherwise, here.
+    NSArray *members = nil;
+    NSMutableArray *sort = [NSMutableArray array];
+    BOOL sortedByStore = NO;
     if (relationship.isToMany) {
-      members = [[object valueForKey:relationship.name] allObjects];
-    } else {
-      id related = [object valueForKey:relationship.name];
-      members = related ? @[ related ] : @[];
+      if (options.orderBy.count) {
+        BOOL inMemory = NO;
+        NSArray *descriptors = [self.service.predicates sortDescriptorsForOrderBy:options.orderBy entity:destination
+                                                                         computed:[self computedNamesOf:options] inMemory:&inMemory error:error];
+        if (!descriptors) return NO;
+        [sort addObjectsFromArray:descriptors];
+        sortedByStore = !inMemory;
+      } else {
+        sortedByStore = YES;
+      }
+      for (NSAttributeDescription *attribute in [self.mapper keyAttributesForEntity:OISRootEntity(destination)]) {
+        [sort addObject:[NSSortDescriptor sortDescriptorWithKey:attribute.name ascending:YES]];
+      }
+      if (!options.compute.count) {
+        NSMutableArray *where = [NSMutableArray array];
+        if (visible) [where addObject:visible];
+        if (filter) [where addObject:filter];
+        NSPredicate *predicate = where.count ? [NSCompoundPredicate andPredicateWithSubpredicates:where] : nil;
+        id found = [self membersOf:object item:item relationship:relationship where:predicate sort:sortedByStore ? sort : nil error:error];
+        if (!found) return NO;
+        if (found != [NSNull null]) members = sortedByStore ? found : [found sortedArrayUsingDescriptors:sort];
+      }
     }
-    if (visible) members = [members filteredArrayUsingPredicate:visible];
-    if (filter) members = [members filteredArrayUsingPredicate:filter];
+    if (!members) {
+      if (relationship.isToMany) {
+        members = [[object valueForKey:relationship.name] allObjects];
+      } else {
+        id related = [object valueForKey:relationship.name];
+        members = related ? @[ related ] : @[];
+      }
+      if (visible) members = [members filteredArrayUsingPredicate:visible];
+      if (filter) members = [members filteredArrayUsingPredicate:filter];
+      if (relationship.isToMany) members = [members sortedArrayUsingDescriptors:sort];
+    }
 
     if (!relationship.isToMany) {
       NSManagedObject *related = members.firstObject;
@@ -1729,18 +1949,6 @@ static const NSInteger OISMaxLevels = 32;
       continue;
     }
 
-    NSMutableArray *sort = [NSMutableArray array];
-    if (options.orderBy.count) {
-      BOOL inMemory = NO;  // expanded members are sorted here anyway
-      NSArray *descriptors = [self.service.predicates sortDescriptorsForOrderBy:options.orderBy entity:destination
-                                                                       computed:[self computedNamesOf:options] inMemory:&inMemory error:error];
-      if (!descriptors) return NO;
-      [sort addObjectsFromArray:descriptors];
-    }
-    for (NSAttributeDescription *attribute in [self.mapper keyAttributesForEntity:OISRootEntity(destination)]) {
-      [sort addObject:[NSSortDescriptor sortDescriptorWithKey:attribute.name ascending:YES]];
-    }
-    members = [members sortedArrayUsingDescriptors:sort];
     if (options.includeCount.boolValue || item.isCount) json[[wire stringByAppendingString:@"@odata.count"]] = @(members.count);
     if (item.isCount) continue;
     NSUInteger skip = MIN(options.skip.unsignedIntegerValue, members.count);
@@ -2014,8 +2222,18 @@ static NSPredicate *OISEquals(NSString *keyPath, id value, NSComparisonPredicate
     [parts addObject:filter];
   }
   self.applied = [options.apply subarrayWithRange:NSMakeRange(first, options.apply.count - first)];
+  NSPredicate *predicate = [NSCompoundPredicate andPredicateWithSubpredicates:parts];
+  OISStoreGrouping *grouping = self.applied.count ? [self storeGroupingOf:self.applied.firstObject predicate:predicate] : nil;
+  if (grouping) {
+    self.storeGrouping = grouping;
+    self.applied = [self.applied subarrayWithRange:NSMakeRange(1, self.applied.count - 1)];
+    self.fetch = grouping.fetch;
+    ODataReply *reply = [self replyWithAction:@selector(didFetchGroupedForApply:)];
+    [reply returned:[self.handler groupedRowsForFetchRequest:grouping.fetch request:self.request reply:reply]];
+    return;
+  }
   NSFetchRequest *fetch = [NSFetchRequest fetchRequestWithEntityName:self.entity.name];
-  fetch.predicate = [NSCompoundPredicate andPredicateWithSubpredicates:parts];
+  fetch.predicate = predicate;
   // One more than the service works on in memory, to know it is too many.
   if (self.service.maxRowsInMemory) fetch.fetchLimit = self.service.maxRowsInMemory + 1;
   self.fetch = fetch;
@@ -2036,6 +2254,125 @@ static void OISSetAtPath(NSMutableDictionary *row, NSArray<NSString *> *path, id
     at = next;
   }
   at[path.lastObject] = value ?: [NSNull null];
+}
+
+// Whether the stores group themselves: on Apple, only SQLite takes
+// propertiesToGroupBy; FreeCoreData groups for any store, in SQL where its
+// store can.
+static BOOL OISStoresGroup(NSManagedObjectContext *context)
+{
+#if defined(__APPLE__)
+  NSArray *stores = context.persistentStoreCoordinator.persistentStores;
+  if (!stores.count) return NO;
+  for (NSPersistentStore *store in stores) {
+    if (![store.type isEqualToString:NSSQLiteStoreType]) return NO;
+  }
+#endif
+  return YES;
+}
+
+static BOOL OISIsIntegerAttribute(NSAttributeDescription *attribute)
+{
+  NSAttributeType type = attribute.attributeType;
+  return type == NSInteger16AttributeType || type == NSInteger32AttributeType || type == NSInteger64AttributeType;
+}
+
+static BOOL OISIsRealAttribute(NSAttributeDescription *attribute)
+{
+  return attribute.attributeType == NSDoubleAttributeType || attribute.attributeType == NSFloatAttributeType;
+}
+
+static NSExpressionDescription *OISAggregateDescription(NSString *name, NSString *function, NSString *keyPath, NSAttributeType type)
+{
+  NSExpressionDescription *description = [[NSExpressionDescription alloc] init];
+  description.name = name;
+  description.expression = [NSExpression expressionForFunction:function arguments:@[ [NSExpression expressionForKeyPath:keyPath] ]];
+  description.expressionResultType = type;
+  return description;
+}
+
+// A groupby or aggregate the store can do exactly as rowsOfGrouping would
+// (OISStoreGrouping), over the rows this predicate selects; nil for one it
+// cannot, which is then grouped here:
+//   - grouped by attributes, through to-one relationships;
+//   - $count; sum and average of integers (exact) and of doubles; min and
+//     max of numbers and dates (no decimals, which SQLite sums as doubles,
+//     and no strings, which SQL orders by collation, not as NSString does);
+//     no countdistinct, no computed values;
+//   - a handler whose rows are the store's (see groupedRowsForFetchRequest:).
+- (OISStoreGrouping *)storeGroupingOf:(ODataApplyTransformation *)t predicate:(NSPredicate *)predicate
+{
+  if (t.kind != ODataApplyGroupBy && t.kind != ODataApplyAggregate) return nil;
+  if (!OISStoresGroup(self.request.context)) return nil;
+  Class base = [ODataEntitySetHandler class];
+  Class handler = [self.handler class];
+  SEL objects = @selector(objectsForFetchRequest:request:reply:), grouped = @selector(groupedRowsForFetchRequest:request:reply:);
+  if ([handler instanceMethodForSelector:grouped] == [base instanceMethodForSelector:grouped] &&
+      [handler instanceMethodForSelector:objects] != [base instanceMethodForSelector:objects]) return nil;
+
+  OISStoreGrouping *grouping = [[OISStoreGrouping alloc] init];
+  grouping.transformation = t;
+  grouping.methods = [NSMutableDictionary dictionary];
+  NSMutableArray *keyPaths = [NSMutableArray array], *groupAttributes = [NSMutableArray array], *fetched = [NSMutableArray array];
+  NSMutableDictionary *aggregateAttributes = [NSMutableDictionary dictionary];
+  for (NSArray *path in t.groupPaths) {
+    NSPropertyDescription *property = nil;
+    NSString *keyPath = [self.service.predicates keyPathForPath:path entity:self.entity property:&property error:NULL];
+    NSAttributeType type = [property isKindOfClass:[NSAttributeDescription class]] ? ((NSAttributeDescription *)property).attributeType : NSUndefinedAttributeType;
+    if (!keyPath || type == NSUndefinedAttributeType || type == NSTransformableAttributeType || type == NSBinaryDataAttributeType) return nil;
+    [keyPaths addObject:keyPath];
+    [groupAttributes addObject:property];
+    [fetched addObject:keyPath];
+  }
+  NSString *someKey = [self.mapper keyAttributesForEntity:self.entity].firstObject.name;
+  for (ODataAggregate *aggregate in t.aggregates) {
+    NSString *alias = aggregate.alias;
+    if (!aggregate.path) {
+      if (!someKey) return nil;
+      [fetched addObject:OISAggregateDescription(alias, @"count:", someKey, NSInteger64AttributeType)];
+      grouping.methods[alias] = @"count";
+      continue;
+    }
+    NSPropertyDescription *property = nil;
+    NSString *keyPath = [self.service.predicates keyPathForPath:aggregate.path entity:self.entity property:&property error:NULL];
+    if (!keyPath || ![property isKindOfClass:[NSAttributeDescription class]]) return nil;
+    NSAttributeDescription *attribute = (NSAttributeDescription *)property;
+    NSString *method = aggregate.method;
+    BOOL integer = OISIsIntegerAttribute(attribute), real = OISIsRealAttribute(attribute);
+    NSExpressionDescription *values = OISAggregateDescription(OISHelperName(alias, @"n"), @"count:", keyPath, NSInteger64AttributeType);
+    if ([method isEqualToString:@"sum"] && (integer || real)) {
+      [fetched addObject:OISAggregateDescription(alias, @"sum:", keyPath, integer ? NSInteger64AttributeType : NSDoubleAttributeType)];
+      [fetched addObject:values];
+      grouping.methods[alias] = integer ? @"decimalSum" : @"sum";
+    } else if ([method isEqualToString:@"average"] && integer) {
+      [fetched addObject:OISAggregateDescription(OISHelperName(alias, @"sum"), @"sum:", keyPath, NSInteger64AttributeType)];
+      [fetched addObject:values];
+      grouping.methods[alias] = @"exactAverage";
+    } else if ([method isEqualToString:@"average"] && real) {
+      [fetched addObject:OISAggregateDescription(alias, @"average:", keyPath, NSDoubleAttributeType)];
+      [fetched addObject:values];
+      grouping.methods[alias] = @"average";
+    } else if (([method isEqualToString:@"min"] || [method isEqualToString:@"max"]) &&
+               (integer || real || attribute.attributeType == NSDateAttributeType)) {
+      NSString *function = [method isEqualToString:@"min"] ? @"min:" : @"max:";
+      [fetched addObject:OISAggregateDescription(alias, function, keyPath, attribute.attributeType)];
+      grouping.methods[alias] = @"value";
+    } else {
+      return nil;
+    }
+    aggregateAttributes[alias] = attribute;
+  }
+  NSFetchRequest *fetch = [NSFetchRequest fetchRequestWithEntityName:self.entity.name];
+  fetch.predicate = predicate;
+  fetch.resultType = NSDictionaryResultType;
+  fetch.propertiesToFetch = fetched;
+  if (keyPaths.count) fetch.propertiesToGroupBy = keyPaths;
+  if (self.service.maxRowsInMemory) fetch.fetchLimit = self.service.maxRowsInMemory + 1;
+  grouping.fetch = fetch;
+  grouping.keyPaths = keyPaths;
+  grouping.groupAttributes = groupAttributes;
+  grouping.aggregateAttributes = aggregateAttributes;
+  return grouping;
 }
 
 // The rows of a groupby or aggregate, as the response has them: each
@@ -2080,6 +2417,16 @@ static void OISSetAtPath(NSMutableDictionary *row, NSArray<NSString *> *path, id
     [aggregates addObject:[ODataAggregate aggregateOfPath:[keyPath componentsSeparatedByString:@"."] method:aggregate.method alias:aggregate.alias]];
   }
   NSArray *raw = [ODataAggregation groupObjects:objects byKeyPaths:keyPaths aggregates:aggregates];
+  return [self rowsOfGroups:raw grouping:t keyPaths:keyPaths groupAttributes:groupAttributes aggregateAttributes:aggregateAttributes];
+}
+
+// Groups (a dictionary each, by key path and by alias, as ODataAggregation
+// gives them) as the response has them: each grouped path nested
+// (Category/CategoryName is {"Category": {"CategoryName": ...}}), each
+// aggregate by its alias, values as JSON.
+- (NSArray *)rowsOfGroups:(NSArray<NSDictionary *> *)raw grouping:(ODataApplyTransformation *)t keyPaths:(NSArray *)keyPaths
+          groupAttributes:(NSArray *)groupAttributes aggregateAttributes:(NSDictionary *)aggregateAttributes
+{
   NSMutableArray *rows = [NSMutableArray array];
   for (NSDictionary *group in raw) {
     NSMutableDictionary *row = [NSMutableDictionary dictionaryWithObject:[NSNull null] forKey:@"@odata.id"];
@@ -2170,6 +2517,9 @@ static void OISSetAtPath(NSMutableDictionary *row, NSArray<NSString *> *path, id
   rows = [rows subarrayWithRange:NSMakeRange(skip, rows.count - skip)];
   if (options.top && options.top.unsignedIntegerValue < rows.count) rows = [rows subarrayWithRange:NSMakeRange(0, options.top.unsignedIntegerValue)];
   NSMutableArray *values = [NSMutableArray array];
+  NSMutableArray *page = [NSMutableArray array];
+  for (id row in rows) [page addObject:[row isKindOfClass:[OISComputedRow class]] ? ((OISComputedRow *)row).object : row];
+  [self noteSiblings:page];
   for (id row in rows) {
     OISComputedRow *more = [row isKindOfClass:[OISComputedRow class]] ? row : nil;
     NSMutableDictionary *json = [self JSONForObject:more ? more.object : row options:written expected:self.entity error:&error];
@@ -2421,10 +2771,35 @@ static NSString *OISSelectListOfPaths(NSArray<NSArray<NSString *> *> *paths)
     [self respondError:reply.error];
     return;
   }
-  ODataQueryOptions *options = self.request.options;
   NSArray *rows = reply.result ?: @[];
   if (![self withinRowsInMemory:rows.count]) return;
-  NSMutableArray *shape = nil;  // the paths of the rows' properties, once grouped
+  [self finishApplied:rows shape:nil];
+}
+
+// The store's grouping: its rows as rowsOfGrouping would have made them,
+// then the rest of $apply.
+- (void)didFetchGroupedForApply:(ODataReply *)reply
+{
+  if (reply.error) {
+    [self respondError:reply.error];
+    return;
+  }
+  NSArray *groups = reply.result ?: @[];
+  if (![self withinRowsInMemory:groups.count]) return;
+  OISStoreGrouping *grouping = self.storeGrouping;
+  NSArray *rows = [self rowsOfGroups:[grouping groupsOfRows:groups] grouping:grouping.transformation keyPaths:grouping.keyPaths
+                     groupAttributes:grouping.groupAttributes aggregateAttributes:grouping.aggregateAttributes];
+  NSMutableArray *shape = [grouping.transformation.groupPaths mutableCopy];
+  for (ODataAggregate *aggregate in grouping.transformation.aggregates) [shape addObject:@[ aggregate.alias ]];
+  [self finishApplied:rows shape:shape];
+}
+
+// The rest of $apply on the rows (entities, or grouped rows when shape is
+// given), then $filter, $orderby, $count, $skip, $top and $select over
+// what it made.
+- (void)finishApplied:(NSArray *)rows shape:(NSMutableArray *)shape
+{
+  ODataQueryOptions *options = self.request.options;
   NSMutableDictionary *computed = [NSMutableDictionary dictionary];  // compute's names, before grouping
   NSError *error = nil;
   NSMutableArray *expansions = [NSMutableArray array];
@@ -2679,6 +3054,7 @@ static NSString *OISSelectListOfPaths(NSArray<NSArray<NSString *> *> *paths)
 {
   NSError *error = nil;
   NSMutableArray *values = [NSMutableArray array];
+  [self noteSiblings:self.objects];
   for (NSManagedObject *object in self.objects) {
     if (self.referencesOnly) {
       [values addObject:@{ @"@odata.id": [self canonicalPathOf:object] }];
@@ -3120,6 +3496,7 @@ static NSString *OISSelectListOfPaths(NSArray<NSArray<NSString *> *> *paths)
 {
   NSError *error = nil;
   NSMutableArray *values = [NSMutableArray array];
+  [self noteSiblings:objects];
   for (NSManagedObject *object in objects) {
     NSDictionary *json = [self JSONForObject:object options:self.request.options expected:self.entity error:&error];
     if (!json) {
@@ -3534,6 +3911,7 @@ static NSNumber *OISScalarReturnValue(NSInvocation *invocation, char type)
       return;
     }
     NSMutableArray *values = [NSMutableArray array];
+    [self noteSiblings:items];
     for (NSManagedObject *item in items) {
       NSDictionary *json = [self JSONForObject:item options:self.request.options expected:returns.entity error:&error];
       if (!json) {

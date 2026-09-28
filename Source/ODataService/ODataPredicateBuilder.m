@@ -327,8 +327,56 @@ static BOOL OISWidens(NSString *from, NSString *to)
   return t;
 }
 
+// An ECMAScript pattern (OData's, Part 2 section 5.1.1.5.4) as ICU's, which
+// MATCHES reads (with "." matching line terminators, and ^ and $ at line
+// boundaries on Apple): ^ and $ outside brackets are the ends of the string,
+// "." is anything but a line terminator, and \d, \D, \w and \W are ASCII.
+// The rest of the two syntaxes is read alike.
+static NSString *OISICUPatternFromECMAScript(NSString *pattern)
+{
+  NSMutableString *out = [NSMutableString string];
+  BOOL inBrackets = NO;
+  for (NSUInteger i = 0; i < pattern.length; i++) {
+    unichar c = [pattern characterAtIndex:i];
+    if (c == '\\' && i + 1 < pattern.length) {
+      unichar next = [pattern characterAtIndex:++i];
+      NSString *ascii = nil;
+      switch (next) {
+        case 'd': ascii = inBrackets ? @"0-9" : @"[0-9]"; break;
+        case 'w': ascii = inBrackets ? @"A-Za-z0-9_" : @"[A-Za-z0-9_]"; break;
+        case 'D': ascii = inBrackets ? nil : @"[^0-9]"; break;
+        case 'W': ascii = inBrackets ? nil : @"[^A-Za-z0-9_]"; break;
+      }
+      if (ascii) [out appendString:ascii];
+      else [out appendFormat:@"\\%C", next];
+      continue;
+    }
+    if (inBrackets) {
+      if (c == ']') inBrackets = NO;
+      [out appendFormat:@"%C", c];
+    } else if (c == '[') {
+      inBrackets = YES;
+      [out appendString:@"["];
+      // A ] first is a member, not the end.
+      if (i + 1 < pattern.length && [pattern characterAtIndex:i + 1] == '^') [out appendFormat:@"%C", [pattern characterAtIndex:++i]];
+      if (i + 1 < pattern.length && [pattern characterAtIndex:i + 1] == ']') { [out appendString:@"\\]"]; i++; }
+    } else if (c == '^') {
+      [out appendString:@"\\A"];
+    } else if (c == '$') {
+      [out appendString:@"\\z"];
+    } else if (c == '.') {
+      [out appendString:@"[^\\n\\r\u2028\u2029]"];
+    } else {
+      [out appendFormat:@"%C", c];
+    }
+  }
+  return out;
+}
+
 // matchesPattern(x, 'pattern') (4.01): the pattern found anywhere in x, as
-// ECMAScript's RegExp test finds it; MATCHES is of the whole string.
+// ECMAScript's RegExp test finds it; MATCHES is of the whole string, so
+// anything at all around it: any character, one at a time ("." in ICU would
+// take a \r\n whole, and hide a match that starts at its \n).
 - (NSPredicate *)matchesPattern:(ODataExpression *)e
 {
   NSArray<ODataExpression *> *args = e.arguments ?: @[];
@@ -348,7 +396,7 @@ static BOOL OISWidens(NSString *from, NSString *to)
   }
   NSExpression *value = [self valueExpression:x typedBy:nil];
   if (!value) return nil;
-  NSString *anywhere = [NSString stringWithFormat:@"(?s).*(?:%@).*", pattern.value];
+  NSString *anywhere = [NSString stringWithFormat:@"(?:[^\\r]|\\r)*(?:%@)(?:[^\\r]|\\r)*", OISICUPatternFromECMAScript(pattern.value)];
   NSPredicate *p = OISCompare(value, NSMatchesPredicateOperatorType, [NSExpression expressionForConstantValue:anywhere], 0);
   return [self guarded:[self nullSafe:p terms:@[ x ] type:NSMatchesPredicateOperatorType] terms:@[ x ] whenNull:NO];
 }
@@ -834,6 +882,33 @@ static NSString *OISConstantString(OISTerm *t)
 
 #pragma mark Step functions
 
+// The patterns below are written with "(?s)" and "." for readability; as
+// MATCHES reads them, each "." is one character, a \r of a \r\n included,
+// where ICU's own "." would take a \r\n whole (and count it as one).
+static NSString *OISOneCharacterAtATime(NSString *pattern)
+{
+  if ([pattern hasPrefix:@"(?s)"]) pattern = [pattern substringFromIndex:4];
+  NSMutableString *out = [NSMutableString string];
+  BOOL inBrackets = NO;
+  for (NSUInteger i = 0; i < pattern.length; i++) {
+    unichar c = [pattern characterAtIndex:i];
+    if (c == '\\' && i + 1 < pattern.length) {
+      [out appendFormat:@"%C%C", c, [pattern characterAtIndex:++i]];
+    } else if (inBrackets) {
+      if (c == ']') inBrackets = NO;
+      [out appendFormat:@"%C", c];
+    } else if (c == '[') {
+      inBrackets = YES;
+      [out appendString:@"["];
+    } else if (c == '.') {
+      [out appendString:@"(?:[^\\r]|\\r)"];
+    } else {
+      [out appendFormat:@"%C", c];
+    }
+  }
+  return out;
+}
+
 // length(x) op n: x MATCHES a run of so many characters.
 - (NSPredicate *)length:(NSExpression *)x type:(NSPredicateOperatorType)type literal:(ODataExpression *)literal
 {
@@ -857,7 +932,7 @@ static NSString *OISConstantString(OISTerm *t)
     case NSLessThanOrEqualToPredicateOperatorType: pattern = [NSString stringWithFormat:@"(?s).{0,%lld}", n]; break;
     default: return [self unsupported:@"length() with that operator"];
   }
-  NSPredicate *p = OISCompare(x, NSMatchesPredicateOperatorType, [NSExpression expressionForConstantValue:pattern], 0);
+  NSPredicate *p = OISCompare(x, NSMatchesPredicateOperatorType, [NSExpression expressionForConstantValue:OISOneCharacterAtATime(pattern)], 0);
   return negate ? [NSCompoundPredicate notPredicateWithSubpredicate:p] : p;
 }
 
@@ -930,7 +1005,7 @@ static NSString *OISConstantString(OISTerm *t)
 {
   NSString *f = t.stepFunction;
   NSPredicate *(^matches)(NSString *) = ^NSPredicate *(NSString *pattern) {
-    return OISCompare(x, NSMatchesPredicateOperatorType, [NSExpression expressionForConstantValue:pattern], 0);
+    return OISCompare(x, NSMatchesPredicateOperatorType, [NSExpression expressionForConstantValue:OISOneCharacterAtATime(pattern)], 0);
   };
   NSPredicate *(^not)(NSPredicate *) = ^NSPredicate *(NSPredicate *p) { return [NSCompoundPredicate notPredicateWithSubpredicate:p]; };
   NSPredicate *no = [NSPredicate predicateWithValue:NO];
@@ -1536,7 +1611,10 @@ static const NSUInteger OISMaxDateRanges = 200;
 {
   *inMemory = NO;
   NSError *keyPathError = nil;
-  NSArray *keyPaths = [self sortDescriptorsForOrderBy:items entity:entity error:&keyPathError];
+  // A computed name that stands for a property path is that path: the
+  // store sorts by it. Anything computed beyond a path is sorted here: a
+  // store sorts by key paths only.
+  NSArray *keyPaths = [self keyPathSortForOrderBy:items entity:entity computed:computed error:&keyPathError];
   if (keyPaths || !computed.count) {
     if (!keyPaths && error) *error = keyPathError;
     return keyPaths;
@@ -1571,8 +1649,14 @@ static const NSUInteger OISMaxDateRanges = 200;
 
 - (NSArray *)sortDescriptorsForOrderBy:(NSArray *)items entity:(NSEntityDescription *)entity error:(NSError **)error
 {
+  return [self keyPathSortForOrderBy:items entity:entity computed:nil error:error];
+}
+
+- (NSArray *)keyPathSortForOrderBy:(NSArray *)items entity:(NSEntityDescription *)entity computed:(NSDictionary *)computed error:(NSError **)error
+{
   OISPredicateBuild *build = [self buildForEntity:entity aliases:nil];
   build.sorting = YES;
+  build.computed = computed;
   NSMutableArray *descriptors = [NSMutableArray array];
   for (ODataOrderItem *item in items) {
     OISTerm *t = [build term:item.expression];

@@ -143,7 +143,9 @@ once, for your own code.
 - **Search**: `ODataSearchPredicate` is `$search`, ANDed with the rest of a
   predicate.
 - **Grouping**: a dictionary fetch with `propertiesToGroupBy` and aggregate
-  expressions is `$apply`, where the service has it.
+  expressions is `$apply`, where the service has it, and its
+  `havingPredicate`, sort, offset and limit follow the grouping there as
+  `filter`, `orderby`, `skip` and `top`, as far as the service lists them.
 - **Computed values**: a dictionary fetch's non-aggregate expression
   descriptions (`unitPrice * 2`) are `$compute`, with a 4.01 service.
 - **Application time**: `ODataTemporalPredicate` is `$at` or `$from`/`$to`;

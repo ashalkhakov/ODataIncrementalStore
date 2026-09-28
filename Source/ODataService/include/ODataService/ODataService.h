@@ -195,6 +195,17 @@ FOUNDATION_EXPORT NSString * const ODataUserInfoETag;  // @"OData.etag"
 - (nullable NSArray<NSManagedObject *> *)objectsForFetchRequest:(NSFetchRequest *)fetchRequest
                                                         request:(ODataRequest *)request
                                                           reply:(ODataReply *)reply;
+// $apply's groupby and aggregate, where the store can do them: a fetch of
+// dictionaries (NSDictionaryResultType), grouped by propertiesToGroupBy
+// and aggregated by the expressions in propertiesToFetch, with
+// -predicateForVisibleObjectsInRequest: in its predicate; the dictionaries.
+// The default executes it. The service asks this only of a handler that
+// overrides it, or that does not override -objectsForFetchRequest:...: a
+// handler whose rows are not the store's has its rows grouped by the
+// service, from what -objectsForFetchRequest:... answers.
+- (nullable NSArray<NSDictionary *> *)groupedRowsForFetchRequest:(NSFetchRequest *)fetchRequest
+                                                         request:(ODataRequest *)request
+                                                           reply:(ODataReply *)reply;
 // How many rows the same request has, without paging; an NSNumber.
 - (nullable NSNumber *)countForFetchRequest:(NSFetchRequest *)fetchRequest
                                     request:(ODataRequest *)request

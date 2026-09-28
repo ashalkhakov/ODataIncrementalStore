@@ -184,10 +184,52 @@ jobs:
       # and object IDs in predicates match on every store, and count (#41);
       # its momc keeps a model version's Identifier, which models generated
       # from $metadata carry (#40).
-      FREECOREDATA_REF: b7f3a7ef2c36a9fe4a53719e49e7297a1ca9c976
+      # #51: the SQL backends share one libCDSQLStore, so a process can load
+      # both, and evaluate MATCHES in SQL.
+      FREECOREDATA_REF: b612b0a
     defaults:
       run:
         working-directory: ${{ github.workspace }}/source
+
+    # FreeCoreData's SQL backends' servers, for the predicate pair tests:
+    # what the service reads from a $filter, run by each store. The same
+    # images FreeCoreData's own backends workflow runs against.
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_PASSWORD: coredata
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 30
+
+      mysql:
+        image: mysql:8
+        env:
+          MYSQL_ROOT_PASSWORD: coredata
+        ports:
+          - 3306:3306
+        options: >-
+          --health-cmd "mysqladmin ping --silent"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 30
+
+      mariadb:
+        image: mariadb:11
+        env:
+          MARIADB_ROOT_PASSWORD: coredata
+        ports:
+          - 3307:3306
+        options: >-
+          --health-cmd "healthcheck.sh --connect --innodb_initialized"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 30
 
     steps:
       - uses: actions/checkout@v4
@@ -216,8 +258,9 @@ jobs:
             libpthread-workqueue-dev libsqlite3-dev \
             libfreetype-dev libfontconfig1-dev libxrender-dev \
             libxt-dev libxmu-dev libxft-dev libxrandr-dev libxfixes-dev libxcursor-dev \
-            xvfb
+            xvfb libpq-dev libmariadb-dev
           # xvfb is a display for the Workbench's self-test.
+          # libpq-dev and libmariadb-dev are FreeCoreData's SQL backends'.
           # libsqlite3-dev is FreeCoreData's: NSSQLitePersistentStore links it.
           # libxml2-dev is what gives gnustep-base the NSXML momc reads models
           # with. The rest is the GNUstep stack's.
@@ -277,6 +320,8 @@ jobs:
           make install
           make -C Tools/momc
           make -C Tools/momc install
+          make -C Backends/PostgreSQL
+          make -C Backends/MySQL
 
       # Built first and on its own, so a compile error in the library is
       # reported as that rather than as a test failure.
@@ -307,6 +352,17 @@ jobs:
         run: |
           . $PREFIX/System/Library/Makefiles/GNUstep.sh
           make test
+
+      # The suite again, with the SQL backends as more stores the predicate
+      # pair tests run over: PostgreSQL and MySQL together, then MariaDB
+      # through the MySQL backend, whose SQL is not the same as MySQL's.
+      - name: Predicates and grouping over PostgreSQL, MySQL and MariaDB
+        run: |
+          . $PREFIX/System/Library/Makefiles/GNUstep.sh
+          backends="FREECOREDATA_BACKENDS=${{ github.workspace }}/FreeCoreData/Backends"
+          CD_TEST_POSTGRES_URL=postgresql://postgres:coredata@127.0.0.1:5432/postgres \
+          CD_TEST_MYSQL_URL=mysql://root:coredata@127.0.0.1:3306/oistest make -C Tests run-tests "$backends"
+          CD_TEST_MYSQL_URL=mysql://root:coredata@127.0.0.1:3307/oistest make -C Tests run-tests "$backends"
 
       - name: HTTP adapter over loopback
         run: |

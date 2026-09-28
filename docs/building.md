@@ -92,6 +92,20 @@ make test            # GNUstep
 
 On Apple: the `ODataKitTests` scheme (⌘U).
 
+The predicate pair tests (`$filter` → `NSPredicate` → rows, and `$apply`
+grouping in the store against grouping in memory) also run over
+FreeCoreData's SQL backends, given a server and the backends built there
+(`make -C Backends/PostgreSQL`, `make -C Backends/MySQL`):
+
+```sh
+CD_TEST_POSTGRES_URL=postgresql://postgres:secret@localhost:5432/postgres \
+CD_TEST_MYSQL_URL=mysql://root:secret@localhost:3306/oistest \
+  make -C Tests run-tests FREECOREDATA_BACKENDS=<FreeCoreData>/Backends
+```
+
+Each store works in a schema of its own, dropped afterwards. CI runs them
+against PostgreSQL 16, MySQL 8 and MariaDB 11.
+
 `Tests/Live/` checks that real services agree: Microsoft's Northwind v4
 (read) and TripPin (write, in a session of its own), streams and `$search`
 among them. CI runs it without letting it fail a build, since the services are

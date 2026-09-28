@@ -761,8 +761,9 @@ static NSAttributeDescription *OISAttributeAtKeyPath(NSEntityDescription *entity
 
 // Rows grouped and aggregated (Data Aggregation): by $apply where the
 // service says it has it (Aggregation.ApplySupported), else here over the
-// rows it sends. havingPredicate, the sort, the offset and the limit are
-// then applied here, to what was grouped. Keys are as Core Data's: the
+// rows it sends. havingPredicate, the sort, the offset and the limit
+// follow the grouping in $apply as far as the service can take them
+// (stepsAfterGrouping:), and are applied here otherwise. Keys are as Core Data's: the
 // grouped key paths (category.name) and the expressions' names.
 // What a grouping fetch asks, by key path: the grouped key paths, the
 // aggregates as Core Data's key paths name them (local) and as the wire
@@ -813,6 +814,39 @@ static NSAttributeDescription *OISAttributeAtKeyPath(NSEntityDescription *entity
     [outputs addObject:description.name];
   }
   return YES;
+}
+
+// What of a grouping fetch the service does after the grouping, as $apply
+// steps: its havingPredicate as filter(), its sort as orderby(), then its
+// offset and limit as skip() and top() when everything before them went
+// too; each only where the service lists the transformation
+// (Aggregation.ApplySupported/Transformations). The rest is done here, in
+// that order: what went is set in the flags.
+- (NSArray *)stepsAfterGrouping:(NSFetchRequest *)fetch entity:(NSEntityDescription *)entity keyPaths:(NSArray *)keyPaths
+                          paths:(NSArray *)paths aggregates:(NSArray *)aggregates
+                         having:(BOOL *)having sort:(BOOL *)sort paging:(BOOL *)paging
+{
+  *having = *sort = *paging = NO;
+  id apply = [self capability:@"Aggregation.ApplySupported" forEntity:entity];
+  NSArray *listed = [apply isKindOfClass:[NSDictionary class]] ? apply[@"Transformations"] : nil;
+  NSSet *supported = [listed isKindOfClass:[NSArray class]] ? [NSSet setWithArray:listed] : [NSSet set];
+  NSMutableDictionary *names = [NSMutableDictionary dictionary];
+  for (NSUInteger i = 0; i < keyPaths.count; i++) names[keyPaths[i]] = [paths[i] componentsJoinedByString:@"/"];
+  for (ODataAggregate *aggregate in aggregates) names[aggregate.alias] = aggregate.alias;
+  NSMutableArray *steps = [NSMutableArray array];
+  NSString *filter = fetch.havingPredicate && [supported containsObject:@"filter"] ? [_builder groupedFilterForPredicate:fetch.havingPredicate names:names] : nil;
+  if (filter) [steps addObject:[NSString stringWithFormat:@"filter(%@)", filter]];
+  *having = !fetch.havingPredicate || filter;
+  NSString *order = fetch.sortDescriptors.count && [supported containsObject:@"orderby"] ? [_builder groupedOrderForSortDescriptors:fetch.sortDescriptors names:names] : nil;
+  if (order) [steps addObject:[NSString stringWithFormat:@"orderby(%@)", order]];
+  *sort = !fetch.sortDescriptors.count || order;
+  BOOL skip = !fetch.fetchOffset || [supported containsObject:@"skip"], top = !fetch.fetchLimit || [supported containsObject:@"top"];
+  if (*having && *sort && skip && top) {
+    if (fetch.fetchOffset) [steps addObject:[NSString stringWithFormat:@"skip(%lu)", (unsigned long)fetch.fetchOffset]];
+    if (fetch.fetchLimit) [steps addObject:[NSString stringWithFormat:@"top(%lu)", (unsigned long)fetch.fetchLimit]];
+    *paging = YES;
+  }
+  return steps;
 }
 
 // $apply where the service says it has it (Aggregation.ApplySupported);
@@ -867,7 +901,11 @@ static NSAttributeDescription *OISAttributeAtKeyPath(NSEntityDescription *entity
   if (![self planAggregateFetch:fetch entity:entity keyPaths:keyPaths local:local wire:wire outputs:[NSMutableArray array]
                     resultTypes:[NSMutableDictionary dictionary] aggregateAttributes:[NSMutableDictionary dictionary] error:error]) return nil;
   NSArray *paths = [self applyPathsFor:keyPaths entity:entity];
-  if (paths) return [_builder URLForAggregateFetch:fetch entity:entity groupPaths:paths aggregates:wire error:error];
+  if (paths) {
+    BOOL having, sort, paging;
+    NSArray *after = [self stepsAfterGrouping:fetch entity:entity keyPaths:keyPaths paths:paths aggregates:wire having:&having sort:&sort paging:&paging];
+    return [_builder URLForAggregateFetch:fetch entity:entity groupPaths:paths aggregates:wire after:after error:error];
+  }
   return [_builder URLForFetch:[self rowsToGroupFor:fetch entity:entity keyPaths:keyPaths local:local] entity:entity error:error];
 }
 
@@ -883,8 +921,11 @@ static NSAttributeDescription *OISAttributeAtKeyPath(NSEntityDescription *entity
   // Each row as nested dictionaries, as the key paths read them.
   NSMutableArray *rows = [NSMutableArray array];
   NSArray *paths = [self applyPathsFor:keyPaths entity:entity];
+  BOOL havingThere = NO, sortThere = NO, pagingThere = NO;
   if (paths) {
-    NSURL *url = [_builder URLForAggregateFetch:fetch entity:entity groupPaths:paths aggregates:wire error:error];
+    NSArray *after = [self stepsAfterGrouping:fetch entity:entity keyPaths:keyPaths paths:paths aggregates:wire
+                                       having:&havingThere sort:&sortThere paging:&pagingThere];
+    NSURL *url = [_builder URLForAggregateFetch:fetch entity:entity groupPaths:paths aggregates:wire after:after error:error];
     if (!url) return nil;
     NSArray *answers = [self rowsAtURL:url limit:0 pageSize:0 error:error];
     if (!answers) return nil;
@@ -934,12 +975,15 @@ static NSAttributeDescription *OISAttributeAtKeyPath(NSEntityDescription *entity
     }
   }
 
+  // What the service did not do after the grouping, here.
   NSArray *result = rows;
-  if (fetch.havingPredicate) result = [result filteredArrayUsingPredicate:fetch.havingPredicate];
-  if (fetch.sortDescriptors.count) result = [result sortedArrayUsingDescriptors:fetch.sortDescriptors];
-  NSUInteger skip = MIN(fetch.fetchOffset, result.count);
-  result = [result subarrayWithRange:NSMakeRange(skip, result.count - skip)];
-  if (fetch.fetchLimit && fetch.fetchLimit < result.count) result = [result subarrayWithRange:NSMakeRange(0, fetch.fetchLimit)];
+  if (fetch.havingPredicate && !havingThere) result = [result filteredArrayUsingPredicate:fetch.havingPredicate];
+  if (fetch.sortDescriptors.count && !sortThere) result = [result sortedArrayUsingDescriptors:fetch.sortDescriptors];
+  if (!pagingThere) {
+    NSUInteger skip = MIN(fetch.fetchOffset, result.count);
+    result = [result subarrayWithRange:NSMakeRange(skip, result.count - skip)];
+    if (fetch.fetchLimit && fetch.fetchLimit < result.count) result = [result subarrayWithRange:NSMakeRange(0, fetch.fetchLimit)];
+  }
   // Flat, keyed as Core Data keys them; a value there is none of is left out.
   NSMutableArray *flat = [NSMutableArray array];
   for (NSDictionary *row in result) {

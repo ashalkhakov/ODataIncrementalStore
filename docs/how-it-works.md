@@ -99,8 +99,8 @@ something, the model's `userInfo` wins.
 | `AND`, `OR`, `NOT` | `and`, `or`, `not` |
 | `name ==[c] 'x'` | `tolower(Name) eq tolower('x')` |
 | `BEGINSWITH`, `ENDSWITH`, `CONTAINS` (with `[c]`) | `startswith`, `endswith`, `contains` (with `tolower`) |
-| `LIKE 'Ch?i*'` | `matchesPattern(Name, '^Ch.i.*$')`, 4.01 only |
-| `MATCHES 're'` | `matchesPattern(Name, '^(?:re)$')`, 4.01 only, not `[c]` |
+| `LIKE 'Ch?i*'` | `matchesPattern(Name, '^Ch.i.*$')`, 4.01 only, each wildcard written as any character including line breaks |
+| `MATCHES 're'` | `matchesPattern(Name, '^(?:re)$')`, 4.01 only, not `[c]`; a pattern ECMAScript reads differently from ICU is refused |
 | `x IN {a, b}` | `x in (a, b)` in 4.01; `(x eq a or x eq b)` in 4.0 |
 | `x BETWEEN {a, b}` | `(x ge a and x le b)` |
 | `category == %@` (an object or object ID) | `Category/CategoryID eq 1` |
@@ -156,7 +156,7 @@ The client sends everything to the service unless the service's
 | `$count` | Service | When it is not `Countable`: the keys are read and counted here |
 | `$select` | Service | When `SelectSupport/Supported` is false, whole rows are read |
 | `groupby`, `aggregate` | Service with `Aggregation.ApplySupported` | When it is not declared, the matching rows are read and grouped here |
-| `havingPredicate`, and the sort, offset and limit of a grouped fetch | **Here**, always | Candidate: `$apply=…/filter(…)/orderby(…)/skip/top` |
+| `havingPredicate`, and the sort, offset and limit of a grouped fetch | Service, as `$apply=…/filter(…)/orderby(…)/skip(n)/top(n)` after the grouping | Each one the service does not list in `ApplySupported/Transformations`, or that its grouped-row syntax cannot say (a `havingPredicate` beyond comparisons with literals, a sort with a comparator); the offset and limit then too |
 | `$compute` | Service, when it speaks 4.01 | With 4.0, or when `ComputeSupported` is false: evaluated here from each object |
 | Faults | Here, from cached rows | A fault fires a request only when its row is not cached. Prefetched (`$expand`) rows fill the cache |
 
@@ -175,11 +175,15 @@ it on the store.
 | `$at`, `$from`/`$to` | **Store** | A filter over the period |
 | Delta links | **Store** | Persistent history since the token |
 | `$apply` `filter` (and `search`) steps before the first grouping | **Store** | Folded into the fetch's predicate |
-| `$apply` `groupby`, `aggregate`, `compute`, `topcount`…, `concat`, and anything after a grouping | Memory | `ODataApply` over the fetched rows, bounded by `maxRowsInMemory` |
-| `$orderby` on a `$compute`d value | Memory | The fetch is sorted, skipped and limited in memory, bounded by `maxRowsInMemory` |
+| `$apply`'s first `groupby` or `aggregate`, right after those filters | **Store**, where it can be exact | A dictionary fetch with `propertiesToGroupBy` and aggregate expressions: `GROUP BY` in SQLite and FreeCoreData's SQL stores. Grouped by attributes through to-one relationships; `$count`, `sum` and `average` of integers and doubles, `min` and `max` of numbers and dates |
+| Other groupings (by a computed value, of decimals, strings, `countdistinct`; on Apple, over a store other than SQLite), `compute`, `topcount`…, `concat`, and anything after the first grouping | Memory | `ODataApply` over the fetched (or grouped) rows, bounded by `maxRowsInMemory` |
+| `$filter` on a `$compute`d value | **Store** | The computed expression in the predicate: `$compute=UnitPrice mul 2 as T&$filter=T gt 40` is `unitPrice * 2 > 40` |
+| `$orderby` on a `$compute`d name that stands for a path | **Store** | That path's key path |
+| `$orderby` on any other `$compute`d value | Memory | The fetch is sorted, skipped and limited in memory, bounded by `maxRowsInMemory`: Core Data sorts by key paths only |
 | `$compute` values | Memory | Evaluated per row as it is written |
 | First-level `$expand` | **Store** | `relationshipKeyPathsForPrefetching` on the fetch |
-| `$expand` of to-many with its own `$filter`/`$orderby`/`$top` | Memory | The related set is filtered and sorted per parent row |
+| `$expand` of a to-many relationship, with its own `$filter`, `$search` and `$orderby` | **Store** | For every parent on the page at once, filtered and sorted there, then split among the parents: a one-to-many in one fetch (`inverse IN parents`); a many-to-many, or one with no inverse, in two (the parents with the relationship prefetched, then `SELF IN` their related rows). Nested expansions and `$levels` likewise, per level |
+| Its `$top`, `$skip` and `$count`, per parent; an expansion with its own `$compute`; a page whose many-to-many members are more than 500 | Memory | Over each parent's members |
 | Temporal actions (split and trim) | Memory, then store | Computed over the affected slices, and written through the handler |
 
 ### `$filter` as `NSPredicate`
@@ -226,7 +230,7 @@ the comparison is then rewritten into something the store does have.
 | `indexof(Name, 'a') eq 2` | a `MATCHES` expression: no `a` before position 2, then `a` |
 | `trim(Name) eq 'Chai'` | `name MATCHES '\s*Chai\s*'` |
 | `concat(First, 'x') eq 'Annx'` | `first == 'Ann'` |
-| `matchesPattern(Name, '^C')` | `name MATCHES '^C.*'` (ECMAScript's search, made a whole-string match) |
+| `matchesPattern(Name, '^C')` | `name MATCHES '\AC.*'` (ECMAScript's search, made a whole-string match, in ICU's syntax) |
 
 The regular expressions above are sketches; the builder escapes the literals
 and anchors the patterns. `substring`, `trim` and `concat` are compared with
@@ -242,11 +246,11 @@ and anchors the patterns. `substring`, `trim` and `concat` are compared with
 | `month(Hired) eq 3` | One March range for each year from the earliest to the latest `hired` in the store, ORed |
 | `day()`, `hour()`, `minute()`, `second()` | Likewise, one range for each month, day, hour or minute; more than 200 ranges is 501 |
 
-### Candidates to move down
+### What stays in memory, and why
 
-| Now in memory | Could be |
+| In memory | Why |
 |---|---|
-| `groupby` + `aggregate` (sum, min, max, average, count, countdistinct) on the server | Core Data's own `propertiesToGroupBy` with aggregate `NSExpressionDescription`s: `GROUP BY` in SQLite. This holds for plain key paths; `compute` and transformations after a grouping stay in memory |
-| `$compute` in `$orderby` and `$filter` on the server | An `NSExpression` in a sort descriptor / predicate where the store can evaluate it (arithmetic, on SQLite) |
-| Filtered or sorted `$expand` of to-many, and nested expansions, on the server | One fetch per expansion across all parents (`parent IN %@`, with the filter and sort), not a filter per parent in memory |
-| A grouped fetch's `havingPredicate`, sort and limit, on the client | `$apply`'s `filter`, `orderby`, `top` and `skip` after the `groupby`, which the server already supports |
+| `$orderby` by a computed value beyond a path | Core Data sorts a fetch by key paths only: an `NSSortDescriptor` has no expression, and a fetch is not sorted by an `NSExpressionDescription` |
+| `sum` and `average` of decimals, `min` and `max` of strings, `countdistinct` | SQLite sums decimals as doubles, and SQL orders strings by collation rather than as `NSString` does; Core Data has no count of distinct values |
+| An expanded to-many's `$top` and `$skip` | Per parent: one fetch for every parent cannot page each one |
+| `$apply` after the first grouping, and `compute` and the top and bottom kin | Over grouped rows, which are the service's, not the store's |

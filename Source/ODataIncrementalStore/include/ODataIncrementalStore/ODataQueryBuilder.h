@@ -28,12 +28,24 @@ NS_ASSUME_NONNULL_BEGIN
                           error:(NSError **)error;
 // $apply for a fetch that groups and aggregates: its predicate as
 // filter(), then groupby((paths),aggregate(...)), or aggregate(...) alone
-// (Data Aggregation section 3). Paths are wire paths (Category/CategoryName).
+// (Data Aggregation section 3), then the steps given, as $apply writes
+// them (filter(...), orderby(...), skip(n), top(n)). Paths are wire paths
+// (Category/CategoryName).
 - (nullable NSURL *)URLForAggregateFetch:(NSFetchRequest *)fetch
                                   entity:(NSEntityDescription *)entity
                               groupPaths:(NSArray<NSArray<NSString *> *> *)paths
                               aggregates:(NSArray *)aggregates
+                                   after:(nullable NSArray<NSString *> *)steps
                                    error:(NSError **)error;
+// A grouping fetch's havingPredicate as a filter of the grouped rows:
+// comparisons of what the rows hold (names: a grouped key path, or an
+// aggregate's name, to its path in the rows, Category/CategoryName or
+// Total) with numbers, strings, booleans and nil, and AND, OR and NOT of
+// those; nil for anything else.
+- (nullable NSString *)groupedFilterForPredicate:(NSPredicate *)predicate names:(NSDictionary<NSString *, NSString *> *)names;
+// Its sort descriptors as an orderby of the grouped rows: each a name's
+// path, compared with compare:; nil for anything else.
+- (nullable NSString *)groupedOrderForSortDescriptors:(NSArray<NSSortDescriptor *> *)descriptors names:(NSDictionary<NSString *, NSString *> *)names;
 - (nullable NSURL *)URLForIdentifier:(ODataResourceIdentifier *)identifier error:(NSError **)error;
 // For reading one entity: the entity URL with its to-one keys expanded.
 - (nullable NSURL *)URLForReadingIdentifier:(ODataResourceIdentifier *)identifier

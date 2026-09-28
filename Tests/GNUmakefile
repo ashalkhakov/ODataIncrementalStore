@@ -44,6 +44,17 @@ ODataIncrementalStoreTests_INCLUDE_DIRS = -I../Source/ODataKit/include -I../Sour
 ODataIncrementalStoreTests_LIB_DIRS = -L../obj -L..
 ODataIncrementalStoreTests_OBJC_LIBS += -lODataService -lODataIncrementalStore -lODataKit -lXCTest -lCoreData
 
+# FreeCoreData's SQL backends, for the pair tests: its Backends directory,
+# built (make -C Backends/PostgreSQL, make -C Backends/MySQL there). The
+# tests load the one whose server CD_TEST_POSTGRES_URL or CD_TEST_MYSQL_URL
+# names; one at a time, since both carry the same CDSQLStore classes.
+FREECOREDATA_BACKENDS ?=
+ifneq ($(FREECOREDATA_BACKENDS),)
+OIS_EMPTY :=
+OIS_SPACE := $(OIS_EMPTY) $(OIS_EMPTY)
+BACKEND_LD_PATH := $(subst $(OIS_SPACE),:,$(strip $(foreach b,Common PostgreSQL MySQL,$(wildcard $(FREECOREDATA_BACKENDS)/$(b)/obj))))
+endif
+
 ADDITIONAL_OBJCFLAGS += -fobjc-arc -fblocks -fobjc-runtime=gnustep-2.0 \
 	-fconstant-string-class=NSConstantString -fobjc-exceptions \
 	-DOIS_CATALOG_MODEL_DIR=\"$(CURDIR)/../Examples/Catalog\"
@@ -52,7 +63,7 @@ XCTEST ?= xctest
 
 .PHONY: check run-tests
 run-tests: all $(BUNDLE_NAME).bundle
-	LD_LIBRARY_PATH="$(CURDIR)/../obj:$(CURDIR)/..$${LD_LIBRARY_PATH:+:$$LD_LIBRARY_PATH}" \
+	LD_LIBRARY_PATH="$(CURDIR)/../obj:$(CURDIR)/..$(if $(BACKEND_LD_PATH),:$(BACKEND_LD_PATH))$${LD_LIBRARY_PATH:+:$$LD_LIBRARY_PATH}" \
 	OIS_SNAPSHOTS="$(CURDIR)/Snapshots" $(XCTEST) "$(BUNDLE_NAME).bundle"
 
 # FreeCoreData loads compiled models only, so Catalog.xcdatamodeld is

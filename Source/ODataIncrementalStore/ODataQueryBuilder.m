@@ -8,6 +8,7 @@
 #import "ODataSearchPredicate.h"
 #import "ODataTemporalPredicate.h"
 #import <ODataKit/ODataApply.h>
+#import <objc/runtime.h>
 #import <ODataKit/ODataExpression.h>
 
 static NSString *OISPercentEncode(NSString *value)
@@ -463,6 +464,7 @@ static NSPredicate *OISWithoutSearches(NSPredicate *predicate, NSMutableArray<OD
                           entity:(NSEntityDescription *)entity
                       groupPaths:(NSArray *)paths
                       aggregates:(NSArray *)aggregates
+                           after:(NSArray *)after
                            error:(NSError **)error
 {
   NSMutableArray<ODataSearchExpression *> *searches = [NSMutableArray array];
@@ -479,6 +481,7 @@ static NSPredicate *OISWithoutSearches(NSPredicate *predicate, NSMutableArray<OD
   ODataApplyTransformation *grouping = paths.count ? [ODataApplyTransformation groupByPaths:paths aggregates:aggregates]
                                                    : [ODataApplyTransformation aggregateWith:aggregates];
   [steps addObject:grouping.description];
+  if (after.count) [steps addObjectsFromArray:after];
   NSMutableArray *items = [NSMutableArray arrayWithObject:@[ @"$apply", [steps componentsJoinedByString:@"/"] ]];
   if (searches.count) {
     ODataSearchExpression *search = searches.firstObject;
@@ -486,6 +489,82 @@ static NSPredicate *OISWithoutSearches(NSPredicate *predicate, NSMutableArray<OD
     [items addObject:@[ @"$search", search.description ]];
   }
   return [self composePath:[self.mapper collectionPathForEntity:entity] query:items error:error];
+}
+
+// A literal a grouped row's value is compared with: a number, a string, a
+// boolean or null; nil for anything else.
+static NSString *OISGroupedLiteral(id value)
+{
+  if (!value || value == [NSNull null]) return @"null";
+  if ([value isKindOfClass:[NSString class]]) return [NSString stringWithFormat:@"'%@'", [value stringByReplacingOccurrencesOfString:@"'" withString:@"''"]];
+  if (![value isKindOfClass:[NSNumber class]]) return nil;
+  const char *type = [value objCType];
+  // A boolean, as @YES and predicateWithFormat:'s YES are.
+  if (type && (!strcmp(type, "c") || !strcmp(type, "B")) && ![value isKindOfClass:[NSDecimalNumber class]]) {
+    return [value boolValue] ? @"true" : @"false";
+  }
+  if ([value isKindOfClass:[NSDecimalNumber class]]) return [value description];
+  double d = [value doubleValue];
+  if (isnan(d) || isinf(d)) return nil;
+  return [value stringValue];
+}
+
+- (NSString *)groupedFilterForPredicate:(NSPredicate *)predicate names:(NSDictionary *)names
+{
+  if ([predicate isKindOfClass:[NSCompoundPredicate class]]) {
+    NSCompoundPredicate *compound = (NSCompoundPredicate *)predicate;
+    NSMutableArray *parts = [NSMutableArray array];
+    for (NSPredicate *sub in compound.subpredicates) {
+      NSString *part = [self groupedFilterForPredicate:sub names:names];
+      if (!part) return nil;
+      [parts addObject:[NSString stringWithFormat:@"(%@)", part]];
+    }
+    switch (compound.compoundPredicateType) {
+      case NSNotPredicateType: return parts.count == 1 ? [NSString stringWithFormat:@"not %@", parts[0]] : nil;
+      case NSAndPredicateType: return parts.count ? [parts componentsJoinedByString:@" and "] : nil;
+      case NSOrPredicateType: return parts.count ? [parts componentsJoinedByString:@" or "] : nil;
+      default: return nil;
+    }
+  }
+  if (![predicate isKindOfClass:[NSComparisonPredicate class]]) return nil;
+  NSComparisonPredicate *cmp = (NSComparisonPredicate *)predicate;
+  if (cmp.comparisonPredicateModifier != NSDirectPredicateModifier || cmp.options) return nil;
+  NSExpression *left = cmp.leftExpression, *right = cmp.rightExpression;
+  NSPredicateOperatorType type = cmp.predicateOperatorType;
+  if (left.expressionType == NSConstantValueExpressionType && right.expressionType == NSKeyPathExpressionType) {
+    NSExpression *swap = left; left = right; right = swap;
+    NSDictionary *mirrored = @{ @(NSLessThanPredicateOperatorType): @(NSGreaterThanPredicateOperatorType),
+                                @(NSGreaterThanPredicateOperatorType): @(NSLessThanPredicateOperatorType),
+                                @(NSLessThanOrEqualToPredicateOperatorType): @(NSGreaterThanOrEqualToPredicateOperatorType),
+                                @(NSGreaterThanOrEqualToPredicateOperatorType): @(NSLessThanOrEqualToPredicateOperatorType) };
+    if (mirrored[@(type)]) type = [mirrored[@(type)] unsignedIntegerValue];
+  }
+  if (left.expressionType != NSKeyPathExpressionType || right.expressionType != NSConstantValueExpressionType) return nil;
+  NSString *path = names[left.keyPath];
+  NSString *literal = OISGroupedLiteral(right.constantValue);
+  NSDictionary *operators = @{ @(NSEqualToPredicateOperatorType): @"eq", @(NSNotEqualToPredicateOperatorType): @"ne",
+                               @(NSLessThanPredicateOperatorType): @"lt", @(NSLessThanOrEqualToPredicateOperatorType): @"le",
+                               @(NSGreaterThanPredicateOperatorType): @"gt", @(NSGreaterThanOrEqualToPredicateOperatorType): @"ge" };
+  NSString *op = operators[@(type)];
+  if (!path || !literal || !op) return nil;
+  return [NSString stringWithFormat:@"%@ %@ %@", path, op, literal];
+}
+
+- (NSString *)groupedOrderForSortDescriptors:(NSArray *)descriptors names:(NSDictionary *)names
+{
+  NSMutableArray *items = [NSMutableArray array];
+  for (NSSortDescriptor *descriptor in descriptors) {
+    NSString *path = descriptor.key ? names[descriptor.key] : nil;
+    // (sel_isEqual: libobjc2's selectors carry types, so == may not match.)
+    if (!path || !descriptor.selector || !sel_isEqual(descriptor.selector, @selector(compare:))) return nil;
+#if defined(__APPLE__)
+    // (gnustep-base has no comparator: a descriptor made with one has no
+    // compare: there either.)
+    if (descriptor.comparator) return nil;
+#endif
+    [items addObject:descriptor.ascending ? path : [path stringByAppendingString:@" desc"]];
+  }
+  return items.count ? [items componentsJoinedByString:@","] : nil;
 }
 
 // Prefetch key paths as $expand items, a path through relationships

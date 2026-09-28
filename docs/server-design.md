@@ -464,7 +464,20 @@ with what `compute` gave it, and the query's `$filter`, `$orderby`,
 entities. Otherwise the handler fetches the rows the caller may see, with
 the leading filters in the fetch; `ODataAggregation` groups and aggregates
 them here (null left out; an empty sum is null, as section 3.1.3.1 has
-it); a filter after the grouping, and then `$filter`, `$orderby`,
+it). The first grouping, when it comes right after those filters, is the
+store's instead where the store gives exactly what `ODataAggregation`
+would: a dictionary fetch with `propertiesToGroupBy` and aggregate
+expressions (`-groupedRowsForFetchRequest:…` of the handler), grouped by
+attributes through to-one relationships, with `$count`, `sum` and
+`average` of integers (a decimal sum, and an exact decimal average of
+the store's sum and count) and of doubles, and `min` and `max` of numbers
+and dates. Decimals, which SQLite sums as doubles, strings, which SQL
+orders by collation rather than as `NSString` does, `countdistinct`, and
+computed values are grouped here, as is everything on Apple over a store
+other than SQLite, and on a handler that answers
+`-objectsForFetchRequest:…` itself without answering
+`-groupedRowsForFetchRequest:…`. `testGroupingInTheStore` holds the two
+ways to the same rows over each store. A filter after the grouping, and then `$filter`, `$orderby`,
 `$skip`, `$top` and `$count`, work on the grouped rows, whose paths are
 nested as the response has them (`{"Category": {"CategoryName": …},
 "Total": …}`). The container says `Aggregation.ApplySupported` with
@@ -641,7 +654,7 @@ Requests map onto fetch requests, the reverse of `ODataQueryBuilder`:
 | `$orderby` | `sortDescriptors` |
 | `$top`, `$skip` | `fetchLimit`, `fetchOffset` |
 | `$select` | the properties written; the rows are fetched whole |
-| `$expand` | `relationshipKeyPathsForPrefetching`, then inline, with its own options applied in memory |
+| `$expand` | `relationshipKeyPathsForPrefetching`, then inline. A to-many's members are fetched for every parent on the page at once, with the visible rows' predicate, its `$filter`, `$search` and application time, and its `$orderby`, and split among the parents: a one-to-many in one fetch (`inverse IN parents`), a many-to-many or one with no inverse in two (the parents with the relationship prefetched, then `SELF IN` the related rows). Its `$top`, `$skip` and `$count` per parent, and an expansion with its own `$compute`, in memory |
 | `$skiptoken` | the service's own: the offset of the next page |
 | `Categories(1)/Products` | the destination's rows whose inverse leads to the parent's key: `category.id == 1`, `ANY suppliers.id == 1` |
 
@@ -777,10 +790,30 @@ Only a few functions become an `NSExpression` the store evaluates:
 | `startswith(Name, 'Ch')`, `endswith(…)` | `BEGINSWITH`, `ENDSWITH` |
 | `tolower(x)`, `toupper(x)` | `[c]` on the comparison, or a folded constant |
 | `now()` | The request's time, as a constant |
-| `matchesPattern(Name, 'a.c')` | `name MATCHES '(?s).*(?:a.c).*'`, the pattern found anywhere |
+| `matchesPattern(Name, 'a.c')` | `name MATCHES`, the pattern found anywhere, rewritten from ECMAScript's syntax into ICU's ([below](#patterns-ecmascript-and-icu)) |
 
 The rest have no `NSPredicate` equivalent, so they work only when compared
 with a literal, as the following sections show.
+
+##### Patterns: ECMAScript and ICU
+
+OData's patterns are ECMAScript's; `MATCHES` reads ICU's, and reads them
+with `.` matching line terminators (a `\r\n` taken whole) and, on Apple,
+`^` and `$` at line boundaries. The two syntaxes mostly agree; where they
+do not, the pattern is rewritten so that it matches what ECMAScript would:
+
+| ECMAScript | ICU, as `MATCHES` reads it |
+|---|---|
+| `^`, `$` (outside brackets) | `\A`, `\z`: the ends of the string, not of a line |
+| `.` | `[^\n\r\u2028\u2029]`: not a line terminator |
+| `\d`, `\D`, `\w`, `\W` | `[0-9]`, `[^0-9]`, `[A-Za-z0-9_]`, `[^A-Za-z0-9_]`: ASCII, as ECMAScript has them |
+| found anywhere | `(?:[^\r]|\r)*(?:…)(?:[^\r]|\r)*`: any character, one at a time, so that a match starting at the `\n` of a `\r\n` is found |
+
+The client goes the other way for `LIKE` and `MATCHES`: a wildcard, or a
+`.`, is `(?:\r\n|\r(?!\n)|[^\r])`, any character with a `\r\n` as one, as
+ICU takes it; `\A` and `\z` are `^` and `$`; and what the two read
+differently (`^` and `$` themselves, `\d`, `\w`, `\s` and the other letter
+escapes, inline flags, sets in sets) is refused rather than guessed.
 
 ##### Step functions as ranges
 
@@ -821,13 +854,15 @@ pattern the property matches, or a plain comparison:
 
 | `$filter` | `NSPredicate` |
 |---|---|
-| `length(Name) gt 10` | `name MATCHES '(?s).{11,}'` |
-| `substring(Name,1) eq 'hai'` | `name MATCHES '(?s).{1}hai'` |
-| `indexof(Name,'a') eq 2` | `name MATCHES '(?s)(?:(?!a).){2}a.*'` |
-| `trim(Name) eq 'Chai'` | `name MATCHES '(?s)\s*Chai\s*'` |
+| `length(Name) gt 10` | `name MATCHES '.{11,}'` |
+| `substring(Name,1) eq 'hai'` | `name MATCHES '.{1}hai'` |
+| `indexof(Name,'a') eq 2` | `name MATCHES '(?:(?!a).){2}a.*'` |
+| `trim(Name) eq 'Chai'` | `name MATCHES '\s*Chai\s*'` |
 | `concat(Name,' tea') eq 'Chai tea'` | `name == 'Chai'` |
 
 `substring`, `trim` and `concat` are compared with `eq` and `ne` only.
+Each `.` above is written `(?:[^\r]|\r)`, one character: ICU's own `.`
+counts a `\r\n` as one, where `length` counts two.
 
 ##### `has`
 
@@ -865,13 +900,16 @@ each other (`Tests/ODataPredicatePairTests.m`):
 - predicate → `$filter` → predicate, and
   `$filter` → predicate → `$filter` → predicate;
 - each pair selecting the same rows;
-- over an in-memory store and SQLite, in 4.0 and 4.01.
+- over an in-memory store and SQLite, and on GNUstep over FreeCoreData's
+  SQL backends too (PostgreSQL 16, MySQL 8 and MariaDB 11, in CI);
+- in 4.0 and 4.01.
 
 A `$filter` the service reads but the client cannot write is listed, with
-the reason. Today the list has two entries, both in 4.0, which has no
-`matchesPattern`: `matchesPattern` itself, and `length()`, which the service
-reads as a `MATCHES` pattern that the client could write back only as
-`matchesPattern`. The test fails when the list stops being true.
+the reason. Today the list is: in 4.0, which has no `matchesPattern`,
+`matchesPattern` itself and the string functions the service reads as
+`MATCHES` patterns (`length`, `substring`, `indexof`); in both versions,
+`trim`, whose pattern uses `\s`, which ICU and ECMAScript read
+differently. The test fails when the list stops being true.
 
 What the tests found, and what was done about each:
 
@@ -891,7 +929,7 @@ What the tests found, and what was done about each:
   numbers compared with arithmetic, are now plain `NSNumber`s.
 - **`length`.** Apple's SQLite store returned every row for
   `name.length > 10`. `length(x) op n` is now a pattern of that many
-  characters: `name MATCHES '(?s).{11,}'`.
+  characters: `name MATCHES '.{11,}'`.
 - **Folded constants.** `startswith(tolower(Name), tolower('ch'))` was
   `lowercase:(name) BEGINSWITH 'ch'`, which Apple's SQLite store refuses
   (a `500`). The case-insensitive form now takes a folded constant the same
@@ -899,6 +937,11 @@ What the tests found, and what was done about each:
 - **`matchesPattern`.** The 4.01 function, which the client writes for
   `LIKE` and `MATCHES`, is read as the pattern found anywhere in the
   string.
+- **ECMAScript is not ICU.** `matchesPattern(Name,'a.b')` matched `a\nb`,
+  and on Apple `'^b'` matched after a line break: `MATCHES` reads `.` as
+  anything and `^` and `$` at line boundaries. Patterns are now rewritten
+  both ways ([above](#patterns-ecmascript-and-icu)), and
+  `testMatchesPatternIsECMAScripts` pins what ECMAScript finds.
 - **Client fixes.** The client:
   - dropped the case of `==[c]`;
   - wrote `Suppliers/@count`;
