@@ -71,8 +71,8 @@ jobs:
           CERTIFICATE_PASSWORD: ${{ secrets.MACOS_CERTIFICATE_PASSWORD }}
           IDENTITY: ${{ secrets.MACOS_SIGN_IDENTITY }}
         run: |
-          if [ -z "$CERTIFICATE" ] || [ -z "$IDENTITY" ]; then
-            echo "::warning::MACOS_CERTIFICATE or MACOS_SIGN_IDENTITY not set; shipping unsigned"
+          if [ -z "$CERTIFICATE" ]; then
+            echo "::warning::MACOS_CERTIFICATE not set; shipping unsigned"
             echo "signed=false" >> "$GITHUB_OUTPUT"
             exit 0
           fi
@@ -88,6 +88,34 @@ jobs:
             -s -k "$password" "$keychain" > /dev/null
           security list-keychain -d user -s "$keychain" login.keychain-db
           rm -f "$RUNNER_TEMP/cert.p12"
+          # codesign takes only an identity it can chain to Apple's root, and
+          # a runner need not have the Developer ID intermediate: without it
+          # the certificate is there and still "no identity found".
+          curl -fsSL -o "$RUNNER_TEMP/DeveloperIDG2CA.cer" https://www.apple.com/certificateauthority/DeveloperIDG2CA.cer
+          security import "$RUNNER_TEMP/DeveloperIDG2CA.cer" -k "$keychain" || true
+
+          # The identity is read out of the keychain, not matched by name:
+          # codesign wants the certificate's common name exactly, a secret
+          # cannot be checked by eye, and what it says when they differ is
+          # "<masked>: no identity found" (RDLKit met it too). Only a
+          # Developer ID Application certificate can be notarized, so that is
+          # the kind looked for; MACOS_SIGN_IDENTITY, if set, chooses between
+          # several. Signed by hash, which is unambiguous.
+          echo "identities in the signing keychain:"
+          security find-identity -p codesigning "$keychain"
+          valid=$(security find-identity -v -p codesigning "$keychain")
+          candidates=$(printf '%s\n' "$valid" | awk -F'"' '/"Developer ID Application: /{print $2}' | sort -u)
+          if [ -z "$candidates" ]; then
+            echo "::error::MACOS_CERTIFICATE holds no valid Developer ID Application certificate (listed above); notarization accepts no other kind"
+            exit 1
+          fi
+          chosen=$(printf '%s\n' "$candidates" | { [ -n "$IDENTITY" ] && grep -Fx "$IDENTITY" || true; } | head -1)
+          if [ -z "$chosen" ]; then
+            [ -z "$IDENTITY" ] || echo "::warning::MACOS_SIGN_IDENTITY names no Developer ID identity in MACOS_CERTIFICATE; signing with the one it holds"
+            chosen=$(printf '%s\n' "$candidates" | head -1)
+          fi
+          echo "signing as: $chosen"
+          IDENTITY=$(printf '%s\n' "$valid" | grep -F "\"$chosen\"" | head -1 | awk '{print $2}')
 
           # --timestamp and --options runtime are what notarization requires.
           # Signed inside out: the three embedded frameworks, then the app,
