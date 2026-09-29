@@ -3,6 +3,19 @@
 
 #import "OISPlan.h"
 
+@implementation OISPlanMembers
+
++ (instancetype)membersOf:(NSArray *)nodes removing:(NSArray *)removes adding:(BOOL)adds
+{
+  OISPlanMembers *members = [[self alloc] init];
+  members.nodes = nodes ?: @[];
+  members.removes = removes ?: @[];
+  members.adds = adds;
+  return members;
+}
+
+@end
+
 @implementation OISPlanNode
 
 + (instancetype)operator:(OISPlanOperator)op input:(OISPlanNode *)input
@@ -18,6 +31,10 @@
   node.prefetch = @[];
   node.nests = @[];
   node.computed = @{};
+  node.values = @{};
+  node.inputs = @[];
+  node.sequences = @{};
+  node.except = @[];
   return node;
 }
 
@@ -32,7 +49,10 @@ static NSString *OISJoined(NSArray *items, NSString *separator)
   NSMutableArray *parts = [NSMutableArray array];
   switch (self.op) {
     case OISPlanScan: [parts addObject:[NSString stringWithFormat:@"Scan %@", self.entity.name]]; break;
-    case OISPlanObjects: [parts addObject:[NSString stringWithFormat:@"Objects (%lu)", (unsigned long)self.objects.count]]; break;
+    case OISPlanObjects:
+      [parts addObject:self.objectsSummary ? [NSString stringWithFormat:@"Objects (%@)", self.objectsSummary]
+                                           : [NSString stringWithFormat:@"Objects (%lu)", (unsigned long)self.objects.count]];
+      break;
     case OISPlanChanges: [parts addObject:[NSString stringWithFormat:@"Changes of %@", self.entity.name]]; break;
     case OISPlanInput: [parts addObject:@"Input"]; break;
     case OISPlanSpan: [parts addObject:[NSString stringWithFormat:@"Span %@.%@", self.entity.name, self.attributeName]]; break;
@@ -73,6 +93,36 @@ static NSString *OISJoined(NSArray *items, NSString *separator)
       break;
     }
     case OISPlanStoreAggregate: [parts addObject:[NSString stringWithFormat:@"Store aggregate %@", self.transformation]]; break;
+    case OISPlanLookup:
+      [parts addObject:[NSString stringWithFormat:@"Lookup %@", self.reference ?: self.entity.name]];
+      if (self.optional) [parts addObject:@"or none"];
+      break;
+    case OISPlanSequence:
+      [parts addObject:[NSString stringWithFormat:@"Sequence %@.%@ from Store scan %@ sort %@ desc top 1", self.entity.name, self.attributeName,
+                                                  self.entity.name, self.attributeName]];
+      break;
+    case OISPlanInsert:
+    case OISPlanUpdate: {
+      NSString *verb = self.op == OISPlanInsert ? @"Insert" : self.replace ? @"Replace" : @"Update";
+      [parts addObject:[NSString stringWithFormat:@"%@ %@", verb, self.entity.name]];
+      NSMutableArray *set = [NSMutableArray array];
+      for (NSString *name in [self.values.allKeys sortedArrayUsingSelector:@selector(compare:)]) {
+        if (![self.values[name] isKindOfClass:[OISPlanNode class]] && ![self.values[name] isKindOfClass:[OISPlanMembers class]]) [set addObject:name];
+      }
+      if (set.count) [parts addObject:[@"set " stringByAppendingString:[set componentsJoinedByString:@", "]]];
+      break;
+    }
+    case OISPlanDelete: [parts addObject:[NSString stringWithFormat:@"Delete %@", self.entity.name]]; break;
+    case OISPlanLink:
+    case OISPlanUnlink:
+      [parts addObject:[NSString stringWithFormat:@"%@ %@.%@", self.op == OISPlanLink ? @"Link" : @"Unlink", self.entity.name, self.relationship.name]];
+      break;
+    case OISPlanMerge: [parts addObject:[NSString stringWithFormat:@"Merge %@", self.entity.name]]; break;
+    case OISPlanTemporal:
+      [parts addObject:[NSString stringWithFormat:@"Temporal %@ of %@ (%lu delta time slices)", self.action, self.entity.name, (unsigned long)self.deltas.count]];
+      break;
+    case OISPlanCall: [parts addObject:[NSString stringWithFormat:@"Call %@", self.reference]]; break;
+    case OISPlanCommit: [parts addObject:@"Commit"]; break;
   }
   if (self.op == OISPlanScan) {
     NSMutableArray *where = [NSMutableArray array];
@@ -95,7 +145,66 @@ static NSString *OISJoined(NSArray *items, NSString *separator)
     [self.nested describeInto:text depth:depth + 2];
   }
   for (OISPlanNode *nest in self.nests) [nest describeInto:text depth:depth + 1];
+  [self describeWriteInto:text indent:indent depth:depth];
   [self.input describeInto:text depth:depth + 1];
+}
+
+// What a write checks, and the rows it reads and writes first.
+- (void)describeWriteInto:(NSMutableString *)text indent:(NSString *)indent depth:(NSUInteger)depth
+{
+  if (self.ifMatch) [text appendFormat:@"%@  Assert If-Match %@%@\n", indent, self.ifMatch, self.mediaAttribute ? @" (of the stream)" : @""];
+  if (self.etag) [text appendFormat:@"%@  Assert @odata.etag %@\n", indent, self.etag];
+  if (self.typed) [text appendFormat:@"%@  Assert a %@\n", indent, self.entity.name];
+  if (self.failure) [text appendFormat:@"%@  Fails: %@\n", indent, self.failure.localizedDescription];
+  if (self.op == OISPlanUpdate) [text appendFormat:@"%@  Assert the key and what is immutable unchanged\n", indent];
+  for (NSString *name in [self.sequences.allKeys sortedArrayUsingSelector:@selector(compare:)]) {
+    [text appendFormat:@"%@  %@ :=\n", indent, name];
+    [self.sequences[name] describeInto:text depth:depth + 2];
+  }
+  for (NSString *name in [self.values.allKeys sortedArrayUsingSelector:@selector(compare:)]) {
+    id value = self.values[name];
+    if ([value isKindOfClass:[OISPlanNode class]]) {
+      [text appendFormat:@"%@  %@ :=\n", indent, name];
+      [value describeInto:text depth:depth + 2];
+    } else if ([value isKindOfClass:[OISPlanMembers class]]) {
+      OISPlanMembers *members = value;
+      [text appendFormat:@"%@  %@ := %@\n", indent, name, members.adds ? @"its members, and" : @"these"];
+      for (id node in members.nodes) {
+        if ([node isKindOfClass:[OISPlanNode class]]) [node describeInto:text depth:depth + 2];
+      }
+      if (members.removes.count) [text appendFormat:@"%@    but not\n", indent];
+      for (id node in members.removes) {
+        if ([node isKindOfClass:[OISPlanNode class]]) [node describeInto:text depth:depth + 3];
+      }
+    }
+  }
+  if (self.member) {
+    [text appendFormat:@"%@  member:\n", indent];
+    [self.member describeInto:text depth:depth + 2];
+  }
+  if (self.deltas.count) {
+    for (NSDictionary *delta in self.deltas) {
+      for (NSString *name in [delta.allKeys sortedArrayUsingSelector:@selector(compare:)]) {
+        if (![delta[name] isKindOfClass:[OISPlanNode class]]) continue;
+        [text appendFormat:@"%@  %@ :=\n", indent, name];
+        [delta[name] describeInto:text depth:depth + 2];
+      }
+    }
+  }
+  for (OISPlanNode *node in self.inputs) [node describeInto:text depth:depth + 1];
+  if (self.target) [self.target describeInto:text depth:depth + 1];
+  if (self.except.count) {
+    [text appendFormat:@"%@  but not\n", indent];
+    for (OISPlanNode *node in self.except) [node describeInto:text depth:depth + 2];
+  }
+  if (self.op == OISPlanMerge) {
+    if (self.matched) {
+      [text appendFormat:@"%@  when matched:\n", indent];
+      [self.matched describeInto:text depth:depth + 2];
+    }
+    [text appendFormat:@"%@  otherwise:\n", indent];
+    [self.otherwise describeInto:text depth:depth + 2];
+  }
 }
 
 - (NSString *)treeDescription
@@ -145,12 +254,23 @@ static NSString *OISJoined(NSArray *items, NSString *separator)
   _nests = @[];
   _closures = @[];
   _spans = @[];
+  _givenKeys = [NSMutableDictionary dictionary];
   return self;
 }
 
 - (NSString *)treeDescription
 {
   NSMutableString *text = [NSMutableString string];
+  if (self.write) {
+    if (self.returning) {
+      [text appendString:@"Returning\n"];
+      for (NSString *line in [[self.returning treeDescription] componentsSeparatedByString:@"\n"]) {
+        if (line.length) [text appendFormat:@"  %@\n", line];
+      }
+    }
+    [self.write describeInto:text depth:0];
+    return text;
+  }
   for (OISPlanNode *closure in self.closures) [closure describeInto:text depth:0];
   for (OISPlanNode *span in self.spans) [span describeInto:text depth:0];
   for (OISPlanNode *nest in self.nests) [nest describeInto:text depth:0];

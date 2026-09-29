@@ -1051,7 +1051,6 @@
   physical = [self get:@"$explain/Products?$apply=filter(UnitPrice gt 10)/groupby((Category/CategoryName),aggregate(UnitPrice with sum as T))"].json[@"physical"];
   XCTAssertTrue([physical containsString:@"groupby((Category/CategoryName),aggregate(UnitPrice with sum as T))"], @"%@", physical);
   XCTAssertTrue([physical containsString:@"Store scan Product where UnitPrice gt 10"], @"%@", physical);
-  XCTAssertEqual(([self send:@"POST" path:@"$explain/Products" headers:nil body:@{}].status), 405);
   XCTAssertEqual([[self get:@"Products?$top=1"].json[@"value"] count], 1u, @"a read is still a read");
 }
 
@@ -2162,6 +2161,113 @@
   XCTAssertEqualObjects([self get:@"Categories/$count"].text, @"3");
 }
 
+#pragma mark Write plans
+
+// A write is planned before anything is done: what it reads through the
+// handlers, what it checks, what it writes, and what it answers with;
+// explain shows the plan and writes nothing.
+- (void)testWritePlans
+{
+  _service.explains = YES;
+  OISServiceResponse *r = [self send:@"POST" path:@"$explain/Categories" headers:nil body:@{
+    @"CategoryName": @"Tea", @"Products": @[ @{ @"ProductName": @"Sencha", @"Suppliers@odata.bind": @[ @"Suppliers(1)" ] } ] }];
+  XCTAssertEqual(r.status, 200, @"%@", r.text);
+  NSString *physical = r.json[@"physical"];
+  XCTAssertTrue([physical hasPrefix:@"Returning\n  Nest Products\n  Objects (what Insert Category wrote)\nCommit\n  Insert Category set name\n"], @"%@", physical);
+  XCTAssertTrue([physical containsString:@"id :=\n      Sequence Category.id from Store scan Category sort id desc top 1"], @"%@", physical);
+  XCTAssertTrue([physical containsString:@"products := these\n      Insert Product set name"], @"%@", physical);
+  XCTAssertTrue([physical containsString:@"suppliers := these\n          Lookup Suppliers(1)"], @"%@", physical);
+  XCTAssertEqualObjects([self get:@"Categories/$count"].text, @"2", @"explained, not written");
+
+  physical = [self send:@"PATCH" path:@"$explain/Products(1)" headers:@{ @"If-Match": @"W/\"1\"" } body:@{ @"UnitPrice": @20 }].json[@"physical"];
+  XCTAssertTrue([physical containsString:@"Commit\n  Update Product set unitPrice\n    Assert If-Match W/\"1\"\n    Assert the key and what is immutable unchanged\n    Objects (1)"], @"%@", physical);
+  physical = [self send:@"DELETE" path:@"$explain/Products/$filter(UnitPrice gt 20)/$each" headers:nil body:nil].json[@"physical"];
+  XCTAssertTrue([physical containsString:@"Delete Product\n    Store scan Product where $filter(UnitPrice gt 20) sort key at most 10000"], @"%@", physical);
+  XCTAssertEqualObjects([self get:@"Products/$count"].text, @"5");
+
+  // A temporal action: the slices read, then its changes to them.
+  [self serveDepartmentHistory];
+  _service.explains = YES;
+  physical = [self send:@"POST" path:@"$explain/Departments/Temporal.Update" headers:nil body:@{
+    @"deltaTimeslices": @[ @{ @"Timeslice": @{ @"Department": @"D08", @"From": @"2012-04-01", @"Budget": @1 } } ] }].json[@"physical"];
+  XCTAssertTrue([physical containsString:@"Commit\n  Temporal Update of Department (1 delta time slices)\n"], @"%@", physical);
+  XCTAssertTrue([physical containsString:@"    Store scan Department sort key at most 10000"], @"%@", physical);
+}
+
+// Everything a write reads and checks comes before anything is written:
+// a deep insert whose second product binds to no supplier asks no handler
+// to insert the first.
+- (void)testWritesAreCheckedBeforeTheyAreMade
+{
+  OISLaterWrites *products = [[OISLaterWrites alloc] initWithEntity:OISCatalogEntity(@"Product")];
+  [_service setHandler:products forEntitySet:@"Products"];
+  OISServiceResponse *r = [self send:@"POST" path:@"Categories" headers:nil body:@{
+    @"CategoryName": @"Grains",
+    @"Products": @[ @{ @"ProductName": @"Rice" }, @{ @"ProductName": @"Oats", @"Suppliers@odata.bind": @[ @"Suppliers(9)" ] } ] }];
+  XCTAssertEqual(r.status, 400, @"%@", r.text);
+  XCTAssertEqual(products.inserts, 0, @"nothing asked before the checks");
+  XCTAssertEqualObjects([self get:@"Categories/$count"].text, @"2");
+
+  // Keys: counted on from the largest, once for the write, and from above
+  // any the request gives.
+  r = [self send:@"POST" path:@"Categories" headers:nil body:@{
+    @"CategoryName": @"Grains", @"Products": @[ @{ @"ProductID": @20, @"ProductName": @"Rice" }, @{ @"ProductName": @"Oats" } ] }];
+  XCTAssertEqual(r.status, 201, @"%@", r.text);
+  XCTAssertEqualObjects([[r.json[@"Products"] valueForKey:@"ProductID"] sortedArrayUsingSelector:@selector(compare:)], (@[ @20, @21 ]));
+  XCTAssertEqualObjects(r.json[@"CategoryID"], @3);
+}
+
+// 4.01's collection writes (Part 1 sections 11.4.12-14): each member a
+// filter selects updated or deleted; a delta payload applied to a set;
+// a set replaced.
+- (void)testCollectionWrites
+{
+  XCTAssertEqualObjects([self get:@"Products/$filter(UnitPrice gt 20)/$count"].text, @"2", @"a filter segment");
+  OISServiceResponse *r = [self send:@"PATCH" path:@"Products/$filter(UnitPrice gt 20)/$each" headers:nil body:@{ @"Discontinued": @YES }];
+  XCTAssertEqual(r.status, 204, @"%@", r.text);
+  XCTAssertEqualObjects([self names:[self get:@"Products?$filter=Discontinued&$orderby=ProductID"]],
+                        (@[ @"Chef Anton's Cajun Seasoning", @"Chef Anton's Gumbo Mix" ]));
+
+  r = [self send:@"PATCH" path:@"Products/$filter(@p)/$each?@p=UnitPrice lt 11" headers:@{ @"Prefer": @"return=representation" }
+            body:@{ @"UnitPrice": @11 }];
+  XCTAssertEqual(r.status, 200, @"%@", r.text);
+  XCTAssertEqualObjects([r.json[@"value"] valueForKey:@"ProductID"], @[ @3 ], @"the updated members");
+  XCTAssertEqualObjects([r.json[@"value"] valueForKey:@"UnitPrice"], @[ @11 ]);
+  XCTAssertEqual(([self send:@"PATCH" path:@"Products/$each" headers:nil body:@{ @"Category": @{ @"CategoryName": @"New" } }].status), 501,
+                 @"a nested entity for each member");
+  XCTAssertEqual(([self send:@"GET" path:@"Products/$each" headers:nil body:nil].status), 405);
+
+  r = [self send:@"DELETE" path:@"Products/$filter(Discontinued)/$each" headers:@{ @"Prefer": @"return=representation" } body:nil];
+  XCTAssertEqual(r.status, 200, @"%@", r.text);
+  XCTAssertEqual([r.json[@"value"] count], 2u, @"a deleted entry for each: %@", r.text);
+  XCTAssertTrue([r.json[@"@odata.context"] hasSuffix:@"#Products/$delta"], @"%@", r.text);
+  XCTAssertEqualObjects([self get:@"Products/$count"].text, @"3");
+
+  // A delta payload: upserts, and a delete.
+  r = [self send:@"PATCH" path:@"Categories" headers:@{ @"OData-Version": @"4.01", @"Prefer": @"return=representation" } body:@{
+    @"@context": @"#$delta",
+    @"value": @[ @{ @"CategoryID": @1, @"CategoryName": @"Drinks" }, @{ @"CategoryName": @"Tea" },
+                 @{ @"@removed": @{ @"reason": @"deleted" }, @"@id": @"Categories(2)" } ] }];
+  XCTAssertEqual(r.status, 200, @"%@", r.text);
+  NSArray *value = r.json[@"value"];
+  XCTAssertEqual(value.count, 3u, @"in the request's order: %@", r.text);
+  XCTAssertEqualObjects(value[0][@"CategoryName"], @"Drinks");
+  XCTAssertEqualObjects(value[1][@"CategoryName"], @"Tea");
+  XCTAssertEqual([self get:@"Categories(2)"].status, 404);
+  XCTAssertEqualObjects([self get:@"Categories(1)/CategoryName"].json[@"value"], @"Drinks");
+  XCTAssertEqual(([self send:@"PATCH" path:@"Categories/$filter(CategoryID eq 1)" headers:nil body:@{ @"value": @[] }].status), 400,
+                 @"a filtered collection is not updated as a whole");
+
+  // PUT: the collection is what the body says.
+  r = [self send:@"PUT" path:@"Suppliers" headers:nil body:@{
+    @"value": @[ @{ @"SupplierID": @1, @"CompanyName": @"Exotic" }, @{ @"CompanyName": @"Pampas", @"City": @"Buenos Aires" } ] }];
+  XCTAssertEqual(r.status, 204, @"%@", r.text);
+  XCTAssertEqualObjects([self get:@"Suppliers/$count"].text, @"2");
+  XCTAssertEqual([self get:@"Suppliers(2)"].status, 404, @"not in the body: deleted");
+  XCTAssertEqualObjects([self get:@"Suppliers(1)/CompanyName"].json[@"value"], @"Exotic");
+  XCTAssertEqualObjects([self get:@"Suppliers(3)/City"].json[@"value"], @"Buenos Aires");
+}
+
 #pragma mark Date and number functions
 
 - (void)testYearAndDateInFilters
@@ -2875,7 +2981,8 @@ static NSComparisonPredicate *OISValidation(NSString *keyPath, NSPredicateOperat
 
   OISServiceResponse *created = [self send:@"POST" path:@"Products" headers:nil body:@{ @"ProductName": @"Mate", @"UnitPrice": @3.333 }];
   XCTAssertEqual(created.status, 201);
-  NSDictionary *warning = [created.json[ODataMessagesAnnotation] firstObject];
+  // The insert's, and the handler's for the key read before it.
+  NSDictionary *warning = [[created.json[ODataMessagesAnnotation] filteredArrayUsingPredicate:[NSPredicate predicateWithFormat:@"code == 'Rounded'"]] firstObject];
   XCTAssertEqualObjects(warning[@"target"], @"UnitPrice");
   XCTAssertEqualObjects(warning[@"severity"], @"warning");
   OISServiceResponse *minimal = [self send:@"POST" path:@"Products" headers:@{ @"Prefer": @"return=minimal" } body:@{ @"ProductName": @"Mate" }];
@@ -2913,7 +3020,9 @@ static NSComparisonPredicate *OISValidation(NSString *keyPath, NSPredicateOperat
   [heard removeAllObjects];
   XCTAssertTrue([context save:&error], @"%@", error);
   XCTAssertEqual(heard.count, 1u);
-  ODataMessage *rounded = [heard.firstObject.userInfo[ODataMessagesKey] firstObject];
+  // The insert's, and the handler's for the key read before it.
+  NSArray<ODataMessage *> *messages = heard.firstObject.userInfo[ODataMessagesKey];
+  ODataMessage *rounded = [messages filteredArrayUsingPredicate:[NSPredicate predicateWithFormat:@"code == 'Rounded'"]].firstObject;
   XCTAssertEqualObjects(rounded.code, @"Rounded");
   XCTAssertEqualObjects(rounded.target, @"UnitPrice");
   XCTAssertEqualObjects(heard.firstObject.userInfo[ODataMessagesObjectIDKey], mate.objectID, @"about the product it made");
@@ -4209,11 +4318,16 @@ static NSString *OISHTTPDate(NSDate *date)
   XCTAssertEqual([self historyOf:@"D15"].count, 4u);
   XCTAssertTrue(guard.inserts > 0 && guard.updates > 0, @"%ld inserts, %ld updates", (long)guard.inserts, (long)guard.updates);
 
-  // One that answers later cannot take part in an action answered at once.
-  [_service setHandler:[[OISLaterWrites alloc] initWithEntity:entity] forEntitySet:@"Departments"];
-  XCTAssertEqual(([self send:@"POST" path:@"Departments/Temporal.Update" headers:nil body:@{
-    @"deltaTimeslices": @[ @{ @"Timeslice": @{ @"Department": @"D15", @"From": @"2015-06-01", @"Budget": @1 } } ] }].status), 501);
-  XCTAssertEqual([self historyOf:@"D15"].count, 4u);
+  // One that answers later: the action waits for each of its writes, and
+  // makes each once.
+  OISLaterWrites *later = [[OISLaterWrites alloc] initWithEntity:entity];
+  [_service setHandler:later forEntitySet:@"Departments"];
+  r = [self send:@"POST" path:@"Departments/Temporal.Update" headers:nil body:@{
+    @"deltaTimeslices": @[ @{ @"Timeslice": @{ @"Department": @"D15", @"From": @"2015-06-01", @"Budget": @1 } } ] }];
+  XCTAssertEqual(r.status, 200, @"%@", r.text);
+  XCTAssertEqual(later.inserts, 1, @"the slice split");
+  XCTAssertEqual(later.updates, 2, @"the slice it split from, and the one after");
+  XCTAssertEqual([self historyOf:@"D15"].count, 5u);
 }
 
 // Delete takes a period away, splitting a slice around it; Upsert fills a

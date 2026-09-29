@@ -40,6 +40,7 @@
 		B50B5458D6BAD80153377672 /* ODataTimeline.m in Sources */ = {isa = PBXBuildFile; fileRef = BBF1AE089209C214D9E6D32B /* ODataTimeline.m */; };
 		B1F47AD4DF7FF85F2416FBA1 /* OISPlan.m in Sources */ = {isa = PBXBuildFile; fileRef = F19A21CB3918F0E3C6DF0848 /* OISPlan.m */; };
 		EAFD25DF946CDEF004C38F69 /* OISServiceCall+Plan.m in Sources */ = {isa = PBXBuildFile; fileRef = A3D97163BCA83293C65C288D /* OISServiceCall+Plan.m */; };
+		EAFD25DF946CDEF004C38F6A /* OISServiceCall+Write.m in Sources */ = {isa = PBXBuildFile; fileRef = A3D97163BCA83293C65C288E /* OISServiceCall+Write.m */; };
 		B52F12E9A99E56EB29276C06 /* Security.framework in FrameworksODataService */ = {isa = PBXBuildFile; fileRef = B2D17EDD20D3E3D1D2E1BB14 /* Security.framework */; };
 		B5A27492DCFD33E47FFFEEF6 /* CoreData.framework in FrameworksODataService */ = {isa = PBXBuildFile; fileRef = B34C6BA09D1A851E774BD249 /* CoreData.framework */; };
 		B5B54B64009D89755AB6335D /* ODataModelBuilder.m in Sources */ = {isa = PBXBuildFile; fileRef = BE18B9CC76197344359F5B12 /* ODataModelBuilder.m */; };
@@ -229,6 +230,7 @@
 		BBF1AE089209C214D9E6D32B /* ODataTimeline.m */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.objc; path = ODataTimeline.m; sourceTree = "<group>"; };
 		F19A21CB3918F0E3C6DF0848 /* OISPlan.m */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.objc; path = OISPlan.m; sourceTree = "<group>"; };
 		A3D97163BCA83293C65C288D /* OISServiceCall+Plan.m */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.objc; path = "OISServiceCall+Plan.m"; sourceTree = "<group>"; };
+		A3D97163BCA83293C65C288E /* OISServiceCall+Write.m */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.objc; path = "OISServiceCall+Write.m"; sourceTree = "<group>"; };
 		BC113BE91BB65A75F9436F4D /* ODataClient.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = ODataClient.h; sourceTree = "<group>"; };
 		BC12C590BE6848DD3A5ED165 /* Release.xcconfig */ = {isa = PBXFileReference; lastKnownFileType = text.xcconfig; path = Release.xcconfig; sourceTree = "<group>"; };
 		BC2A4D85AAF3941E049BB375 /* ODataValue.m */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.objc; path = ODataValue.m; sourceTree = "<group>"; };
@@ -455,6 +457,7 @@
 				BBF1AE089209C214D9E6D32B /* ODataTimeline.m */,
 				F19A21CB3918F0E3C6DF0848 /* OISPlan.m */,
 				A3D97163BCA83293C65C288D /* OISServiceCall+Plan.m */,
+				A3D97163BCA83293C65C288E /* OISServiceCall+Write.m */,
 				BC713C43C4F5EBCCD1BC7B99 /* OISSignature.m */,
 				B6017AF3F8161EB1084CAC48 /* ODataOperationCatalog.h */,
 				B47363F11C69287493103F3C /* ODataServiceBatch.h */,
@@ -772,6 +775,7 @@
 				B50B5458D6BAD80153377672 /* ODataTimeline.m in Sources */,
 				B1F47AD4DF7FF85F2416FBA1 /* OISPlan.m in Sources */,
 				EAFD25DF946CDEF004C38F69 /* OISServiceCall+Plan.m in Sources */,
+				EAFD25DF946CDEF004C38F6A /* OISServiceCall+Write.m in Sources */,
 				B196C8762DFD4DD1590E7E42 /* OISSignature.m in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;

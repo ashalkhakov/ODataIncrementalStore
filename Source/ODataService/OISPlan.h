@@ -1,4 +1,4 @@
-// ODataService — a read's plan: a tree in a nested relational algebra.
+// ODataService — a request's plan: a tree in a nested relational algebra.
 // Copyright (C) 2026 OIS contributors
 // SPDX-License-Identifier: LGPL-2.1-or-later
 //
@@ -7,7 +7,8 @@
 // the store can do into store operators, which reach the store through the
 // set's handler; the rest runs here, over relations: entities (managed
 // objects, with what compute gave them) or grouped rows (nested
-// dictionaries).
+// dictionaries). A write is planned too (docs/write-plan.md): what it
+// reads, what it checks, what it changes, then its save.
 
 #pragma once
 #import <Foundation/Foundation.h>
@@ -37,8 +38,30 @@ typedef NS_ENUM(NSInteger, OISPlanOperator) {
   // What rewriting makes: the store does it, through the handler.
   OISPlanStoreScan,       // entity, fixed, filters, order (then by key), skip, top (+1 for paging), prefetch
   OISPlanStoreAggregate,  // transformation: the first grouping, over the store scan it replaced
-  OISPlanStoreCount       // the count of a store scan's rows (its predicate)
+  OISPlanStoreCount,      // the count of a store scan's rows (its predicate)
+  // Writes (docs/write-plan.md): read, checked, then written, through the
+  // handler.
+  OISPlanLookup,      // entity, key (reference: as the request named it): the one row, through the handler; optional: or none
+  OISPlanSequence,    // entity, attributeName: the largest key, read once; the plan's new rows count on from it
+  OISPlanInsert,      // entity, values; sequences for the keys it is not given
+  OISPlanUpdate,      // target's rows, values (replace: PUT)
+  OISPlanDelete,      // target's rows
+  OISPlanLink,        // target's row, relationship: member added (or, to-one, set)
+  OISPlanUnlink,      // target's row, relationship: member taken away (or, to-one, cleared)
+  OISPlanMerge,       // input: the Lookup it matches by; matched (an Update of it) when there is one, else otherwise (an Insert)
+  OISPlanTemporal,    // action, deltas, over input (the slices): the timeline's changes, as inserts, updates and deletes
+  OISPlanCall,        // an action: the handler's own code (operation)
+  OISPlanCommit       // inputs, then input, then the save
 };
+
+// A relationship's value in a write: its members, from the row's (adds)
+// or none, with nodes' rows added and others' taken away.
+@interface OISPlanMembers : NSObject
+@property (nonatomic, copy) NSArray *nodes;       // OISPlanNode (its row), or an object
+@property (nonatomic, copy) NSArray *removes;     // likewise
+@property (nonatomic) BOOL adds;
++ (instancetype)membersOf:(NSArray *)nodes removing:(NSArray *)removes adding:(BOOL)adds;
+@end
 
 @interface OISPlanNode : NSObject
 + (instancetype)operator:(OISPlanOperator)op input:(nullable OISPlanNode *)input;
@@ -75,6 +98,43 @@ typedef NS_ENUM(NSInteger, OISPlanOperator) {
 // which a sort here or a write computes.
 @property (nonatomic, copy) NSDictionary<NSString *, id> *computed;
 
+// Writes. The set's handler (ODataEntitySetHandler).
+@property (nonatomic, strong, nullable) id handler;
+// By Core Data name: a value (NSNull: none), a node (its row), or members.
+@property (nonatomic, copy) NSDictionary<NSString *, id> *values;
+// Writes done before this one (the nested ones a delta deletes).
+@property (nonatomic, copy) NSArray<OISPlanNode *> *inputs;
+// What an Update, Delete, Link or Unlink changes: Objects, a Lookup, a
+// Store scan (a collection's members), an Insert.
+@property (nonatomic, strong, nullable) OISPlanNode *target;
+@property (nonatomic, strong, nullable) NSRelationshipDescription *relationship;
+@property (nonatomic, strong, nullable) OISPlanNode *member;
+@property (nonatomic, strong, nullable) OISPlanNode *matched;
+@property (nonatomic, strong, nullable) OISPlanNode *otherwise;
+@property (nonatomic, copy, nullable) NSDictionary<NSString *, id> *key;
+@property (nonatomic, copy, nullable) NSString *reference;
+@property (nonatomic) BOOL optional;
+@property (nonatomic) BOOL replace;
+// Sequences, by the key attribute they give.
+@property (nonatomic, copy) NSDictionary<NSString *, OISPlanNode *> *sequences;
+// Checked before anything is written: If-Match (ifMatch; of a stream,
+// mediaAttribute's), a nested entity's @odata.etag (etag), its
+// @odata.type (typed: target is entity).
+@property (nonatomic, copy, nullable) NSString *ifMatch;
+@property (nonatomic, strong, nullable) NSAttributeDescription *mediaAttribute;
+@property (nonatomic, copy, nullable) NSString *etag;
+@property (nonatomic) BOOL typed;
+// A Temporal action's name and delta time slices (values, as Insert's).
+@property (nonatomic, copy, nullable) NSString *action;
+@property (nonatomic, copy, nullable) NSArray<NSDictionary<NSString *, id> *> *deltas;
+// A Delete's rows but these Lookups' (PUT of a collection: those not given).
+@property (nonatomic, copy) NSArray<OISPlanNode *> *except;
+// A branch of a Merge that could not be planned: why, answered if it is
+// the one taken.
+@property (nonatomic, strong, nullable) NSError *failure;
+// How explain names given objects ($objects: what a write made).
+@property (nonatomic, copy, nullable) NSString *objectsSummary;
+
 // The tree, one operator a line, its input indented beneath it.
 - (NSString *)treeDescription;
 - (void)describeInto:(NSMutableString *)text depth:(NSUInteger)depth;
@@ -106,6 +166,12 @@ typedef NS_ENUM(NSInteger, OISPlanOperator) {
 @property (nonatomic, copy) NSArray<OISPlanNode *> *spans;
 // The same read before rewriting, for explain.
 @property (nonatomic, strong, nullable) OISPlan *logical;
+// A write's: its Commit, and the read of what it answers with.
+@property (nonatomic, strong, nullable) OISPlanNode *write;
+@property (nonatomic, strong, nullable) OISPlan *returning;
+// The largest integer key each new row of an entity is given in the
+// request, by "Entity.attribute": a sequence counts on from above it.
+@property (nonatomic, strong) NSMutableDictionary<NSString *, NSNumber *> *givenKeys;
 - (NSString *)treeDescription;
 @end
 

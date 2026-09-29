@@ -19,6 +19,11 @@ NS_ASSUME_NONNULL_BEGIN
 
 @class OISServedOperation, OISPlan, OISPlanNode, OISRelation;
 
+@interface ODataRequest ()
+// Which entity a handler is asked about (a nested write's, while it answers).
+@property (nonatomic, readwrite, strong, nullable) NSEntityDescription *entity;
+@end
+
 @interface ODataReply (Internal)
 // The handler method has returned this: an answer now, unless it deferred.
 - (void)returned:(nullable id)value;
@@ -58,7 +63,8 @@ typedef NS_ENUM(NSInteger, OISTargetKind) {
   OISTargetCount,
   OISTargetOperation,
   OISTargetReference,
-  OISTargetStream   // a media resource (Entity/$value) or stream property: `attribute` holds it
+  OISTargetStream,  // a media resource (Entity/$value) or stream property: `attribute` holds it
+  OISTargetEach     // Collection/$each: each member, written alike
 };
 
 @interface OISStoreGrouping : NSObject
@@ -91,7 +97,7 @@ typedef NS_ENUM(NSInteger, OISTargetKind) {
 - (NSArray *)siblingsOf:(id)node;
 @end
 
-@interface OISServiceCall : NSObject <OISTimelineWriting>
+@interface OISServiceCall : NSObject
 // A repeatable request's: where its answer is remembered, and what it was.
 @property (nonatomic, copy, nullable) NSString *repeatabilityKey;
 @property (nonatomic, copy, nullable) NSString *repeatabilitySignature;
@@ -126,19 +132,7 @@ typedef NS_ENUM(NSInteger, OISTargetKind) {
 @property (nonatomic, copy, nullable) NSArray<NSManagedObject *> *members;
 // A deep insert's response: the entity with what it created expanded.
 @property (nonatomic, strong, nullable) ODataQueryOptions *responseOptions;
-// A deep insert's or update's nested changes, by the body (or delta
-// entry) each is for: the replies of those made, and the objects. A
-// handler that answers later stops the write; its answer starts it again
-// from the top, and what is done is not done twice.
-@property (nonatomic, strong, nullable) NSMutableDictionary<NSValue *, ODataReply *> *nestedReplies;
-@property (nonatomic, strong, nullable) NSMutableDictionary<NSValue *, NSManagedObject *> *nestedObjects;
-@property (nonatomic, strong, nullable) ODataReply *nestedPending;
-@property (nonatomic, strong, nullable) NSValue *nestedPendingKey;
-@property (nonatomic) SEL nestedRestart;
-// The request's entity while a nested change's handler has it.
-@property (nonatomic, strong, nullable) NSEntityDescription *nestedRequestEntity;
-@property (nonatomic) BOOL nestedRestartReplacing;
-// The request's body, parsed once: a write started again reads the same.
+// The request's body, parsed once.
 @property (nonatomic, strong, nullable) NSDictionary *parsedBody;
 @property (nonatomic, copy, nullable) NSDictionary<NSString *, ODataExpression *> *operationArguments;
 // Parameter aliases whose values are JSON (@p=[...], @p={...}): an
@@ -160,8 +154,8 @@ typedef NS_ENUM(NSInteger, OISTargetKind) {
 // call's description.
 @property (nonatomic, strong, nullable) NSMutableDictionary<NSString *, OISHierarchy *> *hierarchies;
 @property (nonatomic, copy, nullable) NSDictionary<NSString *, ODataExpression *> *hierarchyCalls;
-// Slices a temporal action changed: their versions moved on once.
-@property (nonatomic, strong, nullable) NSMutableSet *temporalTouched;
+// $filter(...) segments of the path: the collection's members that pass.
+@property (nonatomic, strong, nullable) NSMutableArray<ODataExpression *> *pathFilters;
 // $compute's values' expressions, by entity and name.
 @property (nonatomic, strong, nullable) NSMutableDictionary<NSString *, NSExpression *> *computedExpressions;
 // Change tracking: the $deltatoken asked about, and the token a delta link
@@ -203,8 +197,17 @@ typedef NS_ENUM(NSInteger, OISTargetKind) {
 @property (nonatomic, strong, nullable) ODataReply *resumeReply;
 @property (nonatomic, copy, nullable) NSArray *timeslices;
 
-// A write in progress.
-@property (nonatomic) BOOL replace;
+// A write's plan as it is made (its sequences, by "Entity.attribute"); the
+// request's entity, which a handler asked has while it answers; what the
+// write answers with: a node's rows, or, for a collection, nodes' rows and
+// removed entries ({node, reason}).
+@property (nonatomic, strong, nullable) OISPlan *writing;
+@property (nonatomic, strong, nullable) NSMutableDictionary<NSString *, OISPlanNode *> *writeSequences;
+@property (nonatomic, strong, nullable) NSEntityDescription *writeRequestEntity;
+@property (nonatomic, strong, nullable) OISPlanNode *writeAnswer;
+@property (nonatomic, copy, nullable) NSArray *writeAnswers;
+// An operation's parameters, with Lookups for its entities until read.
+@property (nonatomic, copy, nullable) NSArray *operationValuesPlanned;
 // NO in a change set: its requests share a context, saved once they have
 // all succeeded.
 @property (nonatomic) BOOL saves;
@@ -248,10 +251,40 @@ typedef NS_ENUM(NSInteger, OISTargetKind) {
                                           fetch:(NSFetchRequest * _Nullable * _Nullable)fetchp handler:(ODataEntitySetHandler * _Nullable * _Nullable)handlerp;
 - (BOOL)takeChanges:(ODataChanges *)changes;
 - (NSDictionary *)removedEntry:(NSString *)path reason:(NSString *)reason;
+// For writes.
+- (nullable NSDictionary *)bodyJSON;
+- (void)methodNotAllowed:(NSArray<NSString *> *)allowed;
+- (void)respondStatus:(NSInteger)status headers:(nullable NSDictionary *)headers body:(nullable NSData *)body;
+- (NSString *)rootString;
+- (NSString *)contextBase;
+- (NSString *)setName;
+- (NSString *)castSuffixFor:(NSEntityDescription *)entity;
+- (NSString *)selectListForOptions:(ODataQueryOptions *)options;
+- (NSString *)etagOf:(NSManagedObject *)object;
+- (NSString *)mediaEtagOf:(NSData *)data;
+- (nullable NSString *)canonicalPathOfValues:(id)values entity:(NSEntityDescription *)entity;
+- (nullable NSEntityDescription *)entityForTypeName:(NSString *)name;
+- (nullable NSDictionary *)keyFromPartsQuietly:(NSDictionary *)parts entity:(NSEntityDescription *)entity;
+- (nullable ODataExpression *)literalForKeySegment:(NSString *)text;
+- (NSString *)expansionOfBody:(NSDictionary *)body entity:(NSEntityDescription *)entity;
+- (NSArray<NSAttributeDescription *> *)servedAttributesOf:(NSEntityDescription *)entity;
+- (nullable NSMutableDictionary *)JSONForObject:(NSManagedObject *)object options:(ODataQueryOptions *)options
+                                       expected:(nullable NSEntityDescription *)expected error:(NSError **)error;
+- (void)writeEntity:(NSManagedObject *)object status:(NSInteger)status headers:(nullable NSDictionary *)headers;
+- (BOOL)save;
 @end
+
+// What the plan asks a handler for.
+typedef NS_ENUM(NSInteger, OISStoreAsk) { OISAskObjects, OISAskCount, OISAskGrouped, OISAskChanges };
 
 // The plan (OISServiceCall+Plan.m).
 @interface OISServiceCall (Plan)
+- (nullable NSArray<NSPredicate *> *)fixedPredicatesSummary:(NSString * _Nullable * _Nullable)summary error:(NSError **)error;
+// A store's answer: known, or asked for (nil until it comes, or once it
+// failed), kept under key.
+- (nullable id)answerFor:(NSString *)key ask:(OISStoreAsk)ask fetch:(NSFetchRequest *)fetch handler:(nullable ODataEntitySetHandler *)handler;
+- (nullable OISRelation *)relationOf:(OISPlanNode *)node scope:(nullable NSString *)scope input:(nullable OISRelation *)input;
+- (void)respondExplaining:(OISPlan *)plan;
 - (nullable OISPlan *)planPlainRead;
 - (nullable OISPlan *)planAppliedRead;
 - (nullable OISPlan *)planCountRead;
@@ -272,6 +305,28 @@ typedef NS_ENUM(NSInteger, OISTargetKind) {
 // An expansion's members of a parent, as the plan read them:
 // @{ members: its page, count: all of them }; nil when it has none.
 - (nullable NSDictionary *)nestedMembersOf:(ODataExpandItem *)item relationship:(NSString *)name parent:(NSManagedObject *)parent;
+@end
+
+// Writes (OISServiceCall+Write.m): planned, then run as plans are.
+@interface OISServiceCall (Write)
+- (void)insert;
+- (void)insertMedia:(NSEntityDescription *)entity media:(NSAttributeDescription *)media;
+- (void)updateReplacing:(BOOL)replace;
+- (void)remove;
+- (void)writeReference;
+- (void)writeProperty;
+- (void)writeStream;
+- (void)temporalAction:(NSString *)action;
+- (void)updateCollection;
+- (void)replaceCollection;
+- (void)updateEach;
+- (void)removeEach;
+// An operation's entity parameters, read, then after (the call is the
+// operation's own code); for explain, the plan.
+- (void)readLookups:(NSArray<OISPlanNode *> *)lookups call:(NSString *)signature then:(SEL)after;
+- (nullable OISPlanNode *)lookupOfReference:(id)reference error:(NSError **)error;
+- (nullable id)resultOf:(OISPlanNode *)node;
+- (void)resumeWrite;
 @end
 
 NSArray<ODataExpression *> *OISTheseOfFilter(ODataQueryOptions *options);

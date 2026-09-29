@@ -49,6 +49,13 @@ static NSManagedObject *OISObjectOfRow(id row)
     [fixed addObject:members];
     [names addObject:[NSString stringWithFormat:@"%@ of the %@", self.navigation.name, self.parent.entity.name]];
   }
+  for (ODataExpression *filter in self.pathFilters) {
+    NSPredicate *predicate = [self.service.predicates predicateForExpression:filter entity:self.entity aliases:self.request.options.aliases
+                                                                    computed:nil spans:self.planSpans error:error];
+    if (!predicate) return nil;
+    [fixed addObject:predicate];
+    [names addObject:[NSString stringWithFormat:@"$filter(%@)", filter]];
+  }
   NSPredicate *visible = [self.handler predicateForVisibleObjectsInRequest:self.request];
   if (visible) {
     [fixed addObject:visible];
@@ -601,6 +608,10 @@ static BOOL OISNestsPerParent(ODataQueryOptions *options)
 - (void)resumePlan
 {
   if (self.done) return;
+  if (self.plan.write) {
+    [self resumeWrite];
+    return;
+  }
   self.planPending = NO;
   OISPlan *plan = self.plan;
   for (OISPlanNode *closure in plan.closures) {
@@ -641,8 +652,6 @@ static BOOL OISNestsPerParent(ODataQueryOptions *options)
 
 // A store's answer: known, or asked for (nil until it comes; a handler
 // that answers at once is known by the time this returns).
-typedef NS_ENUM(NSInteger, OISStoreAsk) { OISAskObjects, OISAskCount, OISAskGrouped, OISAskChanges };
-
 - (id)answerFor:(NSString *)key ask:(OISStoreAsk)ask fetch:(NSFetchRequest *)fetch handler:(ODataEntitySetHandler *)handler
 {
   id known = self.planMemo[key];
@@ -669,6 +678,8 @@ typedef NS_ENUM(NSInteger, OISStoreAsk) { OISAskObjects, OISAskCount, OISAskGrou
 - (void)planDidReply:(ODataReply *)reply
 {
   if (reply.error) {
+    // A write's: nothing of it is kept.
+    if (self.plan.write) [self.request.context rollback];
     [self respondError:reply.error];
     return;
   }

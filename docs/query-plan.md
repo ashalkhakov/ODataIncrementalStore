@@ -1,5 +1,7 @@
 # A query plan for the service's reads
 
+(Writes are planned too: [write-plan.md](write-plan.md).)
+
 How the service answers a read, as a database does: the request, parsed,
 becomes a plan in a nested relational algebra; rewrite rules push what
 the store can do into the store; what is left runs here. The plan is
@@ -107,9 +109,10 @@ of dates are read first too, through the handler: the predicate builder
 is given them rather than reading them itself.
 
 A delta's changes are the handler's too (`-changesSince:request:reply:`,
-by default the persistent history). One read does not go through a
-handler: the slices a temporal action works on, which is a write, left
-for when writes are planned too.
+by default the persistent history). The reads a write does (the rows it
+refers to or changes, the keys it counts on from, the slices of a
+temporal action) are in its plan ([write-plan.md](write-plan.md)), and go
+through the handlers the same way.
 
 ## Explain
 

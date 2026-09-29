@@ -194,7 +194,9 @@ it on the store.
 | First-level `$expand` | **Store** | `relationshipKeyPathsForPrefetching` on the fetch |
 | `$expand` of a to-many relationship, with its own `$filter`, `$search` and `$orderby` | **Store** | For every parent on the page at once, filtered and sorted there, then split among the parents: a one-to-many in one fetch (`inverse IN parents`); a many-to-many, or one with no inverse, in two (the parents with the relationship prefetched, then `SELF IN` their related rows). Nested expansions and `$levels` likewise, per level |
 | Its `$top`, `$skip` and `$count`, per parent; an expansion with its own `$compute`; a page whose many-to-many members are more than 500 | Memory | Over each parent's members |
-| Temporal actions (split and trim) | Memory, then store | Computed over the affected slices, and written through the handler |
+| Temporal actions (split and trim) | Memory, then store | The slices read through the handler, the changes worked out here, then written through the handler |
+| `PATCH` and `DELETE` of `Collection/$each`, `$filter(…)` path segments | **Store**, then each row | The members read in one fetch, then each updated or deleted through the handler |
+| A write's references (`@odata.bind`, `$ref`, a nested entity's `@id` or key), new integer keys | **Store** | Read through the handler before anything is written; a new key counts on from the largest, read once per write |
 
 ### `$filter` as `NSPredicate`
 

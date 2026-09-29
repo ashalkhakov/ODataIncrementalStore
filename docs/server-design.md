@@ -451,6 +451,24 @@ included; the rest runs here. With `ODataService.explains`,
 and the physical plan instead of the rows (not standard OData);
 `logsPlans` logs each read's.
 
+### Writes are planned
+
+Every write is planned too (`docs/write-plan.md`), as databases plan DML:
+Lookups (of `@odata.bind`, `$ref`, a nested entity's `@id` or key),
+Sequences (a new integer key: the largest read once, then counted on),
+Insert, Update, Delete, Link and Unlink, Merge (a deep update's nested
+entity: an Update of the one it names, else an Insert), Temporal, and
+Commit (the save), with the read of what the write answers with. It runs
+in phases: every read, through the handlers; every check (If-Match, a
+nested `@odata.etag`, the key and what is immutable unchanged, what the
+set allows); then the writes, through the handlers, the ones a write
+depends on first; then the save. So a request that fails a check asks no
+handler to write anything. A handler that answers later stops the plan
+until it answers; it goes on from the top, and nothing asked is asked
+again. With `explains`, `POST`, `PATCH`, `PUT` and `DELETE` on
+`$explain/…` answer with the plan and write nothing; an action is `Call`,
+after the Lookups of its entity parameters.
+
 ### `$apply`
 
 `$apply` (OData Data Aggregation 4.0, Committee Specification 04) is read
@@ -647,10 +665,11 @@ gaps in the period, from the slice just before a gap or, for an object
 with none there, from the delta alone; Delete takes the period away,
 trimming or splitting what it overlaps. An object key the delta leaves
 out matches every object. They work on the slices the caller may see,
-through the set's handler: each slice made, changed or taken away is its
-`insert`, `update` or `delete`, which can refuse it (and then nothing of
-the action is done). The action is all or nothing inside the request, so
-a handler that defers its answer cannot take part: `501`. It answers
+through the set's handler: the slices are read, the changes worked out
+over them (`OISTimeline` writes nothing), and each slice made, changed or
+taken away is then its `insert`, `update` or `delete`, once, which can
+refuse it (and then nothing of the action is done), or answer later. It
+answers
 with the slices made or changed (for Delete, the periods taken
 away) as `Collection(Temporal.TimesliceWithPeriod)`, or `204` with
 `return=minimal`. A new slice's key is assigned as an insert's is, and a
@@ -1178,10 +1197,10 @@ the loopback check, so neither the client nor the core links the listener.
      one and `DELETE` from it by `$id` or by key, which is how the client
      changes relationships;
    - deep inserts, to any depth, each entity through its set's handler,
-     answered with what was created expanded. A handler that answers
-     later stops the write there; its answer starts the write again from
-     the top, and what was done is not done again (each nested change is
-     remembered by the part of the body it is for);
+     answered with what was created expanded. The write is planned
+     ("Writes are planned", above): a handler that answers later stops
+     it there, and its answer starts it again from the top, where what
+     was done is not done again;
    - deep updates (Part 1 section 11.4.3.1): a nested entity that names
      one there (by `@id`, or its key) updates it, as by PATCH, and one
      that names none is created; a to-one takes an entity or null, a
@@ -1189,7 +1208,15 @@ the loopback check, so neither the client nor the core links the listener.
      `Nav@delta` changes a collection: entries added or updated, `@removed`
      ones unlinked, or deleted for the reason `deleted`. Each nested
      change goes through its set's handler as the set allows it (`405`
-     otherwise), and a nested `@odata.etag` must match (`412`).
+     otherwise), and a nested `@odata.etag` must match (`412`);
+   - collections (4.01, Part 1 sections 11.4.12-14): `PATCH` of a
+     collection with a delta payload (entities upserted, `@removed` ones
+     deleted, or from a navigation property's collection unlinked unless
+     removed as `deleted`), `PUT` of one (its entities upserted, the rest
+     deleted), and `PATCH` or `DELETE` of `Collection/$each`, after type
+     casts and `$filter(…)` segments (which reads take too). All or
+     nothing; with `return=representation`, the rows as they are now, or
+     a delta payload of the changes.
 4. ~~**HTTP adapter.**~~ Done: GCDWebServer vendored and ported,
    `ODataHTTPServer`, `ois-serve`, the loopback check in CI on both
    platforms, example units and proxy configurations.
