@@ -49,6 +49,7 @@ ODataKit_OBJC_FILES = \
 	Source/ODataKit/ODataExpression.m \
 	Source/ODataKit/ODataLexer.m \
 	Source/ODataKit/ODataPropertyMapper.m \
+	Source/ODataKit/ODataRegex.m \
 	Source/ODataKit/ODataSchema.m \
 	Source/ODataKit/ODataTransport.m \
 	Source/ODataKit/ODataValue.m
@@ -61,6 +62,7 @@ ODataKit_HEADER_FILES = \
 	ODataExpression.h \
 	ODataKit.h \
 	ODataPropertyMapper.h \
+	ODataRegex.h \
 	ODataSchema.h \
 	ODataTransport.h \
 	ODataValue.h \

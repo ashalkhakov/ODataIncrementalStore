@@ -110,7 +110,7 @@ precedence needs them: `UnitPrice gt 20 and Discontinued eq false`.
 | `name ==[c] 'x'` | `tolower(Name) eq tolower('x')` |
 | `BEGINSWITH`, `ENDSWITH`, `CONTAINS` (with `[c]`) | `startswith`, `endswith`, `contains` (with `tolower`) |
 | `LIKE 'Ch?i*'` | `matchesPattern(Name, '^Ch.i.*$')`, 4.01 only, each wildcard written as any character including line breaks |
-| `MATCHES 're'` | `matchesPattern(Name, '^(?:re)$')`, 4.01 only, not `[c]`; a pattern ECMAScript reads differently from ICU is refused |
+| `MATCHES 're'` | `matchesPattern(Name, '^re$')`, 4.01 only, not `[c]`; read as a tree (`ODataRegex`) and written in ECMAScript, and refused where ECMAScript cannot say the same |
 | `x IN {a, b}` | `x in (a,b)` in 4.01; `x eq a or x eq b` in 4.0 |
 | `x BETWEEN {a, b}` | `x ge a and x le b` |
 | `category == %@` (an object or object ID) | `Category/CategoryID eq 1` |
@@ -246,8 +246,8 @@ the comparison is then rewritten into something the store does have.
 | `concat(First, 'x') eq 'Annx'` | `first == 'Ann'` |
 | `matchesPattern(Name, '^C')` | `name MATCHES '\AC.*'` (ECMAScript's search, made a whole-string match, in ICU's syntax) |
 
-The regular expressions above are sketches; the builder escapes the literals
-and anchors the patterns. `substring`, `trim` and `concat` are compared with
+The regular expressions above are sketches; the builder makes them as trees
+(`ODataRegex`), which escape the literals and anchor the patterns. `substring`, `trim` and `concat` are compared with
 `eq` and `ne` only.
 
 **Dates**

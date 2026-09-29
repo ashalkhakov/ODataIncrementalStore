@@ -5,6 +5,7 @@
 #import "ODataError.h"
 #import "ODataValue.h"
 #import <ODataKit/ODataApply.h>
+#import <ODataKit/ODataRegex.h>
 #include <math.h>
 
 typedef NS_ENUM(NSInteger, OISTermKind) {
@@ -332,56 +333,10 @@ static BOOL OISWidens(NSString *from, NSString *to)
   return t;
 }
 
-// An ECMAScript pattern (OData's, Part 2 section 5.1.1.5.4) as ICU's, which
-// MATCHES reads (with "." matching line terminators, and ^ and $ at line
-// boundaries on Apple): ^ and $ outside brackets are the ends of the string,
-// "." is anything but a line terminator, and \d, \D, \w and \W are ASCII.
-// The rest of the two syntaxes is read alike.
-static NSString *OISICUPatternFromECMAScript(NSString *pattern)
-{
-  NSMutableString *out = [NSMutableString string];
-  BOOL inBrackets = NO;
-  for (NSUInteger i = 0; i < pattern.length; i++) {
-    unichar c = [pattern characterAtIndex:i];
-    if (c == '\\' && i + 1 < pattern.length) {
-      unichar next = [pattern characterAtIndex:++i];
-      NSString *ascii = nil;
-      switch (next) {
-        case 'd': ascii = inBrackets ? @"0-9" : @"[0-9]"; break;
-        case 'w': ascii = inBrackets ? @"A-Za-z0-9_" : @"[A-Za-z0-9_]"; break;
-        case 'D': ascii = inBrackets ? nil : @"[^0-9]"; break;
-        case 'W': ascii = inBrackets ? nil : @"[^A-Za-z0-9_]"; break;
-      }
-      if (ascii) [out appendString:ascii];
-      else [out appendFormat:@"\\%C", next];
-      continue;
-    }
-    if (inBrackets) {
-      if (c == ']') inBrackets = NO;
-      [out appendFormat:@"%C", c];
-    } else if (c == '[') {
-      inBrackets = YES;
-      [out appendString:@"["];
-      // A ] first is a member, not the end.
-      if (i + 1 < pattern.length && [pattern characterAtIndex:i + 1] == '^') [out appendFormat:@"%C", [pattern characterAtIndex:++i]];
-      if (i + 1 < pattern.length && [pattern characterAtIndex:i + 1] == ']') { [out appendString:@"\\]"]; i++; }
-    } else if (c == '^') {
-      [out appendString:@"\\A"];
-    } else if (c == '$') {
-      [out appendString:@"\\z"];
-    } else if (c == '.') {
-      [out appendString:@"[^\\n\\r\u2028\u2029]"];
-    } else {
-      [out appendFormat:@"%C", c];
-    }
-  }
-  return out;
-}
-
-// matchesPattern(x, 'pattern') (4.01): the pattern found anywhere in x, as
-// ECMAScript's RegExp test finds it; MATCHES is of the whole string, so
-// anything at all around it: any character, one at a time ("." in ICU would
-// take a \r\n whole, and hide a match that starts at its \n).
+// matchesPattern(x, 'pattern') (4.01): the pattern, ECMAScript's (Part 2
+// section 5.1.1.5.4), found anywhere in x, as ECMAScript's RegExp test finds
+// it; MATCHES is of the whole string, so anything at all around it, one
+// character at a time (ODataRegex.h).
 - (NSPredicate *)matchesPattern:(ODataExpression *)e
 {
   NSArray<ODataExpression *> *args = e.arguments ?: @[];
@@ -396,12 +351,16 @@ static NSString *OISICUPatternFromECMAScript(NSString *pattern)
   if (x.kind != OISTermValue || (x.attribute && x.attribute.attributeType != NSStringAttributeType)) {
     return [self fail:400 message:[NSString stringWithFormat:@"matchesPattern: %@ is not a string", args[0]]];
   }
-  if ([NSRegularExpression regularExpressionWithPattern:pattern.value options:0 error:NULL] == nil) {
-    return [self fail:400 message:[NSString stringWithFormat:@"%@ is not a regular expression", pattern]];
+  NSError *error = nil;
+  NSString *anywhere = [ODataRegex matchesPatternFindingECMAScript:pattern.value error:&error];
+  if (!anywhere) {
+    if (error.code == ODataIncrementalStoreErrorSyntax) {
+      return [self fail:400 message:[NSString stringWithFormat:@"%@ is not a regular expression: %@", pattern, error.localizedDescription]];
+    }
+    return [self unsupported:[NSString stringWithFormat:@"matchesPattern with %@: %@", pattern, error.localizedDescription]];
   }
   NSExpression *value = [self valueExpression:x typedBy:nil];
   if (!value) return nil;
-  NSString *anywhere = [NSString stringWithFormat:@"(?:[^\\r]|\\r)*(?:%@)(?:[^\\r]|\\r)*", OISICUPatternFromECMAScript(pattern.value)];
   NSPredicate *p = OISCompare(value, NSMatchesPredicateOperatorType, [NSExpression expressionForConstantValue:anywhere], 0);
   return [self guarded:[self nullSafe:p terms:@[ x ] type:NSMatchesPredicateOperatorType] terms:@[ x ] whenNull:NO];
 }
@@ -972,31 +931,29 @@ static NSString *OISConstantString(OISTerm *t)
 
 #pragma mark Step functions
 
-// The patterns below are written with "(?s)" and "." for readability; as
-// MATCHES reads them, each "." is one character, a \r of a \r\n included,
-// where ICU's own "." would take a \r\n whole (and count it as one).
-static NSString *OISOneCharacterAtATime(NSString *pattern)
+// What the string functions count is characters one at a time, a \r of a
+// \r\n included, where ICU's own "." would take a \r\n whole: these are
+// the patterns they are compared with, as trees (ODataRegex.h).
+static ODataRegex *OISRun(NSUInteger minimum, NSUInteger maximum)
 {
-  if ([pattern hasPrefix:@"(?s)"]) pattern = [pattern substringFromIndex:4];
-  NSMutableString *out = [NSMutableString string];
-  BOOL inBrackets = NO;
-  for (NSUInteger i = 0; i < pattern.length; i++) {
-    unichar c = [pattern characterAtIndex:i];
-    if (c == '\\' && i + 1 < pattern.length) {
-      [out appendFormat:@"%C%C", c, [pattern characterAtIndex:++i]];
-    } else if (inBrackets) {
-      if (c == ']') inBrackets = NO;
-      [out appendFormat:@"%C", c];
-    } else if (c == '[') {
-      inBrackets = YES;
-      [out appendString:@"["];
-    } else if (c == '.') {
-      [out appendString:@"(?:[^\\r]|\\r)"];
-    } else {
-      [out appendFormat:@"%C", c];
-    }
-  }
-  return out;
+  return [ODataRegex repeat:[ODataRegex any:ODataRegexAnyCodePoint] minimum:minimum maximum:maximum lazy:NO];
+}
+
+static ODataRegex *OISAnyRun(void)
+{
+  return OISRun(0, NSNotFound);
+}
+
+static ODataRegex *OISThen(NSArray<ODataRegex *> *parts)
+{
+  return [ODataRegex sequence:parts];
+}
+
+// x MATCHES the pattern, which MATCHES reads as it is written.
+static NSPredicate *OISMatches(NSExpression *x, ODataRegex *pattern)
+{
+  NSString *text = [pattern stringInDialect:ODataRegexMatches error:NULL];
+  return OISCompare(x, NSMatchesPredicateOperatorType, [NSExpression expressionForConstantValue:text], 0);
 }
 
 // length(x) op n: x MATCHES a run of so many characters.
@@ -1007,22 +964,22 @@ static NSString *OISOneCharacterAtATime(NSString *pattern)
       [value doubleValue] != floor([value doubleValue]) || [value doubleValue] < 0 || [value doubleValue] > 100000) {
     return [self fail:400 message:[NSString stringWithFormat:@"length() is compared with a whole number, not %@", literal]];
   }
-  long long n = [value longLongValue];
-  NSString *pattern;
+  NSUInteger n = (NSUInteger)[value longLongValue];
+  ODataRegex *pattern;
   BOOL negate = NO;
   switch (type) {
-    case NSEqualToPredicateOperatorType: pattern = [NSString stringWithFormat:@"(?s).{%lld}", n]; break;
-    case NSNotEqualToPredicateOperatorType: pattern = [NSString stringWithFormat:@"(?s).{%lld}", n]; negate = YES; break;
-    case NSGreaterThanPredicateOperatorType: pattern = [NSString stringWithFormat:@"(?s).{%lld,}", n + 1]; break;
-    case NSGreaterThanOrEqualToPredicateOperatorType: pattern = [NSString stringWithFormat:@"(?s).{%lld,}", n]; break;
+    case NSEqualToPredicateOperatorType: pattern = OISRun(n, n); break;
+    case NSNotEqualToPredicateOperatorType: pattern = OISRun(n, n); negate = YES; break;
+    case NSGreaterThanPredicateOperatorType: pattern = OISRun(n + 1, NSNotFound); break;
+    case NSGreaterThanOrEqualToPredicateOperatorType: pattern = OISRun(n, NSNotFound); break;
     case NSLessThanPredicateOperatorType:
       if (n == 0) return [NSPredicate predicateWithValue:NO];
-      pattern = [NSString stringWithFormat:@"(?s).{0,%lld}", n - 1];
+      pattern = OISRun(0, n - 1);
       break;
-    case NSLessThanOrEqualToPredicateOperatorType: pattern = [NSString stringWithFormat:@"(?s).{0,%lld}", n]; break;
+    case NSLessThanOrEqualToPredicateOperatorType: pattern = OISRun(0, n); break;
     default: return [self unsupported:@"length() with that operator"];
   }
-  NSPredicate *p = OISCompare(x, NSMatchesPredicateOperatorType, [NSExpression expressionForConstantValue:OISOneCharacterAtATime(pattern)], 0);
+  NSPredicate *p = OISMatches(x, pattern);
   return negate ? [NSCompoundPredicate notPredicateWithSubpredicate:p] : p;
 }
 
@@ -1094,8 +1051,8 @@ static NSString *OISOneCharacterAtATime(NSString *pattern)
 - (NSPredicate *)stringStep:(OISTerm *)t of:(NSExpression *)x type:(NSPredicateOperatorType)type literal:(ODataExpression *)literal
 {
   NSString *f = t.stepFunction;
-  NSPredicate *(^matches)(NSString *) = ^NSPredicate *(NSString *pattern) {
-    return OISCompare(x, NSMatchesPredicateOperatorType, [NSExpression expressionForConstantValue:OISOneCharacterAtATime(pattern)], 0);
+  NSPredicate *(^matches)(ODataRegex *) = ^NSPredicate *(ODataRegex *pattern) {
+    return OISMatches(x, pattern);
   };
   NSPredicate *(^not)(NSPredicate *) = ^NSPredicate *(NSPredicate *p) { return [NSCompoundPredicate notPredicateWithSubpredicate:p]; };
   NSPredicate *no = [NSPredicate predicateWithValue:NO];
@@ -1104,20 +1061,25 @@ static NSString *OISOneCharacterAtATime(NSString *pattern)
     if (![value isKindOfClass:[NSNumber class]] || [value doubleValue] != floor([value doubleValue])) {
       return [self fail:400 message:[NSString stringWithFormat:@"indexof() is compared with a whole number, not %@", literal]];
     }
-    NSString *needle = [NSRegularExpression escapedPatternForString:t.stepArguments[0]];
+    ODataRegex *needle = [ODataRegex literalString:t.stepArguments[0]];
     long long k = [value longLongValue];
+    // Anywhere; so many characters, none the start of the needle.
+    ODataRegex *anywhere = OISThen(@[ OISAnyRun(), needle, OISAnyRun() ]);
+    ODataRegex *(^clear)(long long) = ^ODataRegex *(long long i) {
+      ODataRegex *notNeedle = OISThen(@[ [ODataRegex look:needle behind:NO negated:YES], [ODataRegex any:ODataRegexAnyCodePoint] ]);
+      return [ODataRegex repeat:notNeedle minimum:(NSUInteger)i maximum:(NSUInteger)i lazy:NO];
+    };
     // Found first at k; found at k or later; found before k.
     NSPredicate *(^at)(long long) = ^NSPredicate *(long long i) {
-      return i < 0 ? not(matches([NSString stringWithFormat:@"(?s).*%@.*", needle]))
-                   : matches([NSString stringWithFormat:@"(?s)(?:(?!%@).){%lld}%@.*", needle, i, needle]);
+      return i < 0 ? not(matches(anywhere)) : matches(OISThen(@[ clear(i), needle, OISAnyRun() ]));
     };
     NSPredicate *(^from)(long long) = ^NSPredicate *(long long i) {
-      return matches([NSString stringWithFormat:@"(?s)(?:(?!%@).){%lld}.*%@.*", needle, MAX(i, 0), needle]);
+      return matches(OISThen(@[ clear(MAX(i, 0)), OISAnyRun(), needle, OISAnyRun() ]));
     };
     NSPredicate *(^before)(long long) = ^NSPredicate *(long long i) {
-      return i <= 0 ? not(matches([NSString stringWithFormat:@"(?s).*%@.*", needle]))
-                    : [NSCompoundPredicate orPredicateWithSubpredicates:@[ not(matches([NSString stringWithFormat:@"(?s).*%@.*", needle])),
-                                                                          matches([NSString stringWithFormat:@"(?s).{0,%lld}%@.*", i - 1, needle]) ]];
+      return i <= 0 ? not(matches(anywhere))
+                    : [NSCompoundPredicate orPredicateWithSubpredicates:@[ not(matches(anywhere)),
+                                                                          matches(OISThen(@[ OISRun(0, (NSUInteger)(i - 1)), needle, OISAnyRun() ])) ]];
     };
     switch (type) {
       case NSEqualToPredicateOperatorType: return at(k);
@@ -1140,17 +1102,20 @@ static NSString *OISOneCharacterAtATime(NSString *pattern)
     BOOL counted = t.stepArguments.count > 1;
     long long length = counted ? [t.stepArguments[1] longLongValue] : 0;
     if (!v.length) {
-      match = counted && length == 0 ? [NSPredicate predicateWithValue:YES] : matches([NSString stringWithFormat:@"(?s).{0,%lld}", start]);
+      match = counted && length == 0 ? [NSPredicate predicateWithValue:YES] : matches(OISRun(0, (NSUInteger)start));
     } else if (counted && (long long)v.length > length) {
       match = no;
     } else {
       // Shorter than asked for: the string ends there.
-      NSString *rest = counted && (long long)v.length == length ? @".*" : @"";
-      match = matches([NSString stringWithFormat:@"(?s).{%lld}%@%@", start, [NSRegularExpression escapedPatternForString:v], rest]);
+      NSMutableArray *parts = [NSMutableArray arrayWithObjects:OISRun((NSUInteger)start, (NSUInteger)start), [ODataRegex literalString:v], nil];
+      if (counted && (long long)v.length == length) [parts addObject:OISAnyRun()];
+      match = matches(OISThen(parts));
     }
   } else if ([f isEqualToString:@"trim"]) {
     NSString *trimmed = [v stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceAndNewlineCharacterSet]];
-    match = ![trimmed isEqualToString:v] ? no : matches([NSString stringWithFormat:@"(?s)\\s*%@\\s*", [NSRegularExpression escapedPatternForString:v]]);
+    ODataRegex *spaces = [ODataRegex repeat:[ODataRegex set:@[ [ODataRegexMember classOf:ODataRegexSpaces unicode:YES negated:NO] ] negated:NO]
+                                    minimum:0 maximum:NSNotFound lazy:NO];
+    match = ![trimmed isEqualToString:v] ? no : matches(OISThen(@[ spaces, [ODataRegex literalString:v], spaces ]));
   } else {
     // concat: what is left of the literal once the other part is taken off.
     NSString *prefix = t.stepArguments[0] == [NSNull null] ? @"" : t.stepArguments[0];

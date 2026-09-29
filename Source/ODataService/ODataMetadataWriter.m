@@ -3,6 +3,7 @@
 
 #import "ODataMetadataWriter.h"
 #import "ODataValue.h"
+#import <ODataKit/ODataRegex.h>
 
 // An element with these attributes, in this order: name, value, name,
 // value. NSXML escapes what it writes.
@@ -375,12 +376,15 @@ static void OISAddChildren(NSXMLElement *parent, NSArray<NSXMLElement *> *childr
         annotations[maximum] = constant;
         annotations[[NSString stringWithFormat:@"%@@%@", maximum, exclusive]] = @YES;
         break;
-      case NSMatchesPredicateOperatorType:
-        // MATCHES is of the whole string.
-        if ([constant isKindOfClass:[NSString class]]) {
-          annotations[[OISValidation stringByAppendingString:@".Pattern"]] = [NSString stringWithFormat:@"^(?:%@)$", constant];
-        }
+      case NSMatchesPredicateOperatorType: {
+        // MATCHES is of the whole string, and ICU's; Validation.Pattern is
+        // ECMAScript's. Where ECMAScript cannot say the same, nothing is
+        // said: the service still checks it (ODataRegex.h).
+        ODataRegex *regex = [constant isKindOfClass:[NSString class]] ? [ODataRegex regexWithString:constant dialect:ODataRegexMatches error:NULL] : nil;
+        NSString *pattern = [[regex whole] stringInDialect:ODataRegexECMAScript error:NULL];
+        if (pattern) annotations[[OISValidation stringByAppendingString:@".Pattern"]] = pattern;
         break;
+      }
       case NSInPredicateOperatorType: {
         id values = [constant isKindOfClass:[NSSet class]] ? [constant allObjects] : constant;
         if (![values isKindOfClass:[NSArray class]]) break;

@@ -5,6 +5,7 @@
 #import "ODataPropertyMapper.h"
 #import "ODataValue.h"
 #import "ODataError.h"
+#import "ODataRegex.h"
 
 NSString * const ODataUserInfoUnmapped = @"OData.unmapped";
 NSString * const ODataModelVersionPrefix = @"odata:";
@@ -211,9 +212,12 @@ static void OISApplyVocabularies(NSDictionary<NSString *, id> *annotations, ODat
   }
   if (type == NSStringAttributeType) {
     id pattern = annotations[[validation stringByAppendingString:@"Pattern"]];
-    if ([pattern isKindOfClass:[NSString class]]) {
-      // ECMAScript's test: the pattern anywhere; MATCHES is of the whole.
-      [predicates addObject:OISConstraint(nil, NSMatchesPredicateOperatorType, [NSString stringWithFormat:@"(?s).*(?:%@).*", pattern])];
+    // ECMAScript's, found anywhere, as MATCHES reads it; none where it
+    // cannot say the same, rather than a constraint that is not the
+    // service's.
+    NSString *anywhere = [pattern isKindOfClass:[NSString class]] ? [ODataRegex matchesPatternFindingECMAScript:pattern error:NULL] : nil;
+    if (anywhere) {
+      [predicates addObject:OISConstraint(nil, NSMatchesPredicateOperatorType, anywhere)];
       [warnings addObject:@(NSValidationStringPatternMatchingError)];
     }
     if (property.maxLength) {

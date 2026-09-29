@@ -942,23 +942,41 @@ with a literal, as the following sections show.
 
 ##### Patterns: ECMAScript and ICU
 
-OData's patterns are ECMAScript's; `MATCHES` reads ICU's, and reads them
-with `.` matching line terminators (a `\r\n` taken whole) and, on Apple,
-`^` and `$` at line boundaries. The two syntaxes mostly agree; where they
-do not, the pattern is rewritten so that it matches what ECMAScript would:
+OData's patterns are ECMAScript's; `MATCHES` reads ICU's, with `.`
+matching line terminators (a `\r\n` taken whole) and, on Apple (and on
+gnustep-base with the `predicate-matches-line-anchors` fix), `^` and `$` at
+line boundaries. The two look alike and differ in what they match, so a
+pattern is never passed through as text: `ODataRegex` (ODataKit) reads it
+into a tree whose every node says exactly what it matches, and writes the
+tree in the other dialect, which refuses what it cannot say exactly rather
+than say something close. From ECMAScript, as `MATCHES` reads it:
 
 | ECMAScript | ICU, as `MATCHES` reads it |
 |---|---|
-| `^`, `$` (outside brackets) | `\A`, `\z`: the ends of the string, not of a line |
+| `^`, `$` | `\A`, `\z`: the ends of the string, not of a line |
 | `.` | `[^\n\r\u2028\u2029]`: not a line terminator |
-| `\d`, `\D`, `\w`, `\W` | `[0-9]`, `[^0-9]`, `[A-Za-z0-9_]`, `[^A-Za-z0-9_]`: ASCII, as ECMAScript has them |
+| `\d`, `\w`, `\s` (and `\D`, `\W`, `\S`, in sets too) | `[0-9]`, `[A-Za-z0-9_]`, ECMAScript's white space spelled out: as ECMAScript has them |
+| `\b` | a lookaround of ASCII word characters |
 | found anywhere | `(?:[^\r]|\r)*(?:…)(?:[^\r]|\r)*`: any character, one at a time, so that a match starting at the `\n` of a `\r\n` is found |
 
+A pattern that is none (`(`, `[a`, `a{3,2}`) is `400`; one that is, but
+that the tree does not read (back references, `\p{…}`), is `501`.
+
 The client goes the other way for `LIKE` and `MATCHES`: a wildcard, or a
-`.`, is `(?:\r\n|\r(?!\n)|[^\r])`, any character with a `\r\n` as one, as
-ICU takes it; `\A` and `\z` are `^` and `$`; and what the two read
-differently (`^` and `$` themselves, `\d`, `\w`, `\s` and the other letter
-escapes, inline flags, sets in sets) is refused rather than guessed.
+`.`, is `(?:\r\n|\r(?!\n)|[^\r])`, any character with a `\r\n` as one,
+as ICU takes it; `\A` and `\z` are `^` and `$`; and what ECMAScript cannot
+say (`^` and `$` where they are at each line, ICU's Unicode `\d`, `\w`,
+`\s` and `\b`, inline flags but a leading `(?s)`, sets in sets) is refused
+rather than guessed. The `$metadata` writer does the same for a model's
+`MATCHES` validation, written as `Validation.Pattern`, and leaves out one
+ECMAScript cannot say; the client's model builder, and the service's
+`Validation.Constraint`, read `Validation.Pattern` and `matchesPattern` as
+the server's `matchesPattern` does.
+
+The patterns written for `MATCHES` keep to the part of ICU's syntax
+FreeCoreData's SQL stores translate (literal characters, sets and
+ranges, `.`, `\A`, `\z`, groups, lookahead, repeats) wherever nothing
+outside it is asked for, so they run in the database there.
 
 ##### Step functions as ranges
 

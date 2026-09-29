@@ -168,7 +168,7 @@ calling the client conformant.
 | `rel.@count` | `Nav/$count` | ✅ | |
 | `entity == %@`, `entity IN %@` | `isof(NS.Type)`, `isof(Nav,NS.Type)` | ✅ | An exact type leaves its subentities out (`isof(A) and not isof(B)`); a subentity's property is written through a cast (`NS.Manager/Budget`). |
 | `name.length` | `length(Name)` | ✅ | |
-| `LIKE`, `MATCHES` | `matchesPattern` | ✅ | 4.01 only: an error against a 4.0 service. Anchored, since both match the whole string. `LIKE`'s `*` and `?`, and `MATCHES`'s `.`, become any character as ICU takes it (a line terminator too, `\r\n` as one), and `LIKE[c]` lowercases both sides. A `MATCHES` pattern ICU and ECMAScript read differently (`^`, `$`, `\d`, `\w`, `\s`, inline flags) is an error, as is `MATCHES[c]`, since a regular expression cannot be lowercased safely. |
+| `LIKE`, `MATCHES` | `matchesPattern` | ✅ | 4.01 only: an error against a 4.0 service. Anchored, since both match the whole string. `LIKE`'s `*` and `?`, and `MATCHES`'s `.`, become any character as ICU takes it (a line terminator too, `\r\n` as one), and `LIKE[c]` lowercases both sides. The pattern is read into a tree (`ODataRegex`) as this platform's `MATCHES` reads it and written as ECMAScript; what ECMAScript cannot say the same (`^` and `$` at each line, Unicode `\d`, `\w`, `\s` and `\b`, inline flags) is an error, as is `MATCHES[c]`, since a regular expression cannot be lowercased safely. |
 | Arithmetic (`+ - * /`, `modulus:by:`) | `add`, `sub`, `mul`, `div`, `mod` | ✅ | As Apple and gnustep-base name the functions. A key path the model does not have is an error, not a guess. |
 | Date literals | `2024-01-01T12:00:00.5Z`, `2024-01-01` | ✅ **live** | Typed by the attribute compared with: a DateTimeOffset to the microsecond, an `Edm.Date` as the day. |
 | UUID literals | unquoted Guid | ✅ | |
@@ -471,7 +471,9 @@ done on both sides; the rest is ❌ unless marked otherwise.
   `Exclusive`, `AllowedValues`, `MultipleOf`, `MinItems`/`MaxItems`,
   `Constraint`, `DerivedTypeConstraint`. These map onto Core Data's own
   validation:
-  - `Pattern` is a `MATCHES` validation predicate.
+  - `Pattern` is a `MATCHES` validation predicate: ECMAScript's pattern,
+    found anywhere, written in ICU's syntax (`ODataRegex`); none where the
+    two cannot say the same.
   - `Minimum` and `Maximum` are the attribute's min and max values.
   - `AllowedValues` is an `IN` predicate.
   - `MinItems` and `MaxItems` are a to-many relationship's min and max

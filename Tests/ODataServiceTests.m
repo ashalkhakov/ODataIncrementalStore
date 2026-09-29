@@ -2903,7 +2903,7 @@ static NSComparisonPredicate *OISValidation(NSString *keyPath, NSPredicateOperat
   XCTAssertEqualObjects([schema annotation:@"Core.Description" forTarget:@"Default.Item/Name"], @"What it is called");
   XCTAssertEqualObjects([schema annotation:@"Core.Description#fr" forTarget:@"Default.Item/Name"], @"Son nom");
   XCTAssertEqualObjects([schema annotation:@"Org.Example.V1.Searchable" forTarget:@"Default.Item/Name"], @YES, @"any term at all");
-  XCTAssertEqualObjects([schema annotation:@"Validation.Pattern" forTarget:@"Default.Item/Name"], @"^(?:[A-Z].*)$");
+  XCTAssertEqualObjects([schema annotation:@"Validation.Pattern" forTarget:@"Default.Item/Name"], @"^[A-Z](?:\\r\\n|\\r(?!\\n)|[^\\r])*$");
   XCTAssertTrue([metadata.text rangeOfString:@"<Property Name=\"Name\" Type=\"Edm.String\" MaxLength=\"50\">"].location != NSNotFound, @"%@", metadata.text);
   XCTAssertEqualObjects([schema annotation:@"Validation.Minimum" forTarget:@"Default.Item/Price"], [NSDecimalNumber zero]);
   XCTAssertEqualObjects([schema annotation:@"Validation.Maximum" forTarget:@"Default.Item/Price"], [NSDecimalNumber decimalNumberWithString:@"1000"]);

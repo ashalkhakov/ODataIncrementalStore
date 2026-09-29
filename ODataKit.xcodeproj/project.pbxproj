@@ -70,6 +70,7 @@
 		B8A660C027CF3AD224C5401F /* ODataClassWriter.m in Sources */ = {isa = PBXBuildFile; fileRef = BC33F218A5148A57BD4A53FE /* ODataClassWriter.m */; };
 		B95AE21DA72B1576715BCE0D /* ODataError.m in Sources */ = {isa = PBXBuildFile; fileRef = BF9FF9B4E0ED3F9F68AFFD67 /* ODataError.m */; };
 		B9C16593968EC51AA442C79F /* ODataApply.m in Sources */ = {isa = PBXBuildFile; fileRef = B278CCD1EE0771413289B1BF /* ODataApply.m */; };
+		C1A0E5F1000000000000A001 /* ODataRegex.m in Sources */ = {isa = PBXBuildFile; fileRef = C1A0E5F1000000000000A002 /* ODataRegex.m */; };
 		BA14CA501F7CB1A83428DD6E /* ODataKit.framework in Frameworkstests */ = {isa = PBXBuildFile; fileRef = AA0000000000000000000007 /* ODataKit.framework */; };
 		BA157150B5CB2C5ADF50B9AC /* ODataValueTests.m in Sources */ = {isa = PBXBuildFile; fileRef = BE3D9212857CED74B596EC06 /* ODataValueTests.m */; };
 		BA39A0E142501F3F8733AACA /* ODataExpression.m in Sources */ = {isa = PBXBuildFile; fileRef = BC4150830A60E511EDFED020 /* ODataExpression.m */; };
@@ -88,6 +89,7 @@
 		BC0BBC5190FF7556BC42A7FE /* ODataValue.m in Sources */ = {isa = PBXBuildFile; fileRef = BC2A4D85AAF3941E049BB375 /* ODataValue.m */; };
 		BC755F953112296E0E8137D1 /* ODataQueryBuilder.h in Headers */ = {isa = PBXBuildFile; fileRef = B253B19DC7762A954B421E56 /* ODataQueryBuilder.h */; settings = {ATTRIBUTES = (Public, ); }; };
 		BC8A6A545BCB85FFAB63EEE8 /* ODataExpressionTests.m in Sources */ = {isa = PBXBuildFile; fileRef = BCBBD3FD3B096F870E7CB13B /* ODataExpressionTests.m */; };
+		C1A0E5F1000000000000A005 /* ODataRegexTests.m in Sources */ = {isa = PBXBuildFile; fileRef = C1A0E5F1000000000000A006 /* ODataRegexTests.m */; };
 		BC8D312BFD572BADCEDA503E /* ODataValue.h in Headers */ = {isa = PBXBuildFile; fileRef = B9F38C2E717E0720D785C25D /* ODataValue.h */; settings = {ATTRIBUTES = (Public, ); }; };
 		BC9365A5222B2F21A8EABC9C /* ODataHistory.m in Sources */ = {isa = PBXBuildFile; fileRef = B47892F8D7359812D36C1DFB /* ODataHistory.m */; };
 		BCA4C7DD8D71B7252EFC0591 /* ODataModelBuilderTests.m in Sources */ = {isa = PBXBuildFile; fileRef = BDD1234B5A5212850A89D94D /* ODataModelBuilderTests.m */; };
@@ -104,6 +106,7 @@
 		BEFB5589EC3DACE2024EC81F /* ODataModelBuilder.h in Headers */ = {isa = PBXBuildFile; fileRef = BB6F30CF82E3EDEBC90F595F /* ODataModelBuilder.h */; settings = {ATTRIBUTES = (Public, ); }; };
 		BF79F82E6E0F4202CAE3D0B8 /* ODataOperationCatalog.m in Sources */ = {isa = PBXBuildFile; fileRef = BA2EB602AA25995D34810903 /* ODataOperationCatalog.m */; };
 		BF83239847867BE6FE20375C /* ODataApply.h in Headers */ = {isa = PBXBuildFile; fileRef = B72EE4C94B64568C5EBDC220 /* ODataApply.h */; settings = {ATTRIBUTES = (Public, ); }; };
+		C1A0E5F1000000000000A003 /* ODataRegex.h in Headers */ = {isa = PBXBuildFile; fileRef = C1A0E5F1000000000000A004 /* ODataRegex.h */; settings = {ATTRIBUTES = (Public, ); }; };
 		BFDD379CA7076830C1BD3EAC /* CoreData.framework in Frameworkstests */ = {isa = PBXBuildFile; fileRef = B34C6BA09D1A851E774BD249 /* CoreData.framework */; };
 /* End PBXBuildFile section */
 
@@ -165,6 +168,7 @@
 		B2510B4BE1C68848C8DDF5FE /* ODataSearchPredicate.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = ODataSearchPredicate.h; sourceTree = "<group>"; };
 		B253B19DC7762A954B421E56 /* ODataQueryBuilder.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = ODataQueryBuilder.h; sourceTree = "<group>"; };
 		B278CCD1EE0771413289B1BF /* ODataApply.m */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.objc; path = ODataApply.m; sourceTree = "<group>"; };
+		C1A0E5F1000000000000A002 /* ODataRegex.m */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.objc; path = ODataRegex.m; sourceTree = "<group>"; };
 		B2D17EDD20D3E3D1D2E1BB14 /* Security.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = Security.framework; path = System/Library/Frameworks/Security.framework; sourceTree = SDKROOT; };
 		B2DC65FC070C5C691975B2C9 /* Debug.xcconfig */ = {isa = PBXFileReference; lastKnownFileType = text.xcconfig; path = Debug.xcconfig; sourceTree = "<group>"; };
 		B2FB262C55182612B9FC4702 /* ODataAuthentication.m */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.objc; path = ODataAuthentication.m; sourceTree = "<group>"; };
@@ -198,6 +202,7 @@
 		4C4695EC08E040805F6D5964 /* ODataQuery.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = ODataQuery.h; sourceTree = "<group>"; };
 		B70B76AA54D43A93B2D925E3 /* ODataError.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = ODataError.h; sourceTree = "<group>"; };
 		B72EE4C94B64568C5EBDC220 /* ODataApply.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = ODataApply.h; sourceTree = "<group>"; };
+		C1A0E5F1000000000000A004 /* ODataRegex.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = ODataRegex.h; sourceTree = "<group>"; };
 		B79B75970DACDB3F20CB0BAB /* ODataPropertyMapper.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = ODataPropertyMapper.h; sourceTree = "<group>"; };
 		B7C84FC11DD7261A0B3709F7 /* ODataSchema.m */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.objc; path = ODataSchema.m; sourceTree = "<group>"; };
 		B819C7A9F0C4AD1745DBA5AB /* ODataService.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = ODataService.h; sourceTree = "<group>"; };
@@ -240,6 +245,7 @@
 		BC6FA83F81430EB8A0015BEC /* ODataQueryBuilderTests.m */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.objc; path = ODataQueryBuilderTests.m; sourceTree = "<group>"; };
 		BC713C43C4F5EBCCD1BC7B99 /* OISSignature.m */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.objc; path = OISSignature.m; sourceTree = "<group>"; };
 		BCBBD3FD3B096F870E7CB13B /* ODataExpressionTests.m */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.objc; path = ODataExpressionTests.m; sourceTree = "<group>"; };
+		C1A0E5F1000000000000A006 /* ODataRegexTests.m */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.objc; path = ODataRegexTests.m; sourceTree = "<group>"; };
 		BCFA68AC1F779AD086BBF30F /* ODataServiceBatch.m */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.objc; path = ODataServiceBatch.m; sourceTree = "<group>"; };
 		BD0E19D21EB9182A389283F8 /* ODataIncrementalStore.m */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.objc; path = ODataIncrementalStore.m; sourceTree = "<group>"; };
 		BD3640A4CB161AED48DC4423 /* ODataOperationCall.m */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.objc; path = ODataOperationCall.m; sourceTree = "<group>"; };
@@ -306,6 +312,7 @@
 			children = (
 				B688DF77A530D92AECD8556F /* ODataKit */,
 				B278CCD1EE0771413289B1BF /* ODataApply.m */,
+				C1A0E5F1000000000000A002 /* ODataRegex.m */,
 				BE5990D4C84E1EC229CA5056 /* ODataBatch.m */,
 				B4E0C2F9C9C347E895E31812 /* ODataCSDL.m */,
 				BF9FF9B4E0ED3F9F68AFFD67 /* ODataError.m */,
@@ -335,6 +342,7 @@
 			isa = PBXGroup;
 			children = (
 				BCBBD3FD3B096F870E7CB13B /* ODataExpressionTests.m */,
+				C1A0E5F1000000000000A006 /* ODataRegexTests.m */,
 				BFC56714DFD6BE2E829E1CBD /* ODataHistoryTests.m */,
 				BDD1234B5A5212850A89D94D /* ODataModelBuilderTests.m */,
 				BB577E5CF4CE2F6A616D6346 /* ODataOperationTests.m */,
@@ -385,6 +393,7 @@
 			isa = PBXGroup;
 			children = (
 				B72EE4C94B64568C5EBDC220 /* ODataApply.h */,
+				C1A0E5F1000000000000A004 /* ODataRegex.h */,
 				B58B1F7F6499F45B258C535A /* ODataBatch.h */,
 				BEBA289E13C3D8662C1008AB /* ODataCSDL.h */,
 				B70B76AA54D43A93B2D925E3 /* ODataError.h */,
@@ -512,6 +521,7 @@
 			buildActionMask = 2147483647;
 			files = (
 				BF83239847867BE6FE20375C /* ODataApply.h in Headers */,
+				C1A0E5F1000000000000A003 /* ODataRegex.h in Headers */,
 				B2A761C3BB1A86032F79E542 /* ODataBatch.h in Headers */,
 				B0A3D0303FE9ECE41AAD8746 /* ODataCSDL.h in Headers */,
 				B4D03138626C152A624D8872 /* ODataError.h in Headers */,
@@ -723,6 +733,7 @@
 			buildActionMask = 2147483647;
 			files = (
 				BC8A6A545BCB85FFAB63EEE8 /* ODataExpressionTests.m in Sources */,
+				C1A0E5F1000000000000A005 /* ODataRegexTests.m in Sources */,
 				B7826154FD25D8F66DF99B70 /* ODataHistoryTests.m in Sources */,
 				BCA4C7DD8D71B7252EFC0591 /* ODataModelBuilderTests.m in Sources */,
 				B6234E4BEE3F35AA8278B3E3 /* ODataOperationTests.m in Sources */,
@@ -785,6 +796,7 @@
 			buildActionMask = 2147483647;
 			files = (
 				B9C16593968EC51AA442C79F /* ODataApply.m in Sources */,
+				C1A0E5F1000000000000A001 /* ODataRegex.m in Sources */,
 				B4A603B55B3DDDC2F0227E90 /* ODataBatch.m in Sources */,
 				BB5A24C84EFE49EFF5573781 /* ODataCSDL.m in Sources */,
 				B95AE21DA72B1576715BCE0D /* ODataError.m in Sources */,
