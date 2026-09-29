@@ -1,0 +1,159 @@
+name: Release
+
+# The Workbench for macOS, signed with a Developer ID and notarized: ported
+# from FreeCoreData's and XFormsKit's release workflows. A v* tag builds it
+# and attaches it to that release. Run by hand with a tag, it builds that
+# tag and attaches to its release, one published already included (the
+# ad hoc zip ci.yml attached before this workflow existed is replaced, the
+# name being the same); with none, it builds the branch, as an artifact
+# only. The Linux AppImage is ci.yml's.
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'A v* tag to build, sign and attach to its release (empty: this branch, artifacts only)'
+        required: false
+        default: ''
+
+permissions:
+  contents: write
+
+jobs:
+  macos:
+    name: macOS (signed)
+    runs-on: macos-15
+    timeout-minutes: 60
+    # The signing and notarisation secrets live in this environment, and an
+    # environment's secrets are only readable by a job that names it: without
+    # this line every one of them resolves to the empty string and the job
+    # ships an unsigned build, saying so and passing.
+    environment: production
+    env:
+      TAG: ${{ inputs.tag || (github.ref_type == 'tag' && github.ref_name) || '' }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ env.TAG || github.ref }}
+
+      - name: Version
+        run: |
+          if [ -n "$TAG" ]; then
+            echo "APP_VERSION=${TAG#v}" >> "$GITHUB_ENV"
+          else
+            echo "APP_VERSION=0.0.0-build${{ github.run_number }}" >> "$GITHUB_ENV"
+          fi
+
+      # Release, universal (arm64 and x86_64), the frameworks embedded; it
+      # has to start and pass the offline self-test before anything else.
+      - name: Build
+        run: |
+          xcodebuild -workspace ODataKit.xcworkspace -scheme Workbench \
+            -destination 'generic/platform=macOS' -configuration Release \
+            -derivedDataPath "$RUNNER_TEMP/Release" \
+            MARKETING_VERSION="${APP_VERSION%%-*}" CURRENT_PROJECT_VERSION="$GITHUB_RUN_NUMBER" build
+          app="$RUNNER_TEMP/Release/Build/Products/Release/Workbench.app"
+          echo "APP=$app" >> "$GITHUB_ENV"
+          for fw in ODataKit ODataIncrementalStore ODataService; do
+            test -d "$app/Contents/Frameworks/$fw.framework" \
+              || { echo "::error::Workbench.app does not embed $fw.framework"; exit 1; }
+          done
+          lipo "$app/Contents/MacOS/Workbench" -verify_arch arm64 x86_64
+          "$app/Contents/MacOS/Workbench" --self-test builtin
+
+      # Signing is skipped, loudly, when the certificate secrets are absent, so
+      # a fork or a dry run still produces artifacts -- unsigned, and named so.
+      - name: Sign
+        id: sign
+        env:
+          CERTIFICATE: ${{ secrets.MACOS_CERTIFICATE }}
+          CERTIFICATE_PASSWORD: ${{ secrets.MACOS_CERTIFICATE_PASSWORD }}
+          IDENTITY: ${{ secrets.MACOS_SIGN_IDENTITY }}
+        run: |
+          if [ -z "$CERTIFICATE" ] || [ -z "$IDENTITY" ]; then
+            echo "::warning::MACOS_CERTIFICATE or MACOS_SIGN_IDENTITY not set; shipping unsigned"
+            echo "signed=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          keychain=$RUNNER_TEMP/signing.keychain-db
+          password=$(uuidgen)
+          security create-keychain -p "$password" "$keychain"
+          security set-keychain-settings -lut 21600 "$keychain"
+          security unlock-keychain -p "$password" "$keychain"
+          echo "$CERTIFICATE" | base64 --decode > "$RUNNER_TEMP/cert.p12"
+          security import "$RUNNER_TEMP/cert.p12" -k "$keychain" \
+            -P "$CERTIFICATE_PASSWORD" -T /usr/bin/codesign
+          security set-key-partition-list -S apple-tool:,apple:,codesign: \
+            -s -k "$password" "$keychain" > /dev/null
+          security list-keychain -d user -s "$keychain" login.keychain-db
+          rm -f "$RUNNER_TEMP/cert.p12"
+
+          # --timestamp and --options runtime are what notarization requires.
+          # Signed inside out: the three embedded frameworks, then the app,
+          # whose signature seals theirs. --deep would do it in one call, but
+          # Apple deprecates it and it is the usual reason notarization
+          # rejects a nested framework.
+          for fw in ODataKit ODataIncrementalStore ODataService; do
+            codesign --force --timestamp --options runtime \
+                     --sign "$IDENTITY" "$APP/Contents/Frameworks/$fw.framework"
+          done
+          codesign --force --timestamp --options runtime --sign "$IDENTITY" "$APP"
+          codesign --verify --strict --verbose=2 "$APP"
+          # The hardened runtime loads only frameworks signed by the same
+          # team: the signed app has to start and pass again.
+          "$APP/Contents/MacOS/Workbench" --self-test builtin
+          echo "signed=true" >> "$GITHUB_OUTPUT"
+
+      - name: Notarize
+        if: steps.sign.outputs.signed == 'true'
+        env:
+          NOTARY_APPLE_ID: ${{ secrets.NOTARY_APPLE_ID }}
+          NOTARY_TEAM_ID: ${{ secrets.NOTARY_TEAM_ID }}
+          NOTARY_PASSWORD: ${{ secrets.NOTARY_PASSWORD }}
+        run: |
+          # Checked here rather than in `if:`, where a step's own env block is
+          # not reliably visible to its own condition -- the step would be
+          # skipped whatever the secrets said, and a signed-but-unnotarized app
+          # that Gatekeeper still refuses would ship from a green run.
+          if [ -z "$NOTARY_APPLE_ID" ] || [ -z "$NOTARY_TEAM_ID" ] || [ -z "$NOTARY_PASSWORD" ]; then
+            echo "::warning::NOTARY_* secrets not set; signed but not notarized"
+            exit 0
+          fi
+          ditto -c -k --keepParent "$APP" "$RUNNER_TEMP/Workbench-notarize.zip"
+          # A submission Apple finds invalid still ends the wait: the status
+          # is what says whether it was accepted, and the log says why not.
+          xcrun notarytool submit "$RUNNER_TEMP/Workbench-notarize.zip" \
+            --apple-id "$NOTARY_APPLE_ID" --team-id "$NOTARY_TEAM_ID" \
+            --password "$NOTARY_PASSWORD" --wait --output-format json > "$RUNNER_TEMP/notary.json" || true
+          cat "$RUNNER_TEMP/notary.json"
+          id=$(plutil -extract id raw -o - "$RUNNER_TEMP/notary.json" 2>/dev/null || true)
+          status=$(plutil -extract status raw -o - "$RUNNER_TEMP/notary.json" 2>/dev/null || true)
+          if [ "$status" != "Accepted" ]; then
+            [ -n "$id" ] && xcrun notarytool log "$id" \
+              --apple-id "$NOTARY_APPLE_ID" --team-id "$NOTARY_TEAM_ID" --password "$NOTARY_PASSWORD" || true
+            echo "::error::notarization was not accepted (status: ${status:-none})"
+            exit 1
+          fi
+          xcrun stapler staple "$APP"
+          xcrun stapler validate "$APP"
+          # What a downloaded copy meets: Gatekeeper's own assessment.
+          spctl --assess --type execute --verbose=2 "$APP"
+
+      - name: Package
+        run: |
+          suffix=""
+          [ "${{ steps.sign.outputs.signed }}" = "true" ] || suffix="-unsigned"
+          ditto -c -k --keepParent "$APP" "ODataWorkbench-macOS-${APP_VERSION}${suffix}.zip"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ODataWorkbench-macOS-${{ env.APP_VERSION }}
+          path: ODataWorkbench-macOS-*.zip
+
+      - name: Attach to the release
+        if: env.TAG != ''
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ env.TAG }}
+          files: ODataWorkbench-macOS-*.zip

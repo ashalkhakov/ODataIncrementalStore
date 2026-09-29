@@ -109,12 +109,11 @@ jobs:
         run: |
           "$RUNNER_TEMP/DerivedData/Build/Products/Debug/Workbench.app/Contents/MacOS/Workbench" --self-test
 
-      # The Workbench as an app to hand someone: Release, universal (arm64
-      # and x86_64), the frameworks embedded, signed ad hoc -- there is no
-      # Developer ID here, so a downloaded copy is opened with right-click,
-      # Open (or xattr -dr com.apple.quarantine Workbench.app). It has to
-      # start and pass the offline self-test before it is uploaded. A v* tag
-      # attaches it to that release.
+      # The Workbench as an app, for each push: Release, universal (arm64 and
+      # x86_64), the frameworks embedded, signed ad hoc and named -unsigned.
+      # It has to start and pass the offline self-test before it is
+      # uploaded. The one a release carries is release.yml's, signed with a
+      # Developer ID and notarized.
       - name: Package the Workbench app
         run: |
           version="${GITHUB_REF_NAME#v}"
@@ -131,19 +130,13 @@ jobs:
           lipo "$app/Contents/MacOS/Workbench" -verify_arch arm64 x86_64
           codesign --verify --deep --strict "$app"
           "$app/Contents/MacOS/Workbench" --self-test builtin
-          ditto -c -k --keepParent "$app" "ODataWorkbench-macOS-$version.zip"
+          ditto -c -k --keepParent "$app" "ODataWorkbench-macOS-$version-unsigned.zip"
 
       - uses: actions/upload-artifact@v4
         with:
           name: ODataWorkbench-macOS-${{ github.sha }}
           path: ODataWorkbench-macOS-*.zip
           retention-days: 14
-
-      - name: Attach the app to the release
-        if: github.ref_type == 'tag' && startsWith(github.ref_name, 'v')
-        uses: softprops/action-gh-release@v2
-        with:
-          files: ODataWorkbench-macOS-*.zip
 
       - name: Upload test results
         uses: actions/upload-artifact@v4

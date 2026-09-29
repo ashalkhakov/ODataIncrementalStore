@@ -110,13 +110,16 @@ What you can do:
 
 ## Getting it
 
-CI packages the Workbench on every push, as artifacts of the run (kept 14
-days), and attaches both packages to the release when a `v*` tag is pushed:
+A release carries both packages, attached when a `v*` tag is pushed:
 
 - **macOS**: `ODataWorkbench-macOS-<version>.zip`, a universal (Apple silicon
-  and Intel) `Workbench.app` with the framework inside. It is signed ad hoc,
-  not with a Developer ID, so open it the first time with right-click, Open
-  (or `xattr -dr com.apple.quarantine Workbench.app`).
+  and Intel) `Workbench.app` with the frameworks inside, signed with a
+  Developer ID and notarized, so it opens like any downloaded app. It is
+  `.github/workflows/release.yml`'s: the frameworks signed, then the app,
+  with the hardened runtime; notarized and stapled; and checked the way
+  Gatekeeper checks a download. Run by hand with a tag, it signs that
+  release's app again (the first release's included). Without the signing
+  secrets (a fork) it still builds, and names the zip `-unsigned`.
 - **Linux**: `ODataWorkbench-Linux-<version>-x86_64.AppImage`, the app with
   the library, FreeCoreData and the GNUstep runtime inside
   (`Scripts/prepare-appdir.sh`, `Scripts/package-appimage.sh`). It needs
@@ -124,8 +127,11 @@ days), and attaches both packages to the release when a `v*` tag is pushed:
   executable and run it; where FUSE is missing, `APPIMAGE_EXTRACT_AND_RUN=1`
   runs it without.
 
-Before either is uploaded, CI starts it and runs its offline self-test: the
-AppImage in a plain Ubuntu container with no GNUstep in it.
+Before either is uploaded, it is started and runs its offline self-test:
+the Mac app before signing and again after, the AppImage in a plain Ubuntu
+container with no GNUstep in it. CI also packages both on every push, as
+artifacts of the run (kept 14 days); the Mac app there is signed ad hoc and
+named `-unsigned`.
 
 ## Testing
 
