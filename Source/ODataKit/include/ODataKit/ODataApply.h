@@ -75,6 +75,8 @@ typedef NS_ENUM(NSInteger, ODataApplyKind) {
 + (instancetype)groupByPaths:(NSArray<NSArray<NSString *> *> *)paths sequence:(NSArray<ODataApplyTransformation *> *)sequence;
 + (instancetype)aggregateWith:(NSArray<ODataAggregate *> *)aggregates;
 + (instancetype)orderByItems:(NSArray<ODataOrderItem *> *)items;
++ (instancetype)computeItems:(NSArray<ODataComputeItem *> *)items;
++ (instancetype)searchWith:(ODataSearchExpression *)search;
 + (instancetype)top:(NSUInteger)count;
 + (instancetype)skip:(NSUInteger)count;
 // ancestors or descendants (method) of the nodes of $root/hierarchy, by

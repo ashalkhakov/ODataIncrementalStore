@@ -149,6 +149,20 @@ FOUNDATION_EXPORT NSString * const ODataUserInfoETag;  // @"OData.etag"
 @property (nonatomic, readonly, copy) NSArray<ODataMessage *> *messages;
 @end
 
+// What changed in a set since a token (Part 1 section 11.3, delta links):
+// the objects inserted or updated, first changed first; those deleted, by
+// entity and key values (Core Data attribute names, as a tombstone keeps
+// them); and the token the next delta goes on from.
+@interface ODataChanges : NSObject
++ (instancetype)changesWithToken:(NSString *)token;
+@property (nonatomic, copy) NSString *token;
+@property (nonatomic, readonly, copy) NSArray<NSManagedObjectID *> *changed;
+// Each @{ @"entity": NSEntityDescription, @"values": key values }.
+@property (nonatomic, readonly, copy) NSArray<NSDictionary *> *deleted;
+- (void)addChanged:(NSManagedObjectID *)objectID;
+- (void)addDeletedEntity:(NSEntityDescription *)entity keyValues:(NSDictionary<NSString *, id> *)values;
+@end
+
 // What an entity set does. The default does everything over the request's
 // context; a subclass overrides what it needs to and is registered with
 // -[ODataService setHandler:forEntitySet:]. Values are keyed by Core Data
@@ -202,13 +216,26 @@ FOUNDATION_EXPORT NSString * const ODataUserInfoETag;  // @"OData.etag"
 - (nullable id)valueOfCustomAggregate:(NSString *)name objects:(NSArray<NSManagedObject *> *)objects request:(ODataRequest *)request;
 
 // Whether a read of the set may ask to follow its changes (Prefer:
-// odata.track-changes, Part 1 section 11.3): a delta link, answered from
-// the store's persistent history. Also needs every store to keep history
-// (NSPersistentHistoryTrackingKey) and the set's key attributes to be kept
-// in a deletion's tombstone (preservesValueInHistoryOnDeletion); $metadata
-// says which sets can (Capabilities.ChangeTracking). YES by default; a
-// handler whose rows are not the store's says NO.
+// odata.track-changes, Part 1 section 11.3): a delta link, answered by
+// -changesSince:request:reply:. YES by default; a handler whose rows are
+// not the store's, and that has no changes of its own to give, says NO.
 @property (nonatomic) BOOL tracksChanges;
+// Whether it can, as $metadata says (Capabilities.ChangeTracking). The
+// default: tracksChanges, and the store's persistent history, which every
+// store keeps (NSPersistentHistoryTrackingKey), with the set's key
+// attributes kept in a deletion's tombstone
+// (preservesValueInHistoryOnDeletion). A handler that gives changes of
+// its own says so here.
+- (BOOL)canTrackChanges;
+// Where changes are followed from, now: a token -changesSince: takes. The
+// default: the persistent history's.
+- (nullable NSString *)changeTokenForRequest:(ODataRequest *)request;
+// What changed in the set since a token this gave (the set's rows only: the
+// service keeps those the request matches, and names the others it no
+// longer does). A token it did not give is a failure with a 400
+// (ODataServiceError), one it can no longer answer for a 410: the caller
+// reads the set again. The default: the persistent history since it.
+- (nullable ODataChanges *)changesSince:(NSString *)token request:(ODataRequest *)request reply:(ODataReply *)reply;
 
 // The rows the caller may see at all, however they are reached: fetched,
 // by key, through navigation or $expand. nil: every row.
@@ -316,6 +343,13 @@ FOUNDATION_EXPORT NSString * const ODataUserInfoETag;  // @"OData.etag"
 @property (nonatomic) NSUInteger maxRowsInMemory;
 // A JSON body nested deeper than this: 400. Default: 64.
 @property (nonatomic) NSUInteger maxJSONDepth;
+// Each read is planned before it runs, in a nested relational algebra
+// (docs/query-plan.md): what the store does, what is done here. With
+// explains, GET <root>/$explain/<resource path>?<query> answers with a
+// read's plans (logical and physical) instead of its rows; not standard
+// OData, and off by default. With logsPlans, each read's plan is logged.
+@property (nonatomic) BOOL explains;
+@property (nonatomic) BOOL logsPlans;
 // Who each request is from (ODataAuthentication.h). A request that names
 // no one is answered 401, unless allowsAnonymousRequests; without an
 // authenticator (the default) every request is anonymous and answered.

@@ -1,0 +1,286 @@
+// ODataService — what the service's own files share, beyond its public
+// interface: the call a request is answered by, and the types it uses.
+// Copyright (C) 2026 OIS contributors
+// SPDX-License-Identifier: LGPL-2.1-or-later
+
+#pragma once
+#import "ODataService.h"
+#import "ODataAuthentication.h"
+#import "ODataError.h"
+#import "ODataValue.h"
+#import "ODataSchema.h"
+#import "ODataMetadataWriter.h"
+#import "ODataPredicateBuilder.h"
+#import "ODataOperationCatalog.h"
+#import "ODataApply.h"
+#import "ODataTimeline.h"
+
+NS_ASSUME_NONNULL_BEGIN
+
+@class OISServedOperation, OISPlan, OISPlanNode, OISRelation;
+
+@interface ODataReply (Internal)
+// The handler method has returned this: an answer now, unless it deferred.
+- (void)returned:(nullable id)value;
+@end
+
+@interface ODataService ()
+- (void)rememberAnswer:(NSInteger)status headers:(NSDictionary *)headers body:(NSData *)body
+                forKey:(NSString *)key signature:(nullable NSString *)signature;
+- (void)prepare;
+@property (nonatomic, strong) ODataPredicateBuilder *predicates;
+@property (nonatomic, strong) NSMutableDictionary<NSString *, ODataEntitySetHandler *> *handlers;
+@property (nonatomic, strong) NSMutableDictionary<NSString *, NSString *> *metadataByVersion;
+@property (nonatomic, strong) ODataMetadataWriter *writer;
+@property (nonatomic, strong) OISOperationCatalog *catalog;
+@property (nonatomic) BOOL prepared;
+- (ODataEntitySetHandler *)handlerForEntity:(NSEntityDescription *)entity;
+- (BOOL)isComputedAttribute:(NSAttributeDescription *)attribute;
+- (BOOL)isImmutableAttribute:(NSAttributeDescription *)attribute;
+- (NSDictionary *)metadataContainerAnnotations;
+- (NSString *)entitySetForEntity:(NSEntityDescription *)entity;
+- (NSAttributeDescription *)versionAttributeOfEntity:(NSEntityDescription *)entity;
+@end
+
+static inline NSEntityDescription *OISRootEntity(NSEntityDescription *entity)
+{
+  while (entity.superentity) entity = entity.superentity;
+  return entity;
+}
+
+typedef NS_ENUM(NSInteger, OISTargetKind) {
+  OISTargetServiceDocument,
+  OISTargetMetadata,
+  OISTargetCollection,
+  OISTargetEntity,
+  OISTargetProperty,
+  OISTargetValue,
+  OISTargetCount,
+  OISTargetOperation,
+  OISTargetReference,
+  OISTargetStream   // a media resource (Entity/$value) or stream property: `attribute` holds it
+};
+
+@interface OISStoreGrouping : NSObject
+@property (nonatomic, strong) ODataApplyTransformation *transformation;
+@property (nonatomic, strong) NSFetchRequest *fetch;
+@property (nonatomic, copy) NSArray<NSString *> *keyPaths;
+@property (nonatomic, copy) NSArray *groupAttributes;
+@property (nonatomic, copy) NSDictionary *aggregateAttributes;
+// By alias: how each aggregate is read from a fetched row.
+@property (nonatomic, strong) NSMutableDictionary<NSString *, NSString *> *methods;  // count, sum, decimalSum, average, exactAverage, value
+- (NSArray<NSDictionary *> *)groupsOfRows:(NSArray<NSDictionary *> *)rows;
+@end
+
+@interface OISHierarchy : NSObject
+@property (nonatomic, strong) NSEntityDescription *entity;
+@property (nonatomic, copy) NSString *qualifier;
+@property (nonatomic, copy) NSString *nodeKeyPath;   // q, as a Core Data key path
+@property (nonatomic, copy) NSString *parentKey;     // the parent relationship's name
+@property (nonatomic) BOOL parentsAreMany;
+@property (nonatomic, strong) NSMutableArray *nodes;  // identifiers, in key order
+@property (nonatomic, strong) NSMutableDictionary<id<NSCopying>, NSManagedObject *> *objects;
+@property (nonatomic, strong) NSMutableDictionary<id<NSCopying>, NSArray *> *parents;
+@property (nonatomic, strong) NSMutableDictionary<id<NSCopying>, NSMutableArray *> *children;
+- (void)readObjects:(NSArray<NSManagedObject *> *)objects;
+- (NSArray *)roots;
+- (NSArray *)leaves;
+// Within distance (0: any), and the node itself where includeSelf.
+- (NSArray *)ancestorsOf:(id)node distance:(NSInteger)distance includeSelf:(BOOL)includeSelf;
+- (NSArray *)descendantsOf:(id)node distance:(NSInteger)distance includeSelf:(BOOL)includeSelf;
+- (NSArray *)siblingsOf:(id)node;
+@end
+
+@interface OISServiceCall : NSObject <OISTimelineWriting>
+// A repeatable request's: where its answer is remembered, and what it was.
+@property (nonatomic, copy, nullable) NSString *repeatabilityKey;
+@property (nonatomic, copy, nullable) NSString *repeatabilitySignature;
+@property (nonatomic, strong) ODataService *service;
+@property (nonatomic, strong) ODataExchange *exchange;
+@property (nonatomic, strong) ODataRequest *request;
+@property (nonatomic, strong) ODataValueCoder *coder;
+@property (nonatomic, copy) NSString *metadataLevel;  // minimal, full, none
+@property (nonatomic, copy) NSString *resourcePath;   // as the request wrote it, decoded
+@property (nonatomic) BOOL headOnly;
+@property (nonatomic) BOOL done;
+
+// Where the path leads.
+@property (nonatomic) OISTargetKind kind;
+@property (nonatomic) NSUInteger index;
+@property (nonatomic, strong) NSEntityDescription *entity;
+@property (nonatomic, strong) ODataEntitySetHandler *handler;
+@property (nonatomic, strong, nullable) NSManagedObject *object;
+@property (nonatomic, strong, nullable) NSManagedObject *parent;
+@property (nonatomic, strong, nullable) NSRelationshipDescription *navigation;
+@property (nonatomic, strong, nullable) NSAttributeDescription *attribute;
+@property (nonatomic, strong, nullable) OISServedOperation *operation;
+// How the entity in hand was reached, when through a navigation property:
+// what $ref after it refers to.
+@property (nonatomic, strong, nullable) NSManagedObject *referrer;
+@property (nonatomic, strong, nullable) NSRelationshipDescription *referrerNavigation;
+// $id: the entity a DELETE of a collection's $ref removes.
+@property (nonatomic, copy, nullable) NSString *referenceID;
+@property (nonatomic) BOOL referencesCollection;  // Categories(1)/Products/$ref, Products/$ref
+@property (nonatomic) BOOL referencesOnly;        // a collection read as references
+// The entities a function returned, read on as a collection.
+@property (nonatomic, copy, nullable) NSArray<NSManagedObject *> *members;
+// A deep insert's response: the entity with what it created expanded.
+@property (nonatomic, strong, nullable) ODataQueryOptions *responseOptions;
+// A deep insert's or update's nested changes, by the body (or delta
+// entry) each is for: the replies of those made, and the objects. A
+// handler that answers later stops the write; its answer starts it again
+// from the top, and what is done is not done twice.
+@property (nonatomic, strong, nullable) NSMutableDictionary<NSValue *, ODataReply *> *nestedReplies;
+@property (nonatomic, strong, nullable) NSMutableDictionary<NSValue *, NSManagedObject *> *nestedObjects;
+@property (nonatomic, strong, nullable) ODataReply *nestedPending;
+@property (nonatomic, strong, nullable) NSValue *nestedPendingKey;
+@property (nonatomic) SEL nestedRestart;
+// The request's entity while a nested change's handler has it.
+@property (nonatomic, strong, nullable) NSEntityDescription *nestedRequestEntity;
+@property (nonatomic) BOOL nestedRestartReplacing;
+// The request's body, parsed once: a write started again reads the same.
+@property (nonatomic, strong, nullable) NSDictionary *parsedBody;
+@property (nonatomic, copy, nullable) NSDictionary<NSString *, ODataExpression *> *operationArguments;
+// Parameter aliases whose values are JSON (@p=[...], @p={...}): an
+// operation's complex and collection arguments.
+@property (nonatomic, copy, nullable) NSDictionary<NSString *, id> *JSONAliases;
+
+// $metadata in CSDL JSON rather than XML.
+@property (nonatomic) BOOL metadataAsJSON;
+// A collection read: its page of rows, their count, the next page, and how
+// the pages are cut.
+@property (nonatomic, strong, nullable) NSArray *objects;
+@property (nonatomic, strong, nullable) NSNumber *count;
+@property (nonatomic, copy, nullable) NSString *nextLink;
+@property (nonatomic) NSUInteger pageSize;
+@property (nonatomic) NSUInteger skipToken;
+@property (nonatomic) BOOL pagedByPreference;
+// The recursive hierarchies the request names, read once ($root/Set#Q), and
+// what each hierarchy function in it stands for (Node in (...)), by the
+// call's description.
+@property (nonatomic, strong, nullable) NSMutableDictionary<NSString *, OISHierarchy *> *hierarchies;
+@property (nonatomic, copy, nullable) NSDictionary<NSString *, ODataExpression *> *hierarchyCalls;
+// Slices a temporal action changed: their versions moved on once.
+@property (nonatomic, strong, nullable) NSMutableSet *temporalTouched;
+// $compute's values' expressions, by entity and name.
+@property (nonatomic, strong, nullable) NSMutableDictionary<NSString *, NSExpression *> *computedExpressions;
+// Change tracking: the $deltatoken asked about, and the token a delta link
+// in the response carries (the history as it stood when the read began).
+@property (nonatomic, copy, nullable) NSString *deltaToken;
+@property (nonatomic, copy, nullable) NSString *trackingToken;
+@property (nonatomic, copy, nullable) NSArray<NSManagedObjectID *> *deltaChanged;
+@property (nonatomic, copy, nullable) NSArray<NSDictionary *> *deltaDeleted;
+
+// The read's plan (OISServiceCall+Plan.m), and where it has got to: what
+// is known, by operator; what the handler is being asked; the rows; the
+// values of the store scan's bindings ($compute's, when rows are written);
+// the members of each expansion, by expand item (identity), relationship
+// and parent's object ID.
+@property (nonatomic, strong, nullable) OISPlan *plan;
+@property (nonatomic, strong, nullable) NSMutableDictionary<NSString *, id> *planMemo;
+@property (nonatomic) SEL planAfter;
+@property (nonatomic, copy, nullable) NSString *planPendingKey;
+@property (nonatomic) BOOL planPending;
+@property (nonatomic) BOOL planWaiting;
+@property (nonatomic, strong, nullable) OISRelation *planResult;
+@property (nonatomic, copy, nullable) NSDictionary<NSString *, id> *planValues;
+// The spans of the dates month() and the rest range over, as the plan read them.
+@property (nonatomic, copy, nullable) NSDictionary<NSString *, NSArray *> *planSpans;
+@property (nonatomic, strong, nullable) NSMapTable *nestResults;
+@property (nonatomic, strong, nullable) NSMutableSet<NSString *> *nestVisited;
+// GET <root>/$explain/...: the plan is the answer.
+@property (nonatomic) BOOL explaining;
+// The options entities are written with ($apply's expand() in $expand).
+@property (nonatomic, strong, nullable) ODataQueryOptions *writtenOptions;
+// A delta's entries for what no longer matches the read.
+@property (nonatomic, copy, nullable) NSArray *deltaRemoved;
+// A response of entities, while the plan reads their expansions: the
+// entity, its status and headers; an operation's reply, to go on with;
+// a temporal action's slices.
+@property (nonatomic, strong, nullable) NSManagedObject *writtenObject;
+@property (nonatomic) NSInteger writtenStatus;
+@property (nonatomic, copy, nullable) NSDictionary *writtenHeaders;
+@property (nonatomic, strong, nullable) ODataReply *resumeReply;
+@property (nonatomic, copy, nullable) NSArray *timeslices;
+
+// A write in progress.
+@property (nonatomic) BOOL replace;
+// NO in a change set: its requests share a context, saved once they have
+// all succeeded.
+@property (nonatomic) BOOL saves;
+// Who is asking is known: the authenticator has answered, or a batch
+// the request is part of has been authenticated.
+@property (nonatomic) BOOL authenticated;
+@end
+
+@interface OISComputedRow : NSObject
+@property (nonatomic, strong) NSManagedObject *object;
+@property (nonatomic, strong) NSMutableDictionary *computed;
+@end
+
+// The call's own machinery, which the plan uses.
+@interface OISServiceCall (Machinery)
+- (ODataPropertyMapper *)mapper;
+- (ODataReply *)replyWithAction:(SEL)action;
+- (void)respondJSON:(id)json status:(NSInteger)status headers:(nullable NSDictionary *)headers;
+- (void)respondError:(NSError *)error;
+- (void)fail:(NSInteger)status message:(NSString *)message;
+- (NSString *)canonicalPathOf:(NSManagedObject *)object;
+- (NSPredicate *)predicateForObjects:(NSArray<NSManagedObject *> *)objects;
+- (nullable NSPredicate *)membersOfNavigation;
+- (nullable NSPredicate *)collectionPredicateWithFilter:(BOOL)withFilter error:(NSError **)error;
+- (nullable NSPredicate *)predicateForSearch:(ODataSearchExpression *)search entity:(NSEntityDescription *)entity;
+- (nullable id)predicateForApplicationTimeOf:(ODataQueryOptions *)options entity:(NSEntityDescription *)entity error:(NSError **)error;
+- (BOOL)applyIsFiltersOnly;
+- (BOOL)canTrackChanges;
+- (BOOL)withinRowsInMemory:(NSUInteger)count;
+- (NSDictionary<NSString *, ODataExpression *> *)computedNamesOf:(ODataQueryOptions *)options;
+- (nullable OISStoreGrouping *)storeGroupingOf:(ODataApplyTransformation *)t predicate:(NSPredicate *)predicate;
+- (NSArray *)rowsOfGroups:(NSArray<NSDictionary *> *)raw grouping:(ODataApplyTransformation *)t keyPaths:(NSArray *)keyPaths
+          groupAttributes:(NSArray *)groupAttributes aggregateAttributes:(NSDictionary *)aggregateAttributes;
+- (BOOL)applyTransformations:(NSArray<ODataApplyTransformation *> *)transformations rows:(NSArray * _Nonnull * _Nonnull)rowsp
+                       shape:(NSMutableArray * _Nullable * _Nonnull)shapep computed:(NSMutableDictionary *)computed expansions:(NSMutableArray *)expansions;
+- (nullable NSDictionary *)valuesOf:(NSArray<ODataExpression *> *)asked over:(NSArray *)rows shape:(nullable NSArray *)shape computed:(NSDictionary *)computed;
+- (nullable ODataExpression *)hierarchical:(nullable ODataExpression *)e;
+- (NSArray<ODataOrderItem *> *)resolvedOrder:(NSArray<ODataOrderItem *> *)items options:(ODataQueryOptions *)options;
+- (BOOL)resolveHierarchyCalls;
+- (nullable OISHierarchy *)describedHierarchyOf:(NSArray<NSString *> *)setPath qualifier:(NSString *)qualifier
+                                          fetch:(NSFetchRequest * _Nullable * _Nullable)fetchp handler:(ODataEntitySetHandler * _Nullable * _Nullable)handlerp;
+- (BOOL)takeChanges:(ODataChanges *)changes;
+- (NSDictionary *)removedEntry:(NSString *)path reason:(NSString *)reason;
+@end
+
+// The plan (OISServiceCall+Plan.m).
+@interface OISServiceCall (Plan)
+- (nullable OISPlan *)planPlainRead;
+- (nullable OISPlan *)planAppliedRead;
+- (nullable OISPlan *)planCountRead;
+- (OISPlan *)planDelta;
+- (OISPlan *)planOfObjects:(NSArray *)objects options:(ODataQueryOptions *)options entity:(nullable NSEntityDescription *)entity;
+// Plans are run from the top, again when a handler answers later; then
+// after, with planResult set.
+- (void)runPlan:(OISPlan *)plan then:(SEL)after;
+// The parents' members of a to-many relationship, as the store selects
+// them (with the predicate and sort), read through the handler for them
+// all, by parent object ID: under key, what the plan knows; nil until
+// known (planPending), or once answered with the error.
+- (nullable NSDictionary<NSManagedObjectID *, NSArray *> *)membersOf:(NSArray<NSManagedObject *> *)parents
+                                                        relationship:(NSRelationshipDescription *)relationship
+                                                           predicate:(nullable NSPredicate *)predicate
+                                                                sort:(NSArray<NSSortDescriptor *> *)sort key:(NSString *)key;
+- (void)planDidReply:(ODataReply *)reply;
+// An expansion's members of a parent, as the plan read them:
+// @{ members: its page, count: all of them }; nil when it has none.
+- (nullable NSDictionary *)nestedMembersOf:(ODataExpandItem *)item relationship:(NSString *)name parent:(NSManagedObject *)parent;
+@end
+
+NSArray<ODataExpression *> *OISTheseOfFilter(ODataQueryOptions *options);
+NSArray<ODataExpression *> *OISTheseOfOrder(ODataQueryOptions *options);
+NSString * _Nullable OISHierarchyFunction(NSString *name);
+void OISAddExpressionsOfOptions(ODataQueryOptions * _Nullable options, NSMutableArray *into);
+void OISAddExpressionsOfTransformations(NSArray<ODataApplyTransformation *> * _Nullable transformations, NSMutableArray *into);
+// Options with some of their values in: $filter's and $compute's, and
+// $orderby's ($these, by the description of what each stands for).
+ODataQueryOptions *OISOptionsReplacing(ODataQueryOptions *options, NSDictionary * _Nullable filterValues, NSDictionary * _Nullable orderValues);
+
+NS_ASSUME_NONNULL_END

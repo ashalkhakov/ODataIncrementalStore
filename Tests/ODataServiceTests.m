@@ -38,6 +38,51 @@
 }
 @end
 
+// Changes of its own, not the store's history: a feed whose tokens are
+// feed-1, feed-2, ...; from feed-1, Chai and Chang changed and Products(99)
+// was deleted, told later, as a feed that is asked would.
+@interface OISFeedProducts : ODataEntitySetHandler
+@end
+
+@implementation OISFeedProducts
+
+- (BOOL)canTrackChanges
+{
+  return YES;
+}
+
+- (NSString *)changeTokenForRequest:(ODataRequest *)request
+{
+  return @"feed-1";
+}
+
+- (ODataChanges *)changesSince:(NSString *)token request:(ODataRequest *)request reply:(ODataReply *)reply
+{
+  if (![token hasPrefix:@"feed-"]) {
+    [reply failWithError:ODataServiceError(400, @"Not a token of the feed")];
+    return nil;
+  }
+  [reply defer];
+  NSManagedObjectContext *context = request.context;
+  NSEntityDescription *entity = self.entity;
+  dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(10 * NSEC_PER_MSEC)), dispatch_get_global_queue(0, 0), ^{
+    [context performBlock:^{
+      ODataChanges *changes = [ODataChanges changesWithToken:@"feed-2"];
+      if ([token isEqualToString:@"feed-1"]) {
+        NSFetchRequest *fetch = [NSFetchRequest fetchRequestWithEntityName:@"Product"];
+        fetch.predicate = [NSPredicate predicateWithFormat:@"id IN %@", @[ @1, @2 ]];
+        fetch.sortDescriptors = @[ [NSSortDescriptor sortDescriptorWithKey:@"id" ascending:YES] ];
+        for (NSManagedObject *product in [context executeFetchRequest:fetch error:NULL]) [changes addChanged:product.objectID];
+        [changes addDeletedEntity:entity keyValues:@{ @"id": @99 }];
+      }
+      [reply finishWithResult:changes];
+    }];
+  });
+  return nil;
+}
+
+@end
+
 // Hides discontinued products, and answers fetches later, from another
 // thread, as a handler that waits on something would.
 @interface OISLaterProducts : ODataEntitySetHandler
@@ -983,6 +1028,33 @@
 
 #pragma mark Handlers
 
+// A read's plan, as $explain answers with it where the service says so:
+// what the store does, what is done here.
+- (void)testExplain
+{
+  XCTAssertNotEqual([self get:@"$explain/Products"].status, 200, @"not unless the service explains");
+  _service.explains = YES;
+  OISServiceResponse *r = [self get:@"$explain/Products?$filter=UnitPrice gt $these/aggregate(UnitPrice with average)&$orderby=ProductName&$top=2&$expand=Category&$count=true"];
+  XCTAssertEqual(r.status, 200, @"%@", r.text);
+  NSString *physical = r.json[@"physical"], *logical = r.json[@"logical"];
+  XCTAssertTrue([physical containsString:@"Store scan Product where UnitPrice gt $these/aggregate(UnitPrice with average)"], @"%@", physical);
+  XCTAssertTrue([physical containsString:@"sort ProductName, key top 2 page 2"], @"%@", physical);
+  XCTAssertTrue([physical containsString:@"$these/aggregate(UnitPrice with average) :=\n    Value $these/aggregate(UnitPrice with average)\n      Store scan Product"], @"%@", physical);
+  XCTAssertTrue([physical containsString:@"Nest Category"], @"%@", physical);
+  XCTAssertTrue([physical containsString:@"$count :=\n  Store count Product"], @"%@", physical);
+  XCTAssertTrue([logical containsString:@"Limit top 2\n  Sort ProductName\n    Select UnitPrice gt $these/aggregate(UnitPrice with average)\n      Scan Product"], @"%@", logical);
+
+  // Sorted here, by what the store cannot sort by: every row, then the page.
+  physical = [self get:@"$explain/Products?$orderby=UnitPrice mul 2 desc&$top=1"].json[@"physical"];
+  XCTAssertTrue([physical containsString:@"Limit top 1 page 1\n  Apply orderby(UnitPrice mul 2 desc)\n    Store scan Product sort key at most 10000"], @"%@", physical);
+  // $apply: its leading filter in the store, the rest here.
+  physical = [self get:@"$explain/Products?$apply=filter(UnitPrice gt 10)/groupby((Category/CategoryName),aggregate(UnitPrice with sum as T))"].json[@"physical"];
+  XCTAssertTrue([physical containsString:@"groupby((Category/CategoryName),aggregate(UnitPrice with sum as T))"], @"%@", physical);
+  XCTAssertTrue([physical containsString:@"Store scan Product where UnitPrice gt 10"], @"%@", physical);
+  XCTAssertEqual(([self send:@"POST" path:@"$explain/Products" headers:nil body:@{}].status), 405);
+  XCTAssertEqual([[self get:@"Products?$top=1"].json[@"value"] count], 1u, @"a read is still a read");
+}
+
 - (void)testHandlerSeesAndAnswersLater
 {
   OISLaterProducts *handler = [[OISLaterProducts alloc] initWithEntity:OISCatalogEntity(@"Product")];
@@ -991,8 +1063,32 @@
   XCTAssertEqual(handler.deferred, 1);
   XCTAssertEqual([self get:@"Products(5)"].status, 404, @"by key too");
   XCTAssertEqualObjects([self get:@"Products/$count"].text, @"4");
+  NSInteger asked = handler.deferred;
   NSArray *expanded = [self get:@"Categories(2)?$expand=Products"].json[@"Products"];
   XCTAssertEqual(expanded.count, 2u, @"and through $expand");
+  XCTAssertEqual(handler.deferred, asked + 1, @"an expansion is read through the handler");
+
+  // Answers that come later, as the plan runs again from the top: nested
+  // expansions, counts, a grouping.
+  OISServiceResponse *r = [self get:@"Categories?$expand=Products($expand=Category($expand=Products($select=ProductName));$count=true)&$count=true&$orderby=CategoryID"];
+  XCTAssertEqual(r.status, 200, @"%@", r.text);
+  XCTAssertEqualObjects(r.json[@"@odata.count"], @2);
+  XCTAssertEqualObjects([r.json[@"value"] valueForKey:@"Products@odata.count"], (@[ @2, @2 ]), @"%@", r.text);
+  XCTAssertEqualObjects([[r.json[@"value"][1][@"Products"] firstObject] valueForKeyPath:@"Category.Products.ProductName"],
+                        (@[ @"Aniseed Syrup", @"Chef Anton's Cajun Seasoning" ]), @"%@", r.text);
+  r = [self get:@"Products?$apply=groupby((Category/CategoryName),aggregate($count as N))&$orderby=Category/CategoryName"];
+  XCTAssertEqual(r.status, 200, @"%@", r.text);
+  XCTAssertEqualObjects([r.json[@"value"] valueForKey:@"N"], (@[ @2, @2 ]), @"%@", r.text);
+  // A join's members too, through the handler: at the top, and within a
+  // group's transformations.
+  asked = handler.deferred;
+  r = [self get:@"Categories?$apply=join(Products as P)/groupby((CategoryName),aggregate($count as N))&$orderby=CategoryName"];
+  XCTAssertEqual(r.status, 200, @"%@", r.text);
+  XCTAssertEqualObjects([r.json[@"value"] valueForKey:@"N"], (@[ @2, @2 ]), @"the discontinued one is not joined: %@", r.text);
+  XCTAssertEqual(handler.deferred, asked + 1, @"the members, read once for all the categories");
+  r = [self get:@"Categories?$apply=groupby((CategoryName),join(Products as P)/aggregate($count as N))&$orderby=CategoryName"];
+  XCTAssertEqual(r.status, 200, @"%@", r.text);
+  XCTAssertEqualObjects([r.json[@"value"] valueForKey:@"N"], (@[ @2, @2 ]), @"%@", r.text);
 
   handler.allowsDelete = NO;
   XCTAssertEqual(([self send:@"DELETE" path:@"Products(1)" headers:nil body:nil].status), 405);
@@ -2127,6 +2223,11 @@
       XCTAssertEqualObjects([self sortedEmployeeNames:path], expected[filter], @"%@: %@", storeType, filter);
     }
     XCTAssertEqual([self get:@"Employees?$filter=hour(Hired) eq 9"].status, 501, @"%@: six years of days is too many ranges", storeType);
+    // The span, read first, through the handler.
+    _service.explains = YES;
+    NSString *physical = [self get:@"$explain/Employees?$filter=month(Manager/Hired) eq 12"].json[@"physical"];
+    XCTAssertTrue([physical hasPrefix:@"Span Employee.hired\nStore scan Employee where month(Manager/Hired) eq 12"], @"%@", physical);
+    _service.explains = NO;
 
     // Ann hired the morning before Bob: two days of hours.
     NSManagedObjectContext *context = [[NSManagedObjectContext alloc] init];
@@ -4543,6 +4644,25 @@ static NSDate *OISDay(NSString *day)
   NSManagedObjectContext *context = [[NSManagedObjectContext alloc] init];
   context.persistentStoreCoordinator = _coordinator;
   return context;
+}
+
+// A handler's own changes, with no persistent history: its tokens in the
+// delta links, its changes in the deltas.
+- (void)testDeltaLinksFromTheHandler
+{
+  [_service setHandler:[[OISFeedProducts alloc] initWithEntity:OISCatalogEntity(@"Product")] forEntitySet:@"Products"];
+  XCTAssertTrue([[self get:@"$metadata"].text containsString:@"ChangeTracking"]);
+  OISServiceResponse *read = [self send:@"GET" path:@"Products?$select=ProductName" headers:@{ @"Prefer": @"odata.track-changes" } body:nil];
+  XCTAssertEqual(read.status, 200, @"%@", read.text);
+  NSString *link = read.json[@"@odata.deltaLink"];
+  XCTAssertTrue([link containsString:@"$deltatoken=feed-1"], @"%@", read.text);
+  OISServiceResponse *delta = [self get:[self pathOfLink:link]];
+  XCTAssertEqual(delta.status, 200, @"%@", delta.text);
+  NSArray *values = delta.json[@"value"];
+  XCTAssertEqualObjects([[values subarrayWithRange:NSMakeRange(0, 2)] valueForKey:@"ProductName"], (@[ @"Chai", @"Chang" ]), @"%@", delta.text);
+  XCTAssertEqualObjects(values.lastObject[@"@odata.id"], @"Products(99)", @"%@", delta.text);
+  XCTAssertTrue([delta.json[@"@odata.deltaLink"] containsString:@"$deltatoken=feed-2"], @"%@", delta.text);
+  XCTAssertEqual([self get:@"Products?$deltatoken=other"].status, 400, @"the handler's own refusal");
 }
 
 // Part 1 section 11.3: Prefer: odata.track-changes gives the read a delta

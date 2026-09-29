@@ -15,6 +15,8 @@
 #import "ODataTimeline.h"
 #import "ODataCSDL.h"
 #import <objc/runtime.h>
+#import "ODataServiceInternal.h"
+#import "OISPlan.h"
 
 NSString * const ODataUserInfoETag = @"OData.etag";
 
@@ -215,6 +217,9 @@ NSString * const ODataUserInfoETag = @"OData.etag";
 // A fetch, and what a store refuses to evaluate (Apple's SQLite store
 // raises for arithmetic on a key path's collection operator,
 // products.@count * 20) as 501, not as the service failing.
+static NSString *OISStringFromHistoryToken(NSPersistentHistoryToken *token);
+static BOOL OISHistoryTokenFromString(NSString *string, NSPersistentHistoryToken **token);
+
 static NSArray *OISFetch(NSManagedObjectContext *context, NSFetchRequest *fetchRequest, NSError **error)
 {
   @try {
@@ -225,6 +230,50 @@ static NSArray *OISFetch(NSManagedObjectContext *context, NSFetchRequest *fetchR
     return nil;
   }
 }
+
+@implementation ODataChanges {
+  NSMutableArray *_changed;
+  NSMutableArray *_deleted;
+}
+
++ (instancetype)changesWithToken:(NSString *)token
+{
+  ODataChanges *changes = [[self alloc] init];
+  changes.token = token;
+  return changes;
+}
+
+- (instancetype)init
+{
+  self = [super init];
+  if (!self) return nil;
+  _changed = [NSMutableArray array];
+  _deleted = [NSMutableArray array];
+  _token = @"0";
+  return self;
+}
+
+- (NSArray *)changed
+{
+  return [_changed copy];
+}
+
+- (NSArray *)deleted
+{
+  return [_deleted copy];
+}
+
+- (void)addChanged:(NSManagedObjectID *)objectID
+{
+  if (objectID) [_changed addObject:objectID];
+}
+
+- (void)addDeletedEntity:(NSEntityDescription *)entity keyValues:(NSDictionary *)values
+{
+  if (entity) [_deleted addObject:@{ @"entity": entity, @"values": values ?: @{} }];
+}
+
+@end
 
 @implementation ODataEntitySetHandler
 
@@ -242,6 +291,81 @@ static NSArray *OISFetch(NSManagedObjectContext *context, NSFetchRequest *fetchR
   _allowsDelete = YES;
   _tracksChanges = YES;
   return self;
+}
+
+- (BOOL)canTrackChanges
+{
+  NSPersistentStoreCoordinator *coordinator = self.service.coordinator;
+  if (!self.tracksChanges || !coordinator.persistentStores.count) return NO;
+  for (NSPersistentStore *store in coordinator.persistentStores) {
+    id option = store.options[NSPersistentHistoryTrackingKey];
+    BOOL tracking = [option isKindOfClass:[NSDictionary class]] || ([option respondsToSelector:@selector(boolValue)] && [option boolValue]);
+    if (!tracking) return NO;
+  }
+  NSEntityDescription *root = self.entity;
+  while (root.superentity) root = root.superentity;
+  for (NSAttributeDescription *attribute in [self.service.mapper keyAttributesForEntity:root]) {
+    if (!attribute.preservesValueInHistoryOnDeletion) return NO;
+  }
+  return YES;
+}
+
+- (NSString *)changeTokenForRequest:(ODataRequest *)request
+{
+  return OISStringFromHistoryToken([self.service.coordinator currentPersistentHistoryTokenFromStores:nil]);
+}
+
+// The persistent history since the token: each object's changes in order,
+// one that came and went since not mentioned.
+- (ODataChanges *)changesSince:(NSString *)token request:(ODataRequest *)request reply:(ODataReply *)reply
+{
+  NSPersistentHistoryToken *since = nil;
+  if (!OISHistoryTokenFromString(token, &since)) {
+    [reply failWithError:ODataServiceError(400, [NSString stringWithFormat:@"$deltatoken=%@ is not one this service wrote", token])];
+    return nil;
+  }
+  NSError *error = nil;
+  NSPersistentHistoryChangeRequest *history = [NSPersistentHistoryChangeRequest fetchHistoryAfterToken:since];
+  history.resultType = NSPersistentHistoryResultTypeTransactionsAndChanges;
+  NSPersistentHistoryResult *result = (NSPersistentHistoryResult *)[request.context executeRequest:history error:&error];
+  if (!result) {
+    // NSPersistentHistoryTokenExpiredError, which FreeCoreData does not name.
+    BOOL expired = [error.domain isEqualToString:NSCocoaErrorDomain] && error.code == 134301;
+    [reply failWithError:expired ? ODataServiceError(410, @"The delta link has expired; read the set again") : error];
+    return nil;
+  }
+  NSMutableOrderedSet *changed = [NSMutableOrderedSet orderedSet];
+  NSMutableSet *born = [NSMutableSet set];
+  NSMutableDictionary *deleted = [NSMutableDictionary dictionary];
+  NSPersistentHistoryToken *last = since;
+  for (NSPersistentHistoryTransaction *transaction in result.result) {
+    last = transaction.token ?: last;
+    for (NSPersistentHistoryChange *change in transaction.changes) {
+      NSManagedObjectID *oid = change.changedObjectID;
+      if (![oid.entity isKindOfEntity:self.entity]) continue;
+      switch (change.changeType) {
+        case NSPersistentHistoryChangeTypeInsert:
+          [born addObject:oid];
+          [changed addObject:oid];
+          break;
+        case NSPersistentHistoryChangeTypeUpdate:
+          [changed addObject:oid];
+          break;
+        case NSPersistentHistoryChangeTypeDelete:
+          [changed removeObject:oid];
+          if ([born containsObject:oid]) {
+            [born removeObject:oid];
+          } else {
+            deleted[oid] = change.tombstone ?: @{};
+          }
+          break;
+      }
+    }
+  }
+  ODataChanges *changes = [ODataChanges changesWithToken:OISStringFromHistoryToken(last)];
+  for (NSManagedObjectID *oid in changed) [changes addChanged:oid];
+  for (NSManagedObjectID *oid in deleted) [changes addDeletedEntity:oid.entity keyValues:deleted[oid]];
+  return changes;
 }
 
 - (NSPredicate *)predicateForVisibleObjectsInRequest:(ODataRequest *)request
@@ -344,24 +468,6 @@ static NSArray *OISFetch(NSManagedObjectContext *context, NSFetchRequest *fetchR
 
 #pragma mark - The service's own state
 
-@interface ODataService ()
-- (void)rememberAnswer:(NSInteger)status headers:(NSDictionary *)headers body:(NSData *)body
-                forKey:(NSString *)key signature:(nullable NSString *)signature;
-- (void)prepare;
-@property (nonatomic, strong) ODataPredicateBuilder *predicates;
-@property (nonatomic, strong) NSMutableDictionary<NSString *, ODataEntitySetHandler *> *handlers;
-@property (nonatomic, strong) NSMutableDictionary<NSString *, NSString *> *metadataByVersion;
-@property (nonatomic, strong) ODataMetadataWriter *writer;
-@property (nonatomic, strong) OISOperationCatalog *catalog;
-@property (nonatomic) BOOL prepared;
-- (ODataEntitySetHandler *)handlerForEntity:(NSEntityDescription *)entity;
-- (BOOL)isComputedAttribute:(NSAttributeDescription *)attribute;
-- (BOOL)isImmutableAttribute:(NSAttributeDescription *)attribute;
-- (NSDictionary *)metadataContainerAnnotations;
-- (NSString *)entitySetForEntity:(NSEntityDescription *)entity;
-- (NSAttributeDescription *)versionAttributeOfEntity:(NSEntityDescription *)entity;
-- (BOOL)tracksChangesOfEntity:(NSEntityDescription *)root;
-@end
 
 // An asynchronous request: the client's exchange until it is answered
 // (202, or the answer itself when that comes first), who sent it, and its
@@ -414,14 +520,7 @@ BOOL ODataJSONNestedWithin(NSData *data, NSUInteger depth)
   return YES;
 }
 
-static NSEntityDescription *OISRootEntity(NSEntityDescription *entity)
-{
-  while (entity.superentity) entity = entity.superentity;
-  return entity;
-}
 
-// NSPersistentHistoryTokenExpiredError, which FreeCoreData does not name.
-static const NSInteger OISHistoryTokenExpired = 134301;
 
 // A delta token: the persistent history token, archived, in base64url;
 // 0 for the start of history (a store with none yet may have no token).
@@ -449,23 +548,12 @@ static BOOL OISHistoryTokenFromString(NSString *string, NSPersistentHistoryToken
   return YES;
 }
 
+
 static NSString *OISPercentDecoded(NSString *text)
 {
   return [text stringByRemovingPercentEncoding] ?: text;
 }
 
-typedef NS_ENUM(NSInteger, OISTargetKind) {
-  OISTargetServiceDocument,
-  OISTargetMetadata,
-  OISTargetCollection,
-  OISTargetEntity,
-  OISTargetProperty,
-  OISTargetValue,
-  OISTargetCount,
-  OISTargetOperation,
-  OISTargetReference,
-  OISTargetStream   // a media resource (Entity/$value) or stream property: `attribute` holds it
-};
 
 #pragma mark - One call
 
@@ -480,16 +568,6 @@ typedef NS_ENUM(NSInteger, OISTargetKind) {
 //   the values beside each, and null where it is 0;
 //   sum of integers is a decimal, and average of integers the exact
 //   quotient of their sum and their count.
-@interface OISStoreGrouping : NSObject
-@property (nonatomic, strong) ODataApplyTransformation *transformation;
-@property (nonatomic, strong) NSFetchRequest *fetch;
-@property (nonatomic, copy) NSArray<NSString *> *keyPaths;
-@property (nonatomic, copy) NSArray *groupAttributes;
-@property (nonatomic, copy) NSDictionary *aggregateAttributes;
-// By alias: how each aggregate is read from a fetched row.
-@property (nonatomic, strong) NSMutableDictionary<NSString *, NSString *> *methods;  // count, sum, decimalSum, average, exactAverage, value
-- (NSArray<NSDictionary *> *)groupsOfRows:(NSArray<NSDictionary *> *)rows;
-@end
 
 @implementation OISStoreGrouping
 
@@ -549,24 +627,6 @@ static NSArray<NSString *> *OISApplyTransformations(void)
 // recursive query: the service reads each node's identifier and its
 // parents' and walks the tree here, and what it finds is a set of
 // identifiers, which a store tests with IN.
-@interface OISHierarchy : NSObject
-@property (nonatomic, strong) NSEntityDescription *entity;
-@property (nonatomic, copy) NSString *qualifier;
-@property (nonatomic, copy) NSString *nodeKeyPath;   // q, as a Core Data key path
-@property (nonatomic, copy) NSString *parentKey;     // the parent relationship's name
-@property (nonatomic) BOOL parentsAreMany;
-@property (nonatomic, strong) NSMutableArray *nodes;  // identifiers, in key order
-@property (nonatomic, strong) NSMutableDictionary<id<NSCopying>, NSManagedObject *> *objects;
-@property (nonatomic, strong) NSMutableDictionary<id<NSCopying>, NSArray *> *parents;
-@property (nonatomic, strong) NSMutableDictionary<id<NSCopying>, NSMutableArray *> *children;
-- (void)readObjects:(NSArray<NSManagedObject *> *)objects;
-- (NSArray *)roots;
-- (NSArray *)leaves;
-// Within distance (0: any), and the node itself where includeSelf.
-- (NSArray *)ancestorsOf:(id)node distance:(NSInteger)distance includeSelf:(BOOL)includeSelf;
-- (NSArray *)descendantsOf:(id)node distance:(NSInteger)distance includeSelf:(BOOL)includeSelf;
-- (NSArray *)siblingsOf:(id)node;
-@end
 
 @implementation OISHierarchy
 
@@ -665,121 +725,9 @@ static NSArray<NSString *> *OISApplyTransformations(void)
 
 @end
 
-@interface OISServiceCall : NSObject <OISTimelineWriting>
-// A repeatable request's: where its answer is remembered, and what it was.
-@property (nonatomic, copy, nullable) NSString *repeatabilityKey;
-@property (nonatomic, copy, nullable) NSString *repeatabilitySignature;
-@property (nonatomic, strong) ODataService *service;
-@property (nonatomic, strong) ODataExchange *exchange;
-@property (nonatomic, strong) ODataRequest *request;
-@property (nonatomic, strong) ODataValueCoder *coder;
-@property (nonatomic, copy) NSString *metadataLevel;  // minimal, full, none
-@property (nonatomic, copy) NSString *resourcePath;   // as the request wrote it, decoded
-@property (nonatomic) BOOL headOnly;
-@property (nonatomic) BOOL done;
-
-// Where the path leads.
-@property (nonatomic) OISTargetKind kind;
-@property (nonatomic) NSUInteger index;
-@property (nonatomic, strong) NSEntityDescription *entity;
-@property (nonatomic, strong) ODataEntitySetHandler *handler;
-@property (nonatomic, strong, nullable) NSManagedObject *object;
-@property (nonatomic, strong, nullable) NSManagedObject *parent;
-@property (nonatomic, strong, nullable) NSRelationshipDescription *navigation;
-@property (nonatomic, strong, nullable) NSAttributeDescription *attribute;
-@property (nonatomic, strong, nullable) OISServedOperation *operation;
-// How the entity in hand was reached, when through a navigation property:
-// what $ref after it refers to.
-@property (nonatomic, strong, nullable) NSManagedObject *referrer;
-@property (nonatomic, strong, nullable) NSRelationshipDescription *referrerNavigation;
-// $id: the entity a DELETE of a collection's $ref removes.
-@property (nonatomic, copy, nullable) NSString *referenceID;
-@property (nonatomic) BOOL referencesCollection;  // Categories(1)/Products/$ref, Products/$ref
-@property (nonatomic) BOOL referencesOnly;        // a collection read as references
-// The entities a function returned, read on as a collection.
-@property (nonatomic, copy, nullable) NSArray<NSManagedObject *> *members;
-// A deep insert's response: the entity with what it created expanded.
-@property (nonatomic, strong, nullable) ODataQueryOptions *responseOptions;
-// A deep insert's or update's nested changes, by the body (or delta
-// entry) each is for: the replies of those made, and the objects. A
-// handler that answers later stops the write; its answer starts it again
-// from the top, and what is done is not done twice.
-@property (nonatomic, strong, nullable) NSMutableDictionary<NSValue *, ODataReply *> *nestedReplies;
-@property (nonatomic, strong, nullable) NSMutableDictionary<NSValue *, NSManagedObject *> *nestedObjects;
-@property (nonatomic, strong, nullable) ODataReply *nestedPending;
-@property (nonatomic, strong, nullable) NSValue *nestedPendingKey;
-@property (nonatomic) SEL nestedRestart;
-// The request's entity while a nested change's handler has it.
-@property (nonatomic, strong, nullable) NSEntityDescription *nestedRequestEntity;
-@property (nonatomic) BOOL nestedRestartReplacing;
-// The request's body, parsed once: a write started again reads the same.
-@property (nonatomic, strong, nullable) NSDictionary *parsedBody;
-@property (nonatomic, copy, nullable) NSDictionary<NSString *, ODataExpression *> *operationArguments;
-// Parameter aliases whose values are JSON (@p=[...], @p={...}): an
-// operation's complex and collection arguments.
-@property (nonatomic, copy, nullable) NSDictionary<NSString *, id> *JSONAliases;
-
-// A read in progress.
-@property (nonatomic, strong, nullable) NSFetchRequest *fetch;
-// $metadata in CSDL JSON rather than XML.
-@property (nonatomic) BOOL metadataAsJSON;
-// $apply's transformations still to do on the rows fetched.
-@property (nonatomic, copy, nullable) NSArray<ODataApplyTransformation *> *applied;
-// The grouping the store did, when it did the first one.
-@property (nonatomic, strong, nullable) OISStoreGrouping *storeGrouping;
-// Objects written side by side (a page, or the members of an expansion), by
-// object ID: whose to-many expansions are fetched together.
-@property (nonatomic, strong, nullable) NSMutableDictionary<NSManagedObjectID *, NSArray *> *siblings;
-// Expanded members fetched together: by expand item (identity), then by
-// relationship name, then by the parent's object ID.
-@property (nonatomic, strong, nullable) NSMapTable *expandedMembers;
-@property (nonatomic, strong, nullable) NSArray *objects;
-@property (nonatomic, strong, nullable) NSNumber *count;
-@property (nonatomic, copy, nullable) NSString *nextLink;
-@property (nonatomic) NSUInteger pageSize;
-@property (nonatomic) NSUInteger skipToken;
-@property (nonatomic) BOOL pagedByPreference;
-// $orderby by what $compute computes: sorted, then paged, here.
-@property (nonatomic, copy, nullable) NSArray<NSSortDescriptor *> *memorySort;
-// The values of the collection the request's $filter and $compute ask for
-// ($these/aggregate(...)), by their descriptions, once read.
-@property (nonatomic, copy, nullable) NSDictionary<NSString *, id> *theseValues;
-// The same for $orderby, whose collection is what the $filter left.
-@property (nonatomic, copy, nullable) NSDictionary<NSString *, id> *theseOrderValues;
-// The recursive hierarchies the request names, read once ($root/Set#Q), and
-// what each hierarchy function in it stands for (Node in (...)), by the
-// call's description.
-@property (nonatomic, strong, nullable) NSMutableDictionary<NSString *, OISHierarchy *> *hierarchies;
-@property (nonatomic, copy, nullable) NSDictionary<NSString *, ODataExpression *> *hierarchyCalls;
-@property (nonatomic) NSUInteger memoryOffset;
-@property (nonatomic) NSUInteger memoryLimit;
-// Slices a temporal action changed: their versions moved on once.
-@property (nonatomic, strong, nullable) NSMutableSet *temporalTouched;
-// $compute's values' expressions, by entity and name.
-@property (nonatomic, strong, nullable) NSMutableDictionary<NSString *, NSExpression *> *computedExpressions;
-// Change tracking: the $deltatoken asked about, and the token a delta link
-// in the response carries (the history as it stood when the read began).
-@property (nonatomic, copy, nullable) NSString *deltaToken;
-@property (nonatomic, copy, nullable) NSString *trackingToken;
-@property (nonatomic, copy, nullable) NSArray<NSManagedObjectID *> *deltaChanged;
-@property (nonatomic, copy, nullable) NSArray<NSDictionary *> *deltaDeleted;
-
-// A write in progress.
-@property (nonatomic) BOOL replace;
-// NO in a change set: its requests share a context, saved once they have
-// all succeeded.
-@property (nonatomic) BOOL saves;
-// Who is asking is known: the authenticator has answered, or a batch
-// the request is part of has been authenticated.
-@property (nonatomic) BOOL authenticated;
-@end
 
 // An entity with values $apply's compute gave it: answers them by name,
 // and anything else as the object does.
-@interface OISComputedRow : NSObject
-@property (nonatomic, strong) NSManagedObject *object;
-@property (nonatomic, strong) NSMutableDictionary *computed;
-@end
 
 @implementation OISComputedRow
 - (id)valueForKey:(NSString *)key
@@ -963,6 +911,15 @@ static NSUInteger OISExpandDepth(ODataQueryOptions *options)
   NSString *encoded = [self encodedPathOf:url];
   NSString *resource = encoded.length > rootPath.length ? [encoded substringFromIndex:rootPath.length] : @"";
   if ([resource hasSuffix:@"/"]) resource = [resource substringToIndex:resource.length - 1];
+  // $explain/<resource path>: the read's plans, where the service says so.
+  if (self.service.explains && ([resource isEqualToString:@"$explain"] || [resource hasPrefix:@"$explain/"])) {
+    if (![self.request.method isEqualToString:@"GET"]) {
+      [self fail:405 message:@"$explain explains reads (GET)"];
+      return NO;
+    }
+    self.explaining = YES;
+    resource = resource.length > 9 ? [resource substringFromIndex:9] : @"";
+  }
   self.resourcePath = OISPercentDecoded(resource);
 
   NSError *error = nil;
@@ -1507,7 +1464,6 @@ static NSUInteger OISExpandDepth(ODataQueryOptions *options)
 - (void)dispatch
 {
   if (![self negotiateFormat]) return;
-  if (![self resolveHierarchyCalls]) return;
   NSString *method = self.request.method;
   self.request.entity = self.entity;
   switch (self.kind) {
@@ -1883,116 +1839,6 @@ static NSUInteger OISExpandDepth(ODataQueryOptions *options)
   return json;
 }
 
-// Objects written side by side: each one's to-many expansions are fetched
-// with the others' (membersOf:).
-- (void)noteSiblings:(NSArray *)objects
-{
-  if (objects.count < 2) return;
-  if (!self.siblings) self.siblings = [NSMutableDictionary dictionary];
-  for (id object in objects) {
-    if ([object isKindOfClass:[NSManagedObject class]]) self.siblings[((NSManagedObject *)object).objectID] = objects;
-  }
-}
-
-// How many parents one fetch of their members names (an IN list of bound
-// parameters, which SQLite and FreeCoreData's SQL stores limit).
-static const NSUInteger OISExpandBatch = 500;
-
-// The members of a to-many expansion of an object, as the store selects
-// them: fetched with those of the objects written beside it, with what the
-// caller may see, the expansion's filter and its ordering (then the key),
-// and split among the parents. Where the inverse is to-one, one fetch
-// (inverse IN the parents), split by the inverse. Otherwise (a
-// many-to-many, or no inverse), two: the parents again with the
-// relationship prefetched (the join, at once), then the related rows
-// (SELF IN them all), each parent given those in its own set. NSNull when
-// they are more than one fetch should name, which leaves them to the
-// caller; nil, with the error, when the filter or a fetch fails.
-- (id)membersOf:(NSManagedObject *)object item:(ODataExpandItem *)item relationship:(NSRelationshipDescription *)relationship
-                  where:(NSPredicate *)predicate sort:(NSArray<NSSortDescriptor *> *)sort error:(NSError **)error
-{
-  if (!self.expandedMembers) {
-    self.expandedMembers = [NSMapTable mapTableWithKeyOptions:NSPointerFunctionsObjectPointerPersonality | NSPointerFunctionsStrongMemory
-                                                 valueOptions:NSPointerFunctionsStrongMemory];
-  }
-  NSMutableDictionary *byRelationship = [self.expandedMembers objectForKey:item];
-  if (!byRelationship) {
-    byRelationship = [NSMutableDictionary dictionary];
-    [self.expandedMembers setObject:byRelationship forKey:item];
-  }
-  NSMutableDictionary *byParent = byRelationship[relationship.name];
-  if (!byParent) {
-    byParent = [NSMutableDictionary dictionary];
-    byRelationship[relationship.name] = byParent;
-  }
-  NSArray *found = byParent[object.objectID];
-  if (found) return found;
-
-  // The parents not yet fetched for, this object first; of its entity.
-  NSMutableArray *parents = [NSMutableArray arrayWithObject:object];
-  for (NSManagedObject *sibling in self.siblings[object.objectID]) {
-    if (sibling == object || byParent[sibling.objectID] || ![sibling.entity isKindOfEntity:relationship.entity]) continue;
-    if (parents.count >= OISExpandBatch) break;
-    [parents addObject:sibling];
-  }
-  NSRelationshipDescription *inverse = relationship.inverseRelationship;
-  BOOL byInverse = inverse && !inverse.isToMany;
-  NSMutableDictionary<NSManagedObjectID *, NSSet *> *sets = nil;
-  id among = parents;
-  NSString *through = inverse.name;
-  if (!byInverse) {
-    // The parents' sets, the join read at once.
-    NSFetchRequest *again = [NSFetchRequest fetchRequestWithEntityName:object.entity.name];
-    again.predicate = [NSComparisonPredicate predicateWithLeftExpression:[NSExpression expressionForEvaluatedObject]
-                                                         rightExpression:[NSExpression expressionForConstantValue:parents]
-                                                                modifier:NSDirectPredicateModifier
-                                                                    type:NSInPredicateOperatorType
-                                                                 options:0];
-    again.relationshipKeyPathsForPrefetching = @[ relationship.name ];
-    if (![self.request.context executeFetchRequest:again error:error]) return nil;
-    sets = [NSMutableDictionary dictionary];
-    NSMutableSet *related = [NSMutableSet set];
-    for (NSManagedObject *parent in parents) {
-      NSSet *set = [parent valueForKey:relationship.name] ?: [NSSet set];
-      sets[parent.objectID] = set;
-      [related unionSet:set];
-    }
-    if (related.count > OISExpandBatch) {
-      // Too many to name: each parent's own, here (said once for them all).
-      for (NSManagedObject *parent in parents) byParent[parent.objectID] = [NSNull null];
-      return [NSNull null];
-    }
-    among = related.allObjects;
-    through = nil;
-  }
-  NSFetchRequest *fetch = [NSFetchRequest fetchRequestWithEntityName:relationship.destinationEntity.name];
-  NSPredicate *mine = [NSComparisonPredicate predicateWithLeftExpression:through ? [NSExpression expressionForKeyPath:through]
-                                                                                 : [NSExpression expressionForEvaluatedObject]
-                                                         rightExpression:[NSExpression expressionForConstantValue:among]
-                                                                modifier:NSDirectPredicateModifier
-                                                                    type:NSInPredicateOperatorType
-                                                                 options:0];
-  fetch.predicate = predicate ? [NSCompoundPredicate andPredicateWithSubpredicates:@[ mine, predicate ]] : mine;
-  fetch.sortDescriptors = sort;
-  NSArray *rows = [self.request.context executeFetchRequest:fetch error:error];
-  if (!rows) return nil;
-  for (NSManagedObject *parent in parents) byParent[parent.objectID] = [NSMutableArray array];
-  if (byInverse) {
-    for (NSManagedObject *row in rows) {
-      NSManagedObject *parent = [row valueForKey:through];
-      [byParent[parent.objectID] addObject:row];
-    }
-  } else {
-    for (NSManagedObject *parent in parents) {
-      NSSet *set = sets[parent.objectID];
-      for (NSManagedObject *row in rows) if ([set containsObject:row]) [byParent[parent.objectID] addObject:row];
-    }
-  }
-  // Written side by side in turn: their own expansions together.
-  [self noteSiblings:rows];
-  return byParent[object.objectID];
-}
-
 // $levels=max is taken as this deep, and no object is expanded inside
 // itself (Part 2 section 5.1.3.1).
 static const NSInteger OISMaxLevels = 32;
@@ -2044,121 +1890,25 @@ static const NSInteger OISMaxLevels = 32;
     [relationships addObject:(NSRelationshipDescription *)property];
   }
 
-  ODataQueryOptions *given = options;
   for (NSRelationshipDescription *relationship in relationships) {
     NSString *wire = [self.mapper propertyForRelationship:relationship];
     NSEntityDescription *destination = relationship.destinationEntity;
-    ODataEntitySetHandler *handler = [self.service handlerForEntity:destination];
-    NSPredicate *visible = [handler predicateForVisibleObjectsInRequest:self.request];
-    // $these: this object's own members, which the caller can see, for the
-    // $filter and $compute; what the $filter leaves of them, for the
-    // $orderby. Each parent's own, so its members are read here.
-    options = given;
-    BOOL ownMembers = NO;
-    NSArray *askedByFilter = OISTheseOfFilter(options), *askedByOrder = OISTheseOfOrder(options);
-    if (askedByFilter.count || askedByOrder.count) {
-      ownMembers = YES;
-      id related = [object valueForKey:relationship.name];
-      NSArray *all = relationship.isToMany ? [related allObjects] : (related ? @[ related ] : @[]);
-      if (visible) all = [all filteredArrayUsingPredicate:visible];
-      NSEntityDescription *entity = self.entity;
-      ODataEntitySetHandler *own = self.handler;
-      self.entity = destination;
-      self.handler = handler ?: own;
-      NSDictionary *filterValues = askedByFilter.count ? [self valuesOf:askedByFilter over:all shape:nil computed:@{}] : @{};
-      NSDictionary *orderValues = nil;
-      if (filterValues && askedByOrder.count) {
-        options = OISOptionsReplacing(options, filterValues, nil);
-        NSArray *left = all;
-        if (options.filter) {
-          NSPredicate *leftFilter = [self.service.predicates predicateForExpression:[self hierarchical:options.filter] entity:destination
-                                                                            aliases:self.request.options.aliases computed:[self computedNamesOf:options]
-                                                                            context:self.request.context error:error];
-          if (!leftFilter) {
-            self.entity = entity;
-            self.handler = own;
-            return NO;
-          }
-          left = [all filteredArrayUsingPredicate:leftFilter];
-        }
-        orderValues = [self valuesOf:askedByOrder over:left shape:nil computed:@{}];
-      }
-      self.entity = entity;
-      self.handler = own;
-      if (!filterValues || (askedByOrder.count && !orderValues)) {
-        if (error) *error = ODataServiceError(501, [NSString stringWithFormat:@"$expand=%@: $these of its members", wire]);
-        return NO;
-      }
-      options = OISOptionsReplacing(given, filterValues, orderValues);
+    // What the plan read: this object's members, as the options say, and
+    // the options they are written with (their $these in).
+    NSDictionary *entry = [self nestedMembersOf:item relationship:relationship.name parent:object];
+    if (!entry) {
+      if (error) *error = ODataServiceError(500, [NSString stringWithFormat:@"$expand=%@ was not read for %@", wire, object.entity.name]);
+      return NO;
     }
-    NSPredicate *filter = nil;
-    if (options.filter) {
-      filter = [self.service.predicates predicateForExpression:[self hierarchical:options.filter] entity:destination aliases:self.request.options.aliases
-                                                      computed:[self computedNamesOf:options] context:self.request.context error:error];
-      if (!filter) return NO;
-    }
-    if (options.temporalText.count) {
-      // Application time, of a timeline set's members (OData-Temporal 4.2.1).
-      id period = [self predicateForApplicationTimeOf:options entity:destination error:error];
-      if (!period) return NO;
-      if (period != [NSNull null]) filter = filter ? [NSCompoundPredicate andPredicateWithSubpredicates:@[ filter, period ]] : period;
-    }
-    if (options.searchExpression) {
-      NSPredicate *search = [self predicateForSearch:options.searchExpression entity:destination];
-      if (!search) {
-        if (error) *error = ODataServiceError(501, [NSString stringWithFormat:@"%@ cannot be searched", destination.name]);
-        return NO;
-      }
-      filter = filter ? [NSCompoundPredicate andPredicateWithSubpredicates:@[ filter, search ]] : search;
-    }
-    // A to-many with no $compute of its own: its members as the store
-    // selects and orders them, fetched with those of the objects written
-    // beside this one. Otherwise, here.
-    NSArray *members = nil;
-    NSMutableArray *sort = [NSMutableArray array];
-    BOOL sortedByStore = NO;
-    if (relationship.isToMany) {
-      if (options.orderBy.count) {
-        BOOL inMemory = NO;
-        NSArray *descriptors = [self.service.predicates sortDescriptorsForOrderBy:options.orderBy entity:destination
-                                                                         computed:[self computedNamesOf:options] inMemory:&inMemory error:error];
-        if (!descriptors) return NO;
-        [sort addObjectsFromArray:descriptors];
-        sortedByStore = !inMemory;
-      } else {
-        sortedByStore = YES;
-      }
-      for (NSAttributeDescription *attribute in [self.mapper keyAttributesForEntity:OISRootEntity(destination)]) {
-        [sort addObject:[NSSortDescriptor sortDescriptorWithKey:attribute.name ascending:YES]];
-      }
-      if (!options.compute.count && !ownMembers) {
-        NSMutableArray *where = [NSMutableArray array];
-        if (visible) [where addObject:visible];
-        if (filter) [where addObject:filter];
-        NSPredicate *predicate = where.count ? [NSCompoundPredicate andPredicateWithSubpredicates:where] : nil;
-        id found = [self membersOf:object item:item relationship:relationship where:predicate sort:sortedByStore ? sort : nil error:error];
-        if (!found) return NO;
-        if (found != [NSNull null]) members = sortedByStore ? found : [found sortedArrayUsingDescriptors:sort];
-      }
-    }
-    if (!members) {
-      if (relationship.isToMany) {
-        members = [[object valueForKey:relationship.name] allObjects];
-      } else {
-        id related = [object valueForKey:relationship.name];
-        members = related ? @[ related ] : @[];
-      }
-      if (visible) members = [members filteredArrayUsingPredicate:visible];
-      if (filter) members = [members filteredArrayUsingPredicate:filter];
-      if (relationship.isToMany) members = [members sortedArrayUsingDescriptors:sort];
-    }
+    NSArray *members = entry[@"members"];
+    ODataQueryOptions *written = entry[@"options"] ?: options;
 
     if (!relationship.isToMany) {
       NSManagedObject *related = members.firstObject;
       if (item.isRef) {
         json[wire] = related ? @{ @"@odata.id": [self canonicalPathOf:related] } : [NSNull null];
       } else {
-        id nested = related ? [self JSONForObject:related options:options expected:destination error:error] : [NSNull null];
+        id nested = related ? [self JSONForObject:related options:written expected:destination error:error] : [NSNull null];
         if (!nested) return NO;
         if (related && ![self expandLevels:item of:related into:nested levels:levels path:path error:error]) return NO;
         json[wire] = nested;
@@ -2166,18 +1916,15 @@ static const NSInteger OISMaxLevels = 32;
       continue;
     }
 
-    if (options.includeCount.boolValue || item.isCount) json[[wire stringByAppendingString:@"@odata.count"]] = @(members.count);
+    if (options.includeCount.boolValue || item.isCount) json[[wire stringByAppendingString:@"@odata.count"]] = entry[@"count"];
     if (item.isCount) continue;
-    NSUInteger skip = MIN(options.skip.unsignedIntegerValue, members.count);
-    NSUInteger take = options.top ? MIN(options.top.unsignedIntegerValue, members.count - skip) : members.count - skip;
-    members = [members subarrayWithRange:NSMakeRange(skip, take)];
     NSMutableArray *values = [NSMutableArray array];
     for (NSManagedObject *member in members) {
       if (item.isRef) {
         [values addObject:@{ @"@odata.id": [self canonicalPathOf:member] }];
         continue;
       }
-      NSMutableDictionary *nested = [self JSONForObject:member options:options expected:destination error:error];
+      NSMutableDictionary *nested = [self JSONForObject:member options:written expected:destination error:error];
       if (!nested) return NO;
       if (![self expandLevels:item of:member into:nested levels:levels path:path error:error]) return NO;
       [values addObject:nested];
@@ -2262,7 +2009,7 @@ static const NSInteger OISMaxLevels = 32;
                                                                    entity:self.entity
                                                                   aliases:self.request.options.aliases
                                                                  computed:[self computedNamesOf:self.request.options]
-                                                                  context:self.request.context
+                                                                  spans:self.planSpans
                                                                     error:error];
     if (!filter) return nil;
     [parts addObject:filter];
@@ -2272,7 +2019,7 @@ static const NSInteger OISMaxLevels = 32;
       NSPredicate *filter = [self.service.predicates predicateForExpression:[self hierarchical:t.filter] entity:self.entity
                                                                    aliases:self.request.options.aliases
                                                                   computed:[self computedNamesOf:self.request.options]
-                                                                   context:self.request.context error:error];
+                                                                   spans:self.planSpans error:error];
       if (!filter) return nil;
       [parts addObject:filter];
     }
@@ -2377,24 +2124,14 @@ static NSPredicate *OISEquals(NSString *keyPath, id value, NSComparisonPredicate
 
 - (void)readCount
 {
-  NSError *error = nil;
-  NSFetchRequest *fetch = [NSFetchRequest fetchRequestWithEntityName:self.entity.name];
-  fetch.predicate = [self collectionPredicateWithFilter:YES error:&error];
-  if (!fetch.predicate) {
-    [self respondError:error];
-    return;
-  }
-  ODataReply *reply = [self replyWithAction:@selector(didCountForPath:)];
-  [reply returned:[self.handler countForFetchRequest:fetch request:self.request reply:reply]];
+  OISPlan *plan = [self planCountRead];
+  if (!plan) return;
+  [self runPlan:plan then:@selector(didRunCount)];
 }
 
-- (void)didCountForPath:(ODataReply *)reply
+- (void)didRunCount
 {
-  if (reply.error) {
-    [self respondError:reply.error];
-    return;
-  }
-  [self respondText:[reply.result description] ?: @"0" contentType:@"text/plain;charset=utf-8" headers:nil];
+  [self respondText:[self.planResult.count description] ?: @"0" contentType:@"text/plain;charset=utf-8" headers:nil];
 }
 
 - (BOOL)applyIsFiltersOnly
@@ -2408,65 +2145,6 @@ static NSPredicate *OISEquals(NSString *keyPath, id value, NSComparisonPredicate
 }
 
 #pragma mark $apply
-
-// $apply (Data Aggregation section 3) that groups or aggregates: the rows
-// the caller may see, as the handler fetches them with the leading
-// filters, then the rest of the transformations here, then $filter,
-// $orderby, $skip, $top and $count over what they made.
-- (void)readApplied
-{
-  ODataQueryOptions *options = self.request.options;
-  NSError *error = nil;
-  NSPredicate *base = [self collectionPredicateWithFilter:NO error:&error];
-  if (!base) {
-    [self respondError:error];
-    return;
-  }
-  NSMutableArray *parts = [NSMutableArray arrayWithObject:base];
-  if (options.searchExpression) {
-    NSPredicate *search = [self predicateForSearch:options.searchExpression entity:self.entity];
-    if (!search) return;
-    [parts addObject:search];
-  }
-  NSUInteger first = 0;
-  // Leading filters in the store; not one of the collection's values
-  // ($these/aggregate(...)), which are of the rows before it.
-  for (; first < options.apply.count && ((ODataApplyTransformation *)options.apply[first]).kind == ODataApplyFilter
-         && ![((ODataApplyTransformation *)options.apply[first]).filter aggregatesOfThese].count; first++) {
-    NSPredicate *filter = [self.service.predicates predicateForExpression:[self hierarchical:((ODataApplyTransformation *)options.apply[first]).filter] entity:self.entity
-                                                                 aliases:options.aliases context:self.request.context error:&error];
-    if (!filter) {
-      [self respondError:error];
-      return;
-    }
-    [parts addObject:filter];
-  }
-  self.applied = [options.apply subarrayWithRange:NSMakeRange(first, options.apply.count - first)];
-  NSPredicate *predicate = [NSCompoundPredicate andPredicateWithSubpredicates:parts];
-  OISStoreGrouping *grouping = self.applied.count ? [self storeGroupingOf:self.applied.firstObject predicate:predicate] : nil;
-  if (grouping) {
-    self.storeGrouping = grouping;
-    self.applied = [self.applied subarrayWithRange:NSMakeRange(1, self.applied.count - 1)];
-    self.fetch = grouping.fetch;
-    ODataReply *reply = [self replyWithAction:@selector(didFetchGroupedForApply:)];
-    [reply returned:[self.handler groupedRowsForFetchRequest:grouping.fetch request:self.request reply:reply]];
-    return;
-  }
-  NSFetchRequest *fetch = [NSFetchRequest fetchRequestWithEntityName:self.entity.name];
-  fetch.predicate = predicate;
-  // In key order, so that what $apply makes of them comes out the same way
-  // each time (the input set's order is the service's to choose).
-  NSMutableArray *byKey = [NSMutableArray array];
-  for (NSAttributeDescription *attribute in [self.mapper keyAttributesForEntity:OISRootEntity(self.entity)]) {
-    [byKey addObject:[NSSortDescriptor sortDescriptorWithKey:attribute.name ascending:YES]];
-  }
-  fetch.sortDescriptors = byKey;
-  // One more than the service works on in memory, to know it is too many.
-  if (self.service.maxRowsInMemory) fetch.fetchLimit = self.service.maxRowsInMemory + 1;
-  self.fetch = fetch;
-  ODataReply *reply = [self replyWithAction:@selector(didFetchForApply:)];
-  [reply returned:[self.handler objectsForFetchRequest:fetch request:self.request reply:reply]];
-}
 
 // Sets value at path in nested dictionaries.
 static void OISSetAtPath(NSMutableDictionary *row, NSArray<NSString *> *path, id value)
@@ -2886,68 +2564,17 @@ static BOOL OISPathListed(NSArray<NSString *> *path, id listed)
 // $apply that leaves entities (no groupby or aggregate): the query's
 // $filter, $orderby, $count, $skip and $top on them, each written with the
 // values compute gave it.
-- (void)writeAppliedEntities:(NSArray *)rows computed:(NSDictionary *)computed expansions:(NSArray *)expansions
+- (void)writeAppliedEntities:(NSArray *)rows computed:(NSDictionary *)computed count:(NSNumber *)count
 {
   ODataQueryOptions *options = self.request.options;
-  // $these: of what $apply made, for the $filter; of what it leaves, for
-  // the $orderby.
-  NSArray *asked = OISTheseOfFilter(options);
-  NSDictionary *filterValues = asked.count ? [self valuesOf:asked over:rows shape:nil computed:computed] : @{};
-  if (!filterValues) return;
-  options = OISOptionsReplacing(options, filterValues, nil);
   NSError *error = nil;
   // A join's aliases: written where $expand names them, as their entity.
   NSMutableDictionary *joinedExpansions = [NSMutableDictionary dictionary];  // alias -> its $expand item
-  NSMutableArray *ownExpand = [NSMutableArray array];
   for (ODataExpandItem *item in options.expand) {
     if (item.path.count == 1 && [computed[item.path[0]] isKindOfClass:[NSEntityDescription class]]) joinedExpansions[item.path[0]] = item;
-    else [ownExpand addObject:item.description];
   }
-  // What expand asked for, with the query's own $expand and $select.
-  ODataQueryOptions *written = options;
-  if (expansions.count || joinedExpansions.count) {
-    NSMutableArray *all = [expansions mutableCopy];
-    [all addObjectsFromArray:ownExpand];
-    NSMutableDictionary *query = [NSMutableDictionary dictionary];
-    if (all.count) query[@"$expand"] = [all componentsJoinedByString:@","];
-    if (options.select.count) query[@"$select"] = [[options.select valueForKey:@"description"] componentsJoinedByString:@","];
-    written = [ODataQueryOptions optionsWithQuery:query error:&error];
-    if (!written) {
-      [self respondError:ODataServiceError(400, error.localizedDescription)];
-      return;
-    }
-  }
-  if (options.filter) {
-    NSPredicate *filter = [self.service.predicates predicateForExpression:[self resolved:options.filter options:options] entity:self.entity aliases:options.aliases
-                                                                 computed:computed context:self.request.context error:&error];
-    if (!filter) {
-      [self respondError:error];
-      return;
-    }
-    rows = [rows filteredArrayUsingPredicate:filter];
-  }
-  asked = OISTheseOfOrder(options);
-  NSDictionary *orderValues = asked.count ? [self valuesOf:asked over:rows shape:nil computed:computed] : @{};
-  if (!orderValues) return;
-  options = OISOptionsReplacing(options, nil, orderValues);
-  if (options.orderBy.count) {
-    BOOL inMemory = NO;
-    NSArray *descriptors = [self.service.predicates sortDescriptorsForOrderBy:[self resolvedOrder:options.orderBy options:options] entity:self.entity computed:computed
-                                                                     inMemory:&inMemory error:&error];
-    if (!descriptors) {
-      [self respondError:error];
-      return;
-    }
-    rows = [rows sortedArrayUsingDescriptors:descriptors];
-  }
-  NSNumber *count = options.includeCount.boolValue ? @(rows.count) : nil;
-  NSUInteger skip = MIN(options.skip.unsignedIntegerValue, rows.count);
-  rows = [rows subarrayWithRange:NSMakeRange(skip, rows.count - skip)];
-  if (options.top && options.top.unsignedIntegerValue < rows.count) rows = [rows subarrayWithRange:NSMakeRange(0, options.top.unsignedIntegerValue)];
+  ODataQueryOptions *written = self.writtenOptions ?: options;
   NSMutableArray *values = [NSMutableArray array];
-  NSMutableArray *page = [NSMutableArray array];
-  for (id row in rows) [page addObject:[row isKindOfClass:[OISComputedRow class]] ? ((OISComputedRow *)row).object : row];
-  [self noteSiblings:page];
   for (id row in rows) {
     OISComputedRow *more = [row isKindOfClass:[OISComputedRow class]] ? row : nil;
     NSMutableDictionary *json = [self JSONForObject:more ? more.object : row options:written expected:self.entity error:&error];
@@ -3176,10 +2803,34 @@ static NSMutableDictionary *OISMutableRow(NSDictionary *row)
   for (NSAttributeDescription *attribute in [self.mapper keyAttributesForEntity:OISRootEntity(destination)]) {
     [sort addObject:[NSSortDescriptor sortDescriptorWithKey:attribute.name ascending:YES]];
   }
-  NSMutableArray *out = [NSMutableArray array];
+  // Each row's members: the collection of its owners (itself, or what a
+  // path of to-one steps leads to), read through the handler for all the
+  // rows at once, as an expansion's are; nil until they are known (the
+  // plan goes on when they are).
+  NSArray *steps = [keyPath componentsSeparatedByString:@"."];
+  NSString *prefix = steps.count > 1 ? [[steps subarrayWithRange:NSMakeRange(0, steps.count - 1)] componentsJoinedByString:@"."] : nil;
+  NSMutableArray *owners = [NSMutableArray array];
+  NSMutableArray *ownersOfRows = [NSMutableArray array];
   for (id row in rows) {
-    NSArray *members = [[ODataAggregation valuesAtKeyPath:keyPath inObjects:@[ row ]] sortedArrayUsingDescriptors:sort];
-    if (visible) members = [members filteredArrayUsingPredicate:visible];
+    NSMutableArray *mine = [NSMutableArray array];
+    for (id owner in prefix ? [ODataAggregation valuesAtKeyPath:prefix inObjects:@[ row ]]
+                            : @[ [row isKindOfClass:[OISComputedRow class]] ? ((OISComputedRow *)row).object : row ]) {
+      if (![owner isKindOfClass:[NSManagedObject class]]) continue;
+      [mine addObject:owner];
+      if (![owners containsObject:owner]) [owners addObject:owner];
+    }
+    [ownersOfRows addObject:mine];
+  }
+  NSString *ownersNamed = [[owners valueForKeyPath:@"objectID.URIRepresentation.absoluteString"] componentsJoinedByString:@","];
+  NSString *key = [NSString stringWithFormat:@"join/%p/%lu/%lu", (void *)t, (unsigned long)owners.count, (unsigned long)ownersNamed.hash];
+  NSDictionary *byOwner = [self membersOf:owners relationship:relationship predicate:visible sort:sort key:key];
+  if (!byOwner) return nil;
+  NSMutableArray *out = [NSMutableArray array];
+  for (NSUInteger index = 0; index < rows.count; index++) {
+    id row = rows[index];
+    NSMutableArray *gathered = [NSMutableArray array];
+    for (NSManagedObject *owner in ownersOfRows[index]) [gathered addObjectsFromArray:byOwner[owner.objectID] ?: @[]];
+    NSArray *members = [gathered sortedArrayUsingDescriptors:sort];
     if (t.sequence.count && members.count) {
       // The join's transformations, on the members: as the set of their own.
       NSEntityDescription *entity = self.entity;
@@ -3246,22 +2897,13 @@ static NSMutableDictionary *OISMutableRow(NSDictionary *row)
   return values;
 }
 
-// What the request's own $filter and $compute ask of the collection.
-- (NSArray<ODataExpression *> *)theseAskedByRequest
-{
-  NSMutableArray *asked = [NSMutableArray array];
-  ODataQueryOptions *options = self.request.options;
-  [asked addObjectsFromArray:OISTheseOfFilter(options)];
-  [asked addObjectsFromArray:OISTheseOfOrder(options)];
-  return asked;
-}
-
 // An expression of the request's options with what the hierarchy
 // functions stand for, and the collection's values, in.
 - (ODataExpression *)resolved:(ODataExpression *)e options:(ODataQueryOptions *)options
 {
   e = [self hierarchical:e];
-  return self.theseValues && options == self.request.options ? [e expressionReplacing:self.theseValues] : e;
+  // The plan's store scan bound them ($compute's $these, when written).
+  return self.planValues.count && options == self.request.options ? [e expressionReplacing:self.planValues] : e;
 }
 
 - (ODataExpression *)hierarchical:(ODataExpression *)e
@@ -3269,17 +2911,13 @@ static NSMutableDictionary *OISMutableRow(NSDictionary *row)
   return e && self.hierarchyCalls.count ? [e expressionReplacing:self.hierarchyCalls] : e;
 }
 
-// The request's $orderby with what the hierarchy functions stand for, and
-// the values of the collection it orders, in.
+// An $orderby with what the hierarchy functions stand for in.
 - (NSArray<ODataOrderItem *> *)resolvedOrder:(NSArray<ODataOrderItem *> *)items options:(ODataQueryOptions *)options
 {
-  NSDictionary *values = options == self.request.options ? self.theseOrderValues : nil;
-  if (!values.count && !self.hierarchyCalls.count) return items;
+  if (!self.hierarchyCalls.count) return items;
   NSMutableArray *out = [NSMutableArray array];
   for (ODataOrderItem *item in items) {
-    ODataExpression *e = [self hierarchical:item.expression];
-    if (values.count) e = [e expressionReplacing:values];
-    [out addObject:[ODataOrderItem itemWithExpression:e descending:item.descending]];
+    [out addObject:[ODataOrderItem itemWithExpression:[self hierarchical:item.expression] descending:item.descending]];
   }
   return out;
 }
@@ -3297,7 +2935,7 @@ static NSArray<ODataExpression *> *OISTheseIn(NSArray<ODataExpression *> *expres
 
 // What $filter and $compute of options ask of their collection, and what
 // $orderby asks of its own.
-static NSArray<ODataExpression *> *OISTheseOfFilter(ODataQueryOptions *options)
+NSArray<ODataExpression *> *OISTheseOfFilter(ODataQueryOptions *options)
 {
   NSMutableArray *expressions = [NSMutableArray array];
   if (options.filter) [expressions addObject:options.filter];
@@ -3305,14 +2943,14 @@ static NSArray<ODataExpression *> *OISTheseOfFilter(ODataQueryOptions *options)
   return OISTheseIn(expressions);
 }
 
-static NSArray<ODataExpression *> *OISTheseOfOrder(ODataQueryOptions *options)
+NSArray<ODataExpression *> *OISTheseOfOrder(ODataQueryOptions *options)
 {
   return OISTheseIn([options.orderBy valueForKey:@"expression"] ?: @[]);
 }
 
 // Options with some of their values in: $filter's and $compute's, and
 // $orderby's.
-static ODataQueryOptions *OISOptionsReplacing(ODataQueryOptions *options, NSDictionary *filterValues, NSDictionary *orderValues)
+ODataQueryOptions *OISOptionsReplacing(ODataQueryOptions *options, NSDictionary *filterValues, NSDictionary *orderValues)
 {
   if (!filterValues.count && !orderValues.count) return options;
   ODataMutableQueryOptions *copy = [options mutableCopy];
@@ -3338,7 +2976,7 @@ static ODataQueryOptions *OISOptionsReplacing(ODataQueryOptions *options, NSDict
 
 // isnode, isroot, isleaf, isancestor, isdescendant, issibling, of the
 // Aggregation vocabulary (section 5.5.1.1), by its alias or its namespace.
-static NSString *OISHierarchyFunction(NSString *name)
+NSString *OISHierarchyFunction(NSString *name)
 {
   for (NSString *prefix in @[ @"Aggregation.", @"Org.OData.Aggregation.V1." ]) {
     if (![name hasPrefix:prefix]) continue;
@@ -3348,7 +2986,7 @@ static NSString *OISHierarchyFunction(NSString *name)
   return nil;
 }
 
-static void OISAddExpressionsOfTransformations(NSArray<ODataApplyTransformation *> *transformations, NSMutableArray *into)
+void OISAddExpressionsOfTransformations(NSArray<ODataApplyTransformation *> *transformations, NSMutableArray *into)
 {
   for (ODataApplyTransformation *t in transformations) {
     if (t.filter) [into addObject:t.filter];
@@ -3361,7 +2999,7 @@ static void OISAddExpressionsOfTransformations(NSArray<ODataApplyTransformation 
   }
 }
 
-static void OISAddExpressionsOfOptions(ODataQueryOptions *options, NSMutableArray *into)
+void OISAddExpressionsOfOptions(ODataQueryOptions *options, NSMutableArray *into)
 {
   if (!options) return;
   if (options.filter) [into addObject:options.filter];
@@ -3457,8 +3095,18 @@ static void OISAddExpressionsOfOptions(ODataQueryOptions *options, NSMutableArra
 // qualifier. nil once answered, with the error.
 - (OISHierarchy *)hierarchyOfNodes:(NSArray<NSString *> *)setPath qualifier:(NSString *)qualifier
 {
+  // Read by the plan's Closure, before anything that uses it.
   NSString *key = [NSString stringWithFormat:@"%@#%@", [setPath componentsJoinedByString:@"/"], qualifier];
-  if (self.hierarchies[key]) return self.hierarchies[key];
+  OISHierarchy *hierarchy = self.hierarchies[key];
+  if (!hierarchy) [self fail:500 message:[NSString stringWithFormat:@"The recursive hierarchy %@ was not read first", key]];
+  return hierarchy;
+}
+
+// A recursive hierarchy as the model declares it, its nodes not read yet:
+// and the fetch of them, through the handler it gives; nil once answered.
+- (OISHierarchy *)describedHierarchyOf:(NSArray<NSString *> *)setPath qualifier:(NSString *)qualifier
+                                 fetch:(NSFetchRequest **)fetchp handler:(ODataEntitySetHandler **)handlerp
+{
   ODataEntitySetHandler *handler = setPath.count == 1 ? [self.service handlerForEntitySet:setPath[0]] : nil;
   if (!handler) {
     [self fail:setPath.count == 1 ? 400 : 501 message:[NSString stringWithFormat:@"$root/%@: %@", [setPath componentsJoinedByString:@"/"],
@@ -3501,16 +3149,8 @@ static void OISAddExpressionsOfOptions(ODataQueryOptions *options, NSMutableArra
   fetch.sortDescriptors = byKey;
   fetch.relationshipKeyPathsForPrefetching = @[ relationship.name ];
   if (self.service.maxRowsInMemory) fetch.fetchLimit = self.service.maxRowsInMemory + 1;
-  NSError *error = nil;
-  NSArray *objects = OISFetch(self.request.context, fetch, &error);
-  if (!objects) {
-    [self respondError:error];
-    return nil;
-  }
-  if (![self withinRowsInMemory:objects.count]) return nil;
-  [hierarchy readObjects:objects];
-  if (!self.hierarchies) self.hierarchies = [NSMutableDictionary dictionary];
-  self.hierarchies[key] = hierarchy;
+  if (fetchp) *fetchp = fetch;
+  if (handlerp) *handlerp = handler;
   return hierarchy;
 }
 
@@ -3674,42 +3314,6 @@ static id OISSparseAtPath(NSArray<NSString *> *path, NSArray<NSNumber *> *collec
   }
 }
 
-- (void)didFetchForThese:(ODataReply *)reply
-{
-  if (reply.error) {
-    [self respondError:reply.error];
-    return;
-  }
-  NSArray *rows = reply.result ?: @[];
-  if (![self withinRowsInMemory:rows.count]) return;
-  ODataQueryOptions *options = self.request.options;
-  NSArray *asked = OISTheseOfFilter(options);
-  NSDictionary *values = asked.count ? [self valuesOf:asked over:rows shape:nil computed:@{}] : @{};
-  if (!values) return;
-  self.theseValues = values;
-  asked = OISTheseOfOrder(options);
-  if (asked.count) {
-    // $orderby's collection: what the $filter leaves of them.
-    NSArray *ordered = rows;
-    if (options.filter) {
-      NSError *error = nil;
-      NSPredicate *filter = [self.service.predicates predicateForExpression:[self resolved:options.filter options:options] entity:self.entity
-                                                                    aliases:options.aliases computed:[self computedNamesOf:options]
-                                                                    context:self.request.context error:&error];
-      if (!filter) {
-        [self respondError:error];
-        return;
-      }
-      ordered = [rows filteredArrayUsingPredicate:filter];
-    }
-    NSDictionary *orderValues = [self valuesOf:asked over:ordered shape:nil computed:@{}];
-    if (!orderValues) return;
-    self.theseOrderValues = orderValues;
-  } else {
-    self.theseOrderValues = @{};
-  }
-  [self readCollection];
-}
 
 // $apply's transformations, in order, on the rows (entities, or grouped
 // rows once shape is set); NO once answered, with the error.
@@ -3732,7 +3336,7 @@ static id OISSparseAtPath(NSArray<NSString *> *path, NSArray<NSNumber *> *collec
         if (!condition) return NO;
         NSPredicate *filter = shape ? [ODataAggregation predicateForExpression:condition error:&error]
                                     : [self.service.predicates predicateForExpression:condition entity:self.entity aliases:options.aliases
-                                                                             computed:computed context:self.request.context error:&error];
+                                                                             computed:computed spans:self.planSpans error:&error];
         if (!filter) {
           [self respondError:error.code == ODataIncrementalStoreErrorUnsupportedExpression ? ODataServiceError(501, error.localizedDescription) : error];
           return NO;
@@ -3948,75 +3552,20 @@ static id OISSparseAtPath(NSArray<NSString *> *path, NSArray<NSNumber *> *collec
   return YES;
 }
 
-- (void)didFetchForApply:(ODataReply *)reply
+// A grouping $apply's rows, as the plan made them ($apply, then $filter,
+// $orderby, $count, $skip and $top): entities, or grouped rows, whose
+// $select keeps what it names.
+- (void)didRunApplied
 {
-  if (reply.error) {
-    [self respondError:reply.error];
+  OISRelation *result = self.planResult;
+  if (!result.shape) {
+    [self writeAppliedEntities:result.rows computed:result.computed count:result.count];
     return;
   }
-  NSArray *rows = reply.result ?: @[];
-  if (![self withinRowsInMemory:rows.count]) return;
-  [self finishApplied:rows shape:nil];
-}
-
-// The store's grouping: its rows as rowsOfGrouping would have made them,
-// then the rest of $apply.
-- (void)didFetchGroupedForApply:(ODataReply *)reply
-{
-  if (reply.error) {
-    [self respondError:reply.error];
-    return;
-  }
-  NSArray *groups = reply.result ?: @[];
-  if (![self withinRowsInMemory:groups.count]) return;
-  OISStoreGrouping *grouping = self.storeGrouping;
-  NSArray *rows = [self rowsOfGroups:[grouping groupsOfRows:groups] grouping:grouping.transformation keyPaths:grouping.keyPaths
-                     groupAttributes:grouping.groupAttributes aggregateAttributes:grouping.aggregateAttributes];
-  NSMutableArray *shape = [grouping.transformation.groupPaths mutableCopy];
-  for (ODataAggregate *aggregate in grouping.transformation.aggregates) [shape addObject:@[ aggregate.alias ]];
-  [self finishApplied:rows shape:shape];
-}
-
-// The rest of $apply on the rows (entities, or grouped rows when shape is
-// given), then $filter, $orderby, $count, $skip, $top and $select over
-// what it made.
-- (void)finishApplied:(NSArray *)rows shape:(NSMutableArray *)shape
-{
   ODataQueryOptions *options = self.request.options;
-  NSMutableDictionary *computed = [NSMutableDictionary dictionary];  // compute's names, before grouping
-  NSError *error = nil;
-  NSMutableArray *expansions = [NSMutableArray array];
-  if (![self applyTransformations:self.applied rows:&rows shape:&shape computed:computed expansions:expansions]) return;
-  if (!shape) {
-    // Entities still, with what compute gave them, and expand expanded.
-    [self writeAppliedEntities:rows computed:computed expansions:expansions];
-    return;
-  }
-  NSArray *asked = OISTheseOfFilter(options);
-  NSDictionary *filterValues = asked.count ? [self valuesOf:asked over:rows shape:shape computed:computed] : @{};
-  if (!filterValues) return;
-  options = OISOptionsReplacing(options, filterValues, nil);
-  if (options.filter) {
-    NSPredicate *filter = [ODataAggregation predicateForExpression:[self hierarchical:options.filter] error:&error];
-    if (!filter) {
-      [self respondError:ODataServiceError(501, error.localizedDescription)];
-      return;
-    }
-    rows = [rows filteredArrayUsingPredicate:filter];
-  }
-  asked = OISTheseOfOrder(options);
-  NSDictionary *orderValues = asked.count ? [self valuesOf:asked over:rows shape:shape computed:computed] : @{};
-  if (!orderValues) return;
-  options = OISOptionsReplacing(options, nil, orderValues);
-  if (options.orderBy.count) {
-    NSArray *descriptors = [self descriptorsForGroupedOrder:[self resolvedOrder:options.orderBy options:options]];
-    if (!descriptors) return;
-    rows = [rows sortedArrayUsingDescriptors:descriptors];
-  }
-  NSNumber *count = options.includeCount.boolValue ? @(rows.count) : nil;
-  NSUInteger skip = MIN(options.skip.unsignedIntegerValue, rows.count);
-  rows = [rows subarrayWithRange:NSMakeRange(skip, rows.count - skip)];
-  if (options.top && options.top.unsignedIntegerValue < rows.count) rows = [rows subarrayWithRange:NSMakeRange(0, options.top.unsignedIntegerValue)];
+  NSArray *rows = result.rows;
+  NSMutableArray *shape = result.shape;
+  NSNumber *count = result.count;
   // Grouped rows have no navigation to expand; $select keeps what it names.
   if (options.expand.count) {
     [self fail:400 message:@"The rows of a grouping have no navigation properties to $expand"];
@@ -4055,155 +3604,23 @@ static id OISSparseAtPath(NSArray<NSString *> *path, NSArray<NSNumber *> *collec
 - (void)readCollection
 {
   ODataQueryOptions *options = self.request.options;
-  if (options.apply.count && ![self applyIsFiltersOnly]) {
-    [self readApplied];
-    return;
-  }
-  if (self.deltaToken) {
+  BOOL grouping = options.apply.count && ![self applyIsFiltersOnly];
+  if (!grouping && self.deltaToken) {
     [self readDelta];
     return;
   }
-  NSError *error = nil;
-  if (!self.theseValues && !self.theseOrderValues && [self theseAskedByRequest].count) {
-    // $filter=Amount mul 3 ge $these/aggregate(Amount with sum): the
-    // collection's values first, over the rows the caller can see.
-    NSFetchRequest *all = [NSFetchRequest fetchRequestWithEntityName:self.entity.name];
-    all.predicate = [self collectionPredicateWithFilter:NO error:&error];
-    if (!all.predicate) {
-      [self respondError:error];
-      return;
-    }
-    // After $apply's filters, their output.
-    if ([self applyIsFiltersOnly]) {
-      NSMutableArray *parts = [NSMutableArray arrayWithObject:all.predicate];
-      for (ODataApplyTransformation *t in self.request.options.apply) {
-        NSPredicate *filter = [self.service.predicates predicateForExpression:[self hierarchical:t.filter] entity:self.entity
-                                                                     aliases:self.request.options.aliases computed:@{}
-                                                                     context:self.request.context error:&error];
-        if (!filter) {
-          [self respondError:error];
-          return;
-        }
-        [parts addObject:filter];
-      }
-      all.predicate = [NSCompoundPredicate andPredicateWithSubpredicates:parts];
-    }
-    if (self.service.maxRowsInMemory) all.fetchLimit = self.service.maxRowsInMemory + 1;
-    ODataReply *reply = [self replyWithAction:@selector(didFetchForThese:)];
-    [reply returned:[self.handler objectsForFetchRequest:all request:self.request reply:reply]];
-    return;
-  }
-  NSFetchRequest *fetch = [NSFetchRequest fetchRequestWithEntityName:self.entity.name];
-  fetch.predicate = [self collectionPredicateWithFilter:YES error:&error];
-  if (!fetch.predicate) {
-    [self respondError:error];
-    return;
-  }
-  NSMutableArray *sort = [NSMutableArray array];
-  BOOL inMemory = NO;
-  if (options.orderBy.count) {
-    NSArray *descriptors = [self.service.predicates sortDescriptorsForOrderBy:[self resolvedOrder:options.orderBy options:options] entity:self.entity
-                                                                     computed:[self computedNamesOf:self.request.options] inMemory:&inMemory error:&error];
-    if (!descriptors) {
-      [self respondError:error];
-      return;
-    }
-    [sort addObjectsFromArray:descriptors];
-  }
-  // The key last, so that pages do not overlap.
-  NSMutableArray *keys = [NSMutableArray array];
-  for (NSAttributeDescription *attribute in [self.mapper keyAttributesForEntity:OISRootEntity(self.entity)]) {
-    [keys addObject:[NSSortDescriptor sortDescriptorWithKey:attribute.name ascending:YES]];
-  }
-  [sort addObjectsFromArray:keys];
-  // By a computed value: every row, sorted and paged here, as a store
-  // cannot sort by an expression.
-  fetch.sortDescriptors = inMemory ? keys : sort;
-  if (inMemory) self.memorySort = sort;
-
-  // Paging: the smaller of the service's page and the client's.
-  NSUInteger page = self.service.maxPageSize;
-  NSString *preferred = self.request.preferences[@"odata.maxpagesize"];
-  if (preferred.integerValue > 0 && (!page || (NSUInteger)preferred.integerValue < page)) {
-    page = (NSUInteger)preferred.integerValue;
-    self.pagedByPreference = YES;
-  }
-  NSString *skip = options.skipToken;
-  if (skip) {
-    // A tracked read's pages carry the token it began at: 20~token.
-    NSRange tilde = [skip rangeOfString:@"~"];
-    if (tilde.location != NSNotFound) {
-      self.trackingToken = [skip substringFromIndex:NSMaxRange(tilde)];
-      skip = [skip substringToIndex:tilde.location];
-    }
-    NSScanner *scanner = [NSScanner scannerWithString:skip];
-    NSInteger token = 0;
-    if (![scanner scanInteger:&token] || !scanner.isAtEnd || token < 0) {
-      [self fail:400 message:[NSString stringWithFormat:@"$skiptoken=%@ is not one this service wrote", options.skipToken]];
-      return;
-    }
-    self.skipToken = (NSUInteger)token;
-  }
-  // Changes are followed from before the rows are read: one made while
-  // they are may come again in the delta, but none is missed.
-  if (![self canTrackChanges]) {
-    self.trackingToken = nil;
-  } else if (!self.trackingToken && self.request.preferences[@"odata.track-changes"]) {
-    self.trackingToken = OISStringFromHistoryToken([self.service.coordinator currentPersistentHistoryTokenFromStores:nil]);
-  }
-  NSUInteger remaining = NSUIntegerMax;
-  if (options.top) {
-    NSUInteger top = options.top.unsignedIntegerValue;
-    remaining = top > self.skipToken ? top - self.skipToken : 0;
-  }
-  NSUInteger limit = page ? MIN(page, remaining) : remaining;
-  self.pageSize = limit;
-  fetch.fetchOffset = options.skip.unsignedIntegerValue + self.skipToken;
-  // One more than the page, to know whether there is a next one.
-  if (limit != NSUIntegerMax) fetch.fetchLimit = limit < remaining ? limit + 1 : limit;
-  if (limit == 0) fetch.fetchLimit = 1;
-  if (self.memorySort) {
-    self.memoryOffset = fetch.fetchOffset;
-    self.memoryLimit = fetch.fetchLimit;
-    fetch.fetchOffset = 0;
-    fetch.fetchLimit = self.service.maxRowsInMemory ? self.service.maxRowsInMemory + 1 : 0;
-  }
-
-  [self prefetchExpansionsIn:fetch];
-  self.fetch = fetch;
-
-  ODataReply *reply = [self replyWithAction:@selector(didFetch:)];
-  [reply returned:[self.handler objectsForFetchRequest:fetch request:self.request reply:reply]];
+  OISPlan *plan = grouping ? [self planAppliedRead] : [self planPlainRead];
+  if (!plan) return;
+  [self runPlan:plan then:grouping ? @selector(didRunApplied) : @selector(didRunCollection)];
 }
 
-- (void)didFetch:(ODataReply *)reply
+- (void)didRunCollection
 {
-  if (reply.error) {
-    [self respondError:reply.error];
-    return;
-  }
-  NSArray *objects = reply.result ?: @[];
-  if (self.memorySort && ![self withinRowsInMemory:objects.count]) return;
-  if (self.memorySort) {
-    objects = [objects sortedArrayUsingDescriptors:self.memorySort];
-    NSUInteger start = MIN(self.memoryOffset, objects.count);
-    NSUInteger length = objects.count - start;
-    if (self.memoryLimit) length = MIN(length, self.memoryLimit);
-    objects = [objects subarrayWithRange:NSMakeRange(start, length)];
-  }
-  if (self.pageSize != NSUIntegerMax && objects.count > self.pageSize) {
-    objects = [objects subarrayWithRange:NSMakeRange(0, self.pageSize)];
-    self.nextLink = [self nextLinkWithToken:self.skipToken + self.pageSize];
-  }
-  self.objects = objects;
-  if (!self.request.options.includeCount.boolValue) {
-    [self writeCollection];
-    return;
-  }
-  NSFetchRequest *count = [NSFetchRequest fetchRequestWithEntityName:self.entity.name];
-  count.predicate = self.fetch.predicate;
-  ODataReply *countReply = [self replyWithAction:@selector(didCount:)];
-  [countReply returned:[self.handler countForFetchRequest:count request:self.request reply:countReply]];
+  OISRelation *result = self.planResult;
+  self.objects = result.rows;
+  self.count = result.count;
+  if (result.hasMore) self.nextLink = [self nextLinkWithToken:self.skipToken + self.pageSize];
+  [self writeCollection];
 }
 
 // A read a delta link can follow: a set (or a cast of it) with its
@@ -4214,28 +3631,7 @@ static id OISSparseAtPath(NSArray<NSString *> *path, NSArray<NSNumber *> *collec
   ODataQueryOptions *options = self.request.options;
   if (self.parent || self.members || self.referencesOnly || self.kind != OISTargetCollection) return NO;
   if (options.top || options.skip || (options.apply.count && ![self applyIsFiltersOnly])) return NO;
-  return [self.service tracksChangesOfEntity:OISRootEntity(self.entity)];
-}
-
-- (void)didCount:(ODataReply *)reply
-{
-  if (reply.error) {
-    [self respondError:reply.error];
-    return;
-  }
-  self.count = reply.result;
-  [self writeCollection];
-}
-
-- (void)prefetchExpansionsIn:(NSFetchRequest *)fetch
-{
-  NSMutableArray *prefetch = [NSMutableArray array];
-  for (ODataExpandItem *item in self.request.options.expand) {
-    if (item.path.count != 1) continue;
-    NSPropertyDescription *property = [self.mapper propertyForWireName:item.path[0] entity:self.entity];
-    if ([property isKindOfClass:[NSRelationshipDescription class]]) [prefetch addObject:property.name];
-  }
-  if (prefetch.count) fetch.relationshipKeyPathsForPrefetching = prefetch;
+  return [[self.service handlerForEntity:OISRootEntity(self.entity)] canTrackChanges];
 }
 
 // This request again, from this many rows on.
@@ -4274,7 +3670,6 @@ static id OISSparseAtPath(NSArray<NSString *> *path, NSArray<NSNumber *> *collec
 {
   NSError *error = nil;
   NSMutableArray *values = [NSMutableArray array];
-  [self noteSiblings:self.objects];
   for (NSManagedObject *object in self.objects) {
     if (self.referencesOnly) {
       [values addObject:@{ @"@odata.id": [self canonicalPathOf:object] }];
@@ -4344,7 +3739,7 @@ static id OISSparseAtPath(NSArray<NSString *> *path, NSArray<NSNumber *> *collec
   ODataExpression *expression = [ODataExpression expressionWithString:text error:error];
   if (!expression) return nil;
   return [self.service.predicates predicateForExpression:expression entity:entity aliases:nil computed:nil
-                                                 context:self.request.context error:error];
+                                                 spans:self.planSpans error:error];
 }
 
 // Temporal.Update, Upsert or Delete on a timeline set (OData-Temporal
@@ -4404,9 +3799,19 @@ static id OISSparseAtPath(NSArray<NSString *> *path, NSArray<NSNumber *> *collec
     [self respondStatus:204 headers:@{ @"Preference-Applied": @"return=minimal" } body:nil];
     return;
   }
+  // The slices' expansions read first.
+  self.timeslices = results;
+  NSMutableArray *objects = [NSMutableArray array];
+  for (OISTimeslice *result in results) if (result.object) [objects addObject:result.object];
+  [self runPlan:[self planOfObjects:objects options:self.request.options entity:self.entity] then:@selector(didExpandTimeslices)];
+}
+
+- (void)didExpandTimeslices
+{
+  NSError *error = nil;
   NSMutableArray *value = [NSMutableArray array];
   NSString *context = [NSString stringWithFormat:@"%@#%@/$entity", [self contextBase], [self setName]];
-  for (OISTimeslice *result in results) {
+  for (OISTimeslice *result in self.timeslices) {
     NSMutableDictionary *json;
     if (result.object) {
       json = [self JSONForObject:result.object options:self.request.options expected:self.entity error:&error];
@@ -4596,111 +4001,36 @@ static id OISSparseAtPath(NSArray<NSString *> *path, NSArray<NSNumber *> *collec
 // response, with the delta link to follow next.
 - (void)readDelta
 {
-  NSPersistentHistoryToken *token = nil;
-  if (!OISHistoryTokenFromString(self.deltaToken, &token)) {
-    [self fail:400 message:[NSString stringWithFormat:@"$deltatoken=%@ is not one this service wrote", self.deltaToken]];
-    return;
-  }
   if (![self canTrackChanges]) {
     [self fail:410 message:@"The changes of this set are not tracked; read it again"];
     return;
   }
-  NSError *error = nil;
-  NSPersistentHistoryChangeRequest *history = [NSPersistentHistoryChangeRequest fetchHistoryAfterToken:token];
-  history.resultType = NSPersistentHistoryResultTypeTransactionsAndChanges;
-  NSPersistentHistoryResult *result = (NSPersistentHistoryResult *)[self.request.context executeRequest:history error:&error];
-  if (!result) {
-    if ([error.domain isEqualToString:NSCocoaErrorDomain] && error.code == OISHistoryTokenExpired) {
-      [self fail:410 message:@"The delta link has expired; read the set again"];
-    } else {
-      [self respondError:error];
-    }
-    return;
-  }
-  // Each object's changes, in order: one that came and went since is not
-  // mentioned.
-  NSMutableOrderedSet *changed = [NSMutableOrderedSet orderedSet];
-  NSMutableSet *born = [NSMutableSet set];
-  NSMutableDictionary *deleted = [NSMutableDictionary dictionary];
-  NSPersistentHistoryToken *last = token;
-  for (NSPersistentHistoryTransaction *transaction in result.result) {
-    last = transaction.token ?: last;
-    for (NSPersistentHistoryChange *change in transaction.changes) {
-      NSManagedObjectID *oid = change.changedObjectID;
-      if (![oid.entity isKindOfEntity:self.entity]) continue;
-      switch (change.changeType) {
-        case NSPersistentHistoryChangeTypeInsert:
-          [born addObject:oid];
-          [changed addObject:oid];
-          break;
-        case NSPersistentHistoryChangeTypeUpdate:
-          [changed addObject:oid];
-          break;
-        case NSPersistentHistoryChangeTypeDelete:
-          [changed removeObject:oid];
-          if ([born containsObject:oid]) {
-            [born removeObject:oid];
-          } else {
-            deleted[oid] = change.tombstone ?: @{};
-          }
-          break;
-      }
-    }
-  }
+  [self runPlan:[self planDelta] then:@selector(didRunDelta)];
+}
+
+- (void)didRunDelta
+{
+  [self writeDelta:self.planResult.rows removed:self.deltaRemoved ?: @[]];
+}
+
+// What changed since a delta token, as the handler says: the changed
+// objects, the deleted ones' paths, and the token a delta link goes on
+// from. NO once answered, with the error.
+- (BOOL)takeChanges:(ODataChanges *)changes
+{
   NSMutableArray *paths = [NSMutableArray array];
-  for (NSManagedObjectID *oid in deleted) {
-    NSString *path = [self canonicalPathOfValues:deleted[oid] entity:oid.entity];
+  for (NSDictionary *deleted in changes.deleted) {
+    NSString *path = [self canonicalPathOfValues:deleted[@"values"] entity:deleted[@"entity"]];
     if (!path) {
       [self fail:410 message:@"A deleted entity's key was not kept; read the set again"];
-      return;
+      return NO;
     }
     [paths addObject:path];
   }
   self.deltaDeleted = paths;
-  self.deltaChanged = changed.array;
-  self.trackingToken = OISStringFromHistoryToken(last);
-  if (!changed.count) {
-    [self writeDelta:@[] removed:@[]];
-    return;
-  }
-  NSFetchRequest *fetch = [NSFetchRequest fetchRequestWithEntityName:self.entity.name];
-  NSPredicate *matching = [self collectionPredicateWithFilter:YES error:&error];
-  if (!matching) {
-    [self respondError:error];
-    return;
-  }
-  fetch.predicate = [NSCompoundPredicate andPredicateWithSubpredicates:@[ [NSPredicate predicateWithFormat:@"self IN %@", changed.array], matching ]];
-  [self prefetchExpansionsIn:fetch];
-  ODataReply *reply = [self replyWithAction:@selector(didFetchDelta:)];
-  [reply returned:[self.handler objectsForFetchRequest:fetch request:self.request reply:reply]];
-}
-
-- (void)didFetchDelta:(ODataReply *)reply
-{
-  if (reply.error) {
-    [self respondError:reply.error];
-    return;
-  }
-  NSArray *objects = reply.result ?: @[];
-  NSMutableSet *gone = [NSMutableSet setWithArray:self.deltaChanged];
-  for (NSManagedObject *object in objects) [gone removeObject:object.objectID];
-  NSMutableArray *removed = [NSMutableArray array];
-  if (gone.count) {
-    // Changed so that the request no longer matches them; only those the
-    // caller may see are named.
-    NSFetchRequest *fetch = [NSFetchRequest fetchRequestWithEntityName:self.entity.name];
-    NSPredicate *members = [NSPredicate predicateWithFormat:@"self IN %@", gone.allObjects];
-    NSPredicate *visible = [self.handler predicateForVisibleObjectsInRequest:self.request];
-    fetch.predicate = visible ? [NSCompoundPredicate andPredicateWithSubpredicates:@[ members, visible ]] : members;
-    NSError *error = nil;
-    NSArray *others = [self.request.context executeFetchRequest:fetch error:&error];
-    if (!others) {
-      [self respondError:error];
-      return;
-    }
-    for (NSManagedObject *object in others) [removed addObject:[self removedEntry:[self canonicalPathOf:object] reason:@"changed"]];
-  }
-  [self writeDelta:objects removed:removed];
+  self.deltaChanged = changes.changed;
+  self.trackingToken = changes.token;
+  return YES;
 }
 
 // A deleted entity, or one no longer in the request's rows: 4.01's
@@ -4718,7 +4048,6 @@ static id OISSparseAtPath(NSArray<NSString *> *path, NSArray<NSNumber *> *collec
 {
   NSError *error = nil;
   NSMutableArray *values = [NSMutableArray array];
-  [self noteSiblings:objects];
   for (NSManagedObject *object in objects) {
     NSDictionary *json = [self JSONForObject:object options:self.request.options expected:self.entity error:&error];
     if (!json) {
@@ -4761,13 +4090,29 @@ static id OISSparseAtPath(NSArray<NSString *> *path, NSArray<NSNumber *> *collec
     [self respondStatus:304 headers:@{ @"ETag": etag } body:nil];
     return;
   }
+  [self writeEntity:self.object status:200 headers:@{ @"ETag": etag }];
+}
+
+// An entity as a response: its expansions read first (the plan's Nest),
+// then its body.
+- (void)writeEntity:(NSManagedObject *)object status:(NSInteger)status headers:(NSDictionary *)headers
+{
+  self.writtenObject = object;
+  self.writtenStatus = status;
+  self.writtenHeaders = headers;
+  ODataQueryOptions *options = self.responseOptions ?: self.request.options;
+  [self runPlan:[self planOfObjects:@[ object ] options:options entity:object.entity] then:@selector(didExpandEntity)];
+}
+
+- (void)didExpandEntity
+{
   NSError *error = nil;
-  NSDictionary *json = [self entityBodyFor:self.object error:&error];
+  NSDictionary *json = [self entityBodyFor:self.writtenObject error:&error];
   if (!json) {
     [self respondError:error];
     return;
   }
-  [self respondJSON:json status:200 headers:@{ @"ETag": etag }];
+  [self respondJSON:json status:self.writtenStatus headers:self.writtenHeaders];
 }
 
 - (void)readProperty
@@ -5077,6 +4422,11 @@ static NSNumber *OISScalarReturnValue(NSInvocation *invocation, char type)
   [self walk];
 }
 
+- (void)didExpandOperationResults
+{
+  [self didInvokeOperation:self.resumeReply];
+}
+
 - (void)didInvokeOperation:(ODataReply *)reply
 {
   OISServedOperation *operation = self.operation;
@@ -5124,16 +4474,17 @@ static NSNumber *OISScalarReturnValue(NSInvocation *invocation, char type)
       }
     }
     if (!collection) {
-      NSDictionary *json = [self entityBodyFor:result error:&error];
-      if (!json) {
-        [self respondError:error];
-        return;
-      }
-      [self respondJSON:json status:200 headers:@{ @"ETag": [self etagOf:result] }];
+      [self writeEntity:result status:200 headers:@{ @"ETag": [self etagOf:result] }];
+      return;
+    }
+    // Their expansions read first; then this again, which is done by then
+    // with everything before (a function rolled back, an action saved).
+    if (!self.planResult) {
+      self.resumeReply = reply;
+      [self runPlan:[self planOfObjects:items options:self.request.options entity:returns.entity] then:@selector(didExpandOperationResults)];
       return;
     }
     NSMutableArray *values = [NSMutableArray array];
-    [self noteSiblings:items];
     for (NSManagedObject *item in items) {
       NSDictionary *json = [self JSONForObject:item options:self.request.options expected:returns.entity error:&error];
       if (!json) {
@@ -5907,13 +5258,7 @@ static NSNumber *OISScalarReturnValue(NSInvocation *invocation, char type)
     return;
   }
   if ([self.request.preferences[@"return"] isEqualToString:@"representation"]) headers[@"Preference-Applied"] = @"return=representation";
-  NSError *error = nil;
-  NSDictionary *json = [self entityBodyFor:object error:&error];
-  if (!json) {
-    [self respondError:error];
-    return;
-  }
-  [self respondJSON:json status:201 headers:headers];
+  [self writeEntity:object status:201 headers:headers];
 }
 
 - (void)updateReplacing:(BOOL)replace
@@ -5981,13 +5326,7 @@ static NSNumber *OISScalarReturnValue(NSInvocation *invocation, char type)
   NSMutableDictionary *headers = [NSMutableDictionary dictionaryWithDictionary:@{ @"ETag": [self etagOf:object] }];
   if ([self.request.preferences[@"return"] isEqualToString:@"representation"]) {
     headers[@"Preference-Applied"] = @"return=representation";
-    NSError *error = nil;
-    NSDictionary *json = [self entityBodyFor:object error:&error];
-    if (!json) {
-      [self respondError:error];
-      return;
-    }
-    [self respondJSON:json status:200 headers:headers];
+    [self writeEntity:object status:200 headers:headers];
     return;
   }
   [self respondStatus:204 headers:headers body:nil];
@@ -6290,19 +5629,6 @@ static NSNumber *OISScalarReturnValue(NSInvocation *invocation, char type)
   return annotations;
 }
 
-- (BOOL)tracksChangesOfEntity:(NSEntityDescription *)root
-{
-  if (![self handlerForEntity:root].tracksChanges || !self.coordinator.persistentStores.count) return NO;
-  for (NSPersistentStore *store in self.coordinator.persistentStores) {
-    id option = store.options[NSPersistentHistoryTrackingKey];
-    BOOL tracking = [option isKindOfClass:[NSDictionary class]] || ([option respondsToSelector:@selector(boolValue)] && [option boolValue]);
-    if (!tracking) return NO;
-  }
-  for (NSAttributeDescription *attribute in [self.mapper keyAttributesForEntity:root]) {
-    if (!attribute.preservesValueInHistoryOnDeletion) return NO;
-  }
-  return YES;
-}
 
 - (NSAttributeDescription *)versionAttributeOfEntity:(NSEntityDescription *)entity
 {
@@ -6377,7 +5703,7 @@ static NSNumber *OISScalarReturnValue(NSInvocation *invocation, char type)
       }
       [signature appendFormat:@";%@ apply:%lu", set, (unsigned long)apply.description.hash + handler.customAggregates.description.hash];
       // Delta links, where the stores keep history.
-      if ([self tracksChangesOfEntity:OISRootEntity(handler.entity)]) {
+      if ([handler canTrackChanges]) {
         capabilities[@"Org.OData.Capabilities.V1.ChangeTracking"] = @{ @"Supported": @YES };
         [signature appendFormat:@";%@ tracked", set];
       }

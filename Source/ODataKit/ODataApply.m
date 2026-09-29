@@ -367,6 +367,26 @@ static NSUInteger OISLastTopWord(NSString *text, NSString *word)
   return t;
 }
 
++ (instancetype)computeItems:(NSArray<ODataComputeItem *> *)items
+{
+  ODataApplyTransformation *t = [[self alloc] init];
+  t->_kind = ODataApplyCompute;
+  t->_groupPaths = @[];
+  t->_aggregates = @[];
+  t->_compute = [items copy];
+  return t;
+}
+
++ (instancetype)searchWith:(ODataSearchExpression *)search
+{
+  ODataApplyTransformation *t = [[self alloc] init];
+  t->_kind = ODataApplySearch;
+  t->_groupPaths = @[];
+  t->_aggregates = @[];
+  t->_search = search;
+  return t;
+}
+
 + (instancetype)top:(NSUInteger)count
 {
   ODataApplyTransformation *t = [[self alloc] init];

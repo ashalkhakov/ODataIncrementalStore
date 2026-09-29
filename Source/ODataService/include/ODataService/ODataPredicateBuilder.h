@@ -85,6 +85,22 @@ NS_ASSUME_NONNULL_BEGIN
                                         computed:(nullable NSDictionary<NSString *, ODataExpression *> *)computed
                                          context:(nullable NSManagedObjectContext *)context
                                            error:(NSError **)error;
+// The same, month() and the rest ranging over the spans given (by
+// +spanKeyOfAttribute:, each @[earliest, latest], NSNull where there is
+// none), not over a context: what a service reads through its handlers.
+// One not given is 500.
+- (nullable NSPredicate *)predicateForExpression:(ODataExpression *)expression
+                                          entity:(NSEntityDescription *)entity
+                                         aliases:(nullable NSDictionary<NSString *, ODataExpression *> *)aliases
+                                        computed:(nullable NSDictionary<NSString *, ODataExpression *> *)computed
+                                           spans:(nullable NSDictionary<NSString *, NSArray *> *)spans
+                                           error:(NSError **)error;
+// The date attributes whose spans an expression's month() and the rest
+// need; what cannot be read is left out.
+- (NSArray<NSAttributeDescription *> *)spanAttributesOfExpression:(ODataExpression *)expression entity:(NSEntityDescription *)entity
+                                                            aliases:(nullable NSDictionary<NSString *, ODataExpression *> *)aliases
+                                                           computed:(nullable NSDictionary<NSString *, ODataExpression *> *)computed;
++ (NSString *)spanKeyOfAttribute:(NSAttributeDescription *)attribute;
 - (nullable NSExpression *)valueExpressionForExpression:(ODataExpression *)expression
                                                  entity:(NSEntityDescription *)entity
                                                 aliases:(nullable NSDictionary<NSString *, ODataExpression *> *)aliases

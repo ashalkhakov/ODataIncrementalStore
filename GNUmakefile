@@ -129,6 +129,8 @@ ODataService_OBJC_FILES = \
 	Source/ODataService/ODataService.m \
 	Source/ODataService/ODataServiceBatch.m \
 	Source/ODataService/ODataTimeline.m \
+	Source/ODataService/OISPlan.m \
+	Source/ODataService/OISServiceCall+Plan.m \
 	Source/ODataService/OISSignature.m
 
 ODataService_HEADER_FILES = \

@@ -167,7 +167,11 @@ static NSPredicate *OISCompare(NSExpression *left, NSPredicateOperatorType type,
 @property (nonatomic) NSInteger computeDepth;
 @property (nonatomic) NSInteger variables;
 @property (nonatomic, strong, nullable) NSError *error;
-// The request's, for the span of a date month() and the like range over.
+// The span of a date month() and the like range over: given, by
+// attribute (+spanKeyOfAttribute:), or asked for (wanted: the attributes
+// a predicate's date parts need), or read from a context.
+@property (nonatomic, copy, nullable) NSDictionary<NSString *, NSArray *> *spans;
+@property (nonatomic, strong, nullable) NSMutableDictionary<NSString *, NSAttributeDescription *> *wanted;
 @property (nonatomic, strong, nullable) NSManagedObjectContext *context;
 @end
 
@@ -1324,13 +1328,24 @@ static const NSUInteger OISMaxDateRanges = 200;
     }
   }
   NSAttributeDescription *attribute = t.inner.attribute;
-  if (!self.context || !attribute || !attribute.entity) {
+  if ((!self.context && !self.spans && !self.wanted) || !attribute || !attribute.entity) {
     return [self unsupported:[NSString stringWithFormat:@"%@() of anything but a date property", f]];
   }
 
-  // The span: the earliest and the latest date there is.
+  // The span: the earliest and the latest date there is; as given, else
+  // as the context has it.
+  NSString *key = [ODataPredicateBuilder spanKeyOfAttribute:attribute];
+  if (self.wanted) {
+    self.wanted[key] = attribute;
+    return [NSPredicate predicateWithValue:YES];
+  }
   NSDate *bounds[2] = { nil, nil };
-  for (int i = 0; i < 2; i++) {
+  if (self.spans) {
+    NSArray *span = self.spans[key];
+    if (span.count != 2) return [self fail:500 message:[NSString stringWithFormat:@"%@(): the span of %@ was not read", f, key]];
+    for (int i = 0; i < 2; i++) bounds[i] = [span[(NSUInteger)i] isKindOfClass:[NSDate class]] ? span[(NSUInteger)i] : nil;
+  }
+  for (int i = 0; i < 2 && !self.spans; i++) {
     NSFetchRequest *fetch = [[NSFetchRequest alloc] init];
     fetch.entity = attribute.entity;
     fetch.predicate = [NSPredicate predicateWithFormat:@"%K != nil", attribute.name];
@@ -1657,6 +1672,36 @@ static const NSUInteger OISMaxDateRanges = 200;
   NSPredicate *predicate = [build predicate:expression];
   if (!predicate && error) *error = build.error ?: ODataServiceError(400, @"The filter does not apply");
   return predicate;
+}
+
++ (NSString *)spanKeyOfAttribute:(NSAttributeDescription *)attribute
+{
+  return [NSString stringWithFormat:@"%@.%@", attribute.entity.name, attribute.name];
+}
+
+- (NSPredicate *)predicateForExpression:(ODataExpression *)expression
+                                 entity:(NSEntityDescription *)entity
+                                aliases:(NSDictionary *)aliases
+                               computed:(NSDictionary *)computed
+                                  spans:(NSDictionary *)spans
+                                  error:(NSError **)error
+{
+  OISPredicateBuild *build = [self buildForEntity:entity aliases:aliases];
+  build.spans = spans ?: @{};
+  build.computed = computed ?: @{};
+  NSPredicate *predicate = [build predicate:expression];
+  if (!predicate && error) *error = build.error ?: ODataServiceError(400, @"The filter does not apply");
+  return predicate;
+}
+
+- (NSArray<NSAttributeDescription *> *)spanAttributesOfExpression:(ODataExpression *)expression entity:(NSEntityDescription *)entity
+                                                            aliases:(NSDictionary *)aliases computed:(NSDictionary *)computed
+{
+  OISPredicateBuild *build = [self buildForEntity:entity aliases:aliases];
+  build.wanted = [NSMutableDictionary dictionary];
+  build.computed = computed ?: @{};
+  [build predicate:expression];
+  return build.wanted.allValues;
 }
 
 - (NSPredicate *)predicateForExpression:(ODataExpression *)expression

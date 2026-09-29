@@ -437,6 +437,20 @@ into XML for the client's schema reader. The two defaults that differ are
 kept: `$Nullable` is false when absent in JSON, true in XML, and `$Type`
 is `Edm.String`.
 
+### Reads are planned
+
+Every read is planned before it runs, as a database plans a query
+(`docs/query-plan.md`): the parsed request becomes a tree in a nested
+relational algebra (Scan, Select, Sort, Limit, `$apply`'s
+transformations, Nest for `$expand`, Closure for a recursive hierarchy,
+Bind for a `$these` a store filter uses); rewriting it puts filters,
+orders, pages, counts and the first grouping into store operators, which
+reach the store through the set's handler, expansions and hierarchies
+included; the rest runs here. With `ODataService.explains`,
+`GET <root>/$explain/<resource path>?<query>` answers with the logical
+and the physical plan instead of the rows (not standard OData);
+`logsPlans` logs each read's.
+
 ### `$apply`
 
 `$apply` (OData Data Aggregation 4.0, Committee Specification 04) is read
@@ -680,14 +694,18 @@ A read of a whole set (or a cast of it), with or without `$filter`,
 `$search`, `$select` and `$expand`, but not `$top`, `$skip` or grouping,
 takes `Prefer: odata.track-changes` (Part 1 §11.3): the answer says
 `Preference-Applied`, and its last page has an `@odata.deltaLink`, the
-same request with a `$deltatoken`. The token is Core Data's persistent
-history token, archived, in base64url, taken before the rows are read, so
-a change made meanwhile comes again rather than never. A paged read's next
+same request with a `$deltatoken`. The token is the handler's
+(`-changeTokenForRequest:`; by default Core Data's persistent history
+token, archived, in base64url), taken before the rows are read, so a
+change made meanwhile comes again rather than never. A paged read's next
 links carry it (`$skiptoken=20~token`), so the delta starts from the first
 page, not the last.
 
-The delta link answers what the history holds since the token, in one
-response, with the next delta link:
+The delta link answers what changed since the token, as the handler
+says (`-changesSince:request:reply:`, an `ODataChanges`: by default what
+the persistent history holds; a handler with a change feed of its own
+gives that, with tokens of its own), in one response, first changed
+first, with the next delta link:
 
 - entities added or changed, as they are now, through the handler's fetch
   and the request's own options, so visibility, `$select` and `$expand`
@@ -701,12 +719,14 @@ A removal is `@odata.removed` with `@odata.id` in 4.01 and a
 `$deletedEntity` in 4.0. A relationship change is a change of the objects
 on both sides, which come again whole, so there are no `$link` entries.
 
-A set can be followed where every store keeps history
+By default, a set can be followed where every store keeps history
 (`NSPersistentHistoryTrackingKey`, which on both platforms means SQLite;
 `ois-serve` takes it in `StoreOptions`), its key attributes are kept in a
 deletion's tombstone (`preservesValueInHistoryOnDeletion`, "Preserve After
 Deletion" in the model editor), and its handler's `tracksChanges` is left
-`YES`; `$metadata` says so with `Capabilities.ChangeTracking`. Elsewhere
+`YES`; a handler that gives its own changes says so in
+`-canTrackChanges`. `$metadata` says which with
+`Capabilities.ChangeTracking`. Elsewhere
 the preference is not applied, and a `$deltatoken` is `410 Gone`, as is
 one whose history has been purged, or a deletion whose key was not kept:
 the client reads the set again. A token the service did not write is
@@ -945,10 +965,13 @@ use an index for it:
 `month`, `day`, `hour`, `minute` and `second` are not one range but one in
 each year, month, day, hour or minute.
 
-- `month(Hired) eq 3` is every March from the earliest `Hired` the store has
-  to the latest.
-- Two fetches of one row each find that span; the builder is given the
-  request's context for them.
+- `month(Hired) eq 3` is every March from the earliest `Hired` the caller
+  can see to the latest.
+- The read's plan finds that span first (a Span: two fetches of one row
+  each, through the handler), and gives it to the builder
+  (`-predicateForExpression:entity:aliases:computed:spans:error:`).
+  Outside a service, the builder can be given a context to read it from
+  instead.
 - A span of more than 200 ranges (six years of days, for `hour`) is `501`,
   since an `OR` that long is more than SQLite takes.
 
