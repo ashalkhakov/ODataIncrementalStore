@@ -107,6 +107,27 @@ with a merge policy settles it and saves again by itself:
 context.mergePolicy = NSMergeByPropertyObjectTrumpMergePolicy;   // my changes win, property by property
 ```
 
+**Batch updates and deletes** are Core Data's own requests, sent as 4.01's
+collection writes: one request for every row a predicate picks, which the
+service plans as one write, all or nothing.
+
+```objc
+NSBatchUpdateRequest *update = [NSBatchUpdateRequest batchUpdateRequestWithEntityName:@"Product"];
+update.predicate = [NSPredicate predicateWithFormat:@"unitPrice > 20"];
+update.propertiesToUpdate = @{ @"discontinued": @YES };
+update.resultType = NSUpdatedObjectIDsResultType;
+NSBatchUpdateResult *result = [context executeRequest:update error:&error];
+// PATCH Products/$filter(@f)/$each?@f=UnitPrice gt 20   {"Discontinued": true}
+[NSManagedObjectContext mergeChangesFromRemoteContextSave:@{ NSUpdatedObjectsKey: result.result } intoContexts:@[ context ]];
+```
+
+`NSBatchDeleteRequest` is `DELETE …/$each` likewise. A service that does
+not say it takes filter segments (`Capabilities.UpdateRestrictions` and
+`DeleteRestrictions`, `FilterSegmentSupported`), a 4.0 one, and a delete
+whose fetch has a limit, get the objects fetched and each written, in one
+change set. As with Core Data's own stores, no context is changed: merge
+the result's object IDs into those that hold the objects.
+
 ## Actions and functions
 
 A service's actions and functions are its entities' methods over the network,

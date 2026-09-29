@@ -141,6 +141,8 @@ evaluated in memory, because that would read every row.
 | A stream property / media entity | `PUT …/Photo` / `PUT …/$value`, with the media ETag |
 | Repeatable requests (when the service supports them) | `Repeatability-Request-ID`, `-First-Sent`, so a retried save is not applied twice |
 | `-performTemporalAction:…` | `POST Budgets/Org.OData.Temporal.V1.Update` (or `Upsert`, `Delete`) |
+| `NSBatchUpdateRequest` | `PATCH Products/$filter(@f)/$each?@f=…` with the values, where the service takes a filter segment (4.01, `Capabilities.UpdateRestrictions/FilterSegmentSupported`); elsewhere, the objects fetched and each PATCHed, in one change set |
+| `NSBatchDeleteRequest` | `DELETE Products/$filter(@f)/$each?@f=…`, likewise; one with a limit or offset, the objects fetched and each deleted |
 
 Changes at the service go the other way: `-fetchRemoteChanges:` follows
 `@odata.deltaLink`, and a set is read again and compared where the service

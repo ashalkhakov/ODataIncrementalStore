@@ -1024,7 +1024,11 @@ static BOOL OISConditionAllows(NSString *condition, NSString *current)
   NSMutableArray *entries = [NSMutableArray array], *objects = [NSMutableArray array];
   for (id answer in self.writeAnswers) {
     if ([answer isKindOfClass:[NSDictionary class]]) {
-      for (NSString *path in self.planMemo[OISWriteKey(@"p", answer[@"node"])]) [entries addObject:[self removedEntry:path reason:answer[@"reason"]]];
+      for (NSDictionary *removed in self.planMemo[OISWriteKey(@"p", answer[@"node"])]) {
+        NSMutableDictionary *entry = [[self removedEntry:removed[@"path"] reason:answer[@"reason"]] mutableCopy];
+        if (![self.request.version isEqualToString:@"4.0"]) [entry addEntriesFromDictionary:removed[@"keys"]];
+        [entries addObject:entry];
+      }
       continue;
     }
     NSArray *rows = [self rowsWrittenBy:answer];
@@ -1269,7 +1273,7 @@ static BOOL OISConditionAllows(NSString *condition, NSString *current)
   switch (node.op) {
     case OISPlanLookup: {
       id found = self.planMemo[OISWriteKey(@"o", node)];
-      if (found && found != [NSNull null]) self.planMemo[OISWriteKey(@"p", node)] = @[ [self canonicalPathOf:found] ];
+      if (found && found != [NSNull null]) self.planMemo[OISWriteKey(@"p", node)] = @[ [self removedOf:found] ];
       return YES;
     }
     case OISPlanInsert: {
@@ -1304,7 +1308,7 @@ static BOOL OISConditionAllows(NSString *condition, NSString *current)
         if ([kept containsObject:object]) continue;
         if (![self allows:node object:object]) return NO;
         [objects addObject:object];
-        [paths addObject:[self canonicalPathOf:object]];
+        [paths addObject:[self removedOf:object]];
       }
       self.planMemo[OISWriteKey(@"d", node)] = objects;
       self.planMemo[OISWriteKey(@"p", node)] = paths;
@@ -1329,6 +1333,20 @@ static BOOL OISConditionAllows(NSString *condition, NSString *current)
     case OISPlanTemporal: return [self checkTemporal:node];
     default: return YES;
   }
+}
+
+// What a removed entry says of a row, worked out before it is written:
+// its path, and (in 4.01) its key and type, so a client knows which of its
+// objects it was.
+- (NSDictionary *)removedOf:(NSManagedObject *)object
+{
+  NSMutableDictionary *keys = [NSMutableDictionary dictionary];
+  NSEntityDescription *root = OISRootEntity(object.entity);
+  for (NSAttributeDescription *attribute in [self.mapper keyAttributesForEntity:root]) {
+    keys[[self.mapper propertyForAttribute:attribute]] = [self.coder JSONForCoreDataValue:[object valueForKey:attribute.name] attribute:attribute];
+  }
+  if (object.entity != root) keys[@"@odata.type"] = [@"#" stringByAppendingString:[self.service.writer typeNameForEntity:object.entity]];
+  return @{ @"path": [self canonicalPathOf:object], @"keys": keys };
 }
 
 // If-Match, a nested entity's ETag and type: NO, answered, when the row

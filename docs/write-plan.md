@@ -140,6 +140,13 @@ deletes, one by one, each of which may answer later.
   Nested entities in the body are not taken (`501`): bind them.
 - **`DELETE …/$each`**: a Delete over the same.
 
+`$metadata` says so: each set's `UpdateRestrictions` and
+`DeleteRestrictions` have `FilterSegmentSupported` and
+`TypecastSegmentSupported` (and `DeltaUpdateSupported`), which is how the
+client knows to send `NSBatchUpdateRequest` and `NSBatchDeleteRequest` as
+`$each`. A removed entry carries its key (and `@odata.type`, for a
+derived type) in 4.01, so the client knows which object it was.
+
 All or nothing (`continue-on-error` is not taken). With
 `return=representation`, a collection is answered with its rows as they
 are now (`$each`'s PATCH, PUT), or a delta payload of the changes in the

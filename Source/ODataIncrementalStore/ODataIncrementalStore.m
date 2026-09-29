@@ -56,6 +56,40 @@ typedef NS_ENUM(NSInteger, OISWriteMode) {
 @implementation OISTracking
 @end
 
+// A batch update's or delete's result: what the store found, as the
+// request's result type asks.
+@interface OISBatchUpdateResult : NSBatchUpdateResult
+@property (nonatomic, strong) id storeResult;
+@property (nonatomic) NSBatchUpdateRequestResultType storeResultType;
+@end
+
+@implementation OISBatchUpdateResult
+- (id)result
+{
+  return self.storeResult;
+}
+- (NSBatchUpdateRequestResultType)resultType
+{
+  return self.storeResultType;
+}
+@end
+
+@interface OISBatchDeleteResult : NSBatchDeleteResult
+@property (nonatomic, strong) id storeResult;
+@property (nonatomic) NSBatchDeleteRequestResultType storeResultType;
+@end
+
+@implementation OISBatchDeleteResult
+- (id)result
+{
+  return self.storeResult;
+}
+- (NSBatchDeleteRequestResultType)resultType
+{
+  return self.storeResultType;
+}
+@end
+
 @implementation ODataIncrementalStore {
   ODataClient *_client;
   ODataPropertyMapper *_mapper;
@@ -238,6 +272,12 @@ typedef NS_ENUM(NSInteger, OISWriteMode) {
     [_members removeAllObjects];
     [_lock unlock];
     return [self executeSave:(NSSaveChangesRequest *)request error:error];
+  }
+  if (request.requestType == NSBatchUpdateRequestType && [request isKindOfClass:[NSBatchUpdateRequest class]]) {
+    return [self executeBatchUpdate:(NSBatchUpdateRequest *)request context:context error:error];
+  }
+  if (request.requestType == NSBatchDeleteRequestType && [request isKindOfClass:[NSBatchDeleteRequest class]]) {
+    return [self executeBatchDelete:(NSBatchDeleteRequest *)request context:context error:error];
   }
   if ([request isKindOfClass:[NSPersistentHistoryChangeRequest class]]) {
     if (!_history) {
@@ -1288,6 +1328,13 @@ static void OISSetKeyPath(NSMutableDictionary *row, NSString *keyPath, id value)
     [deleted addObject:object.objectID];
     context = context ?: object.managedObjectContext;
   }
+  [self recordInserted:inserted updated:updated deleted:deleted context:context];
+}
+
+// Changes this store made at the service: what -fetchRemoteChanges:
+// compares against, and the persistent history.
+- (void)recordInserted:(NSArray *)inserted updated:(NSDictionary *)updated deleted:(NSArray *)deleted context:(NSManagedObjectContext *)context
+{
   [_lock lock];
   for (OISTracking *tracking in _tracking.allValues) {
     for (NSManagedObjectID *oid in inserted) {
@@ -1300,6 +1347,163 @@ static void OISSetKeyPath(NSMutableDictionary *row, NSString *keyPath, id value)
   }
   [_lock unlock];
   [_history recordInserted:inserted updated:updated deleted:deleted author:context.transactionAuthor contextName:context.name];
+}
+
+#pragma mark - Batch updates and deletes
+
+// NSBatchUpdateRequest and NSBatchDeleteRequest (4.01's collection writes,
+// Part 1 sections 11.4.13-14): PATCH or DELETE of Set/$filter(@f)/$each,
+// where the set's Capabilities say it takes a filter segment (and a cast
+// one, for a sub-entity); elsewhere, or for what a filter segment cannot
+// say (a limit, $search, application time), the objects are fetched and
+// each is written, in one change set. As with Core Data's own stores, no
+// context is changed: merge the result's object IDs into those that need
+// them (NSUpdatedObjectsKey, NSDeletedObjectsKey,
+// +mergeChangesFromRemoteContextSave:intoContexts:).
+- (id)executeBatchUpdate:(NSBatchUpdateRequest *)request context:(NSManagedObjectContext *)context error:(NSError **)error
+{
+  NSEntityDescription *entity = request.entity ?: self.persistentStoreCoordinator.managedObjectModel.entitiesByName[request.entityName];
+  id restrictions = [self capability:@"Capabilities.UpdateRestrictions" forEntity:entity];
+  if ([restrictions isKindOfClass:[NSDictionary class]] && OISRefused(restrictions[@"Updatable"])) {
+    if (error) *error = [self notAllowed:@"update" entity:entity term:@"UpdateRestrictions"];
+    return nil;
+  }
+  NSMutableDictionary *body = [NSMutableDictionary dictionary];
+  NSMutableSet *names = [NSMutableSet set];
+  for (id key in request.propertiesToUpdate) {
+    NSString *name = [key isKindOfClass:[NSPropertyDescription class]] ? [key name] : key;
+    NSPropertyDescription *property = entity.propertiesByName[name];
+    id value = request.propertiesToUpdate[key];
+    if ([value isKindOfClass:[NSExpression class]]) {
+      if ([value expressionType] != NSConstantValueExpressionType) {
+        if (error) *error = OISError(ODataIncrementalStoreErrorUnsupportedRequest,
+                                     [NSString stringWithFormat:@"%@.%@: a batch update sends a value to each; %@ is not one", entity.name, name, value]);
+        return nil;
+      }
+      value = [value constantValue];
+    }
+    if (value == [NSNull null]) value = nil;
+    // Attributes, as Core Data's own batch updates take.
+    if (![property isKindOfClass:[NSAttributeDescription class]]) {
+      if (error) *error = OISError(ODataIncrementalStoreErrorUnsupportedRequest,
+                                   [NSString stringWithFormat:@"%@.%@: a batch update sets attributes", entity.name, name]);
+      return nil;
+    }
+    NSAttributeDescription *attribute = (NSAttributeDescription *)property;
+    body[[_mapper propertyForAttribute:attribute]] = value ? [_mapper.values JSONForCoreDataValue:value attribute:attribute] : [NSNull null];
+    [names addObject:name];
+  }
+  NSFetchRequest *fetch = [NSFetchRequest fetchRequestWithEntityName:entity.name];
+  fetch.predicate = request.predicate;
+  fetch.includesSubentities = request.includesSubentities;
+  NSArray *objectIDs = [self writeEach:@"PATCH" fetch:fetch body:body restrictions:restrictions context:context error:error];
+  if (!objectIDs) return nil;
+  NSMutableDictionary *updated = [NSMutableDictionary dictionary];
+  for (NSManagedObjectID *oid in objectIDs) updated[oid] = names;
+  [self recordInserted:@[] updated:updated deleted:@[] context:context];
+  OISBatchUpdateResult *result = [[OISBatchUpdateResult alloc] init];
+  result.storeResultType = request.resultType;
+  result.storeResult = request.resultType == NSUpdatedObjectIDsResultType ? objectIDs
+                     : request.resultType == NSUpdatedObjectsCountResultType ? @(objectIDs.count) : @YES;
+  return result;
+}
+
+- (id)executeBatchDelete:(NSBatchDeleteRequest *)request context:(NSManagedObjectContext *)context error:(NSError **)error
+{
+  NSFetchRequest *fetch = [request.fetchRequest copy];
+  NSEntityDescription *entity = [self resolvedEntity:fetch];
+  id restrictions = [self capability:@"Capabilities.DeleteRestrictions" forEntity:entity];
+  if ([restrictions isKindOfClass:[NSDictionary class]] && OISRefused(restrictions[@"Deletable"])) {
+    if (error) *error = [self notAllowed:@"delete" entity:entity term:@"DeleteRestrictions"];
+    return nil;
+  }
+  fetch.resultType = NSManagedObjectResultType;
+  NSArray *objectIDs = [self writeEach:@"DELETE" fetch:fetch body:nil restrictions:restrictions context:context error:error];
+  if (!objectIDs) return nil;
+  for (NSManagedObjectID *oid in objectIDs) [self forgetObjectID:oid];
+  [self recordInserted:@[] updated:@{} deleted:objectIDs context:context];
+  OISBatchDeleteResult *result = [[OISBatchDeleteResult alloc] init];
+  result.storeResultType = request.resultType;
+  result.storeResult = request.resultType == NSBatchDeleteResultTypeObjectIDs ? objectIDs
+                     : request.resultType == NSBatchDeleteResultTypeCount ? @(objectIDs.count) : @YES;
+  return result;
+}
+
+// PATCH (with the body) or DELETE each object the fetch selects: the
+// object IDs of those written; their rows, updated, kept.
+- (NSArray *)writeEach:(NSString *)method fetch:(NSFetchRequest *)fetch body:(NSDictionary *)body
+          restrictions:(id)restrictions context:(NSManagedObjectContext *)context error:(NSError **)error
+{
+  NSEntityDescription *entity = [self resolvedEntity:fetch];
+  ODataQueryOptions *options = [_builder optionsForFetch:fetch entity:entity error:error];
+  if (!options) return nil;
+  NSEntityDescription *root = entity;
+  while (root.superentity) root = root.superentity;
+  BOOL segments = [_client.configuration.version isEqualToString:@"4.01"] &&
+                  [restrictions isKindOfClass:[NSDictionary class]] && [restrictions[@"FilterSegmentSupported"] isEqual:@YES] &&
+                  (entity == root || [restrictions[@"TypecastSegmentSupported"] isEqual:@YES]);
+  // A filter segment says which, and nothing else: not how many, nor a
+  // search, nor a time ($select and $expand are only what a read reads).
+  BOOL filterOnly = !options.search && !options.apply.count && !options.compute.count && !options.temporalText.count &&
+                    !fetch.fetchLimit && !fetch.fetchOffset && (fetch.includesSubentities || !entity.subentities.count);
+  // The members' changed relationships are read again.
+  [_lock lock];
+  [_members removeAllObjects];
+  [_lock unlock];
+  if (segments && filterOnly) return [self sendEach:method entity:entity filter:options.filter body:body error:error];
+
+  NSFetchRequest *ids = [fetch copy];
+  ids.resultType = NSManagedObjectIDResultType;
+  NSArray *objectIDs = [self executeFetch:ids context:context error:error];
+  if (!objectIDs) return nil;
+  NSMutableArray *operations = [NSMutableArray array];
+  for (NSManagedObjectID *oid in objectIDs) {
+    NSURL *url = [self editURLForObjectID:oid error:error];
+    if (!url) return nil;
+    NSMutableURLRequest *req = [_client requestWithMethod:method URL:url body:body etag:nil error:error];
+    if (!req) return nil;
+    OISOperation *operation = [self operation:req completion:^BOOL(ODataHTTPResponse *response, NSError **e) {
+      id json = response.data.length ? [response JSONWithError:NULL] : nil;
+      if ([json isKindOfClass:[NSDictionary class]]) [self cacheNodeForObjectID:oid entity:oid.entity payload:json error:nil];
+      else [self discardCachedRowsForObjectIDs:@[ oid ]];
+      return YES;
+    }];
+    operation.objectID = oid;
+    [operations addObject:operation];
+  }
+  return [self sendOperations:operations error:error] ? objectIDs : nil;
+}
+
+// One request for them all: the rows it answers with are those written,
+// entities for an update and removed entries, with their keys, for a
+// delete.
+- (NSArray *)sendEach:(NSString *)method entity:(NSEntityDescription *)entity filter:(ODataExpression *)filter
+                 body:(NSDictionary *)body error:(NSError **)error
+{
+  NSString *path = [_mapper collectionPathForEntity:entity];
+  ODataMutableQueryOptions *each = [[ODataMutableQueryOptions alloc] init];
+  if (filter) {
+    each.aliases = @{ @"f": filter };
+    path = [path stringByAppendingString:@"/$filter(@f)"];
+  }
+  NSURL *url = [_builder URLForPath:[path stringByAppendingString:@"/$each"] options:each error:error];
+  NSMutableURLRequest *req = url ? [_client requestWithMethod:method URL:url body:body etag:nil error:error] : nil;
+  if (!req) return nil;
+  [req setValue:@"return=representation" forHTTPHeaderField:@"Prefer"];
+  ODataHTTPResponse *response = [_client sendRequest:req error:error];
+  if (!response) return nil;
+  id json = response.data.length ? [response JSONWithError:error] : @{};
+  if (![json isKindOfClass:[NSDictionary class]]) return nil;
+  [self noteMessagesIn:json URL:url objectID:nil];
+  NSMutableArray *objectIDs = [NSMutableArray array];
+  for (NSDictionary *row in [json[@"value"] isKindOfClass:[NSArray class]] ? json[@"value"] : @[]) {
+    if (![row isKindOfClass:[NSDictionary class]]) continue;
+    NSManagedObjectID *oid = [self objectIDFromPayload:row entity:entity error:error];
+    if (!oid) return nil;
+    if (!row[@"@odata.removed"] && !row[@"@removed"]) [self cacheNodeForObjectID:oid entity:oid.entity payload:row error:nil];
+    [objectIDs addObject:oid];
+  }
+  return objectIDs;
 }
 
 #pragma mark - Remote changes
@@ -2573,11 +2777,12 @@ static BOOL OISKeyIsSet(id value)
   return [value description];
 }
 
+// By name first: Apple's -entity raises for a request made with a name
+// that no context has used yet (a batch delete's).
 - (NSEntityDescription *)resolvedEntity:(NSFetchRequest *)fetch
 {
-  if (fetch.entity) return fetch.entity;
   if (fetch.entityName) return self.persistentStoreCoordinator.managedObjectModel.entitiesByName[fetch.entityName];
-  return nil;
+  return fetch.entity;
 }
 
 @end

@@ -2268,6 +2268,71 @@
   XCTAssertEqualObjects([self get:@"Suppliers(3)/City"].json[@"value"], @"Buenos Aires");
 }
 
+// Core Data's batch requests, through the client: one PATCH or DELETE of
+// each member a filter segment selects, with the objects' IDs back and
+// their rows kept, merged into a context as a store's batch results are;
+// what a filter segment cannot say, each object fetched and written.
+- (void)testClientBatchUpdatesAndDeletes
+{
+  OISRecordingTransport *transport = [[OISRecordingTransport alloc] init];
+  transport.next = _service;
+  NSError *error = nil;
+  NSManagedObjectContext *context = [self clientOver:transport options:nil error:&error];
+  XCTAssertNotNil(context, @"%@", error);
+  NSFetchRequest *fetch = [NSFetchRequest fetchRequestWithEntityName:@"Product"];
+  fetch.sortDescriptors = @[ [NSSortDescriptor sortDescriptorWithKey:@"id" ascending:YES] ];
+  NSArray *products = [context executeFetchRequest:fetch error:&error];
+  XCTAssertEqual(products.count, 5u, @"%@", error);
+
+  NSBatchUpdateRequest *update = [NSBatchUpdateRequest batchUpdateRequestWithEntityName:@"Product"];
+  update.predicate = [NSPredicate predicateWithFormat:@"unitPrice > 20"];
+  update.propertiesToUpdate = @{ @"discontinued": [NSExpression expressionForConstantValue:@YES], @"quantityPerUnit": @"12 boxes" };
+  update.resultType = NSUpdatedObjectIDsResultType;
+  NSBatchUpdateResult *updated = (NSBatchUpdateResult *)[context executeRequest:update error:&error];
+  XCTAssertEqual([updated.result count], 2u, @"%@", error);
+  NSURLRequest *sent = transport.requests.lastObject;
+  XCTAssertEqualObjects(sent.HTTPMethod, @"PATCH");
+  NSString *url = [sent.URL.absoluteString stringByRemovingPercentEncoding];
+  XCTAssertTrue([url hasSuffix:@"/Products/$filter(@f)/$each?@f=UnitPrice gt 20"], @"%@", url);
+  [NSManagedObjectContext mergeChangesFromRemoteContextSave:@{ NSUpdatedObjectsKey: updated.result } intoContexts:@[ context ]];
+  XCTAssertEqualObjects([products valueForKey:@"discontinued"], (@[ @NO, @NO, @NO, @YES, @YES ]));
+  XCTAssertEqualObjects([products[4] valueForKey:@"quantityPerUnit"], @"12 boxes");
+  XCTAssertEqualObjects([self get:@"Products(5)/QuantityPerUnit"].json[@"value"], @"12 boxes");
+
+  // The objects deleted, known by the keys in the removed entries.
+  NSFetchRequest *discontinued = [NSFetchRequest fetchRequestWithEntityName:@"Product"];
+  discontinued.predicate = [NSPredicate predicateWithFormat:@"discontinued == YES"];
+  NSBatchDeleteRequest *delete = [[NSBatchDeleteRequest alloc] initWithFetchRequest:discontinued];
+  delete.resultType = NSBatchDeleteResultTypeObjectIDs;
+  NSBatchDeleteResult *deleted = (NSBatchDeleteResult *)[context executeRequest:delete error:&error];
+  XCTAssertEqualObjects([NSSet setWithArray:deleted.result], ([NSSet setWithObjects:[products[3] objectID], [products[4] objectID], nil]), @"%@", error);
+  XCTAssertEqualObjects(transport.requests.lastObject.HTTPMethod, @"DELETE");
+  XCTAssertEqualObjects([self get:@"Products/$count"].text, @"3");
+  [NSManagedObjectContext mergeChangesFromRemoteContextSave:@{ NSDeletedObjectsKey: deleted.result } intoContexts:@[ context ]];
+  XCTAssertEqual([context executeFetchRequest:fetch error:&error].count, 3u, @"%@", error);
+
+  // By object ID (SELF IN them: a filter too).
+  NSBatchDeleteRequest *byID = [[NSBatchDeleteRequest alloc] initWithObjectIDs:@[ [products[1] objectID] ]];
+  byID.resultType = NSBatchDeleteResultTypeCount;
+  XCTAssertEqualObjects(((NSBatchDeleteResult *)[context executeRequest:byID error:&error]).result, @1, @"%@", error);
+  XCTAssertTrue([transport.requests.lastObject.URL.absoluteString containsString:@"$each"]);
+  // A limit, which a filter segment cannot say: the object fetched, then
+  // deleted at its own URL.
+  NSFetchRequest *last = [NSFetchRequest fetchRequestWithEntityName:@"Product"];
+  last.sortDescriptors = @[ [NSSortDescriptor sortDescriptorWithKey:@"id" ascending:NO] ];
+  last.fetchLimit = 1;
+  NSBatchDeleteRequest *limited = [[NSBatchDeleteRequest alloc] initWithFetchRequest:last];
+  limited.resultType = NSBatchDeleteResultTypeCount;
+  XCTAssertEqualObjects(((NSBatchDeleteResult *)[context executeRequest:limited error:&error]).result, @1, @"%@", error);
+  XCTAssertTrue([transport.requests.lastObject.URL.path hasSuffix:@"/Products/3"], @"%@", transport.requests.lastObject.URL);
+  XCTAssertEqualObjects([self get:@"Products/$count"].text, @"1");
+
+  // A value computed from each row is no value to send.
+  update.propertiesToUpdate = @{ @"unitPrice": [NSExpression expressionWithFormat:@"unitPrice * 2"] };
+  XCTAssertNil([context executeRequest:update error:&error]);
+  XCTAssertEqual(error.code, ODataIncrementalStoreErrorUnsupportedRequest);
+}
+
 #pragma mark Date and number functions
 
 - (void)testYearAndDateInFilters
@@ -5435,10 +5500,16 @@ static NSExpressionDescription *OISAggregateOf(NSString *function, NSString *key
 
 - (void)testRestrictionsInMetadata
 {
+  // Everything allowed: no insert restrictions; what updates and deletes
+  // take (Collection/$each after $filter(...) and cast segments, a delta
+  // payload).
   NSString *allowed = [self get:@"$metadata"].text;
-  for (NSString *restriction in @[ @"InsertRestrictions", @"UpdateRestrictions", @"DeleteRestrictions" ]) {
-    XCTAssertTrue([allowed rangeOfString:restriction].location == NSNotFound, @"everything allowed");
-  }
+  XCTAssertTrue([allowed rangeOfString:@"InsertRestrictions"].location == NSNotFound, @"everything allowed");
+  ODataSchema *all = [ODataSchema schemaWithData:[allowed dataUsingEncoding:NSUTF8StringEncoding] error:NULL];
+  XCTAssertEqualObjects([all annotation:@"Capabilities.UpdateRestrictions" forTarget:@"Default.Container/Products"],
+                        (@{ @"FilterSegmentSupported": @YES, @"TypecastSegmentSupported": @YES, @"DeltaUpdateSupported": @YES }));
+  XCTAssertEqualObjects([all annotation:@"Capabilities.DeleteRestrictions" forTarget:@"Default.Container/Products"],
+                        (@{ @"FilterSegmentSupported": @YES, @"TypecastSegmentSupported": @YES }));
   ODataEntitySetHandler *locations = [[ODataEntitySetHandler alloc] initWithEntity:OISCatalogEntity(@"Location")];
   [_service setHandler:locations forEntitySet:@"Locations"];
   locations.allowsInsert = NO;
@@ -5449,7 +5520,7 @@ static NSExpressionDescription *OISAggregateOf(NSString *function, NSString *key
   XCTAssertNotNil(schema, @"still reads");
   XCTAssertEqualObjects([schema annotation:@"Capabilities.InsertRestrictions" forTarget:@"Default.Container/Locations"], @{ @"Insertable": @NO }, @"%@", xml);
   XCTAssertEqualObjects([schema annotation:@"Capabilities.DeleteRestrictions" forTarget:@"Default.Container/Locations"], @{ @"Deletable": @NO });
-  XCTAssertNil([schema annotation:@"Capabilities.UpdateRestrictions" forTarget:@"Default.Container/Locations"]);
+  XCTAssertEqualObjects([[schema annotation:@"Capabilities.UpdateRestrictions" forTarget:@"Default.Container/Locations"] objectForKey:@"FilterSegmentSupported"], @YES);
   XCTAssertEqual(([self send:@"POST" path:@"Locations" headers:nil body:@{ @"LocationName": @"Shed" }].status), 405);
 }
 

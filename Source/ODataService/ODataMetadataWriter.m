@@ -559,9 +559,18 @@ static void OISAddChildren(NSXMLElement *parent, NSArray<NSXMLElement *> *childr
     NSString *setName = [self.mapper entitySetForEntity:entity];
     NSMutableDictionary *annotations = [NSMutableDictionary dictionary];
     for (NSString *restriction in @[ @"Insert", @"Update", @"Delete" ]) {
-      if (![self.restrictions[setName] containsObject:restriction]) continue;
-      NSString *property = [@{ @"Insert": @"Insertable", @"Update": @"Updatable", @"Delete": @"Deletable" } objectForKey:restriction];
-      annotations[[NSString stringWithFormat:@"Org.OData.Capabilities.V1.%@Restrictions", restriction]] = @{ property: @NO };
+      NSMutableDictionary *record = [NSMutableDictionary dictionary];
+      if ([self.restrictions[setName] containsObject:restriction]) {
+        NSString *property = [@{ @"Insert": @"Insertable", @"Update": @"Updatable", @"Delete": @"Deletable" } objectForKey:restriction];
+        record[property] = @NO;
+      } else if (![restriction isEqualToString:@"Insert"]) {
+        // Collection/$each, after $filter(...) and cast segments; and for
+        // updates, PATCH of a collection with a delta payload.
+        record[@"FilterSegmentSupported"] = @YES;
+        record[@"TypecastSegmentSupported"] = @YES;
+        if ([restriction isEqualToString:@"Update"]) record[@"DeltaUpdateSupported"] = @YES;
+      }
+      if (record.count) annotations[[NSString stringWithFormat:@"Org.OData.Capabilities.V1.%@Restrictions", restriction]] = record;
     }
     NSAttributeDescription *concurrency = self.concurrencyAttributes[entity.name];
     if (concurrency) {
