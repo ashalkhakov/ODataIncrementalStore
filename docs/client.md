@@ -38,7 +38,7 @@ NSArray *products = [context executeFetchRequest:request error:&error];
 ```
 
 ```
-GET Products?$filter=(UnitPrice gt 20) and (Discontinued eq false)
+GET Products?$filter=UnitPrice gt 20 and Discontinued eq false
            &$orderby=ProductName,ProductID
            &$top=25
            &$expand=Category

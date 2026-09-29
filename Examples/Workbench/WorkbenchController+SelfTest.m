@@ -60,25 +60,44 @@ static void WBCheck(BOOL ok, NSString *what, NSString *detail)
   [self tableView:self.tableView setObjectValue:value forTableColumn:self.tableView.tableColumns[column] row:(NSInteger)row];
 }
 
+// The row whose key has this value, the results scrolled as far as it
+// takes: a screenful at a time, as scrolling to the end loads them.
+- (NSUInteger)rowWhere:(NSString *)key is:(id)value
+{
+  NSUInteger found;
+  while ((found = [[self.results.rows valueForKey:key] indexOfObject:value]) == NSNotFound && self.results.hasMore) {
+    NSUInteger before = self.results.rows.count;
+    [self loadNextPage];
+    if (self.results.rows.count == before) break;
+  }
+  return found;
+}
+
 // Insert, fill in, Save (a POST); find it; Delete, Save (a DELETE); gone.
 - (void)checkInsertAndDeleteWithKey:(NSString *)key value:(NSString *)value fields:(NSDictionary *)fields
 {
   NSString *entity = [[self currentQuery] entity].name;
+  // A short screen, however big this one is: the new row may be pages away.
+  self.screenfulForTests = 5;
   [self insertObject:nil];
   [self editColumn:key row:0 value:value];
   for (NSString *field in fields) [self editColumn:field row:0 value:fields[field]];
   [self saveChanges:nil];
   WBCheck([self.statusField.stringValue hasPrefix:@"Saved: 1 inserted (POST)"], [NSString stringWithFormat:@"Insert a %@, Save (POST)", entity],
           self.statusField.stringValue);
-  NSUInteger found = [[self.results.rows valueForKey:key] indexOfObject:value];
+  NSUInteger found = [self rowWhere:key is:value];
   WBCheck(found != NSNotFound, [NSString stringWithFormat:@"the new %@ is read back", entity], self.statusField.stringValue);
-  if (found == NSNotFound) return;
+  if (found == NSNotFound) {
+    self.screenfulForTests = 0;
+    return;
+  }
   [self.tableView selectRowIndexes:[NSIndexSet indexSetWithIndex:found] byExtendingSelection:NO];
   [self deleteSelected:nil];
   [self saveChanges:nil];
   WBCheck([self.statusField.stringValue hasPrefix:@"Saved: 0 inserted (POST), 0 updated (PATCH), 1 deleted"] &&
-          [[self.results.rows valueForKey:key] indexOfObject:value] == NSNotFound,
+          [self rowWhere:key is:value] == NSNotFound,
           [NSString stringWithFormat:@"Delete it, Save (DELETE)"], self.statusField.stringValue);
+  self.screenfulForTests = 0;
 }
 
 // The panel, clicked as a person would: two relationships prefetched, one
@@ -196,18 +215,20 @@ static void WBCheck(BOOL ok, NSString *what, NSString *detail)
 }
 
 // The window's contents follow its size, as the xib's springs and struts
-// say: the results and the log grow, the URL field widens, the buttons on
-// the right keep to the right.
+// say: the results and the log shrink, the URL field narrows, the buttons
+// on the right keep to the right. Smaller, not larger: a small screen (a
+// CI runner's) does not let the window grow.
 - (void)checkResizing
 {
   NSRect before = self.window.frame;
   NSRect results = self.tableView.enclosingScrollView.frame, log = self.logTable.enclosingScrollView.frame;
   NSRect wire = self.wireURLField.frame, explain = self.explainButton.frame;
-  [self.window setFrame:NSMakeRect(before.origin.x, before.origin.y - 100, before.size.width + 200, before.size.height + 100) display:YES];
+  CGFloat dw = 160, dh = MIN(60.0, results.size.height / 2);
+  [self.window setFrame:NSMakeRect(before.origin.x, before.origin.y + dh, before.size.width - dw, before.size.height - dh) display:YES];
   NSRect r = self.tableView.enclosingScrollView.frame, l = self.logTable.enclosingScrollView.frame;
   NSRect w = self.wireURLField.frame, e = self.explainButton.frame;
-  BOOL ok = r.size.width > results.size.width + 100 && r.size.height > results.size.height + 50 && l.size.height > log.size.height + 50 &&
-            w.size.width > wire.size.width + 150 && NSMaxX(e) > NSMaxX(explain) + 150;
+  BOOL ok = r.size.width < results.size.width - dw + 2 && r.size.height < results.size.height - dh + 2 &&
+            l.size.height < log.size.height - dh + 2 && w.size.width < wire.size.width - dw + 2 && NSMaxX(e) < NSMaxX(explain) - dw + 2;
   WBCheck(ok, @"the window's contents follow its size",
           [NSString stringWithFormat:@"results %@ -> %@, log %@ -> %@, URL %@ -> %@, Explain %@ -> %@",
                                      NSStringFromRect(results), NSStringFromRect(r), NSStringFromRect(log), NSStringFromRect(l),

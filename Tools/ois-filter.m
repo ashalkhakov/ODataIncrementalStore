@@ -5,7 +5,7 @@
 // Links FreeCoreData (https://github.com/ashalkhakov/FreeCoreData).
 //
 //   ./ois-filter 'unitPrice > 20 AND discontinued == NO'
-//   (UnitPrice gt 20) and (Discontinued eq false)
+//   UnitPrice gt 20 and Discontinued eq false
 
 #import "ODataIncrementalStore.h"
 #import <stdio.h>

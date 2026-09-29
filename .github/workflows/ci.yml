@@ -338,7 +338,7 @@ jobs:
           . $PREFIX/System/Library/Makefiles/GNUstep.sh
           make -f Makefile
           got=$(LD_LIBRARY_PATH=".:$LD_LIBRARY_PATH" ./ois-filter 'unitPrice > 20 AND discontinued == NO')
-          want='(UnitPrice gt 20) and (Discontinued eq false)'
+          want='UnitPrice gt 20 and Discontinued eq false'
           [ "$got" = "$want" ] || { echo "::error::ois-filter printed '$got', expected '$want'"; exit 1; }
           make -f Makefile clean
 
