@@ -61,6 +61,13 @@ What you can do:
   `$to`; `..=` to include the end; `2024-01-01..` from then on). The GET the store will send is shown
   before you execute it: `$apply` where the service has it, else the read
   of the rows the store groups itself.
+- Explain, at the built-in service: how the service plans that GET, in
+  a window of its own. Above, the physical plan, what runs: `Store scan`,
+  `Store aggregate` and `Store count` are what the store does, through the
+  set's handler, and the rest runs in the service; below, the logical
+  plan, the request as it reads (`docs/query-plan.md`). It is the same
+  URL under `$explain/`, which the service answers with the plans instead
+  of the rows, and the wire log shows it.
 - Execute. Rows are real managed objects; select one to see its attributes,
   fire its faults, or its relationships. Each prefetched relationship is a
   column, showing what came with the row. Fire relationships reads every

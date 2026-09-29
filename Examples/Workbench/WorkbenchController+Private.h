@@ -43,6 +43,13 @@
 @property (nonatomic, strong) NSTextView *responseView;
 @property (nonatomic, strong) NSMenu *storeMenu;
 
+// Explain: the built-in service's plan for the query, physical and logical.
+@property (nonatomic, strong) NSButton *explainButton;
+@property (nonatomic, strong) NSWindow *planWindow;
+@property (nonatomic, strong) NSTextView *explainedView;
+@property (nonatomic, strong) NSTextView *physicalPlanView;
+@property (nonatomic, strong) NSTextView *logicalPlanView;
+
 // How many rows a screen holds, as a test says; 0: as the table's height says.
 @property (nonatomic) NSUInteger screenfulForTests;
 
@@ -62,6 +69,7 @@
 - (IBAction)moveSortUp:(id)sender;
 - (IBAction)downloadStream:(id)sender;
 - (IBAction)showExchange:(id)sender;
+- (IBAction)explainQuery:(id)sender;
 - (IBAction)setMergePolicy:(NSMenuItem *)sender;
 - (IBAction)toggleRespondAsync:(id)sender;
 

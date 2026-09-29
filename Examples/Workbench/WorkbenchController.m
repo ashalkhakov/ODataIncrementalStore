@@ -220,6 +220,7 @@ static NSTextField *WBLabel(NSString *text, NSRect frame)
 - (void)connectionDidConnect:(WBConnection *)connection
 {
   self.connectButton.enabled = YES;
+  _explainButton.enabled = connection.engine != nil;
   if (connection.failure) {
     self.statusField.stringValue = [NSString stringWithFormat:@"Could not connect: %@", connection.failure];
     return;
@@ -675,6 +676,103 @@ static NSString *WBRawHeaders(NSDictionary *headers)
   [_exchangeWindow makeKeyAndOrderFront:nil];
 }
 
+#pragma mark - Explain
+
+// The plan, physical above and logical below, as the service answered.
+- (void)buildPlanWindow
+{
+  _planWindow = [[NSWindow alloc] initWithContentRect:NSMakeRect(160, 160, 860, 640)
+                                            styleMask:NSTitledWindowMask | NSClosableWindowMask | NSResizableWindowMask | NSMiniaturizableWindowMask
+                                              backing:NSBackingStoreBuffered defer:NO];
+  _planWindow.releasedWhenClosed = NO;
+  NSView *content = _planWindow.contentView;
+  // At the top, the request explained, whole, to read and to copy.
+  CGFloat width = content.bounds.size.width - 16, top = content.bounds.size.height - 8;
+  NSScrollView *requestScroll = [[NSScrollView alloc] initWithFrame:NSMakeRect(8, top - 60, width, 60)];
+  requestScroll.borderType = NSBezelBorder;
+  requestScroll.hasVerticalScroller = YES;
+  requestScroll.autoresizingMask = NSViewWidthSizable | NSViewMinYMargin;
+  NSTextView *request = [[NSTextView alloc] initWithFrame:NSMakeRect(0, 0, requestScroll.contentSize.width, requestScroll.contentSize.height)];
+  request.editable = NO;
+  request.selectable = YES;
+  request.richText = NO;
+  request.font = [NSFont userFixedPitchFontOfSize:11];
+  request.drawsBackground = YES;
+  request.backgroundColor = [NSColor textBackgroundColor];
+  request.textColor = [NSColor textColor];
+  requestScroll.documentView = request;
+  [content addSubview:requestScroll];
+  [self makeScrollable:request];
+  _explainedView = request;
+  NSSplitView *split = [[NSSplitView alloc] initWithFrame:NSMakeRect(8, 30, width, top - 60 - 8 - 30)];
+  split.vertical = NO;
+  split.autoresizingMask = NSViewWidthSizable | NSViewHeightSizable;
+  [content addSubview:split];
+  _physicalPlanView = [self exchangeTextViewIn:split];
+  _logicalPlanView = [self exchangeTextViewIn:split];
+  [split adjustSubviews];
+  NSTextField *note = WBLabel(@"Store operators go to the store, through the set's handler; the rest runs in the service.",
+                              NSMakeRect(8, 6, content.bounds.size.width - 16, 18));
+  note.autoresizingMask = NSViewWidthSizable | NSViewMaxYMargin;
+  [content addSubview:note];
+}
+
+// The built-in service's plan for the GET the store would send: the same
+// URL under $explain/, which the service answers with the plans instead of
+// the rows. Another service has no $explain.
+- (IBAction)explainQuery:(id)sender
+{
+  (void)sender;
+  WorkbenchEngine *engine = _connection.engine;
+  if (!engine) {
+    self.statusField.stringValue = @"Explain asks the built-in service for its plan; other services have no $explain.";
+    return;
+  }
+  [self refreshTranslation];
+  NSString *root = engine.serviceRoot.absoluteString;
+  if (![root hasSuffix:@"/"]) root = [root stringByAppendingString:@"/"];
+  NSString *wire = self.wireURLField.stringValue;
+  if (![wire hasPrefix:root]) {
+    self.statusField.stringValue = [NSString stringWithFormat:@"Nothing to explain: %@", wire.length ? wire : @"no query"];
+    return;
+  }
+  NSURL *url = [NSURL URLWithString:[NSString stringWithFormat:@"%@$explain/%@", root, [wire substringFromIndex:root.length]]];
+  NSMutableURLRequest *request = [NSMutableURLRequest requestWithURL:url];
+  [request setValue:@"application/json" forHTTPHeaderField:@"Accept"];
+  [request setValue:@"4.01" forHTTPHeaderField:@"OData-MaxVersion"];
+  ODataExchange *exchange = [[ODataExchange alloc] initWithRequest:request target:self action:@selector(didExplain:)];
+  [engine startExchange:exchange];
+}
+
+- (void)didExplain:(ODataExchange *)exchange
+{
+  if (![NSThread isMainThread]) {
+    [self performSelectorOnMainThread:_cmd withObject:exchange waitUntilDone:NO];
+    return;
+  }
+  NSInteger status = [exchange.URLResponse isKindOfClass:[NSHTTPURLResponse class]] ? ((NSHTTPURLResponse *)exchange.URLResponse).statusCode : 0;
+  id json = exchange.data.length ? [NSJSONSerialization JSONObjectWithData:exchange.data options:0 error:NULL] : nil;
+  NSDictionary *body = [json isKindOfClass:[NSDictionary class]] ? json : nil;
+  if (status != 200 || ![body[@"physical"] isKindOfClass:[NSString class]]) {
+    NSString *why = [body[@"error"] isKindOfClass:[NSDictionary class]] ? body[@"error"][@"message"] : exchange.error.localizedDescription;
+    self.statusField.stringValue = [NSString stringWithFormat:@"The service did not explain it (%ld): %@", (long)status, why ?: @"no answer"];
+    return;
+  }
+  if (!_planWindow) [self buildPlanWindow];
+  // The request as the store would send it, decoded: the URL without
+  // $explain/.
+  NSString *path = [exchange.request.URL.absoluteString stringByRemovingPercentEncoding] ?: exchange.request.URL.absoluteString;
+  NSRange explain = [path rangeOfString:@"$explain/"];
+  if (explain.location != NSNotFound) path = [path stringByReplacingCharactersInRange:explain withString:@""];
+  _planWindow.title = @"Plan";
+  [self show:[@"GET " stringByAppendingString:path] in:_explainedView];
+  [self show:[@"Physical plan\n\n" stringByAppendingString:body[@"physical"]] in:_physicalPlanView];
+  NSString *logical = [body[@"logical"] isKindOfClass:[NSString class]] ? body[@"logical"] : @"(the same as the physical plan)";
+  [self show:[@"Logical plan\n\n" stringByAppendingString:logical] in:_logicalPlanView];
+  [_planWindow makeKeyAndOrderFront:nil];
+  self.statusField.stringValue = @"Explained: the plan is in its own window.";
+}
+
 #pragma mark - The table
 
 - (NSInteger)numberOfRowsInTableView:(NSTableView *)table
@@ -885,6 +983,12 @@ static NSString *WBRawHeaders(NSDictionary *headers)
   // Application time, beside the other options: a day, or from..to.
   [content addSubview:WBLabel(@"application time", NSMakeRect(836, 792 + dy, 120, 16))];
   _timeField = [self addField:NSMakeRect(836, 768 + dy, 118, 22) hint:@"2024-10-01, a..b"];
+  // Beside the GET the store would send: how the built-in service plans it.
+  NSRect wire = self.wireURLField.frame;
+  wire.size.width -= 100;
+  self.wireURLField.frame = wire;
+  _explainButton = [self addButton:@"Explain" frame:NSMakeRect(NSMaxX(wire) + 6, wire.origin.y - 5, 94, 32) action:@selector(explainQuery:)];
+  _explainButton.autoresizingMask = NSViewMinXMargin | NSViewMinYMargin;
   [self buildStreamControls];
 }
 

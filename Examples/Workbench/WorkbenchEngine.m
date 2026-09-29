@@ -336,6 +336,8 @@ static NSDate *WBDay(NSString *day)
   ODataService *service = [[ODataService alloc] initWithPersistentStoreCoordinator:coordinator serviceRoot:_serviceRoot];
   service.namespaceName = @"Catalog";
   service.serviceOperations = [[WorkbenchCatalogOperations alloc] init];
+  // GET <root>/$explain/<path>: the Explain button's plans.
+  service.explains = YES;
   for (NSString *problem in service.operationProblems) NSLog(@"Workbench: %@", problem);
   _service = service;
   return YES;

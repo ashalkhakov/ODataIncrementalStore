@@ -323,6 +323,19 @@ static void WBCheck(BOOL ok, NSString *what, NSString *detail)
   WBCheck(!self.results.lastError && [wire rangeOfString:@"$filter=Products/aggregate(UnitPrice with sum) gt 90"].location != NSNotFound &&
           [names isEqual:(@[ @"Beverages", @"Confections" ])],
           @"aggregate(): products.@sum.unitPrice", self.results.lastError ?: [NSString stringWithFormat:@"%@ %@", wire, names]);
+  // Explain: the service's plan for that GET, the filter in the store.
+  [self explainQuery:nil];
+  [[NSRunLoop currentRunLoop] runMode:NSDefaultRunLoopMode beforeDate:[NSDate dateWithTimeIntervalSinceNow:0.2]];
+  NSString *physical = self.physicalPlanView.string;
+  WorkbenchLogEntry *explained = self.log.firstObject;
+  WBCheck([self.explainButton isEnabled] && self.planWindow.isVisible &&
+          [physical rangeOfString:@"Store scan Category where Products/aggregate(UnitPrice with sum) gt 90"].location != NSNotFound &&
+          [self.logicalPlanView.string rangeOfString:@"Select Products/aggregate(UnitPrice with sum) gt 90"].location != NSNotFound &&
+          [explained.URL rangeOfString:@"$explain/Categories"].location != NSNotFound &&
+          [self.explainedView.string hasPrefix:@"GET http://workbench.local/odata/Categories?$filter=Products/aggregate(UnitPrice with sum) gt 90&"],
+          @"explain: the built-in service's plan for the query", [NSString stringWithFormat:@"%@ | %@", physical, explained.URL]);
+  [self shoot:@"Plan" window:self.planWindow];
+  [self.planWindow orderOut:nil];
   NSDictionary *hierarchies = @{ @"Hierarchy: below EMEA": @[ @"EMEA Central" ], @"Hierarchy: US East and above": @[ @"Sales", @"US", @"US East" ],
                                  @"Hierarchy: the leaves in the US": @[ @"US East", @"US West" ],
                                  @"Hierarchy: sales anywhere below US": @[ @1, @2, @3, @4, @5 ] };
@@ -492,6 +505,7 @@ static void WBCheck(BOOL ok, NSString *what, NSString *detail)
       [self checkSearchAndGrouping];
       [self checkBuiltInFeatures];
     }
+    if (service != WBServiceBuiltIn) WBCheck(![self.explainButton isEnabled], @"explain: only at the built-in service", nil);
     if (service != WBServiceTripPin) continue;
 
     // TripPin: an instance function, a service function, an edit, the changes.
