@@ -138,11 +138,15 @@ The interface is in XIBs, File's Owner `WorkbenchController` in each:
 `WorkbenchWindow.xib` (the window, every control in it, and the main menu
 with the Store menu), `ExchangeWindow.xib` (one exchange, whole) and
 `PlanWindow.xib` (Explain's plans), the last two loaded when first shown.
-Xcode 5 format, springs and struts, no Auto Layout; GNUstep loads them
-with `GSXib5Loader`. A split view has its `<holdingPriorities>`, which
-Xcode's `ibtool` needs (it fails without them, saying nothing) and GNUstep
-does not; a table column has its `minWidth` and `maxWidth`, without which
-Apple's draws it with no width at all. The code makes no views: what it
+As Xcode saves them: fixed frames with springs and struts and no
+constraints, which `ibtool` turns into constraints and GNUstep's
+`GSXib5Loader` reads as they are (`checkResizing` in the self-test sees
+the window's contents follow its size). Written by hand, three things are
+easy to miss: a split view's `<holdingPriorities>`, which Xcode's `ibtool`
+needs (it fails without them, saying nothing) and GNUstep does not; a
+table column's `minWidth` and `maxWidth`, without which Apple's draws it
+with no width at all; and a checkbox's `<behavior>`, without which Xcode
+makes it a bevel button when it saves the file (`checkSwitches`). The code makes no views: what it
 fills in is what depends on the service (the results' columns, the
 presets, the operations, the streams).
 

@@ -195,6 +195,42 @@ static void WBCheck(BOOL ok, NSString *what, NSString *detail)
   [self runFetch:nil];
 }
 
+// The window's contents follow its size, as the xib's springs and struts
+// say: the results and the log grow, the URL field widens, the buttons on
+// the right keep to the right.
+- (void)checkResizing
+{
+  NSRect before = self.window.frame;
+  NSRect results = self.tableView.enclosingScrollView.frame, log = self.logTable.enclosingScrollView.frame;
+  NSRect wire = self.wireURLField.frame, explain = self.explainButton.frame;
+  [self.window setFrame:NSMakeRect(before.origin.x, before.origin.y - 100, before.size.width + 200, before.size.height + 100) display:YES];
+  NSRect r = self.tableView.enclosingScrollView.frame, l = self.logTable.enclosingScrollView.frame;
+  NSRect w = self.wireURLField.frame, e = self.explainButton.frame;
+  BOOL ok = r.size.width > results.size.width + 100 && r.size.height > results.size.height + 50 && l.size.height > log.size.height + 50 &&
+            w.size.width > wire.size.width + 150 && NSMaxX(e) > NSMaxX(explain) + 150;
+  WBCheck(ok, @"the window's contents follow its size",
+          [NSString stringWithFormat:@"results %@ -> %@, log %@ -> %@, URL %@ -> %@, Explain %@ -> %@",
+                                     NSStringFromRect(results), NSStringFromRect(r), NSStringFromRect(log), NSStringFromRect(l),
+                                     NSStringFromRect(wire), NSStringFromRect(w), NSStringFromRect(explain), NSStringFromRect(e)]);
+  [self.window setFrame:before display:YES];
+}
+
+// The switches are checkboxes: a cell that shows its state by its image
+// (Xcode turns one with no <behavior> into a bevel button, which does not).
+- (void)checkSwitches
+{
+  NSDictionary *cells = @{ @"sub-entities": self.subentitiesButton.cell, @"return as faults": self.faultsButton.cell,
+                           @"sort: desc": [[self.sortTable tableColumnWithIdentifier:@"descending"] dataCell],
+                           @"prefetch: include": [[self.expandOutline tableColumnWithIdentifier:@"include"] dataCell],
+                           @"properties: include": [[self.selectTable tableColumnWithIdentifier:@"include"] dataCell] };
+  NSMutableArray *not = [NSMutableArray array];
+  for (NSString *name in [cells.allKeys sortedArrayUsingSelector:@selector(compare:)]) {
+    NSButtonCell *cell = cells[name];
+    if (![cell isKindOfClass:[NSButtonCell class]] || !(cell.showsStateBy & NSContentsCellMask)) [not addObject:name];
+  }
+  WBCheck(!not.count, @"the switches are checkboxes", [not componentsJoinedByString:@", "]);
+}
+
 // Choosing a preset, as a person does (the popup's own action), shows
 // every part of it in the panel.
 - (void)checkPresetsFillThePanel
@@ -561,6 +597,8 @@ static void WBCheck(BOOL ok, NSString *what, NSString *detail)
               self.statusField.stringValue);
       [self checkScrolling];
       [self checkPresetsFillThePanel];
+      [self checkResizing];
+      [self checkSwitches];
       [self checkQueryPanel];
       [self checkBuiltInOperations];
       [self checkSearchAndGrouping];
