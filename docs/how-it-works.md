@@ -73,7 +73,17 @@ something, the model's `userInfo` wins.
 
 ## Reading: a fetch request as a URL
 
-`ODataQueryBuilder` and `ODataPredicateTranslator`, on the client.
+`ODataQueryBuilder` and `ODataPredicateTranslator`, on the client. Every
+query is typed before it is written: the translator builds a predicate
+into an `ODataExpression` tree, and the builder makes a fetch request
+into ODataKit's `ODataQueryOptions` (order items, select and expand
+items with options of their own, `$apply`'s transformations), which the
+builder alone writes into a URL, and which the store sends through one
+reader for fetches, grouped fetches and `ODataQuery` alike.
+`+[ODataQuery queryWithFetchRequest:inContext:error:]` gives a fetch's
+query, typed, to go on from; the server parses a request into the same
+types. The URL is the tree's own writing, in parentheses only where
+precedence needs them: `UnitPrice gt 20 and Discontinued eq false`.
 
 | `NSFetchRequest` | Request |
 |---|---|
@@ -100,9 +110,9 @@ something, the model's `userInfo` wins.
 | `name ==[c] 'x'` | `tolower(Name) eq tolower('x')` |
 | `BEGINSWITH`, `ENDSWITH`, `CONTAINS` (with `[c]`) | `startswith`, `endswith`, `contains` (with `tolower`) |
 | `LIKE 'Ch?i*'` | `matchesPattern(Name, '^Ch.i.*$')`, 4.01 only, each wildcard written as any character including line breaks |
-| `MATCHES 're'` | `matchesPattern(Name, '^(?:re)$')`, 4.01 only, not `[c]`; a pattern ECMAScript reads differently from ICU is refused |
-| `x IN {a, b}` | `x in (a, b)` in 4.01; `(x eq a or x eq b)` in 4.0 |
-| `x BETWEEN {a, b}` | `(x ge a and x le b)` |
+| `MATCHES 're'` | `matchesPattern(Name, '^re$')`, 4.01 only, not `[c]`; read as a tree (`ODataRegex`) and written in ECMAScript, and refused where ECMAScript cannot say the same |
+| `x IN {a, b}` | `x in (a,b)` in 4.01; `x eq a or x eq b` in 4.0 |
+| `x BETWEEN {a, b}` | `x ge a and x le b` |
 | `category == %@` (an object or object ID) | `Category/CategoryID eq 1` |
 | `category.name == 'x'` | `Category/Name eq 'x'` |
 | `ANY products.price > 20`, `ALL …` | `Products/any(p:p/Price gt 20)`, `all(…)` |
@@ -131,6 +141,8 @@ evaluated in memory, because that would read every row.
 | A stream property / media entity | `PUT …/Photo` / `PUT …/$value`, with the media ETag |
 | Repeatable requests (when the service supports them) | `Repeatability-Request-ID`, `-First-Sent`, so a retried save is not applied twice |
 | `-performTemporalAction:…` | `POST Budgets/Org.OData.Temporal.V1.Update` (or `Upsert`, `Delete`) |
+| `NSBatchUpdateRequest` | `PATCH Products/$filter(@f)/$each?@f=…` with the values, where the service takes a filter segment (4.01, `Capabilities.UpdateRestrictions/FilterSegmentSupported`); elsewhere, the objects fetched and each PATCHed, in one change set |
+| `NSBatchDeleteRequest` | `DELETE Products/$filter(@f)/$each?@f=…`, likewise; one with a limit or offset, the objects fetched and each deleted |
 
 Changes at the service go the other way: `-fetchRemoteChanges:` follows
 `@odata.deltaLink`, and a set is read again and compared where the service
@@ -184,7 +196,9 @@ it on the store.
 | First-level `$expand` | **Store** | `relationshipKeyPathsForPrefetching` on the fetch |
 | `$expand` of a to-many relationship, with its own `$filter`, `$search` and `$orderby` | **Store** | For every parent on the page at once, filtered and sorted there, then split among the parents: a one-to-many in one fetch (`inverse IN parents`); a many-to-many, or one with no inverse, in two (the parents with the relationship prefetched, then `SELF IN` their related rows). Nested expansions and `$levels` likewise, per level |
 | Its `$top`, `$skip` and `$count`, per parent; an expansion with its own `$compute`; a page whose many-to-many members are more than 500 | Memory | Over each parent's members |
-| Temporal actions (split and trim) | Memory, then store | Computed over the affected slices, and written through the handler |
+| Temporal actions (split and trim) | Memory, then store | The slices read through the handler, the changes worked out here, then written through the handler |
+| `PATCH` and `DELETE` of `Collection/$each`, `$filter(…)` path segments | **Store**, then each row | The members read in one fetch, then each updated or deleted through the handler |
+| A write's references (`@odata.bind`, `$ref`, a nested entity's `@id` or key), new integer keys | **Store** | Read through the handler before anything is written; a new key counts on from the largest, read once per write |
 
 ### `$filter` as `NSPredicate`
 
@@ -232,8 +246,8 @@ the comparison is then rewritten into something the store does have.
 | `concat(First, 'x') eq 'Annx'` | `first == 'Ann'` |
 | `matchesPattern(Name, '^C')` | `name MATCHES '\AC.*'` (ECMAScript's search, made a whole-string match, in ICU's syntax) |
 
-The regular expressions above are sketches; the builder escapes the literals
-and anchors the patterns. `substring`, `trim` and `concat` are compared with
+The regular expressions above are sketches; the builder makes them as trees
+(`ODataRegex`), which escape the literals and anchor the patterns. `substring`, `trim` and `concat` are compared with
 `eq` and `ne` only.
 
 **Dates**
@@ -254,3 +268,13 @@ and anchors the patterns. `substring`, `trim` and `concat` are compared with
 | `sum` and `average` of decimals, `min` and `max` of strings, `countdistinct` | SQLite sums decimals as doubles, and SQL orders strings by collation rather than as `NSString` does; Core Data has no count of distinct values |
 | An expanded to-many's `$top` and `$skip` | Per parent: one fetch for every parent cannot page each one |
 | `$apply` after the first grouping, and `compute` and the top and bottom kin | Over grouped rows, which are the service's, not the store's |
+| A recursive hierarchy's nodes and parents, and `ancestors`, `descendants` and `traverse` | Core Data has no recursive query; the functions (`isdescendant`, …) are then `IN` a set of identifiers, in the store |
+
+What neither the store nor the service does: arithmetic on a
+collection's aggregate or count (`Products/$count mul 20 gt 50`,
+`Products/aggregate(UnitPrice with sum) div 2 gt 20`). The service reads
+each as a key path's collection operator (`products.@count * 20`), which
+Apple's SQLite store refuses to evaluate; the answer is `501`, with the
+store's reason. FreeCoreData's stores evaluate it. Compared as they are (`Products/aggregate(UnitPrice with
+sum) gt 40`, or with another aggregate), they are evaluated in every
+store.

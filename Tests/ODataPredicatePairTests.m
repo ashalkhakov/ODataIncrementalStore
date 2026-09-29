@@ -327,6 +327,7 @@ static id OISPairGET(ODataService *service, NSString *path)
 {
   ODataPredicateTranslator *translator = [[ODataPredicateTranslator alloc] initWithMapper:_mapper entity:entity];
   translator.version = version;
+  translator.writesAggregates = YES;  // as ODataService has it
   return [translator translatePredicate:predicate error:error];
 }
 
@@ -476,6 +477,21 @@ static id OISPairGET(ODataService *service, NSString *path)
     @"length(ProductName) gt 10": @"4.0: length() is read as a pattern, and 4.0 has no matchesPattern",
     @"length(QuantityPerUnit) le 16": @"4.0: as length(ProductName)",
   } entity:@"Product" contexts:[self catalogs]];
+}
+
+// A navigation's aggregate (Data Aggregation section 3.6.1): a key path's
+// collection operator, products.@sum.unitPrice, in each store, which the
+// client writes back as aggregate().
+- (void)testAggregatesOfNavigations
+{
+  [self assertServiceFilters:@[
+    @"Products/aggregate($count) gt 2",
+    @"Products/aggregate(UnitPrice with sum) gt 40",
+    @"Products/aggregate(UnitPrice with average) lt 20",
+    @"Products/aggregate(UnitPrice with max) ge 30",
+    @"Products/aggregate(UnitPrice with min) le 10",
+    @"Products/aggregate(UnitPrice with max) gt Products/aggregate(UnitPrice with min)",
+  ] clientCannotWrite:@{} entity:@"Category" contexts:[self catalogs]];
 }
 
 // substring, trim, indexof and concat compared with a literal: each read

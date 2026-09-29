@@ -6,7 +6,7 @@
     "path": "Animals",
     "query": {
       "$select": "Born,Diet,Features,Home,Id,Name,Nicknames,PastHomes,Zoo.Lion/MaxRoar",
-      "$filter": "(Zoo.Caretaker()/Name eq 'Ann') and (Zoo.CurrentHome()/Opened lt 2016-01-01)",
+      "$filter": "Zoo.Caretaker()/Name eq 'Ann' and Zoo.CurrentHome()/Opened lt 2016-01-01",
       "$expand": "Keeper($select=Code)"
     }
   },

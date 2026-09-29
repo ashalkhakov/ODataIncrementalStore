@@ -7,7 +7,7 @@
     "path": "Products",
     "query": {
       "$select": "Discontinued,ProductID,ProductName,UnitPrice",
-      "$filter": "(UnitPrice gt 20) and (Discontinued eq false)",
+      "$filter": "UnitPrice gt 20 and Discontinued eq false",
       "$orderby": "ProductName,ProductID",
       "$top": "25",
       "$expand": "Category($select=CategoryID)"

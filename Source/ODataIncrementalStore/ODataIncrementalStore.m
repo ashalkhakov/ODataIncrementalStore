@@ -56,6 +56,40 @@ typedef NS_ENUM(NSInteger, OISWriteMode) {
 @implementation OISTracking
 @end
 
+// A batch update's or delete's result: what the store found, as the
+// request's result type asks.
+@interface OISBatchUpdateResult : NSBatchUpdateResult
+@property (nonatomic, strong) id storeResult;
+@property (nonatomic) NSBatchUpdateRequestResultType storeResultType;
+@end
+
+@implementation OISBatchUpdateResult
+- (id)result
+{
+  return self.storeResult;
+}
+- (NSBatchUpdateRequestResultType)resultType
+{
+  return self.storeResultType;
+}
+@end
+
+@interface OISBatchDeleteResult : NSBatchDeleteResult
+@property (nonatomic, strong) id storeResult;
+@property (nonatomic) NSBatchDeleteRequestResultType storeResultType;
+@end
+
+@implementation OISBatchDeleteResult
+- (id)result
+{
+  return self.storeResult;
+}
+- (NSBatchDeleteRequestResultType)resultType
+{
+  return self.storeResultType;
+}
+@end
+
 @implementation ODataIncrementalStore {
   ODataClient *_client;
   ODataPropertyMapper *_mapper;
@@ -238,6 +272,12 @@ typedef NS_ENUM(NSInteger, OISWriteMode) {
     [_members removeAllObjects];
     [_lock unlock];
     return [self executeSave:(NSSaveChangesRequest *)request error:error];
+  }
+  if (request.requestType == NSBatchUpdateRequestType && [request isKindOfClass:[NSBatchUpdateRequest class]]) {
+    return [self executeBatchUpdate:(NSBatchUpdateRequest *)request context:context error:error];
+  }
+  if (request.requestType == NSBatchDeleteRequestType && [request isKindOfClass:[NSBatchDeleteRequest class]]) {
+    return [self executeBatchDelete:(NSBatchDeleteRequest *)request context:context error:error];
   }
   if ([request isKindOfClass:[NSPersistentHistoryChangeRequest class]]) {
     if (!_history) {
@@ -587,6 +627,32 @@ static void OISCollectKeyPaths(NSPredicate *predicate, NSMutableSet *into)
 
 #pragma mark - Fetch / save
 
+- (ODataQueryBuilder *)builder
+{
+  return _builder;
+}
+
+- (NSArray *)rowsForPath:(NSString *)path options:(ODataQueryOptions *)options limit:(NSUInteger)limit pageSize:(NSUInteger)pageSize
+                     URL:(NSURL **)urlp error:(NSError **)error
+{
+  NSURL *url = [_builder URLForPath:path options:options error:error];
+  if (urlp) *urlp = url;
+  return url ? [self rowsAtURL:url limit:limit pageSize:pageSize error:error] : nil;
+}
+
+- (NSArray *)objectIDsForRows:(NSArray *)rows entity:(NSEntityDescription *)entity URL:(NSURL *)url error:(NSError **)error
+{
+  NSMutableArray *objectIDs = [NSMutableArray array];
+  for (NSDictionary *row in rows) {
+    NSManagedObjectID *oid = [row isKindOfClass:[NSDictionary class]] ? [self objectIDFromPayload:row entity:entity error:error] : nil;
+    if (!oid) return nil;
+    [self cacheNodeForObjectID:oid entity:oid.entity payload:row error:nil];
+    if (url) [self noteMessagesIn:row URL:url objectID:oid];
+    [objectIDs addObject:oid];
+  }
+  return objectIDs;
+}
+
 - (id)executeFetch:(NSFetchRequest *)fetch context:(NSManagedObjectContext *)context error:(NSError **)error
 {
   NSEntityDescription *entity = [self resolvedEntity:fetch];
@@ -605,17 +671,21 @@ static void OISCollectKeyPaths(NSPredicate *predicate, NSMutableSet *into)
   NSFetchRequest *original = fetch;
   fetch = [self sendableFetch:original entity:entity sortLocally:&sortLocally skip:&skip limit:&limit count:&countLocally error:error];
   if (!fetch) return nil;
-  NSURL *url = [_builder URLForFetch:fetch entity:entity error:error];
-  if (!url) return nil;
+  // The fetch, typed: what the service is asked.
+  ODataQueryOptions *options = [_builder optionsForFetch:fetch entity:entity error:error];
+  if (!options) return nil;
+  NSString *set = [_mapper collectionPathForEntity:entity];
 
   if (fetch.resultType == NSCountResultType) {
-    NSString *text = [_client textAtURL:url error:error];
+    NSURL *url = [_builder URLForPath:[set stringByAppendingString:@"/$count"] options:options error:error];
+    NSString *text = url ? [_client textAtURL:url error:error] : nil;
     if (!text) return nil;
     NSInteger count = [text integerValue];
     return @[ @(count) ];
   }
 
-  NSArray *rows = [self rowsAtURL:url limit:fetch.fetchLimit pageSize:fetch.fetchBatchSize error:error];
+  NSURL *url = nil;
+  NSArray *rows = [self rowsForPath:set options:options limit:fetch.fetchLimit pageSize:fetch.fetchBatchSize URL:&url error:error];
   if (!rows) return nil;
 
   NSArray *sort = sortLocally ? original.sortDescriptors : nil;
@@ -630,12 +700,10 @@ static void OISCollectKeyPaths(NSPredicate *predicate, NSMutableSet *into)
   // Every row is a whole entity, so it is cached whether or not the fetch
   // returns faults: firing the fault then costs nothing, where it used to
   // cost one GET per object.
+  NSArray *kept = [self objectIDsForRows:rows entity:entity URL:url error:error];
+  if (!kept) return nil;
   NSMutableArray *objectIDs = [NSMutableArray array];
-  for (NSDictionary *row in rows) {
-    NSManagedObjectID *oid = [self objectIDFromPayload:row entity:entity error:error];
-    if (!oid) return nil;
-    [self cacheNodeForObjectID:oid entity:oid.entity payload:row error:nil];
-    [self noteMessagesIn:row URL:url objectID:oid];
+  for (NSManagedObjectID *oid in kept) {
     // A set of a base type holds its derived types too; a fetch that does
     // not include sub-entities leaves them out.
     if (!fetch.includesSubentities && oid.entity != entity && ![oid.entity.name isEqualToString:entity.name]) continue;
@@ -827,34 +895,52 @@ static NSAttributeDescription *OISAttributeAtKeyPath(NSEntityDescription *entity
                          having:(BOOL *)having sort:(BOOL *)sort paging:(BOOL *)paging
 {
   *having = *sort = *paging = NO;
-  id apply = [self capability:@"Aggregation.ApplySupported" forEntity:entity];
-  NSArray *listed = [apply isKindOfClass:[NSDictionary class]] ? apply[@"Transformations"] : nil;
-  NSSet *supported = [listed isKindOfClass:[NSArray class]] ? [NSSet setWithArray:listed] : [NSSet set];
+  NSDictionary *apply = [self applySupportFor:entity];
+  NSArray *listed = apply[@"Transformations"];
+  // No list: every transformation (Data Aggregation section 5.1).
+  NSSet *supported = [listed isKindOfClass:[NSArray class]] ? [NSSet setWithArray:listed]
+                                                            : [NSSet setWithObjects:@"filter", @"orderby", @"skip", @"top", nil];
   NSMutableDictionary *names = [NSMutableDictionary dictionary];
   for (NSUInteger i = 0; i < keyPaths.count; i++) names[keyPaths[i]] = [paths[i] componentsJoinedByString:@"/"];
   for (ODataAggregate *aggregate in aggregates) names[aggregate.alias] = aggregate.alias;
   NSMutableArray *steps = [NSMutableArray array];
-  NSString *filter = fetch.havingPredicate && [supported containsObject:@"filter"] ? [_builder groupedFilterForPredicate:fetch.havingPredicate names:names] : nil;
-  if (filter) [steps addObject:[NSString stringWithFormat:@"filter(%@)", filter]];
+  ODataExpression *filter = fetch.havingPredicate && [supported containsObject:@"filter"]
+      ? [_builder groupedFilterExpressionForPredicate:fetch.havingPredicate names:names] : nil;
+  if (filter) [steps addObject:[ODataApplyTransformation filterWithExpression:filter]];
   *having = !fetch.havingPredicate || filter;
-  NSString *order = fetch.sortDescriptors.count && [supported containsObject:@"orderby"] ? [_builder groupedOrderForSortDescriptors:fetch.sortDescriptors names:names] : nil;
-  if (order) [steps addObject:[NSString stringWithFormat:@"orderby(%@)", order]];
+  NSArray *order = fetch.sortDescriptors.count && [supported containsObject:@"orderby"]
+      ? [_builder groupedOrderItemsForSortDescriptors:fetch.sortDescriptors names:names] : nil;
+  if (order) [steps addObject:[ODataApplyTransformation orderByItems:order]];
   *sort = !fetch.sortDescriptors.count || order;
   BOOL skip = !fetch.fetchOffset || [supported containsObject:@"skip"], top = !fetch.fetchLimit || [supported containsObject:@"top"];
   if (*having && *sort && skip && top) {
-    if (fetch.fetchOffset) [steps addObject:[NSString stringWithFormat:@"skip(%lu)", (unsigned long)fetch.fetchOffset]];
-    if (fetch.fetchLimit) [steps addObject:[NSString stringWithFormat:@"top(%lu)", (unsigned long)fetch.fetchLimit]];
+    if (fetch.fetchOffset) [steps addObject:[ODataApplyTransformation skip:fetch.fetchOffset]];
+    if (fetch.fetchLimit) [steps addObject:[ODataApplyTransformation top:fetch.fetchLimit]];
     *paging = YES;
   }
   return steps;
+}
+
+// What $apply the service has for an entity's set: its ApplySupported
+// over the container's ApplySupportedDefaults (Data Aggregation section
+// 5.1), the one replacing the other's properties; nil for none. Either
+// said null is none.
+- (NSDictionary *)applySupportFor:(NSEntityDescription *)entity
+{
+  id apply = [self capability:@"Aggregation.ApplySupported" forEntity:entity];
+  id defaults = _schema.containerName ? [_schema annotation:@"Aggregation.ApplySupportedDefaults" forTarget:_schema.containerName] : nil;
+  if (apply == [NSNull null] || defaults == [NSNull null] || (!apply && !defaults)) return nil;
+  NSMutableDictionary *merged = [NSMutableDictionary dictionary];
+  if ([defaults isKindOfClass:[NSDictionary class]]) [merged addEntriesFromDictionary:defaults];
+  if ([apply isKindOfClass:[NSDictionary class]]) [merged addEntriesFromDictionary:apply];
+  return merged;
 }
 
 // $apply where the service says it has it (Aggregation.ApplySupported);
 // nil where the rows are grouped here.
 - (NSArray *)applyPathsFor:(NSArray *)keyPaths entity:(NSEntityDescription *)entity
 {
-  id apply = [self capability:@"Aggregation.ApplySupported" forEntity:entity];
-  if (!apply || apply == [NSNull null]) return nil;
+  if (![self applySupportFor:entity]) return nil;
   NSMutableArray *paths = [NSMutableArray array];
   for (NSString *keyPath in keyPaths) [paths addObject:[[_mapper propertyPathForKeyPath:keyPath entity:entity] componentsSeparatedByString:@"/"]];
   return paths;
@@ -925,9 +1011,8 @@ static NSAttributeDescription *OISAttributeAtKeyPath(NSEntityDescription *entity
   if (paths) {
     NSArray *after = [self stepsAfterGrouping:fetch entity:entity keyPaths:keyPaths paths:paths aggregates:wire
                                        having:&havingThere sort:&sortThere paging:&pagingThere];
-    NSURL *url = [_builder URLForAggregateFetch:fetch entity:entity groupPaths:paths aggregates:wire after:after error:error];
-    if (!url) return nil;
-    NSArray *answers = [self rowsAtURL:url limit:0 pageSize:0 error:error];
+    ODataQueryOptions *options = [_builder optionsForAggregateFetch:fetch entity:entity groupPaths:paths aggregates:wire after:after error:error];
+    NSArray *answers = options ? [self rowsForPath:[_mapper collectionPathForEntity:entity] options:options limit:0 pageSize:0 URL:NULL error:error] : nil;
     if (!answers) return nil;
     for (NSDictionary *answer in answers) {
       NSMutableDictionary *row = [NSMutableDictionary dictionary];
@@ -1243,6 +1328,13 @@ static void OISSetKeyPath(NSMutableDictionary *row, NSString *keyPath, id value)
     [deleted addObject:object.objectID];
     context = context ?: object.managedObjectContext;
   }
+  [self recordInserted:inserted updated:updated deleted:deleted context:context];
+}
+
+// Changes this store made at the service: what -fetchRemoteChanges:
+// compares against, and the persistent history.
+- (void)recordInserted:(NSArray *)inserted updated:(NSDictionary *)updated deleted:(NSArray *)deleted context:(NSManagedObjectContext *)context
+{
   [_lock lock];
   for (OISTracking *tracking in _tracking.allValues) {
     for (NSManagedObjectID *oid in inserted) {
@@ -1255,6 +1347,163 @@ static void OISSetKeyPath(NSMutableDictionary *row, NSString *keyPath, id value)
   }
   [_lock unlock];
   [_history recordInserted:inserted updated:updated deleted:deleted author:context.transactionAuthor contextName:context.name];
+}
+
+#pragma mark - Batch updates and deletes
+
+// NSBatchUpdateRequest and NSBatchDeleteRequest (4.01's collection writes,
+// Part 1 sections 11.4.13-14): PATCH or DELETE of Set/$filter(@f)/$each,
+// where the set's Capabilities say it takes a filter segment (and a cast
+// one, for a sub-entity); elsewhere, or for what a filter segment cannot
+// say (a limit, $search, application time), the objects are fetched and
+// each is written, in one change set. As with Core Data's own stores, no
+// context is changed: merge the result's object IDs into those that need
+// them (NSUpdatedObjectsKey, NSDeletedObjectsKey,
+// +mergeChangesFromRemoteContextSave:intoContexts:).
+- (id)executeBatchUpdate:(NSBatchUpdateRequest *)request context:(NSManagedObjectContext *)context error:(NSError **)error
+{
+  NSEntityDescription *entity = request.entity ?: self.persistentStoreCoordinator.managedObjectModel.entitiesByName[request.entityName];
+  id restrictions = [self capability:@"Capabilities.UpdateRestrictions" forEntity:entity];
+  if ([restrictions isKindOfClass:[NSDictionary class]] && OISRefused(restrictions[@"Updatable"])) {
+    if (error) *error = [self notAllowed:@"update" entity:entity term:@"UpdateRestrictions"];
+    return nil;
+  }
+  NSMutableDictionary *body = [NSMutableDictionary dictionary];
+  NSMutableSet *names = [NSMutableSet set];
+  for (id key in request.propertiesToUpdate) {
+    NSString *name = [key isKindOfClass:[NSPropertyDescription class]] ? [key name] : key;
+    NSPropertyDescription *property = entity.propertiesByName[name];
+    id value = request.propertiesToUpdate[key];
+    if ([value isKindOfClass:[NSExpression class]]) {
+      if ([value expressionType] != NSConstantValueExpressionType) {
+        if (error) *error = OISError(ODataIncrementalStoreErrorUnsupportedRequest,
+                                     [NSString stringWithFormat:@"%@.%@: a batch update sends a value to each; %@ is not one", entity.name, name, value]);
+        return nil;
+      }
+      value = [value constantValue];
+    }
+    if (value == [NSNull null]) value = nil;
+    // Attributes, as Core Data's own batch updates take.
+    if (![property isKindOfClass:[NSAttributeDescription class]]) {
+      if (error) *error = OISError(ODataIncrementalStoreErrorUnsupportedRequest,
+                                   [NSString stringWithFormat:@"%@.%@: a batch update sets attributes", entity.name, name]);
+      return nil;
+    }
+    NSAttributeDescription *attribute = (NSAttributeDescription *)property;
+    body[[_mapper propertyForAttribute:attribute]] = value ? [_mapper.values JSONForCoreDataValue:value attribute:attribute] : [NSNull null];
+    [names addObject:name];
+  }
+  NSFetchRequest *fetch = [NSFetchRequest fetchRequestWithEntityName:entity.name];
+  fetch.predicate = request.predicate;
+  fetch.includesSubentities = request.includesSubentities;
+  NSArray *objectIDs = [self writeEach:@"PATCH" fetch:fetch body:body restrictions:restrictions context:context error:error];
+  if (!objectIDs) return nil;
+  NSMutableDictionary *updated = [NSMutableDictionary dictionary];
+  for (NSManagedObjectID *oid in objectIDs) updated[oid] = names;
+  [self recordInserted:@[] updated:updated deleted:@[] context:context];
+  OISBatchUpdateResult *result = [[OISBatchUpdateResult alloc] init];
+  result.storeResultType = request.resultType;
+  result.storeResult = request.resultType == NSUpdatedObjectIDsResultType ? objectIDs
+                     : request.resultType == NSUpdatedObjectsCountResultType ? @(objectIDs.count) : @YES;
+  return result;
+}
+
+- (id)executeBatchDelete:(NSBatchDeleteRequest *)request context:(NSManagedObjectContext *)context error:(NSError **)error
+{
+  NSFetchRequest *fetch = [request.fetchRequest copy];
+  NSEntityDescription *entity = [self resolvedEntity:fetch];
+  id restrictions = [self capability:@"Capabilities.DeleteRestrictions" forEntity:entity];
+  if ([restrictions isKindOfClass:[NSDictionary class]] && OISRefused(restrictions[@"Deletable"])) {
+    if (error) *error = [self notAllowed:@"delete" entity:entity term:@"DeleteRestrictions"];
+    return nil;
+  }
+  fetch.resultType = NSManagedObjectResultType;
+  NSArray *objectIDs = [self writeEach:@"DELETE" fetch:fetch body:nil restrictions:restrictions context:context error:error];
+  if (!objectIDs) return nil;
+  for (NSManagedObjectID *oid in objectIDs) [self forgetObjectID:oid];
+  [self recordInserted:@[] updated:@{} deleted:objectIDs context:context];
+  OISBatchDeleteResult *result = [[OISBatchDeleteResult alloc] init];
+  result.storeResultType = request.resultType;
+  result.storeResult = request.resultType == NSBatchDeleteResultTypeObjectIDs ? objectIDs
+                     : request.resultType == NSBatchDeleteResultTypeCount ? @(objectIDs.count) : @YES;
+  return result;
+}
+
+// PATCH (with the body) or DELETE each object the fetch selects: the
+// object IDs of those written; their rows, updated, kept.
+- (NSArray *)writeEach:(NSString *)method fetch:(NSFetchRequest *)fetch body:(NSDictionary *)body
+          restrictions:(id)restrictions context:(NSManagedObjectContext *)context error:(NSError **)error
+{
+  NSEntityDescription *entity = [self resolvedEntity:fetch];
+  ODataQueryOptions *options = [_builder optionsForFetch:fetch entity:entity error:error];
+  if (!options) return nil;
+  NSEntityDescription *root = entity;
+  while (root.superentity) root = root.superentity;
+  BOOL segments = [_client.configuration.version isEqualToString:@"4.01"] &&
+                  [restrictions isKindOfClass:[NSDictionary class]] && [restrictions[@"FilterSegmentSupported"] isEqual:@YES] &&
+                  (entity == root || [restrictions[@"TypecastSegmentSupported"] isEqual:@YES]);
+  // A filter segment says which, and nothing else: not how many, nor a
+  // search, nor a time ($select and $expand are only what a read reads).
+  BOOL filterOnly = !options.search && !options.apply.count && !options.compute.count && !options.temporalText.count &&
+                    !fetch.fetchLimit && !fetch.fetchOffset && (fetch.includesSubentities || !entity.subentities.count);
+  // The members' changed relationships are read again.
+  [_lock lock];
+  [_members removeAllObjects];
+  [_lock unlock];
+  if (segments && filterOnly) return [self sendEach:method entity:entity filter:options.filter body:body error:error];
+
+  NSFetchRequest *ids = [fetch copy];
+  ids.resultType = NSManagedObjectIDResultType;
+  NSArray *objectIDs = [self executeFetch:ids context:context error:error];
+  if (!objectIDs) return nil;
+  NSMutableArray *operations = [NSMutableArray array];
+  for (NSManagedObjectID *oid in objectIDs) {
+    NSURL *url = [self editURLForObjectID:oid error:error];
+    if (!url) return nil;
+    NSMutableURLRequest *req = [_client requestWithMethod:method URL:url body:body etag:nil error:error];
+    if (!req) return nil;
+    OISOperation *operation = [self operation:req completion:^BOOL(ODataHTTPResponse *response, NSError **e) {
+      id json = response.data.length ? [response JSONWithError:NULL] : nil;
+      if ([json isKindOfClass:[NSDictionary class]]) [self cacheNodeForObjectID:oid entity:oid.entity payload:json error:nil];
+      else [self discardCachedRowsForObjectIDs:@[ oid ]];
+      return YES;
+    }];
+    operation.objectID = oid;
+    [operations addObject:operation];
+  }
+  return [self sendOperations:operations error:error] ? objectIDs : nil;
+}
+
+// One request for them all: the rows it answers with are those written,
+// entities for an update and removed entries, with their keys, for a
+// delete.
+- (NSArray *)sendEach:(NSString *)method entity:(NSEntityDescription *)entity filter:(ODataExpression *)filter
+                 body:(NSDictionary *)body error:(NSError **)error
+{
+  NSString *path = [_mapper collectionPathForEntity:entity];
+  ODataMutableQueryOptions *each = [[ODataMutableQueryOptions alloc] init];
+  if (filter) {
+    each.aliases = @{ @"f": filter };
+    path = [path stringByAppendingString:@"/$filter(@f)"];
+  }
+  NSURL *url = [_builder URLForPath:[path stringByAppendingString:@"/$each"] options:each error:error];
+  NSMutableURLRequest *req = url ? [_client requestWithMethod:method URL:url body:body etag:nil error:error] : nil;
+  if (!req) return nil;
+  [req setValue:@"return=representation" forHTTPHeaderField:@"Prefer"];
+  ODataHTTPResponse *response = [_client sendRequest:req error:error];
+  if (!response) return nil;
+  id json = response.data.length ? [response JSONWithError:error] : @{};
+  if (![json isKindOfClass:[NSDictionary class]]) return nil;
+  [self noteMessagesIn:json URL:url objectID:nil];
+  NSMutableArray *objectIDs = [NSMutableArray array];
+  for (NSDictionary *row in [json[@"value"] isKindOfClass:[NSArray class]] ? json[@"value"] : @[]) {
+    if (![row isKindOfClass:[NSDictionary class]]) continue;
+    NSManagedObjectID *oid = [self objectIDFromPayload:row entity:entity error:error];
+    if (!oid) return nil;
+    if (!row[@"@odata.removed"] && !row[@"@removed"]) [self cacheNodeForObjectID:oid entity:oid.entity payload:row error:nil];
+    [objectIDs addObject:oid];
+  }
+  return objectIDs;
 }
 
 #pragma mark - Remote changes
@@ -2528,11 +2777,12 @@ static BOOL OISKeyIsSet(id value)
   return [value description];
 }
 
+// By name first: Apple's -entity raises for a request made with a name
+// that no context has used yet (a batch delete's).
 - (NSEntityDescription *)resolvedEntity:(NSFetchRequest *)fetch
 {
-  if (fetch.entity) return fetch.entity;
   if (fetch.entityName) return self.persistentStoreCoordinator.managedObjectModel.entitiesByName[fetch.entityName];
-  return nil;
+  return fetch.entity;
 }
 
 @end

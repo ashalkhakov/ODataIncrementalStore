@@ -118,6 +118,11 @@ FOUNDATION_EXPORT NSString * const ODataUserInfoClosedClosedPeriods;
 - (nullable NSPredicate *)predicateForCondition:(id)condition entity:(NSEntityDescription *)entity;
 // Its qualified name, from the schema or from userInfo alone.
 - (nullable NSString *)qualifiedTypeForEntity:(NSEntityDescription *)entity;
+// The annotations of a property of an entity, or (property nil) of the
+// entity type, by full term (Org.OData.Aggregation.V1.RecursiveHierarchy#Q),
+// as JSON CSDL has their values: the schema's, else userInfo's
+// (OData.annotations).
+- (NSDictionary<NSString *, id> *)annotationsOfProperty:(nullable NSPropertyDescription *)property entity:(NSEntityDescription *)entity;
 // The path an entity's rows are read from: its entity set, followed by a
 // type cast (People/NS.Employee) when the entity is a derived type in a
 // set of its base type (Part 2 section 4.11).

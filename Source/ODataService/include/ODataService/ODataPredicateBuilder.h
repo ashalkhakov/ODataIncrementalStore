@@ -73,6 +73,8 @@ NS_ASSUME_NONNULL_BEGIN
                                                               error:(NSError **)error;
 
 // $compute (Part 2 section 5.1.3): its names stand for their expressions,
+// and a join's alias ($apply's join, as an NSEntityDescription) for the
+// joined member, an entity of that type,
 // by alias, in the filter and the ordering. A value's expression, to be
 // evaluated with each object (in memory); and an ordering, as key paths
 // where each item is one, else (*inMemory YES) as descriptors that compare
@@ -83,6 +85,22 @@ NS_ASSUME_NONNULL_BEGIN
                                         computed:(nullable NSDictionary<NSString *, ODataExpression *> *)computed
                                          context:(nullable NSManagedObjectContext *)context
                                            error:(NSError **)error;
+// The same, month() and the rest ranging over the spans given (by
+// +spanKeyOfAttribute:, each @[earliest, latest], NSNull where there is
+// none), not over a context: what a service reads through its handlers.
+// One not given is 500.
+- (nullable NSPredicate *)predicateForExpression:(ODataExpression *)expression
+                                          entity:(NSEntityDescription *)entity
+                                         aliases:(nullable NSDictionary<NSString *, ODataExpression *> *)aliases
+                                        computed:(nullable NSDictionary<NSString *, ODataExpression *> *)computed
+                                           spans:(nullable NSDictionary<NSString *, NSArray *> *)spans
+                                           error:(NSError **)error;
+// The date attributes whose spans an expression's month() and the rest
+// need; what cannot be read is left out.
+- (NSArray<NSAttributeDescription *> *)spanAttributesOfExpression:(ODataExpression *)expression entity:(NSEntityDescription *)entity
+                                                            aliases:(nullable NSDictionary<NSString *, ODataExpression *> *)aliases
+                                                           computed:(nullable NSDictionary<NSString *, ODataExpression *> *)computed;
++ (NSString *)spanKeyOfAttribute:(NSAttributeDescription *)attribute;
 - (nullable NSExpression *)valueExpressionForExpression:(ODataExpression *)expression
                                                  entity:(NSEntityDescription *)entity
                                                 aliases:(nullable NSDictionary<NSString *, ODataExpression *> *)aliases

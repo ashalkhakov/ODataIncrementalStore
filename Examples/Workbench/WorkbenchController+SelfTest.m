@@ -60,25 +60,44 @@ static void WBCheck(BOOL ok, NSString *what, NSString *detail)
   [self tableView:self.tableView setObjectValue:value forTableColumn:self.tableView.tableColumns[column] row:(NSInteger)row];
 }
 
+// The row whose key has this value, the results scrolled as far as it
+// takes: a screenful at a time, as scrolling to the end loads them.
+- (NSUInteger)rowWhere:(NSString *)key is:(id)value
+{
+  NSUInteger found;
+  while ((found = [[self.results.rows valueForKey:key] indexOfObject:value]) == NSNotFound && self.results.hasMore) {
+    NSUInteger before = self.results.rows.count;
+    [self loadNextPage];
+    if (self.results.rows.count == before) break;
+  }
+  return found;
+}
+
 // Insert, fill in, Save (a POST); find it; Delete, Save (a DELETE); gone.
 - (void)checkInsertAndDeleteWithKey:(NSString *)key value:(NSString *)value fields:(NSDictionary *)fields
 {
   NSString *entity = [[self currentQuery] entity].name;
+  // A short screen, however big this one is: the new row may be pages away.
+  self.screenfulForTests = 5;
   [self insertObject:nil];
   [self editColumn:key row:0 value:value];
   for (NSString *field in fields) [self editColumn:field row:0 value:fields[field]];
   [self saveChanges:nil];
   WBCheck([self.statusField.stringValue hasPrefix:@"Saved: 1 inserted (POST)"], [NSString stringWithFormat:@"Insert a %@, Save (POST)", entity],
           self.statusField.stringValue);
-  NSUInteger found = [[self.results.rows valueForKey:key] indexOfObject:value];
+  NSUInteger found = [self rowWhere:key is:value];
   WBCheck(found != NSNotFound, [NSString stringWithFormat:@"the new %@ is read back", entity], self.statusField.stringValue);
-  if (found == NSNotFound) return;
+  if (found == NSNotFound) {
+    self.screenfulForTests = 0;
+    return;
+  }
   [self.tableView selectRowIndexes:[NSIndexSet indexSetWithIndex:found] byExtendingSelection:NO];
   [self deleteSelected:nil];
   [self saveChanges:nil];
   WBCheck([self.statusField.stringValue hasPrefix:@"Saved: 0 inserted (POST), 0 updated (PATCH), 1 deleted"] &&
-          [[self.results.rows valueForKey:key] indexOfObject:value] == NSNotFound,
+          [self rowWhere:key is:value] == NSNotFound,
           [NSString stringWithFormat:@"Delete it, Save (DELETE)"], self.statusField.stringValue);
+  self.screenfulForTests = 0;
 }
 
 // The panel, clicked as a person would: two relationships prefetched, one
@@ -193,6 +212,104 @@ static void WBCheck(BOOL ok, NSString *what, NSString *detail)
   [self.presetsPopup selectItemAtIndex:(NSInteger)index];
   [self applyPreset:self.presetsPopup];
   [self runFetch:nil];
+}
+
+// The window's contents follow its size, as the xib's springs and struts
+// say: the results and the log shrink, the URL field narrows, the buttons
+// on the right keep to the right. Smaller, not larger: a small screen (a
+// CI runner's) does not let the window grow.
+- (void)checkResizing
+{
+  NSRect before = self.window.frame;
+  NSRect results = self.tableView.enclosingScrollView.frame, log = self.logTable.enclosingScrollView.frame;
+  NSRect wire = self.wireURLField.frame, explain = self.explainButton.frame;
+  CGFloat dw = 160, dh = MIN(60.0, results.size.height / 2);
+  [self.window setFrame:NSMakeRect(before.origin.x, before.origin.y + dh, before.size.width - dw, before.size.height - dh) display:YES];
+  NSRect r = self.tableView.enclosingScrollView.frame, l = self.logTable.enclosingScrollView.frame;
+  NSRect w = self.wireURLField.frame, e = self.explainButton.frame;
+  BOOL ok = r.size.width < results.size.width - dw + 2 && r.size.height < results.size.height - dh + 2 &&
+            l.size.height < log.size.height - dh + 2 && w.size.width < wire.size.width - dw + 2 && NSMaxX(e) < NSMaxX(explain) - dw + 2;
+  WBCheck(ok, @"the window's contents follow its size",
+          [NSString stringWithFormat:@"results %@ -> %@, log %@ -> %@, URL %@ -> %@, Explain %@ -> %@",
+                                     NSStringFromRect(results), NSStringFromRect(r), NSStringFromRect(log), NSStringFromRect(l),
+                                     NSStringFromRect(wire), NSStringFromRect(w), NSStringFromRect(explain), NSStringFromRect(e)]);
+  [self.window setFrame:before display:YES];
+}
+
+// The switches are checkboxes: a cell that shows its state by its image
+// (Xcode turns one with no <behavior> into a bevel button, which does not).
+- (void)checkSwitches
+{
+  NSDictionary *cells = @{ @"sub-entities": self.subentitiesButton.cell, @"return as faults": self.faultsButton.cell,
+                           @"sort: desc": [[self.sortTable tableColumnWithIdentifier:@"descending"] dataCell],
+                           @"prefetch: include": [[self.expandOutline tableColumnWithIdentifier:@"include"] dataCell],
+                           @"properties: include": [[self.selectTable tableColumnWithIdentifier:@"include"] dataCell] };
+  NSMutableArray *not = [NSMutableArray array];
+  for (NSString *name in [cells.allKeys sortedArrayUsingSelector:@selector(compare:)]) {
+    NSButtonCell *cell = cells[name];
+    if (![cell isKindOfClass:[NSButtonCell class]] || !(cell.showsStateBy & NSContentsCellMask)) [not addObject:name];
+  }
+  WBCheck(!not.count, @"the switches are checkboxes", [not componentsJoinedByString:@", "]);
+}
+
+// Choosing a preset, as a person does (the popup's own action), shows
+// every part of it in the panel.
+- (void)checkPresetsFillThePanel
+{
+  NSMutableArray *wrong = [NSMutableArray array];
+  for (NSUInteger i = 0; i < self.presets.count; i++) {
+    NSDictionary *p = self.presets[i];
+    [self.presetsPopup selectItemAtIndex:(NSInteger)i];
+    [self.presetsPopup sendAction:self.presetsPopup.action to:self.presetsPopup.target];
+    NSString *type = p[@"type"] ?: @"objects";
+    NSDictionary *shown = @{
+      @"entity": @[ self.entityPopup.titleOfSelectedItem ?: @"", p[@"entity"] ?: @"" ],
+      @"type": @[ self.resultTypePopup.titleOfSelectedItem ?: @"", [type isEqualToString:@"objects"] ? @"objects" : type ],
+      @"predicate": @[ self.predicateView.string ?: @"", p[@"predicate"] ?: @"" ],
+      @"limit": @[ self.limitField.stringValue ?: @"", p[@"limit"] ?: @"" ],
+      @"search": @[ self.searchField.stringValue ?: @"", p[@"search"] ?: @"" ],
+      @"compute": @[ self.computeField.stringValue ?: @"", p[@"compute"] ?: @"" ],
+      @"group": @[ self.groupField.stringValue ?: @"", p[@"group"] ?: @"" ],
+      @"aggregate": @[ self.aggregateField.stringValue ?: @"", p[@"aggregate"] ?: @"" ],
+      @"time": @[ self.timeField.stringValue ?: @"", p[@"time"] ?: @"" ],
+    };
+    for (NSString *part in [shown.allKeys sortedArrayUsingSelector:@selector(compare:)]) {
+      if (![shown[part][0] isEqual:shown[part][1]]) {
+        [wrong addObject:[NSString stringWithFormat:@"%@: %@ shows \"%@\", not \"%@\"", p[@"label"], part, shown[part][0], shown[part][1]]];
+      }
+    }
+    NSUInteger sorts = 0;
+    for (NSString *item in [p[@"sort"] ?: @"" componentsSeparatedByString:@","]) {
+      if ([item stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceCharacterSet]].length) sorts++;
+    }
+    if ((NSUInteger)self.sortTable.numberOfRows != sorts) {
+      [wrong addObject:[NSString stringWithFormat:@"%@: %ld sort keys shown, not %lu", p[@"label"], (long)self.sortTable.numberOfRows, (unsigned long)sorts]];
+    }
+  }
+  WBCheck(!wrong.count, @"a preset chosen fills the panel", [wrong componentsJoinedByString:@"; "]);
+  // A field being typed in when a preset is chosen shows the preset, and
+  // keeps it once the editing ends.
+  [self runPreset:[self presetLabelled:@"All products"]];
+  [self.window makeFirstResponder:self.limitField];
+  NSText *editor = [self.window fieldEditor:YES forObject:self.limitField];
+  editor.string = @"7";
+  NSUInteger top5 = [self presetLabelled:@"Top 5"];
+  [self.presetsPopup selectItemAtIndex:(NSInteger)top5];
+  [self.presetsPopup sendAction:self.presetsPopup.action to:self.presetsPopup.target];
+  [self.window makeFirstResponder:nil];
+  WBCheck([self.limitField.stringValue isEqualToString:@"5"] && [self.query.limitText isEqualToString:@"5"],
+          @"a preset chosen while a field is being edited replaces what was typed",
+          [NSString stringWithFormat:@"$top shows \"%@\", the query has \"%@\"", self.limitField.stringValue, self.query.limitText]);
+  // Another entity after a grouped preset: nothing of the grouping stays,
+  // not even a sort by one of its keys.
+  [self runPreset:[self presetLabelled:@"Sales by organization"]];
+  [self.entityPopup selectItemWithTitle:@"Product"];
+  [self entityChanged:self.entityPopup];
+  NSArray *keys = [self.query.sorts valueForKey:@"key"];
+  WBCheck([keys isEqual:@[ @"id" ]] && !self.groupField.stringValue.length, @"another entity after a grouped preset starts afresh",
+          [NSString stringWithFormat:@"sort keys %@, group by \"%@\"", keys, self.groupField.stringValue]);
+  // Back to the first, which the checks after this start from.
+  [self runPreset:0];
 }
 
 // $search beside the predicate, and a grouping with its aggregates, as
@@ -312,9 +429,51 @@ static void WBCheck(BOOL ok, NSString *what, NSString *detail)
 {
   [self runPreset:[self presetLabelled:@"Computed:"]];
   NSString *wire = [self.wireURLField.stringValue stringByRemovingPercentEncoding];
-  WBCheck(!self.results.lastError && [wire rangeOfString:@"$compute=(UnitPrice mul 1.2) as withTax"].location != NSNotFound &&
+  WBCheck(!self.results.lastError && [wire rangeOfString:@"$compute=UnitPrice mul 1.2 as withTax"].location != NSNotFound &&
           [[self.results.rows.firstObject objectForKey:@"withTax"] doubleValue] > 0,
           @"compute: a value from each row ($compute)", self.results.lastError ?: [NSString stringWithFormat:@"%@ %@", wire, self.results.rows.firstObject]);
+
+  // Data Aggregation: a relationship's aggregate, and the hierarchy tests.
+  [self runPreset:[self presetLabelled:@"Categories over 90"]];
+  wire = [self.wireURLField.stringValue stringByRemovingPercentEncoding];
+  NSArray *names = [self.results.rows valueForKey:@"name"];
+  WBCheck(!self.results.lastError && [wire rangeOfString:@"$filter=Products/aggregate(UnitPrice with sum) gt 90"].location != NSNotFound &&
+          [names isEqual:(@[ @"Beverages", @"Confections" ])],
+          @"aggregate(): products.@sum.unitPrice", self.results.lastError ?: [NSString stringWithFormat:@"%@ %@", wire, names]);
+  // Explain: the service's plan for that GET, the filter in the store.
+  [self explainQuery:nil];
+  [[NSRunLoop currentRunLoop] runMode:NSDefaultRunLoopMode beforeDate:[NSDate dateWithTimeIntervalSinceNow:0.2]];
+  NSString *physical = self.physicalPlanView.string;
+  WorkbenchLogEntry *explained = self.log.firstObject;
+  WBCheck([self.explainButton isEnabled] && self.planWindow.isVisible &&
+          [physical rangeOfString:@"Store scan Category where Products/aggregate(UnitPrice with sum) gt 90"].location != NSNotFound &&
+          [self.logicalPlanView.string rangeOfString:@"Select Products/aggregate(UnitPrice with sum) gt 90"].location != NSNotFound &&
+          [explained.URL rangeOfString:@"$explain/Categories"].location != NSNotFound &&
+          [self.explainedView.string hasPrefix:@"GET http://workbench.local/odata/Categories?$filter=Products/aggregate(UnitPrice with sum) gt 90&"],
+          @"explain: the built-in service's plan for the query", [NSString stringWithFormat:@"%@ | %@", physical, explained.URL]);
+  [self shoot:@"Plan" window:self.planWindow];
+  [self.planWindow orderOut:nil];
+  NSDictionary *hierarchies = @{ @"Hierarchy: below EMEA": @[ @"EMEA Central" ], @"Hierarchy: US East and above": @[ @"Sales", @"US", @"US East" ],
+                                 @"Hierarchy: the leaves in the US": @[ @"US East", @"US West" ],
+                                 @"Hierarchy: sales anywhere below US": @[ @1, @2, @3, @4, @5 ] };
+  for (NSString *label in [hierarchies.allKeys sortedArrayUsingSelector:@selector(compare:)]) {
+    [self runPreset:[self presetLabelled:label]];
+    wire = [self.wireURLField.stringValue stringByRemovingPercentEncoding];
+    NSArray *ids = [self.results.rows valueForKey:@"id"];
+    WBCheck(!self.results.lastError && [wire rangeOfString:@"Org.OData.Aggregation.V1.is"].location != NSNotFound && [ids isEqual:hierarchies[label]],
+            [NSString stringWithFormat:@"hierarchy: %@", [label substringFromIndex:11]],
+            self.results.lastError ?: [NSString stringWithFormat:@"%@ %@", wire, ids]);
+  }
+
+  // A query as written: objects in the service's order, or dictionaries.
+  [self runPreset:[self presetLabelled:@"As written: the tree"]];
+  NSArray *tree = [self.results.rows valueForKey:@"id"];
+  WBCheck(!self.results.lastError && [tree isEqual:(@[ @"Sales", @"EMEA", @"EMEA Central", @"US", @"US East", @"US West" ])],
+          @"a query as written: $apply=traverse, objects", self.results.lastError ?: tree.description);
+  [self runPreset:[self presetLabelled:@"As written: totals"]];
+  NSArray *totals = [self.results.rows valueForKey:@"Total"];
+  WBCheck(!self.results.lastError && [totals isEqual:(@[ @5, @12, @7 ])] && [self.tableView columnWithIdentifier:@"SalesOrganization/ID"] >= 0,
+          @"a query as written: grouped rows, dictionaries", self.results.lastError ?: totals.description);
 
   [self runPreset:[self presetLabelled:@"Budgets on 2024-10-01"]];
   wire = [self.wireURLField.stringValue stringByRemovingPercentEncoding];
@@ -458,11 +617,15 @@ static void WBCheck(BOOL ok, NSString *what, NSString *detail)
       WBCheck([[self.results.rows.firstObject valueForKey:@"name"] isEqual:first] && ![self.results pendingCount], @"Revert drops an edit",
               self.statusField.stringValue);
       [self checkScrolling];
+      [self checkPresetsFillThePanel];
+      [self checkResizing];
+      [self checkSwitches];
       [self checkQueryPanel];
       [self checkBuiltInOperations];
       [self checkSearchAndGrouping];
       [self checkBuiltInFeatures];
     }
+    if (service != WBServiceBuiltIn) WBCheck(![self.explainButton isEnabled], @"explain: only at the built-in service", nil);
     if (service != WBServiceTripPin) continue;
 
     // TripPin: an instance function, a service function, an edit, the changes.

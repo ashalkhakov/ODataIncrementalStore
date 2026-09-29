@@ -11,6 +11,20 @@ NS_ASSUME_NONNULL_BEGIN
 @interface ODataIncrementalStore ()
 @property (nonatomic, readonly) ODataClient *client;
 @property (nonatomic, readonly) ODataPropertyMapper *mapper;
+// What writes the store's queries, typed, and their URLs.
+@property (nonatomic, readonly) ODataQueryBuilder *builder;
+
+// The one way the store reads: typed options, written into a GET of a
+// path (by the builder), every page of the answer read (limit and
+// pageSize as -rowsAtURL:), and the URL it was, for messages.
+- (nullable NSArray *)rowsForPath:(NSString *)path options:(nullable ODataQueryOptions *)options
+                            limit:(NSUInteger)limit pageSize:(NSUInteger)pageSize
+                              URL:(NSURL * _Nullable * _Nullable)url error:(NSError **)error;
+// Rows as the object IDs of entities of an entity (or of the sub-entity
+// each names), each row kept, and what it expanded; nil and the error for
+// a row that is no entity.
+- (nullable NSArray<NSManagedObjectID *> *)objectIDsForRows:(NSArray *)rows entity:(NSEntityDescription *)entity
+                                                        URL:(nullable NSURL *)url error:(NSError **)error;
 
 // The object ID for a row, of the sub-entity its @odata.type names; its
 // ETag and edit link are remembered.

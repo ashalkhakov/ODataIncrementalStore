@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: LGPL-2.1-or-later
 
 #import "ODataPropertyMapper.h"
+#import "ODataRegex.h"
 
 NSString * const ODataUserInfoEntitySet = @"OData.entitySet";
 NSString * const ODataUserInfoProperty = @"OData.property";
@@ -142,7 +143,7 @@ NSString * const ODataUserInfoClosedClosedPeriods = @"OData.closedClosedPeriods"
   if (![local isKindOfClass:[NSDictionary class]]) return found;
   for (NSString *term in local) {
     NSString *full = term;
-    for (NSString *vocabulary in @[ @"Core", @"Validation", @"Capabilities" ]) {
+    for (NSString *vocabulary in @[ @"Core", @"Validation", @"Capabilities", @"Aggregation" ]) {
       NSString *prefix = [vocabulary stringByAppendingString:@"."];
       if ([term hasPrefix:prefix]) full = [NSString stringWithFormat:@"Org.OData.%@.V1.%@", vocabulary, [term substringFromIndex:prefix.length]];
     }
@@ -235,7 +236,9 @@ NSString * const ODataUserInfoClosedClosedPeriods = @"OData.closedClosedPeriods"
       [apply[1] isKindOfClass:[NSString class]]) {
     NSExpression *text = [self expressionForOperand:apply[0] entity:entity];
     if (!text) return nil;
-    NSString *anywhere = [NSString stringWithFormat:@"(?s).*(?:%@).*", apply[1]];
+    // ECMAScript's, found anywhere, as MATCHES reads it (ODataRegex.h).
+    NSString *anywhere = [ODataRegex matchesPatternFindingECMAScript:apply[1] error:NULL];
+    if (!anywhere) return nil;
     return [NSComparisonPredicate predicateWithLeftExpression:text rightExpression:[NSExpression expressionForConstantValue:anywhere]
                                                      modifier:NSDirectPredicateModifier type:NSMatchesPredicateOperatorType options:0];
   }

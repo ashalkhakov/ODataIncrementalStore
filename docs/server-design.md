@@ -437,22 +437,157 @@ into XML for the client's schema reader. The two defaults that differ are
 kept: `$Nullable` is false when absent in JSON, true in XML, and `$Type`
 is `Edm.String`.
 
+### Reads are planned
+
+Every read is planned before it runs, as a database plans a query
+(`docs/query-plan.md`): the parsed request becomes a tree in a nested
+relational algebra (Scan, Select, Sort, Limit, `$apply`'s
+transformations, Nest for `$expand`, Closure for a recursive hierarchy,
+Bind for a `$these` a store filter uses); rewriting it puts filters,
+orders, pages, counts and the first grouping into store operators, which
+reach the store through the set's handler, expansions and hierarchies
+included; the rest runs here. With `ODataService.explains`,
+`GET <root>/$explain/<resource path>?<query>` answers with the logical
+and the physical plan instead of the rows (not standard OData);
+`logsPlans` logs each read's.
+
+### Writes are planned
+
+Every write is planned too (`docs/write-plan.md`), as databases plan DML:
+Lookups (of `@odata.bind`, `$ref`, a nested entity's `@id` or key),
+Sequences (a new integer key: the largest read once, then counted on),
+Insert, Update, Delete, Link and Unlink, Merge (a deep update's nested
+entity: an Update of the one it names, else an Insert), Temporal, and
+Commit (the save), with the read of what the write answers with. It runs
+in phases: every read, through the handlers; every check (If-Match, a
+nested `@odata.etag`, the key and what is immutable unchanged, what the
+set allows); then the writes, through the handlers, the ones a write
+depends on first; then the save. So a request that fails a check asks no
+handler to write anything. A handler that answers later stops the plan
+until it answers; it goes on from the top, and nothing asked is asked
+again. With `explains`, `POST`, `PATCH`, `PUT` and `DELETE` on
+`$explain/…` answer with the plan and write nothing; an action is `Call`,
+after the Lookups of its entity parameters.
+
 ### `$apply`
 
-`$apply` (OData Data Aggregation 4.0) is read by `ODataApplyTransformation`
-in ODataKit: `filter(…)`, `groupby((paths),aggregate(…))` and
-`aggregate(…)`, of paths `with sum`, `min`, `max`, `average` or
-`countdistinct`, and `$count`, each `as` an alias; `identity`,
-`search(…)`, `compute(… as …)`, `orderby(…)`, `top(n)`, `skip(n)`, and
-`topcount`, `topsum`, `toppercent` and their `bottom` kin, each
-`(n,value)`; `concat(sequence,sequence,…)`, each sequence on the same
-input and their rows one after the other (entities, or grouped rows, not
-both); and `expand(Nav)` or `expand(Nav,filter(…))`, which the entities
-are written with, as `$expand=Nav($filter=…)`. A `groupby` or
-`aggregate` of grouped rows groups them again, by their paths. After
-`$apply`, `$select` and `$expand` work on entities as ever; on grouped
-rows `$select` keeps what it names, and `$expand` is `400`. The rest (`nest`, the
-hierarchy transformations, rollup, custom methods, `from`) is `501`.
+`$apply` (OData Data Aggregation 4.0, Committee Specification 04) is read
+by `ODataApplyTransformation` in ODataKit:
+
+- `aggregate(…)`, each aggregate expression `as` an alias:
+  - a path `with sum`, `min`, `max`, `average` or `countdistinct`, the
+    path through navigation properties of either cardinality
+    (`Products/UnitPrice with sum` is every product's price);
+  - an expression with a method (`UnitPrice mul Quantity with sum`);
+  - `$count`, or a collection's (`Products/$count`);
+  - a custom aggregate the set declares, alone (`Forecast`, or
+    `Forecast as F`), whose value the handler gives
+    (`-valueOfCustomAggregate:objects:request:`), and a custom aggregation
+    method, namespace-qualified (`ProductName with Custom.concat`), whose
+    value the handler gives too (`-valueOfAggregationMethod:values:request:`).
+- `groupby((paths))`, and `groupby((paths),transformations)`: each group's
+  rows through the transformations (`filter(…)/aggregate(…)`, say), which
+  have to aggregate, then given the group's values. Grouping paths go
+  through to-one navigation.
+- `filter(…)`, with `isdefined(path)` among its functions (true of a
+  declared or computed property of an entity, null or not; of a grouped
+  row, of what the grouping kept); `identity`; `search(…)`;
+  `compute(… as …)`; `orderby(…)`; `top(n)`; `skip(n)`; `topcount`,
+  `topsum`, `toppercent` and their `bottom` kin, each `(n,value)`, `n`
+  a number or an expression of the input (`topcount($these/$count div 3,Amount)`).
+- `join(Nav as Alias)` and `outerjoin(…)`, with transformations of their
+  own after the alias (`join(Products as P,filter(UnitPrice gt 20))`):
+  each row once per member of the collection, the member under the alias,
+  a navigation property written where `$expand` names it; an outerjoin
+  keeps a row with none, the alias null.
+- `concat(sequence,sequence,…)`, each sequence on the same input and
+  their rows one after the other (entities, or grouped rows, not both).
+- `expand(Nav)` or `expand(Nav,filter(…))`, from earlier drafts, which the
+  entities are written with, as `$expand=Nav($filter=…)`.
+
+A `groupby` or `aggregate` of grouped rows groups them again, by their
+paths. After `$apply`, `$select` and `$expand` work on entities as ever;
+on grouped rows `$select` keeps what it names, and `$expand` is `400`.
+Aggregates are values in expressions too (section 3.6), in `$filter`,
+`$compute`, `$orderby` (an expression `$orderby` is sorted here), within
+`$expand` as well, and in `$apply`'s `filter`, `compute`, `orderby` and
+top and bottom kin:
+
+- `$these/aggregate(UnitPrice with sum)` and `$these/$count`, of the
+  current collection, each option's own: in `$apply`, the
+  transformation's input; for the query's `$filter` and `$compute`, the
+  rows the caller can see (after `$apply`, what it made), read once
+  first; for `$orderby`, what the `$filter` leaves of them; within
+  `$expand`, the parent's members, each parent's (whose members are then
+  read one parent at a time, not with the others'). The values are then
+  literals in what is read after.
+- `Products/aggregate(UnitPrice with sum)`, of a collection-valued
+  navigation, a path through to-one navigation to an attribute of the
+  members with `sum`, `min`, `max` or `average`, or `$count`: a key path's
+  collection operator (`products.@sum.unitPrice`), which each store
+  evaluates (`testAggregatesOfNavigations`). An expression, `countdistinct`
+  or a custom method there is `501`. Apple's SQLite store refuses arithmetic
+  on one (`products.@count * 20`; FreeCoreData's stores do not): `501`,
+  as any fetch the store raises for (docs/how-it-works.md, "What stays in memory, and why").
+
+Recursive hierarchies (sections 5.5 and 6) are declared in the model, as
+any annotation is: the entity's userInfo `OData.annotations` holds
+`Aggregation.RecursiveHierarchy#Qualifier`, a `NodeProperty` (a path
+through to-one relationships to an attribute) and a
+`ParentNavigationProperty` to the entity itself, to-one or to-many:
+
+```json
+{"Aggregation.RecursiveHierarchy#SalesOrgHierarchy":
+  {"NodeProperty": {"$PropertyPath": "ID"},
+   "ParentNavigationProperty": {"$NavigationPropertyPath": "Superordinate"}}}
+```
+
+`$metadata` has it as ever, and a model built from `$metadata` has it
+back. Core Data has no recursive query, so a request that names a
+hierarchy (`HierarchyNodes=$root/SalesOrganizations`) reads its nodes
+once, those the caller can see, and walks the parents here; a parent the
+caller cannot see is none, and its children are roots.
+
+- The functions `Aggregation.isnode`, `isroot`, `isleaf`, `isancestor`,
+  `isdescendant` (with `MaxDistance` and `IncludeSelf`) and `issibling`,
+  in `$filter`, in `$expand`'s, in lambdas and in `$apply`'s `filter`,
+  are each read as `Node in (the identifiers that pass)`, which the store
+  evaluates. `Ancestor`, `Descendant` and `Other` are literals; anything
+  else there is `501`.
+- `ancestors(H,Q,p,T[,d][,keep start])` and `descendants(…)`: of the
+  input, what is related to an ancestor (a descendant) of the nodes T
+  picks, within d, and those nodes with keep start. T is transformations
+  that pick among the input, or a bare condition (`Name eq 'US'`, as
+  example 56 has it).
+- `traverse(H,Q,p,preorder|postorder[,o])`: the input related to each
+  node, the nodes in that order; the roots sorted by o, stable, and each
+  node's children too (their order is the service's to choose), else in
+  key order. Over a hierarchy whose parents are single-valued, as the spec
+  defines it.
+
+All three work on entities or grouped rows. Where p goes through a
+collection (`Sales/SalesOrganization/ID` of a product), an instance's
+nodes are the values along it: ancestors and descendants keep it once if
+any is one; traverse writes it once per node, with that node at p (a
+collection of one where p's segment is one: example 88's
+`{"Sales": [{"SalesOrganization": {"ID": "US"}}]}`).
+
+`501`: what CS04 removed (`from`, `rollup`, `nest`). CS04 groups by
+single-valued paths only; a collection-valued one is `400`.
+
+`$metadata` says what a set can do: the container's
+`ApplySupportedDefaults` lists the transformations, and each set's
+`ApplySupported` the handler's `groupableProperties`,
+`aggregatableProperties` (each with its methods) and
+`customAggregationMethods`, with a `CustomAggregate` term per custom
+aggregate. Aggregating or grouping by what the handler leaves out is
+`400`.
+
+| Conformance level (section 8) | What it asks | |
+|---|---|---|
+| Minimal | `aggregate`, `groupby`, `sum`, `min`, `max`, `average`, `$count` | ✅ |
+| Intermediate | and `filter`, `orderby`, `search`, `topcount`, `bottomcount`, `compute`, `concat`, `isdefined` | ✅ |
+| Advanced | and the rest | Partly: aggregating expressions and collection-valued paths, custom aggregates and methods, `groupby` with transformations of its own, the top and bottom kin, `join` and `outerjoin`, aggregates in expressions, the capability terms, and recursive hierarchies (p through a collection aside) |
 
 Each works in order on what the one before left: before a grouping on
 the entities (`compute` gives each object values by name, which later
@@ -481,7 +616,10 @@ ways to the same rows over each store. A filter after the grouping, and then `$f
 `$skip`, `$top` and `$count`, work on the grouped rows, whose paths are
 nested as the response has them (`{"Category": {"CategoryName": …},
 "Total": …}`). The container says `Aggregation.ApplySupported` with
-those transformations.
+those transformations, `concat` among them. The store's grouping takes
+only a `groupby` of plain aggregates: aggregating an expression or a
+collection's values, and a `groupby` with transformations of its own,
+are grouped here.
 
 ### `$compute`
 
@@ -527,10 +665,11 @@ gaps in the period, from the slice just before a gap or, for an object
 with none there, from the delta alone; Delete takes the period away,
 trimming or splitting what it overlaps. An object key the delta leaves
 out matches every object. They work on the slices the caller may see,
-through the set's handler: each slice made, changed or taken away is its
-`insert`, `update` or `delete`, which can refuse it (and then nothing of
-the action is done). The action is all or nothing inside the request, so
-a handler that defers its answer cannot take part: `501`. It answers
+through the set's handler: the slices are read, the changes worked out
+over them (`OISTimeline` writes nothing), and each slice made, changed or
+taken away is then its `insert`, `update` or `delete`, once, which can
+refuse it (and then nothing of the action is done), or answer later. It
+answers
 with the slices made or changed (for Delete, the periods taken
 away) as `Collection(Temporal.TimesliceWithPeriod)`, or `204` with
 `return=minimal`. A new slice's key is assigned as an insert's is, and a
@@ -574,14 +713,18 @@ A read of a whole set (or a cast of it), with or without `$filter`,
 `$search`, `$select` and `$expand`, but not `$top`, `$skip` or grouping,
 takes `Prefer: odata.track-changes` (Part 1 §11.3): the answer says
 `Preference-Applied`, and its last page has an `@odata.deltaLink`, the
-same request with a `$deltatoken`. The token is Core Data's persistent
-history token, archived, in base64url, taken before the rows are read, so
-a change made meanwhile comes again rather than never. A paged read's next
+same request with a `$deltatoken`. The token is the handler's
+(`-changeTokenForRequest:`; by default Core Data's persistent history
+token, archived, in base64url), taken before the rows are read, so a
+change made meanwhile comes again rather than never. A paged read's next
 links carry it (`$skiptoken=20~token`), so the delta starts from the first
 page, not the last.
 
-The delta link answers what the history holds since the token, in one
-response, with the next delta link:
+The delta link answers what changed since the token, as the handler
+says (`-changesSince:request:reply:`, an `ODataChanges`: by default what
+the persistent history holds; a handler with a change feed of its own
+gives that, with tokens of its own), in one response, first changed
+first, with the next delta link:
 
 - entities added or changed, as they are now, through the handler's fetch
   and the request's own options, so visibility, `$select` and `$expand`
@@ -595,12 +738,14 @@ A removal is `@odata.removed` with `@odata.id` in 4.01 and a
 `$deletedEntity` in 4.0. A relationship change is a change of the objects
 on both sides, which come again whole, so there are no `$link` entries.
 
-A set can be followed where every store keeps history
+By default, a set can be followed where every store keeps history
 (`NSPersistentHistoryTrackingKey`, which on both platforms means SQLite;
 `ois-serve` takes it in `StoreOptions`), its key attributes are kept in a
 deletion's tombstone (`preservesValueInHistoryOnDeletion`, "Preserve After
 Deletion" in the model editor), and its handler's `tracksChanges` is left
-`YES`; `$metadata` says so with `Capabilities.ChangeTracking`. Elsewhere
+`YES`; a handler that gives its own changes says so in
+`-canTrackChanges`. `$metadata` says which with
+`Capabilities.ChangeTracking`. Elsewhere
 the preference is not applied, and a `$deltatoken` is `410 Gone`, as is
 one whose history has been purged, or a deletion whose key was not kept:
 the client reads the set again. A token the service did not write is
@@ -797,23 +942,41 @@ with a literal, as the following sections show.
 
 ##### Patterns: ECMAScript and ICU
 
-OData's patterns are ECMAScript's; `MATCHES` reads ICU's, and reads them
-with `.` matching line terminators (a `\r\n` taken whole) and, on Apple,
-`^` and `$` at line boundaries. The two syntaxes mostly agree; where they
-do not, the pattern is rewritten so that it matches what ECMAScript would:
+OData's patterns are ECMAScript's; `MATCHES` reads ICU's, with `.`
+matching line terminators (a `\r\n` taken whole) and, on Apple (and on
+gnustep-base with the `predicate-matches-line-anchors` fix), `^` and `$` at
+line boundaries. The two look alike and differ in what they match, so a
+pattern is never passed through as text: `ODataRegex` (ODataKit) reads it
+into a tree whose every node says exactly what it matches, and writes the
+tree in the other dialect, which refuses what it cannot say exactly rather
+than say something close. From ECMAScript, as `MATCHES` reads it:
 
 | ECMAScript | ICU, as `MATCHES` reads it |
 |---|---|
-| `^`, `$` (outside brackets) | `\A`, `\z`: the ends of the string, not of a line |
+| `^`, `$` | `\A`, `\z`: the ends of the string, not of a line |
 | `.` | `[^\n\r\u2028\u2029]`: not a line terminator |
-| `\d`, `\D`, `\w`, `\W` | `[0-9]`, `[^0-9]`, `[A-Za-z0-9_]`, `[^A-Za-z0-9_]`: ASCII, as ECMAScript has them |
+| `\d`, `\w`, `\s` (and `\D`, `\W`, `\S`, in sets too) | `[0-9]`, `[A-Za-z0-9_]`, ECMAScript's white space spelled out: as ECMAScript has them |
+| `\b` | a lookaround of ASCII word characters |
 | found anywhere | `(?:[^\r]|\r)*(?:…)(?:[^\r]|\r)*`: any character, one at a time, so that a match starting at the `\n` of a `\r\n` is found |
 
+A pattern that is none (`(`, `[a`, `a{3,2}`) is `400`; one that is, but
+that the tree does not read (back references, `\p{…}`), is `501`.
+
 The client goes the other way for `LIKE` and `MATCHES`: a wildcard, or a
-`.`, is `(?:\r\n|\r(?!\n)|[^\r])`, any character with a `\r\n` as one, as
-ICU takes it; `\A` and `\z` are `^` and `$`; and what the two read
-differently (`^` and `$` themselves, `\d`, `\w`, `\s` and the other letter
-escapes, inline flags, sets in sets) is refused rather than guessed.
+`.`, is `(?:\r\n|\r(?!\n)|[^\r])`, any character with a `\r\n` as one,
+as ICU takes it; `\A` and `\z` are `^` and `$`; and what ECMAScript cannot
+say (`^` and `$` where they are at each line, ICU's Unicode `\d`, `\w`,
+`\s` and `\b`, inline flags but a leading `(?s)`, sets in sets) is refused
+rather than guessed. The `$metadata` writer does the same for a model's
+`MATCHES` validation, written as `Validation.Pattern`, and leaves out one
+ECMAScript cannot say; the client's model builder, and the service's
+`Validation.Constraint`, read `Validation.Pattern` and `matchesPattern` as
+the server's `matchesPattern` does.
+
+The patterns written for `MATCHES` keep to the part of ICU's syntax
+FreeCoreData's SQL stores translate (literal characters, sets and
+ranges, `.`, `\A`, `\z`, groups, lookahead, repeats) wherever nothing
+outside it is asked for, so they run in the database there.
 
 ##### Step functions as ranges
 
@@ -839,10 +1002,13 @@ use an index for it:
 `month`, `day`, `hour`, `minute` and `second` are not one range but one in
 each year, month, day, hour or minute.
 
-- `month(Hired) eq 3` is every March from the earliest `Hired` the store has
-  to the latest.
-- Two fetches of one row each find that span; the builder is given the
-  request's context for them.
+- `month(Hired) eq 3` is every March from the earliest `Hired` the caller
+  can see to the latest.
+- The read's plan finds that span first (a Span: two fetches of one row
+  each, through the handler), and gives it to the builder
+  (`-predicateForExpression:entity:aliases:computed:spans:error:`).
+  Outside a service, the builder can be given a context to read it from
+  instead.
 - A span of more than 200 ranges (six years of days, for `hour`) is `501`,
   since an `OR` that long is more than SQLite takes.
 
@@ -1049,10 +1215,10 @@ the loopback check, so neither the client nor the core links the listener.
      one and `DELETE` from it by `$id` or by key, which is how the client
      changes relationships;
    - deep inserts, to any depth, each entity through its set's handler,
-     answered with what was created expanded. A handler that answers
-     later stops the write there; its answer starts the write again from
-     the top, and what was done is not done again (each nested change is
-     remembered by the part of the body it is for);
+     answered with what was created expanded. The write is planned
+     ("Writes are planned", above): a handler that answers later stops
+     it there, and its answer starts it again from the top, where what
+     was done is not done again;
    - deep updates (Part 1 section 11.4.3.1): a nested entity that names
      one there (by `@id`, or its key) updates it, as by PATCH, and one
      that names none is created; a to-one takes an entity or null, a
@@ -1060,7 +1226,15 @@ the loopback check, so neither the client nor the core links the listener.
      `Nav@delta` changes a collection: entries added or updated, `@removed`
      ones unlinked, or deleted for the reason `deleted`. Each nested
      change goes through its set's handler as the set allows it (`405`
-     otherwise), and a nested `@odata.etag` must match (`412`).
+     otherwise), and a nested `@odata.etag` must match (`412`);
+   - collections (4.01, Part 1 sections 11.4.12-14): `PATCH` of a
+     collection with a delta payload (entities upserted, `@removed` ones
+     deleted, or from a navigation property's collection unlinked unless
+     removed as `deleted`), `PUT` of one (its entities upserted, the rest
+     deleted), and `PATCH` or `DELETE` of `Collection/$each`, after type
+     casts and `$filter(…)` segments (which reads take too). All or
+     nothing; with `return=representation`, the rows as they are now, or
+     a delta payload of the changes.
 4. ~~**HTTP adapter.**~~ Done: GCDWebServer vendored and ported,
    `ODataHTTPServer`, `ois-serve`, the loopback check in CI on both
    platforms, example units and proxy configurations.

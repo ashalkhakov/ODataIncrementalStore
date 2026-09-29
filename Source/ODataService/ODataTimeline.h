@@ -16,21 +16,36 @@
 
 NS_ASSUME_NONNULL_BEGIN
 
-// A time slice an action made, changed or took away: the object, or, for a
+// A slice as an action works on it: one of the slices it was given, or one
+// it makes. Its values as they are now (Core Data names; NSNull for none),
+// and, for one it was given, what the action changes. -valueForKey: reads
+// its values, so a record stands where a slice would.
+@interface OISSliceRecord : NSObject
+@property (nonatomic, strong) NSEntityDescription *entity;
+// The slice given; for one made, the one written, once it is.
+@property (nonatomic, strong, nullable) NSManagedObject *object;
+@property (nonatomic, readonly) NSMutableDictionary<NSString *, id> *values;
+@property (nonatomic, readonly) NSMutableDictionary<NSString *, id> *changes;
+@property (nonatomic, readonly) BOOL isNew;
+@property (nonatomic, readonly) BOOL isDeleted;
+@end
+
+// A time slice an action made, changed or took away: its record, or, for a
 // period deleted, what the slice held then (Core Data values, the period
 // included).
 @interface OISTimeslice : NSObject
-@property (nonatomic, strong, nullable) NSManagedObject *object;
+@property (nonatomic, strong, nullable) OISSliceRecord *record;
 @property (nonatomic, copy, nullable) NSDictionary<NSString *, id> *values;
+// The record's slice, once written.
+@property (nonatomic, readonly, nullable) NSManagedObject *object;
 @end
 
-// How an action writes: every slice it makes, changes (values by Core
-// Data name, NSNull for none) and takes away. NO, or nil, with the error,
-// when it cannot.
-@protocol OISTimelineWriting <NSObject>
-- (nullable NSManagedObject *)timelineInsertValues:(NSDictionary<NSString *, id> *)values entity:(NSEntityDescription *)entity error:(NSError **)error;
-- (BOOL)timelineUpdate:(NSManagedObject *)slice values:(NSDictionary<NSString *, id> *)values error:(NSError **)error;
-- (BOOL)timelineDelete:(NSManagedObject *)slice error:(NSError **)error;
+// What an action does: the slices it makes, changes and deletes (each
+// once, in the order it first touched them: made ones with their values,
+// changed ones with their changes), and what it answers with.
+@interface OISTimelineChanges : NSObject
+@property (nonatomic, copy) NSArray<OISSliceRecord *> *records;
+@property (nonatomic, copy) NSArray<OISTimeslice *> *results;
 @end
 
 @interface OISTimeline : NSObject
@@ -54,13 +69,13 @@ NS_ASSUME_NONNULL_BEGIN
 
 // Temporal.Update, Upsert or Delete (the vocabulary's names, unqualified)
 // of these delta time slices (Core Data values, each with its period),
-// over the slices given; what was made or changed, or, for Delete, what
-// was taken away. nil, and why (an ODataServiceError), when it cannot.
-- (nullable NSArray<OISTimeslice *> *)perform:(NSString *)action
-                                        deltas:(NSArray<NSDictionary<NSString *, id> *> *)deltas
-                                    candidates:(NSArray<NSManagedObject *> *)candidates
-                                        writer:(id<OISTimelineWriting>)writer
-                                         error:(NSError **)error;
+// over the slices given: what it would write, and answer with. Nothing is
+// written: the caller writes the records. nil, and why (an
+// ODataServiceError), when it cannot.
+- (nullable OISTimelineChanges *)changesOf:(NSString *)action
+                                    deltas:(NSArray<NSDictionary<NSString *, id> *> *)deltas
+                                candidates:(NSArray<NSManagedObject *> *)candidates
+                                     error:(NSError **)error;
 @end
 
 NS_ASSUME_NONNULL_END

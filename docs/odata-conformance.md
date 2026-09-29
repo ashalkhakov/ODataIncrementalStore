@@ -126,6 +126,8 @@ calling the client conformant.
 | Update a to-many relationship | `POST` / `DELETE Entity(key)/Nav/$ref?$id=…` | ✅ **live** | Written from one side only: never from a to-many whose inverse is to-one (that side's reference says it), and for many-to-many from the side whose entity name sorts first. |
 | Insert with relationships | `POST` with `@odata.bind` | ✅ | The only way to create an entity whose relationship is required. TripPin answers `500` to a POST with binds, in breach of JSON Format §24 item 7c. |
 | Delete | `DELETE Entity(key)` | ✅ | |
+| `NSBatchUpdateRequest` | `PATCH EntitySet/$filter(@f)/$each` (§11.4.13) | ✅ | Constant attribute values, as Core Data's own batch updates take; with 4.01, where `UpdateRestrictions` says `FilterSegmentSupported` (and `TypecastSegmentSupported` for a sub-entity). Elsewhere, and for a predicate a filter segment cannot carry (`$search`, application time), the objects are fetched and each PATCHed in one change set. The result type's object IDs or count; the rows the service answers with are kept. No context changes: merge the IDs, as with Core Data's stores. |
+| `NSBatchDeleteRequest` | `DELETE EntitySet/$filter(@f)/$each` (§11.4.14) | ✅ | Likewise, `DeleteRestrictions`; also for `-initWithObjectIDs:` (`SELF IN` them). A fetch request with a limit or offset is fetched, then each deleted. The removed entries' keys give the object IDs. |
 | Save atomicity | `$batch` change set | ✅ **live** | See section 3. |
 | Merge conflicts | `412` → `NSMergeConflict` | ✅ | A `412` on an update or delete (or a `404`: the entity is gone) fails the save with `NSPersistentStoreSaveConflictsError`, one `NSMergeConflict` per object the failed request wrote, holding the row the service has now (none for a deleted entity), read back with its ETag. The context's merge policy settles them and saves again, as with any store; the error policy returns them, with the service's error underneath. FreeCoreData does this from `b7f3a7e` on. |
 
@@ -166,7 +168,7 @@ calling the client conformant.
 | `rel.@count` | `Nav/$count` | ✅ | |
 | `entity == %@`, `entity IN %@` | `isof(NS.Type)`, `isof(Nav,NS.Type)` | ✅ | An exact type leaves its subentities out (`isof(A) and not isof(B)`); a subentity's property is written through a cast (`NS.Manager/Budget`). |
 | `name.length` | `length(Name)` | ✅ | |
-| `LIKE`, `MATCHES` | `matchesPattern` | ✅ | 4.01 only: an error against a 4.0 service. Anchored, since both match the whole string. `LIKE`'s `*` and `?`, and `MATCHES`'s `.`, become any character as ICU takes it (a line terminator too, `\r\n` as one), and `LIKE[c]` lowercases both sides. A `MATCHES` pattern ICU and ECMAScript read differently (`^`, `$`, `\d`, `\w`, `\s`, inline flags) is an error, as is `MATCHES[c]`, since a regular expression cannot be lowercased safely. |
+| `LIKE`, `MATCHES` | `matchesPattern` | ✅ | 4.01 only: an error against a 4.0 service. Anchored, since both match the whole string. `LIKE`'s `*` and `?`, and `MATCHES`'s `.`, become any character as ICU takes it (a line terminator too, `\r\n` as one), and `LIKE[c]` lowercases both sides. The pattern is read into a tree (`ODataRegex`) as this platform's `MATCHES` reads it and written as ECMAScript; what ECMAScript cannot say the same (`^` and `$` at each line, Unicode `\d`, `\w`, `\s` and `\b`, inline flags) is an error, as is `MATCHES[c]`, since a regular expression cannot be lowercased safely. |
 | Arithmetic (`+ - * /`, `modulus:by:`) | `add`, `sub`, `mul`, `div`, `mod` | ✅ | As Apple and gnustep-base name the functions. A key path the model does not have is an error, not a guess. |
 | Date literals | `2024-01-01T12:00:00.5Z`, `2024-01-01` | ✅ **live** | Typed by the attribute compared with: a DateTimeOffset to the microsecond, an `Edm.Date` as the day. |
 | UUID literals | unquoted Guid | ✅ | |
@@ -469,7 +471,9 @@ done on both sides; the rest is ❌ unless marked otherwise.
   `Exclusive`, `AllowedValues`, `MultipleOf`, `MinItems`/`MaxItems`,
   `Constraint`, `DerivedTypeConstraint`. These map onto Core Data's own
   validation:
-  - `Pattern` is a `MATCHES` validation predicate.
+  - `Pattern` is a `MATCHES` validation predicate: ECMAScript's pattern,
+    found anywhere, written in ICU's syntax (`ODataRegex`); none where the
+    two cannot say the same.
   - `Minimum` and `Maximum` are the attribute's min and max values.
   - `AllowedValues` is an `IN` predicate.
   - `MinItems` and `MaxItems` are a to-many relationship's min and max

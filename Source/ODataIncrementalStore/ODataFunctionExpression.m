@@ -105,6 +105,107 @@
 
 @end
 
+@implementation ODataTheseExpression
+
++ (instancetype)expressionForAggregate:(NSString *)method keyPath:(NSString *)keyPath
+{
+  ODataTheseExpression *e = [[self alloc] initWithExpressionType:NSFunctionExpressionType];
+  e->_method = [method copy];
+  e->_aggregatedKeyPath = [keyPath copy];
+  return e;
+}
+
++ (instancetype)expressionForCount
+{
+  return [[self alloc] initWithExpressionType:NSFunctionExpressionType];
+}
+
++ (BOOL)supportsSecureCoding
+{
+  return YES;
+}
+
+- (instancetype)initWithCoder:(NSCoder *)coder
+{
+  self = [super initWithExpressionType:NSFunctionExpressionType];
+  if (!self) return nil;
+  _method = [[coder decodeObjectOfClass:[NSString class] forKey:@"ODataMethod"] copy];
+  _aggregatedKeyPath = [[coder decodeObjectOfClass:[NSString class] forKey:@"ODataKeyPath"] copy];
+  return self;
+}
+
+- (void)encodeWithCoder:(NSCoder *)coder
+{
+  if (self.method) [coder encodeObject:self.method forKey:@"ODataMethod"];
+  if (self.aggregatedKeyPath) [coder encodeObject:self.aggregatedKeyPath forKey:@"ODataKeyPath"];
+}
+
+// Immutable, as expressions are.
+- (id)copyWithZone:(NSZone *)zone
+{
+  return self;
+}
+
+- (NSString *)function
+{
+  return @"these";
+}
+
+- (NSArray *)arguments
+{
+  return @[];
+}
+
+- (BOOL)isEqual:(id)other
+{
+  if (other == self) return YES;
+  if (![other isKindOfClass:[ODataTheseExpression class]]) return NO;
+  ODataTheseExpression *o = other;
+  return (o.method == self.method || [o.method isEqual:self.method]) &&
+         (o.aggregatedKeyPath == self.aggregatedKeyPath || [o.aggregatedKeyPath isEqual:self.aggregatedKeyPath]);
+}
+
+- (NSUInteger)hash
+{
+  return self.method.hash ^ self.aggregatedKeyPath.hash;
+}
+
+- (NSString *)description
+{
+  return self.method ? [NSString stringWithFormat:@"$these.%@(%@)", self.method, self.aggregatedKeyPath] : @"$these.@count";
+}
+
+- (NSString *)predicateFormat
+{
+  return self.description;
+}
+
+// The entity's objects in the object's context, aggregated.
+- (id)expressionValueWithObject:(id)object context:(NSMutableDictionary *)context
+{
+  NSManagedObject *managed = [object isKindOfClass:[NSManagedObject class]] ? object : nil;
+  if (!managed.managedObjectContext) return nil;
+  NSEntityDescription *entity = managed.entity;
+  while (entity.superentity) entity = entity.superentity;
+  NSFetchRequest *fetch = [[NSFetchRequest alloc] init];
+  fetch.entity = entity;
+  NSArray *all = [managed.managedObjectContext executeFetchRequest:fetch error:NULL];
+  if (!all) return nil;
+  if (!self.method) return @(all.count);
+  NSDictionary *operators = @{ @"sum": @"@sum", @"average": @"@avg", @"min": @"@min", @"max": @"@max" };
+  NSMutableArray *values = [NSMutableArray array];
+  for (id member in all) {
+    id value = [member valueForKeyPath:self.aggregatedKeyPath];
+    if (value && value != [NSNull null]) [values addObject:value];
+  }
+  if ([self.method isEqualToString:@"countdistinct"]) return @([NSSet setWithArray:values].count);
+  NSString *operator = operators[self.method];
+  if (!operator || !values.count) return nil;  // an aggregate of none is null
+  return [values valueForKeyPath:[operator stringByAppendingString:@".self"]];
+}
+
+@end
+
 @implementation ODataSortDescriptor
 
 + (instancetype)sortDescriptorWithExpression:(NSExpression *)expression ascending:(BOOL)ascending

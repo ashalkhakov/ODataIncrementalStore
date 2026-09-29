@@ -49,6 +49,7 @@ ODataKit_OBJC_FILES = \
 	Source/ODataKit/ODataExpression.m \
 	Source/ODataKit/ODataLexer.m \
 	Source/ODataKit/ODataPropertyMapper.m \
+	Source/ODataKit/ODataRegex.m \
 	Source/ODataKit/ODataSchema.m \
 	Source/ODataKit/ODataTransport.m \
 	Source/ODataKit/ODataValue.m
@@ -61,6 +62,7 @@ ODataKit_HEADER_FILES = \
 	ODataExpression.h \
 	ODataKit.h \
 	ODataPropertyMapper.h \
+	ODataRegex.h \
 	ODataSchema.h \
 	ODataTransport.h \
 	ODataValue.h \
@@ -88,6 +90,8 @@ ODataIncrementalStore_OBJC_FILES = \
 	Source/ODataIncrementalStore/ODataStreamTransfer.m \
 	Source/ODataIncrementalStore/ODataSearchPredicate.m \
 	Source/ODataIncrementalStore/ODataTemporalPredicate.m \
+	Source/ODataIncrementalStore/ODataHierarchyPredicate.m \
+	Source/ODataIncrementalStore/ODataQuery.m \
 	Source/ODataIncrementalStore/ODataPredicateTranslator.m \
 	Source/ODataIncrementalStore/ODataQueryBuilder.m \
 	Source/ODataIncrementalStore/ODataResourceIdentifier.m
@@ -104,6 +108,8 @@ ODataIncrementalStore_HEADER_FILES = \
 	ODataStreamTransfer.h \
 	ODataSearchPredicate.h \
 	ODataTemporalPredicate.h \
+	ODataHierarchyPredicate.h \
+	ODataQuery.h \
 	ODataPredicateTranslator.h \
 	ODataQueryBuilder.h \
 	ODataResourceIdentifier.h
@@ -125,6 +131,9 @@ ODataService_OBJC_FILES = \
 	Source/ODataService/ODataService.m \
 	Source/ODataService/ODataServiceBatch.m \
 	Source/ODataService/ODataTimeline.m \
+	Source/ODataService/OISPlan.m \
+	Source/ODataService/OISServiceCall+Plan.m \
+	Source/ODataService/OISServiceCall+Write.m \
 	Source/ODataService/OISSignature.m
 
 ODataService_HEADER_FILES = \

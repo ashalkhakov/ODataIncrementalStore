@@ -38,6 +38,51 @@
 }
 @end
 
+// Changes of its own, not the store's history: a feed whose tokens are
+// feed-1, feed-2, ...; from feed-1, Chai and Chang changed and Products(99)
+// was deleted, told later, as a feed that is asked would.
+@interface OISFeedProducts : ODataEntitySetHandler
+@end
+
+@implementation OISFeedProducts
+
+- (BOOL)canTrackChanges
+{
+  return YES;
+}
+
+- (NSString *)changeTokenForRequest:(ODataRequest *)request
+{
+  return @"feed-1";
+}
+
+- (ODataChanges *)changesSince:(NSString *)token request:(ODataRequest *)request reply:(ODataReply *)reply
+{
+  if (![token hasPrefix:@"feed-"]) {
+    [reply failWithError:ODataServiceError(400, @"Not a token of the feed")];
+    return nil;
+  }
+  [reply defer];
+  NSManagedObjectContext *context = request.context;
+  NSEntityDescription *entity = self.entity;
+  dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(10 * NSEC_PER_MSEC)), dispatch_get_global_queue(0, 0), ^{
+    [context performBlock:^{
+      ODataChanges *changes = [ODataChanges changesWithToken:@"feed-2"];
+      if ([token isEqualToString:@"feed-1"]) {
+        NSFetchRequest *fetch = [NSFetchRequest fetchRequestWithEntityName:@"Product"];
+        fetch.predicate = [NSPredicate predicateWithFormat:@"id IN %@", @[ @1, @2 ]];
+        fetch.sortDescriptors = @[ [NSSortDescriptor sortDescriptorWithKey:@"id" ascending:YES] ];
+        for (NSManagedObject *product in [context executeFetchRequest:fetch error:NULL]) [changes addChanged:product.objectID];
+        [changes addDeletedEntity:entity keyValues:@{ @"id": @99 }];
+      }
+      [reply finishWithResult:changes];
+    }];
+  });
+  return nil;
+}
+
+@end
+
 // Hides discontinued products, and answers fetches later, from another
 // thread, as a handler that waits on something would.
 @interface OISLaterProducts : ODataEntitySetHandler
@@ -486,6 +531,36 @@
 @end
 
 // Fails every fetch as a store would, with a message not for clients.
+// Products as an analyst sees them: grouped by category or by whether
+// discontinued, prices summed or averaged, names joined; and a forecast.
+@interface OISAggregatingHandler : ODataEntitySetHandler
+@end
+
+@implementation OISAggregatingHandler
+- (instancetype)initWithEntity:(NSEntityDescription *)entity
+{
+  if ((self = [super initWithEntity:entity])) {
+    self.groupableProperties = [NSSet setWithObjects:@"Category", @"Discontinued", nil];
+    self.aggregatableProperties = @{ @"UnitPrice": @[ @"sum", @"average", @"$count" ], @"ProductName": @[ @"Custom.concat" ] };
+    self.customAggregationMethods = [NSSet setWithObject:@"Custom.concat"];
+    self.customAggregates = @{ @"Forecast": @"Edm.Decimal" };
+  }
+  return self;
+}
+// Distinct values, sorted, joined by commas.
+- (id)valueOfAggregationMethod:(NSString *)method values:(NSArray *)values request:(ODataRequest *)request
+{
+  return [[[NSSet setWithArray:values].allObjects sortedArrayUsingSelector:@selector(compare:)] componentsJoinedByString:@","];
+}
+// A tenth more than the prices come to.
+- (id)valueOfCustomAggregate:(NSString *)name objects:(NSArray *)objects request:(ODataRequest *)request
+{
+  NSDecimalNumber *total = [NSDecimalNumber zero];
+  for (NSManagedObject *object in objects) total = [total decimalNumberByAdding:[object valueForKey:@"unitPrice"] ?: [NSDecimalNumber zero]];
+  return [total decimalNumberByMultiplyingBy:[NSDecimalNumber decimalNumberWithString:@"1.1"]];
+}
+@end
+
 @interface OISFailingStoreHandler : ODataEntitySetHandler
 @end
 
@@ -580,6 +655,7 @@
   dispatch_semaphore_t _finished;
   NSMutableArray<NSURL *> *_storeFiles;
   ODataStreamTransfer *_finishedTransfer;
+  ODataQuery *_finishedQuery;
 }
 
 - (void)setUp
@@ -602,9 +678,19 @@
 // A service over the Catalog rows in memory, in this model.
 - (void)serveModel:(NSManagedObjectModel *)model
 {
+  [self serveModel:model storeType:NSInMemoryStoreType];
+}
+
+- (void)serveModel:(NSManagedObjectModel *)model storeType:(NSString *)storeType
+{
   _coordinator = [[NSPersistentStoreCoordinator alloc] initWithManagedObjectModel:model];
+  NSURL *url = nil;
+  if (![storeType isEqualToString:NSInMemoryStoreType]) {
+    url = [NSURL fileURLWithPath:[NSTemporaryDirectory() stringByAppendingPathComponent:[[NSProcessInfo processInfo] globallyUniqueString]]];
+    [_storeFiles addObject:url];
+  }
   NSError *error = nil;
-  XCTAssertNotNil([_coordinator addPersistentStoreWithType:NSInMemoryStoreType configuration:nil URL:nil options:nil error:&error], @"%@", error);
+  XCTAssertNotNil([_coordinator addPersistentStoreWithType:storeType configuration:nil URL:url options:nil error:&error], @"%@", error);
   [self seed];
   _service = [[ODataService alloc] initWithPersistentStoreCoordinator:_coordinator
                                                           serviceRoot:[NSURL URLWithString:@"http://example.test/odata/"]];
@@ -942,6 +1028,32 @@
 
 #pragma mark Handlers
 
+// A read's plan, as $explain answers with it where the service says so:
+// what the store does, what is done here.
+- (void)testExplain
+{
+  XCTAssertNotEqual([self get:@"$explain/Products"].status, 200, @"not unless the service explains");
+  _service.explains = YES;
+  OISServiceResponse *r = [self get:@"$explain/Products?$filter=UnitPrice gt $these/aggregate(UnitPrice with average)&$orderby=ProductName&$top=2&$expand=Category&$count=true"];
+  XCTAssertEqual(r.status, 200, @"%@", r.text);
+  NSString *physical = r.json[@"physical"], *logical = r.json[@"logical"];
+  XCTAssertTrue([physical containsString:@"Store scan Product where UnitPrice gt $these/aggregate(UnitPrice with average)"], @"%@", physical);
+  XCTAssertTrue([physical containsString:@"sort ProductName, key top 2 page 2"], @"%@", physical);
+  XCTAssertTrue([physical containsString:@"$these/aggregate(UnitPrice with average) :=\n    Value $these/aggregate(UnitPrice with average)\n      Store scan Product"], @"%@", physical);
+  XCTAssertTrue([physical containsString:@"Nest Category"], @"%@", physical);
+  XCTAssertTrue([physical containsString:@"$count :=\n  Store count Product"], @"%@", physical);
+  XCTAssertTrue([logical containsString:@"Limit top 2\n  Sort ProductName\n    Select UnitPrice gt $these/aggregate(UnitPrice with average)\n      Scan Product"], @"%@", logical);
+
+  // Sorted here, by what the store cannot sort by: every row, then the page.
+  physical = [self get:@"$explain/Products?$orderby=UnitPrice mul 2 desc&$top=1"].json[@"physical"];
+  XCTAssertTrue([physical containsString:@"Limit top 1 page 1\n  Apply orderby(UnitPrice mul 2 desc)\n    Store scan Product sort key at most 10000"], @"%@", physical);
+  // $apply: its leading filter in the store, the rest here.
+  physical = [self get:@"$explain/Products?$apply=filter(UnitPrice gt 10)/groupby((Category/CategoryName),aggregate(UnitPrice with sum as T))"].json[@"physical"];
+  XCTAssertTrue([physical containsString:@"groupby((Category/CategoryName),aggregate(UnitPrice with sum as T))"], @"%@", physical);
+  XCTAssertTrue([physical containsString:@"Store scan Product where UnitPrice gt 10"], @"%@", physical);
+  XCTAssertEqual([[self get:@"Products?$top=1"].json[@"value"] count], 1u, @"a read is still a read");
+}
+
 - (void)testHandlerSeesAndAnswersLater
 {
   OISLaterProducts *handler = [[OISLaterProducts alloc] initWithEntity:OISCatalogEntity(@"Product")];
@@ -950,8 +1062,32 @@
   XCTAssertEqual(handler.deferred, 1);
   XCTAssertEqual([self get:@"Products(5)"].status, 404, @"by key too");
   XCTAssertEqualObjects([self get:@"Products/$count"].text, @"4");
+  NSInteger asked = handler.deferred;
   NSArray *expanded = [self get:@"Categories(2)?$expand=Products"].json[@"Products"];
   XCTAssertEqual(expanded.count, 2u, @"and through $expand");
+  XCTAssertEqual(handler.deferred, asked + 1, @"an expansion is read through the handler");
+
+  // Answers that come later, as the plan runs again from the top: nested
+  // expansions, counts, a grouping.
+  OISServiceResponse *r = [self get:@"Categories?$expand=Products($expand=Category($expand=Products($select=ProductName));$count=true)&$count=true&$orderby=CategoryID"];
+  XCTAssertEqual(r.status, 200, @"%@", r.text);
+  XCTAssertEqualObjects(r.json[@"@odata.count"], @2);
+  XCTAssertEqualObjects([r.json[@"value"] valueForKey:@"Products@odata.count"], (@[ @2, @2 ]), @"%@", r.text);
+  XCTAssertEqualObjects([[r.json[@"value"][1][@"Products"] firstObject] valueForKeyPath:@"Category.Products.ProductName"],
+                        (@[ @"Aniseed Syrup", @"Chef Anton's Cajun Seasoning" ]), @"%@", r.text);
+  r = [self get:@"Products?$apply=groupby((Category/CategoryName),aggregate($count as N))&$orderby=Category/CategoryName"];
+  XCTAssertEqual(r.status, 200, @"%@", r.text);
+  XCTAssertEqualObjects([r.json[@"value"] valueForKey:@"N"], (@[ @2, @2 ]), @"%@", r.text);
+  // A join's members too, through the handler: at the top, and within a
+  // group's transformations.
+  asked = handler.deferred;
+  r = [self get:@"Categories?$apply=join(Products as P)/groupby((CategoryName),aggregate($count as N))&$orderby=CategoryName"];
+  XCTAssertEqual(r.status, 200, @"%@", r.text);
+  XCTAssertEqualObjects([r.json[@"value"] valueForKey:@"N"], (@[ @2, @2 ]), @"the discontinued one is not joined: %@", r.text);
+  XCTAssertEqual(handler.deferred, asked + 1, @"the members, read once for all the categories");
+  r = [self get:@"Categories?$apply=groupby((CategoryName),join(Products as P)/aggregate($count as N))&$orderby=CategoryName"];
+  XCTAssertEqual(r.status, 200, @"%@", r.text);
+  XCTAssertEqualObjects([r.json[@"value"] valueForKey:@"N"], (@[ @2, @2 ]), @"%@", r.text);
 
   handler.allowsDelete = NO;
   XCTAssertEqual(([self send:@"DELETE" path:@"Products(1)" headers:nil body:nil].status), 405);
@@ -1914,7 +2050,16 @@
     OISServiceResponse *expanded = [self get:@"Employees(1)?$expand=Reports($filter=isof(Default.Executive))"];
     XCTAssertEqualObjects([expanded.json[@"Reports"] valueForKey:@"Name"], @[ @"Zed" ], @"%@: %@", storeType, expanded.text);
 
-    XCTAssertEqual([self get:@"Employees?$orderby=Default.Manager/Budget"].status, 501, @"a store that sorts objects cannot ask an Employee for its budget");
+    // Sorted here: the cast is null for an Employee that is no Manager,
+    // and nulls come first.
+    OISServiceResponse *byBudget = [self get:@"Employees?$orderby=Default.Manager/Budget"];
+    XCTAssertEqual(byBudget.status, 200, @"%@: %@", storeType, byBudget.text);
+    NSArray *managers = [self sortedEmployeeNames:@"Employees?$filter=isof(Default.Manager)"];
+    NSArray *names = [byBudget.json[@"value"] valueForKey:@"Name"];
+    XCTAssertEqual(names.count, 5u, @"%@", byBudget.text);
+    for (NSUInteger i = 0; i < names.count; i++) {
+      XCTAssertEqual([managers containsObject:names[i]], i >= names.count - managers.count, @"%@: %@", storeType, names);
+    }
     XCTAssertEqualObjects([self get:@"Employees/$count?$filter=isof(Name,Edm.String)"].text, @"5", @"%@: its own type", storeType);
     XCTAssertEqual([self get:@"Employees?$filter=isof(Default.Nobody)"].status, 400);
     XCTAssertEqual([self get:@"Employees?$filter=Default.Manager/Nothing eq 1"].status, 400);
@@ -2016,6 +2161,178 @@
   XCTAssertEqualObjects([self get:@"Categories/$count"].text, @"3");
 }
 
+#pragma mark Write plans
+
+// A write is planned before anything is done: what it reads through the
+// handlers, what it checks, what it writes, and what it answers with;
+// explain shows the plan and writes nothing.
+- (void)testWritePlans
+{
+  _service.explains = YES;
+  OISServiceResponse *r = [self send:@"POST" path:@"$explain/Categories" headers:nil body:@{
+    @"CategoryName": @"Tea", @"Products": @[ @{ @"ProductName": @"Sencha", @"Suppliers@odata.bind": @[ @"Suppliers(1)" ] } ] }];
+  XCTAssertEqual(r.status, 200, @"%@", r.text);
+  NSString *physical = r.json[@"physical"];
+  XCTAssertTrue([physical hasPrefix:@"Returning\n  Nest Products\n  Objects (what Insert Category wrote)\nCommit\n  Insert Category set name\n"], @"%@", physical);
+  XCTAssertTrue([physical containsString:@"id :=\n      Sequence Category.id from Store scan Category sort id desc top 1"], @"%@", physical);
+  XCTAssertTrue([physical containsString:@"products := these\n      Insert Product set name"], @"%@", physical);
+  XCTAssertTrue([physical containsString:@"suppliers := these\n          Lookup Suppliers(1)"], @"%@", physical);
+  XCTAssertEqualObjects([self get:@"Categories/$count"].text, @"2", @"explained, not written");
+
+  physical = [self send:@"PATCH" path:@"$explain/Products(1)" headers:@{ @"If-Match": @"W/\"1\"" } body:@{ @"UnitPrice": @20 }].json[@"physical"];
+  XCTAssertTrue([physical containsString:@"Commit\n  Update Product set unitPrice\n    Assert If-Match W/\"1\"\n    Assert the key and what is immutable unchanged\n    Objects (1)"], @"%@", physical);
+  physical = [self send:@"DELETE" path:@"$explain/Products/$filter(UnitPrice gt 20)/$each" headers:nil body:nil].json[@"physical"];
+  XCTAssertTrue([physical containsString:@"Delete Product\n    Store scan Product where $filter(UnitPrice gt 20) sort key at most 10000"], @"%@", physical);
+  XCTAssertEqualObjects([self get:@"Products/$count"].text, @"5");
+
+  // A temporal action: the slices read, then its changes to them.
+  [self serveDepartmentHistory];
+  _service.explains = YES;
+  physical = [self send:@"POST" path:@"$explain/Departments/Temporal.Update" headers:nil body:@{
+    @"deltaTimeslices": @[ @{ @"Timeslice": @{ @"Department": @"D08", @"From": @"2012-04-01", @"Budget": @1 } } ] }].json[@"physical"];
+  XCTAssertTrue([physical containsString:@"Commit\n  Temporal Update of Department (1 delta time slices)\n"], @"%@", physical);
+  XCTAssertTrue([physical containsString:@"    Store scan Department sort key at most 10000"], @"%@", physical);
+}
+
+// Everything a write reads and checks comes before anything is written:
+// a deep insert whose second product binds to no supplier asks no handler
+// to insert the first.
+- (void)testWritesAreCheckedBeforeTheyAreMade
+{
+  OISLaterWrites *products = [[OISLaterWrites alloc] initWithEntity:OISCatalogEntity(@"Product")];
+  [_service setHandler:products forEntitySet:@"Products"];
+  OISServiceResponse *r = [self send:@"POST" path:@"Categories" headers:nil body:@{
+    @"CategoryName": @"Grains",
+    @"Products": @[ @{ @"ProductName": @"Rice" }, @{ @"ProductName": @"Oats", @"Suppliers@odata.bind": @[ @"Suppliers(9)" ] } ] }];
+  XCTAssertEqual(r.status, 400, @"%@", r.text);
+  XCTAssertEqual(products.inserts, 0, @"nothing asked before the checks");
+  XCTAssertEqualObjects([self get:@"Categories/$count"].text, @"2");
+
+  // Keys: counted on from the largest, once for the write, and from above
+  // any the request gives.
+  r = [self send:@"POST" path:@"Categories" headers:nil body:@{
+    @"CategoryName": @"Grains", @"Products": @[ @{ @"ProductID": @20, @"ProductName": @"Rice" }, @{ @"ProductName": @"Oats" } ] }];
+  XCTAssertEqual(r.status, 201, @"%@", r.text);
+  XCTAssertEqualObjects([[r.json[@"Products"] valueForKey:@"ProductID"] sortedArrayUsingSelector:@selector(compare:)], (@[ @20, @21 ]));
+  XCTAssertEqualObjects(r.json[@"CategoryID"], @3);
+}
+
+// 4.01's collection writes (Part 1 sections 11.4.12-14): each member a
+// filter selects updated or deleted; a delta payload applied to a set;
+// a set replaced.
+- (void)testCollectionWrites
+{
+  XCTAssertEqualObjects([self get:@"Products/$filter(UnitPrice gt 20)/$count"].text, @"2", @"a filter segment");
+  OISServiceResponse *r = [self send:@"PATCH" path:@"Products/$filter(UnitPrice gt 20)/$each" headers:nil body:@{ @"Discontinued": @YES }];
+  XCTAssertEqual(r.status, 204, @"%@", r.text);
+  XCTAssertEqualObjects([self names:[self get:@"Products?$filter=Discontinued&$orderby=ProductID"]],
+                        (@[ @"Chef Anton's Cajun Seasoning", @"Chef Anton's Gumbo Mix" ]));
+
+  r = [self send:@"PATCH" path:@"Products/$filter(@p)/$each?@p=UnitPrice lt 11" headers:@{ @"Prefer": @"return=representation" }
+            body:@{ @"UnitPrice": @11 }];
+  XCTAssertEqual(r.status, 200, @"%@", r.text);
+  XCTAssertEqualObjects([r.json[@"value"] valueForKey:@"ProductID"], @[ @3 ], @"the updated members");
+  XCTAssertEqualObjects([r.json[@"value"] valueForKey:@"UnitPrice"], @[ @11 ]);
+  XCTAssertEqual(([self send:@"PATCH" path:@"Products/$each" headers:nil body:@{ @"Category": @{ @"CategoryName": @"New" } }].status), 501,
+                 @"a nested entity for each member");
+  XCTAssertEqual(([self send:@"GET" path:@"Products/$each" headers:nil body:nil].status), 405);
+
+  r = [self send:@"DELETE" path:@"Products/$filter(Discontinued)/$each" headers:@{ @"Prefer": @"return=representation" } body:nil];
+  XCTAssertEqual(r.status, 200, @"%@", r.text);
+  XCTAssertEqual([r.json[@"value"] count], 2u, @"a deleted entry for each: %@", r.text);
+  XCTAssertTrue([r.json[@"@odata.context"] hasSuffix:@"#Products/$delta"], @"%@", r.text);
+  XCTAssertEqualObjects([self get:@"Products/$count"].text, @"3");
+
+  // A delta payload: upserts, and a delete.
+  r = [self send:@"PATCH" path:@"Categories" headers:@{ @"OData-Version": @"4.01", @"Prefer": @"return=representation" } body:@{
+    @"@context": @"#$delta",
+    @"value": @[ @{ @"CategoryID": @1, @"CategoryName": @"Drinks" }, @{ @"CategoryName": @"Tea" },
+                 @{ @"@removed": @{ @"reason": @"deleted" }, @"@id": @"Categories(2)" } ] }];
+  XCTAssertEqual(r.status, 200, @"%@", r.text);
+  NSArray *value = r.json[@"value"];
+  XCTAssertEqual(value.count, 3u, @"in the request's order: %@", r.text);
+  XCTAssertEqualObjects(value[0][@"CategoryName"], @"Drinks");
+  XCTAssertEqualObjects(value[1][@"CategoryName"], @"Tea");
+  XCTAssertEqual([self get:@"Categories(2)"].status, 404);
+  XCTAssertEqualObjects([self get:@"Categories(1)/CategoryName"].json[@"value"], @"Drinks");
+  XCTAssertEqual(([self send:@"PATCH" path:@"Categories/$filter(CategoryID eq 1)" headers:nil body:@{ @"value": @[] }].status), 400,
+                 @"a filtered collection is not updated as a whole");
+
+  // PUT: the collection is what the body says.
+  r = [self send:@"PUT" path:@"Suppliers" headers:nil body:@{
+    @"value": @[ @{ @"SupplierID": @1, @"CompanyName": @"Exotic" }, @{ @"CompanyName": @"Pampas", @"City": @"Buenos Aires" } ] }];
+  XCTAssertEqual(r.status, 204, @"%@", r.text);
+  XCTAssertEqualObjects([self get:@"Suppliers/$count"].text, @"2");
+  XCTAssertEqual([self get:@"Suppliers(2)"].status, 404, @"not in the body: deleted");
+  XCTAssertEqualObjects([self get:@"Suppliers(1)/CompanyName"].json[@"value"], @"Exotic");
+  XCTAssertEqualObjects([self get:@"Suppliers(3)/City"].json[@"value"], @"Buenos Aires");
+}
+
+// Core Data's batch requests, through the client: one PATCH or DELETE of
+// each member a filter segment selects, with the objects' IDs back and
+// their rows kept, merged into a context as a store's batch results are;
+// what a filter segment cannot say, each object fetched and written.
+- (void)testClientBatchUpdatesAndDeletes
+{
+  OISRecordingTransport *transport = [[OISRecordingTransport alloc] init];
+  transport.next = _service;
+  NSError *error = nil;
+  NSManagedObjectContext *context = [self clientOver:transport options:nil error:&error];
+  XCTAssertNotNil(context, @"%@", error);
+  NSFetchRequest *fetch = [NSFetchRequest fetchRequestWithEntityName:@"Product"];
+  fetch.sortDescriptors = @[ [NSSortDescriptor sortDescriptorWithKey:@"id" ascending:YES] ];
+  NSArray *products = [context executeFetchRequest:fetch error:&error];
+  XCTAssertEqual(products.count, 5u, @"%@", error);
+
+  NSBatchUpdateRequest *update = [NSBatchUpdateRequest batchUpdateRequestWithEntityName:@"Product"];
+  update.predicate = [NSPredicate predicateWithFormat:@"unitPrice > 20"];
+  update.propertiesToUpdate = @{ @"discontinued": [NSExpression expressionForConstantValue:@YES], @"quantityPerUnit": @"12 boxes" };
+  update.resultType = NSUpdatedObjectIDsResultType;
+  NSBatchUpdateResult *updated = (NSBatchUpdateResult *)[context executeRequest:update error:&error];
+  XCTAssertEqual([updated.result count], 2u, @"%@", error);
+  NSURLRequest *sent = transport.requests.lastObject;
+  XCTAssertEqualObjects(sent.HTTPMethod, @"PATCH");
+  NSString *url = [sent.URL.absoluteString stringByRemovingPercentEncoding];
+  XCTAssertTrue([url hasSuffix:@"/Products/$filter(@f)/$each?@f=UnitPrice gt 20"], @"%@", url);
+  [NSManagedObjectContext mergeChangesFromRemoteContextSave:@{ NSUpdatedObjectsKey: updated.result } intoContexts:@[ context ]];
+  XCTAssertEqualObjects([products valueForKey:@"discontinued"], (@[ @NO, @NO, @NO, @YES, @YES ]));
+  XCTAssertEqualObjects([products[4] valueForKey:@"quantityPerUnit"], @"12 boxes");
+  XCTAssertEqualObjects([self get:@"Products(5)/QuantityPerUnit"].json[@"value"], @"12 boxes");
+
+  // The objects deleted, known by the keys in the removed entries.
+  NSFetchRequest *discontinued = [NSFetchRequest fetchRequestWithEntityName:@"Product"];
+  discontinued.predicate = [NSPredicate predicateWithFormat:@"discontinued == YES"];
+  NSBatchDeleteRequest *delete = [[NSBatchDeleteRequest alloc] initWithFetchRequest:discontinued];
+  delete.resultType = NSBatchDeleteResultTypeObjectIDs;
+  NSBatchDeleteResult *deleted = (NSBatchDeleteResult *)[context executeRequest:delete error:&error];
+  XCTAssertEqualObjects([NSSet setWithArray:deleted.result], ([NSSet setWithObjects:[products[3] objectID], [products[4] objectID], nil]), @"%@", error);
+  XCTAssertEqualObjects(transport.requests.lastObject.HTTPMethod, @"DELETE");
+  XCTAssertEqualObjects([self get:@"Products/$count"].text, @"3");
+  [NSManagedObjectContext mergeChangesFromRemoteContextSave:@{ NSDeletedObjectsKey: deleted.result } intoContexts:@[ context ]];
+  XCTAssertEqual([context executeFetchRequest:fetch error:&error].count, 3u, @"%@", error);
+
+  // By object ID (SELF IN them: a filter too).
+  NSBatchDeleteRequest *byID = [[NSBatchDeleteRequest alloc] initWithObjectIDs:@[ [products[1] objectID] ]];
+  byID.resultType = NSBatchDeleteResultTypeCount;
+  XCTAssertEqualObjects(((NSBatchDeleteResult *)[context executeRequest:byID error:&error]).result, @1, @"%@", error);
+  XCTAssertTrue([transport.requests.lastObject.URL.absoluteString containsString:@"$each"]);
+  // A limit, which a filter segment cannot say: the object fetched, then
+  // deleted at its own URL.
+  NSFetchRequest *last = [NSFetchRequest fetchRequestWithEntityName:@"Product"];
+  last.sortDescriptors = @[ [NSSortDescriptor sortDescriptorWithKey:@"id" ascending:NO] ];
+  last.fetchLimit = 1;
+  NSBatchDeleteRequest *limited = [[NSBatchDeleteRequest alloc] initWithFetchRequest:last];
+  limited.resultType = NSBatchDeleteResultTypeCount;
+  XCTAssertEqualObjects(((NSBatchDeleteResult *)[context executeRequest:limited error:&error]).result, @1, @"%@", error);
+  XCTAssertTrue([transport.requests.lastObject.URL.path hasSuffix:@"/Products/3"], @"%@", transport.requests.lastObject.URL);
+  XCTAssertEqualObjects([self get:@"Products/$count"].text, @"1");
+
+  // A value computed from each row is no value to send.
+  update.propertiesToUpdate = @{ @"unitPrice": [NSExpression expressionWithFormat:@"unitPrice * 2"] };
+  XCTAssertNil([context executeRequest:update error:&error]);
+  XCTAssertEqual(error.code, ODataIncrementalStoreErrorUnsupportedRequest);
+}
+
 #pragma mark Date and number functions
 
 - (void)testYearAndDateInFilters
@@ -2077,6 +2394,11 @@
       XCTAssertEqualObjects([self sortedEmployeeNames:path], expected[filter], @"%@: %@", storeType, filter);
     }
     XCTAssertEqual([self get:@"Employees?$filter=hour(Hired) eq 9"].status, 501, @"%@: six years of days is too many ranges", storeType);
+    // The span, read first, through the handler.
+    _service.explains = YES;
+    NSString *physical = [self get:@"$explain/Employees?$filter=month(Manager/Hired) eq 12"].json[@"physical"];
+    XCTAssertTrue([physical hasPrefix:@"Span Employee.hired\nStore scan Employee where month(Manager/Hired) eq 12"], @"%@", physical);
+    _service.explains = NO;
 
     // Ann hired the morning before Bob: two days of hours.
     NSManagedObjectContext *context = [[NSManagedObjectContext alloc] init];
@@ -2581,7 +2903,7 @@ static NSComparisonPredicate *OISValidation(NSString *keyPath, NSPredicateOperat
   XCTAssertEqualObjects([schema annotation:@"Core.Description" forTarget:@"Default.Item/Name"], @"What it is called");
   XCTAssertEqualObjects([schema annotation:@"Core.Description#fr" forTarget:@"Default.Item/Name"], @"Son nom");
   XCTAssertEqualObjects([schema annotation:@"Org.Example.V1.Searchable" forTarget:@"Default.Item/Name"], @YES, @"any term at all");
-  XCTAssertEqualObjects([schema annotation:@"Validation.Pattern" forTarget:@"Default.Item/Name"], @"^(?:[A-Z].*)$");
+  XCTAssertEqualObjects([schema annotation:@"Validation.Pattern" forTarget:@"Default.Item/Name"], @"^[A-Z](?:\\r\\n|\\r(?!\\n)|[^\\r])*$");
   XCTAssertTrue([metadata.text rangeOfString:@"<Property Name=\"Name\" Type=\"Edm.String\" MaxLength=\"50\">"].location != NSNotFound, @"%@", metadata.text);
   XCTAssertEqualObjects([schema annotation:@"Validation.Minimum" forTarget:@"Default.Item/Price"], [NSDecimalNumber zero]);
   XCTAssertEqualObjects([schema annotation:@"Validation.Maximum" forTarget:@"Default.Item/Price"], [NSDecimalNumber decimalNumberWithString:@"1000"]);
@@ -2724,7 +3046,8 @@ static NSComparisonPredicate *OISValidation(NSString *keyPath, NSPredicateOperat
 
   OISServiceResponse *created = [self send:@"POST" path:@"Products" headers:nil body:@{ @"ProductName": @"Mate", @"UnitPrice": @3.333 }];
   XCTAssertEqual(created.status, 201);
-  NSDictionary *warning = [created.json[ODataMessagesAnnotation] firstObject];
+  // The insert's, and the handler's for the key read before it.
+  NSDictionary *warning = [[created.json[ODataMessagesAnnotation] filteredArrayUsingPredicate:[NSPredicate predicateWithFormat:@"code == 'Rounded'"]] firstObject];
   XCTAssertEqualObjects(warning[@"target"], @"UnitPrice");
   XCTAssertEqualObjects(warning[@"severity"], @"warning");
   OISServiceResponse *minimal = [self send:@"POST" path:@"Products" headers:@{ @"Prefer": @"return=minimal" } body:@{ @"ProductName": @"Mate" }];
@@ -2762,7 +3085,9 @@ static NSComparisonPredicate *OISValidation(NSString *keyPath, NSPredicateOperat
   [heard removeAllObjects];
   XCTAssertTrue([context save:&error], @"%@", error);
   XCTAssertEqual(heard.count, 1u);
-  ODataMessage *rounded = [heard.firstObject.userInfo[ODataMessagesKey] firstObject];
+  // The insert's, and the handler's for the key read before it.
+  NSArray<ODataMessage *> *messages = heard.firstObject.userInfo[ODataMessagesKey];
+  ODataMessage *rounded = [messages filteredArrayUsingPredicate:[NSPredicate predicateWithFormat:@"code == 'Rounded'"]].firstObject;
   XCTAssertEqualObjects(rounded.code, @"Rounded");
   XCTAssertEqualObjects(rounded.target, @"UnitPrice");
   XCTAssertEqualObjects(heard.firstObject.userInfo[ODataMessagesObjectIDKey], mate.objectID, @"about the product it made");
@@ -3158,6 +3483,673 @@ static NSString *OISHTTPDate(NSDate *date)
   XCTAssertEqual([self get:@"Products?$schemaversion=2"].status, 404);
 }
 
+// Data Aggregation 4.0 (CS04) beyond the minimal level: aggregating an
+// expression, paths through collection-valued navigation and their $count,
+// groupby with transformations of its own, isdefined; and what $metadata
+// says of them.
+- (void)testAggregationMore
+{
+  // An expression with a method.
+  OISServiceResponse *r = [self get:@"Products?$apply=aggregate(UnitPrice mul 2 with sum as Twice,UnitPrice add 1 with max as Most)"];
+  XCTAssertEqual(r.status, 200, @"%@", r.text);
+  NSDictionary *row = [r.json[@"value"] firstObject];
+  XCTAssertEqualWithAccuracy([row[@"Twice"] doubleValue], 180.7, 0.001, @"%@", r.text);
+  XCTAssertEqualWithAccuracy([row[@"Most"] doubleValue], 23.0, 0.001, @"%@", r.text);
+
+  // Through a collection-valued navigation property: each category's
+  // products' prices, and how many products.
+  r = [self get:@"Categories?$apply=groupby((CategoryName),aggregate(Products/UnitPrice with sum as Total,Products/$count as N))"
+                @"&$orderby=CategoryName"];
+  XCTAssertEqual(r.status, 200, @"%@", r.text);
+  NSArray *rows = r.json[@"value"];
+  XCTAssertEqualObjects([rows valueForKey:@"CategoryName"], (@[ @"Beverages", @"Condiments" ]), @"%@", r.text);
+  XCTAssertEqualWithAccuracy([rows.lastObject[@"Total"] doubleValue], 53.35, 0.001, @"%@", r.text);
+  XCTAssertEqualObjects([rows valueForKey:@"N"], (@[ @2, @3 ]), @"%@", r.text);
+  r = [self get:@"Categories?$apply=aggregate(Products/UnitPrice with average as Mean,Products/$count as N)"];
+  XCTAssertEqualWithAccuracy([[r.json[@"value"] firstObject][@"Mean"] doubleValue], 18.07, 0.001, @"%@", r.text);
+  XCTAssertEqualObjects([r.json[@"value"] firstObject][@"N"], @5, @"%@", r.text);
+
+  // groupby with transformations of its own: filtered, then counted, in each group.
+  r = [self get:@"Products?$apply=groupby((Category/CategoryName),filter(UnitPrice gt 15)/aggregate($count as N,UnitPrice with sum as Total))"
+                @"&$orderby=Category/CategoryName"];
+  XCTAssertEqual(r.status, 200, @"%@", r.text);
+  rows = r.json[@"value"];
+  XCTAssertEqualObjects([rows valueForKeyPath:@"Category.CategoryName"], (@[ @"Beverages", @"Condiments" ]), @"%@", r.text);
+  XCTAssertEqualObjects([rows valueForKey:@"N"], (@[ @2, @2 ]), @"%@", r.text);
+  XCTAssertEqualWithAccuracy([rows.lastObject[@"Total"] doubleValue], 43.35, 0.001, @"%@", r.text);
+  XCTAssertTrue([r.json[@"@odata.context"] rangeOfString:@"(Category(CategoryName),N,Total)"].location != NSNotFound, @"%@", r.json[@"@odata.context"]);
+  // A group's transformations have to aggregate.
+  XCTAssertEqual([self get:@"Products?$apply=groupby((Category/CategoryName),filter(UnitPrice gt 15))"].status, 501);
+  // And groupby of a groupby's rows.
+  r = [self get:@"Products?$apply=groupby((Discontinued),groupby((Category/CategoryName),aggregate($count as N))/aggregate(N with max as Most))"];
+  XCTAssertEqual(r.status, 200, @"%@", r.text);
+
+  // isdefined: of an entity, what its type declares; of a grouped row,
+  // what the grouping kept.
+  XCTAssertEqual([[self get:@"Products?$filter=isdefined(UnitPrice)"].json[@"value"] count], 5u);
+  XCTAssertEqual([[self get:@"Products?$filter=isdefined(Nothing)"].json[@"value"] count], 0u);
+  r = [self get:@"Products?$apply=groupby((Category/CategoryName),aggregate(UnitPrice with sum as Total))/filter(isdefined(Total))"];
+  XCTAssertEqual([r.json[@"value"] count], 2u, @"%@", r.text);
+  r = [self get:@"Products?$apply=groupby((Category/CategoryName),aggregate(UnitPrice with sum as Total))/filter(isdefined(UnitPrice))"];
+  XCTAssertEqual([r.json[@"value"] count], 0u, @"%@", r.text);
+
+  // What $apply writes back is what it read.
+  NSError *error = nil;
+  NSString *text = @"groupby((Category/CategoryName),filter(UnitPrice gt 15)/aggregate(UnitPrice mul 2 with sum as T,Suppliers/$count as S))";
+  NSArray *read = [ODataApplyTransformation transformationsWithString:text error:&error];
+  XCTAssertEqualObjects([ODataApplyTransformation stringForTransformations:read], text, @"%@", error);
+  // A custom aggregate the set does not declare; from, which CS04 removed.
+  XCTAssertEqual([self get:@"Products?$apply=aggregate(Forecast)"].status, 400);
+  XCTAssertEqual([self get:@"Products?$apply=aggregate(UnitPrice with sum from Category as T)"].status, 501);
+
+  // $metadata says which transformations there are: concat among them.
+  ODataSchema *schema = [ODataSchema schemaWithData:[self get:@"$metadata"].data error:NULL];
+  NSDictionary *apply = [schema annotation:@"Org.OData.Aggregation.V1.ApplySupportedDefaults" forTarget:schema.containerName];
+  XCTAssertTrue([apply[@"Transformations"] containsObject:@"concat"], @"%@", apply);
+  XCTAssertNil(apply[@"Rollup"], @"not a term of this version");
+}
+
+// What a set allows of $apply (Aggregation.ApplySupported: groupable and
+// aggregatable properties), and custom aggregation methods and aggregates.
+- (void)testAggregationCapabilities
+{
+  [_service setHandler:[[OISAggregatingHandler alloc] initWithEntity:OISCatalogEntity(@"Product")] forEntitySet:@"Products"];
+  OISServiceResponse *r = [self get:@"Products?$apply=groupby((Category/CategoryName),aggregate(ProductName with Custom.concat as Names,Forecast))"
+                                     @"&$orderby=Category/CategoryName"];
+  XCTAssertEqual(r.status, 200, @"%@", r.text);
+  NSArray *rows = r.json[@"value"];
+  XCTAssertEqualObjects([rows valueForKey:@"Names"], (@[ @"Chai,Chang", @"Aniseed Syrup,Chef Anton's Cajun Seasoning,Chef Anton's Gumbo Mix" ]), @"%@", r.text);
+  XCTAssertEqualWithAccuracy([rows.firstObject[@"Forecast"] doubleValue], 40.7, 0.001, @"%@", r.text);
+  r = [self get:@"Products?$apply=aggregate(Forecast as F,UnitPrice with average as Mean)"];
+  XCTAssertEqualWithAccuracy([[r.json[@"value"] firstObject][@"F"] doubleValue], 99.385, 0.001, @"%@", r.text);
+  XCTAssertEqual([self get:@"Products?$apply=groupby((Discontinued),aggregate(UnitPrice with sum as T))"].status, 200);
+
+  // What the set does not allow.
+  XCTAssertEqual([self get:@"Products?$apply=groupby((ProductName))"].status, 400, @"not groupable");
+  XCTAssertEqual([self get:@"Products?$apply=aggregate(UnitPrice with max as M)"].status, 400, @"not with max");
+  XCTAssertEqual([self get:@"Products?$apply=aggregate(ProductName with sum as S)"].status, 400, @"only with Custom.concat");
+  XCTAssertEqual([self get:@"Products?$apply=aggregate(Nothing)"].status, 400, @"no such custom aggregate");
+  XCTAssertEqual([self get:@"Products?$apply=aggregate(UnitPrice with Other.m as X)"].status, 400, @"no such method");
+
+  // $metadata says so.
+  ODataSchema *schema = [ODataSchema schemaWithData:[self get:@"$metadata"].data error:NULL];
+  NSDictionary *apply = [schema capability:@"Org.OData.Aggregation.V1.ApplySupported" forEntitySet:@"Products"];
+  XCTAssertEqualObjects([apply[@"GroupableProperties"] valueForKey:@"$PropertyPath"], (@[ @"Category", @"Discontinued" ]), @"%@", apply);
+  XCTAssertEqualObjects([apply[@"AggregatableProperties"] valueForKeyPath:@"Property.$PropertyPath"], (@[ @"ProductName", @"UnitPrice" ]), @"%@", apply);
+  XCTAssertEqualObjects(apply[@"CustomAggregationMethods"], @[ @"Custom.concat" ], @"%@", apply);
+  XCTAssertEqualObjects([schema capability:@"Org.OData.Aggregation.V1.CustomAggregate#Forecast" forEntitySet:@"Products"], @"Edm.Decimal");
+}
+
+// join and outerjoin (Data Aggregation section 3.5.1): a row for each
+// related entity, under an alias; then grouped, aggregated, filtered through
+// it, or written with it where $expand names it.
+// The sales organizations of the Data Aggregation spec's example data
+// (section 2.2), a recursive hierarchy (SalesOrgHierarchy: ID, and
+// Superordinate), and their sales.
+- (void)serveSalesOrganizationsInStoreOfType:(NSString *)storeType
+{
+  NSAttributeDescription *(^attribute)(NSString *, NSAttributeType, NSString *) = ^(NSString *name, NSAttributeType type, NSString *wire) {
+    NSAttributeDescription *a = OISSwatchAttribute(name, type, nil);
+    a.userInfo = [name isEqualToString:@"id"] ? @{ @"OData.property": wire, @"OData.key": @"YES" } : @{ @"OData.property": wire };
+    return a;
+  };
+  NSEntityDescription *organization = [[NSEntityDescription alloc] init];
+  organization.name = @"SalesOrganization";
+  organization.managedObjectClassName = @"NSManagedObject";
+  organization.userInfo = @{ @"OData.entitySet": @"SalesOrganizations",
+                             @"OData.annotations": @"{\"Aggregation.RecursiveHierarchy#SalesOrgHierarchy\": "
+                                                    "{\"NodeProperty\": {\"$PropertyPath\": \"ID\"}, "
+                                                    "\"ParentNavigationProperty\": {\"$NavigationPropertyPath\": \"Superordinate\"}}}" };
+  NSEntityDescription *sale = [[NSEntityDescription alloc] init];
+  sale.name = @"Sale";
+  sale.managedObjectClassName = @"NSManagedObject";
+  sale.userInfo = @{ @"OData.entitySet": @"Sales" };
+  NSRelationshipDescription *(^relationship)(NSString *, NSString *, NSEntityDescription *, BOOL) = ^(NSString *name, NSString *wire, NSEntityDescription *to, BOOL many) {
+    NSRelationshipDescription *r = [[NSRelationshipDescription alloc] init];
+    r.name = name;
+    r.destinationEntity = to;
+    r.minCount = 0;
+    r.maxCount = many ? 0 : 1;
+    r.optional = YES;
+    r.deleteRule = NSNullifyDeleteRule;
+    r.userInfo = @{ @"OData.property": wire };
+    return r;
+  };
+  NSRelationshipDescription *superordinate = relationship(@"superordinate", @"Superordinate", organization, NO);
+  NSRelationshipDescription *subordinates = relationship(@"subordinates", @"Subordinates", organization, YES);
+  superordinate.inverseRelationship = subordinates;
+  subordinates.inverseRelationship = superordinate;
+  NSRelationshipDescription *sales = relationship(@"sales", @"Sales", sale, YES);
+  NSRelationshipDescription *seller = relationship(@"salesOrganization", @"SalesOrganization", organization, NO);
+  sales.inverseRelationship = seller;
+  seller.inverseRelationship = sales;
+  NSEntityDescription *product = [[NSEntityDescription alloc] init];
+  product.name = @"Product";
+  product.managedObjectClassName = @"NSManagedObject";
+  product.userInfo = @{ @"OData.entitySet": @"Products" };
+  NSRelationshipDescription *productSales = relationship(@"sales", @"Sales", sale, YES);
+  NSRelationshipDescription *sold = relationship(@"product", @"Product", product, NO);
+  productSales.inverseRelationship = sold;
+  sold.inverseRelationship = productSales;
+  product.properties = @[ attribute(@"id", NSStringAttributeType, @"ID"), attribute(@"name", NSStringAttributeType, @"Name"), productSales ];
+  organization.properties = @[ attribute(@"id", NSStringAttributeType, @"ID"), attribute(@"name", NSStringAttributeType, @"Name"),
+                               superordinate, subordinates, sales ];
+  sale.properties = @[ attribute(@"id", NSInteger32AttributeType, @"ID"), attribute(@"amount", NSDecimalAttributeType, @"Amount"), seller, sold ];
+  NSManagedObjectModel *model = [[NSManagedObjectModel alloc] init];
+  model.entities = @[ organization, sale, product ];
+  _coordinator = [[NSPersistentStoreCoordinator alloc] initWithManagedObjectModel:model];
+  NSURL *url = nil;
+  if (![storeType isEqualToString:NSInMemoryStoreType]) {
+    url = [NSURL fileURLWithPath:[NSTemporaryDirectory() stringByAppendingPathComponent:[[NSProcessInfo processInfo] globallyUniqueString]]];
+    [_storeFiles addObject:url];
+  }
+  NSError *error = nil;
+  XCTAssertNotNil([_coordinator addPersistentStoreWithType:storeType configuration:nil URL:url options:nil error:&error], @"%@", error);
+  NSManagedObjectContext *context = [[NSManagedObjectContext alloc] init];
+  context.persistentStoreCoordinator = _coordinator;
+  NSMutableDictionary *organizations = [NSMutableDictionary dictionary];
+  for (NSArray *row in @[ @[ @"Sales", @"Corporate Sales", @"" ], @[ @"US", @"US", @"Sales" ], @[ @"US West", @"US West", @"US" ],
+                          @[ @"US East", @"US East", @"US" ], @[ @"EMEA", @"EMEA", @"Sales" ], @[ @"EMEA Central", @"EMEA Central", @"EMEA" ] ]) {
+    NSManagedObject *o = [self insert:@"SalesOrganization" into:context values:@{ @"id": row[0], @"name": row[1] }];
+    if ([row[2] length]) [o setValue:organizations[row[2]] forKey:@"superordinate"];
+    organizations[row[0]] = o;
+  }
+  NSMutableDictionary *products = [NSMutableDictionary dictionary];
+  for (NSArray *row in @[ @[ @"P1", @"Sugar" ], @[ @"P2", @"Coffee" ], @[ @"P3", @"Paper" ], @[ @"P4", @"Pencil" ] ]) {
+    products[row[0]] = [self insert:@"Product" into:context values:@{ @"id": row[0], @"name": row[1] }];
+  }
+  NSArray *rows = @[ @[ @1, @"US West", @1, @"P3" ], @[ @2, @"US West", @2, @"P1" ], @[ @3, @"US West", @4, @"P2" ], @[ @4, @"US East", @8, @"P2" ],
+                     @[ @5, @"US East", @4, @"P3" ], @[ @6, @"EMEA Central", @2, @"P1" ], @[ @7, @"EMEA Central", @1, @"P3" ], @[ @8, @"EMEA Central", @2, @"P3" ] ];
+  for (NSArray *row in rows) {
+    [self insert:@"Sale" into:context values:@{ @"id": row[0], @"salesOrganization": organizations[row[1]], @"product": products[row[3]],
+                                                  @"amount": [NSDecimalNumber decimalNumberWithDecimal:[row[2] decimalValue]] }];
+  }
+  XCTAssertTrue([context save:&error], @"%@", error);
+  _service = [[ODataService alloc] initWithPersistentStoreCoordinator:_coordinator serviceRoot:[NSURL URLWithString:@"http://example.test/odata/"]];
+}
+
+// Recursive hierarchies (Data Aggregation sections 5.5 and 6), in the
+// spec's examples: the functions in $filter, in the store as IN; ancestors,
+// descendants and traverse in $apply.
+- (void)testRecursiveHierarchies
+{
+  for (NSString *storeType in @[ NSInMemoryStoreType, NSSQLiteStoreType ]) {
+    [self serveSalesOrganizationsInStoreOfType:storeType];
+    NSString *metadata = [self get:@"$metadata"].text;
+    XCTAssertTrue([metadata containsString:@"RecursiveHierarchy\" Qualifier=\"SalesOrgHierarchy\""], @"%@", metadata);
+    XCTAssertTrue([metadata containsString:@"<String>traverse</String>"], @"%@", metadata);
+
+    NSString *h = @"HierarchyNodes=$root/SalesOrganizations,HierarchyQualifier='SalesOrgHierarchy'";
+    NSArray *(^ids)(NSString *) = ^NSArray *(NSString *query) {
+      OISServiceResponse *r = [self get:query];
+      XCTAssertEqual(r.status, 200, @"%@ %@: %@", storeType, query, r.text);
+      return [r.json[@"value"] valueForKey:@"ID"];
+    };
+    NSArray *(^filtered)(NSString *) = ^NSArray *(NSString *condition) {
+      return ids([NSString stringWithFormat:@"SalesOrganizations?$filter=%@&$orderby=ID", condition]);
+    };
+    // Examples 47 to 49; and the rest of the functions.
+    XCTAssertEqualObjects(filtered([NSString stringWithFormat:@"Aggregation.isdescendant(%@,Node=ID,Ancestor='EMEA')", h]), @[ @"EMEA Central" ]);
+    XCTAssertEqualObjects(filtered([NSString stringWithFormat:@"Aggregation.isdescendant(%@,Node=ID,Ancestor='Sales',MaxDistance=1)", h]), (@[ @"EMEA", @"US" ]));
+    XCTAssertEqualObjects(filtered([NSString stringWithFormat:@"Aggregation.isleaf(%@,Node=ID)", h]), (@[ @"EMEA Central", @"US East", @"US West" ]));
+    XCTAssertEqualObjects(filtered([NSString stringWithFormat:@"Aggregation.isroot(%@,Node=ID)", h]), @[ @"Sales" ]);
+    XCTAssertEqualObjects(filtered([NSString stringWithFormat:@"not Org.OData.Aggregation.V1.isnode(%@,Node=ID)", h]), @[]);
+    XCTAssertEqualObjects(filtered([NSString stringWithFormat:@"Aggregation.isancestor(%@,Node=ID,Descendant='US East')", h]), (@[ @"Sales", @"US" ]));
+    XCTAssertEqualObjects(filtered([NSString stringWithFormat:@"Aggregation.isancestor(%@,Node=ID,Descendant='US East',IncludeSelf=true)", h]),
+                          (@[ @"Sales", @"US", @"US East" ]));
+    XCTAssertEqualObjects(filtered([NSString stringWithFormat:@"Aggregation.issibling(%@,Node=ID,Other='US West')", h]), @[ @"US East" ]);
+    XCTAssertEqualObjects(filtered([NSString stringWithFormat:@"Aggregation.issibling(%@,Node=ID,Other='Sales')", h]), @[]);
+    XCTAssertEqualObjects(filtered([NSString stringWithFormat:@"Aggregation.isleaf(%@,Node=ID) and startswith(ID,'US')", h]), (@[ @"US East", @"US West" ]));
+    // Example 51: of a related entity's node.
+    XCTAssertEqualObjects(ids([NSString stringWithFormat:@"Sales?$select=ID&$filter=Aggregation.isdescendant(%@,Node=SalesOrganization/ID,Ancestor='EMEA')", h]),
+                          (@[ @6, @7, @8 ]));
+    XCTAssertEqualObjects(ids([NSString stringWithFormat:@"SalesOrganizations?$filter=ID eq 'US'&$expand=Subordinates($filter=Aggregation.isleaf(%@,Node=ID);$orderby=ID)", h])
+                              .firstObject, @"US");
+
+    // Examples 53 to 56.
+    XCTAssertEqualObjects(ids(@"SalesOrganizations?$apply=ancestors($root/SalesOrganizations,SalesOrgHierarchy,ID,filter(contains(Name,'East') or contains(Name,'Central')))"),
+                          (@[ @"EMEA", @"Sales", @"US" ]));
+    XCTAssertEqualObjects(ids(@"SalesOrganizations?$apply=descendants($root/SalesOrganizations,SalesOrgHierarchy,ID,filter(Name eq 'US'),keep start)"),
+                          (@[ @"US", @"US East", @"US West" ]));
+    XCTAssertEqualObjects(ids(@"SalesOrganizations?$apply=descendants($root/SalesOrganizations,SalesOrgHierarchy,ID,filter(ID eq 'Sales'),1)"),
+                          (@[ @"EMEA", @"US" ]));
+    XCTAssertEqualObjects(ids(@"Sales?$apply=ancestors($root/SalesOrganizations,SalesOrgHierarchy,SalesOrganization/ID,"
+                               "filter(contains(SalesOrganization/Name,'East') or contains(SalesOrganization/Name,'Central')),keep start)"),
+                          (@[ @4, @5, @6, @7, @8 ]));
+    XCTAssertEqualObjects(ids(@"SalesOrganizations?$apply=descendants($root/SalesOrganizations,SalesOrgHierarchy,ID,Name eq 'US',keep start)"
+                               "/ancestors($root/SalesOrganizations,SalesOrgHierarchy,ID,contains(Name,'East'),keep start)"
+                               "/traverse($root/SalesOrganizations,SalesOrgHierarchy,ID,preorder)"),
+                          (@[ @"US", @"US East" ]));
+    // Example 57, the children in an order of our choosing; example 88's
+    // traversal of what is related to the nodes.
+    XCTAssertEqualObjects(ids(@"SalesOrganizations?$apply=traverse($root/SalesOrganizations,SalesOrgHierarchy,ID,postorder,Name desc)"),
+                          (@[ @"US West", @"US East", @"US", @"EMEA Central", @"EMEA", @"Sales" ]));
+    XCTAssertEqualObjects(ids(@"SalesOrganizations?$apply=traverse($root/SalesOrganizations,SalesOrgHierarchy,ID,preorder)"),
+                          (@[ @"Sales", @"EMEA", @"EMEA Central", @"US", @"US East", @"US West" ]));
+    XCTAssertEqualObjects(ids(@"Sales?$apply=traverse($root/SalesOrganizations,SalesOrgHierarchy,SalesOrganization/ID,preorder,Name asc)"),
+                          (@[ @6, @7, @8, @4, @5, @1, @2, @3 ]));
+    // Over grouped rows: each organization's total, in the tree's order.
+    OISServiceResponse *grouped = [self get:@"Sales?$apply=groupby((SalesOrganization/ID),aggregate(Amount with sum as Total))"
+                                             "/traverse($root/SalesOrganizations,SalesOrgHierarchy,SalesOrganization/ID,preorder)"];
+    XCTAssertEqual(grouped.status, 200, @"%@", grouped.text);
+    XCTAssertEqualObjects([grouped.json[@"value"] valueForKeyPath:@"SalesOrganization.ID"], (@[ @"EMEA Central", @"US East", @"US West" ]), @"%@", grouped.text);
+    XCTAssertEqualObjects([grouped.json[@"value"] valueForKey:@"Total"], (@[ @5, @12, @7 ]), @"%@", grouped.text);
+    grouped = [self get:@"Sales?$apply=groupby((SalesOrganization/ID),aggregate(Amount with sum as Total))"
+                         "/ancestors($root/SalesOrganizations,SalesOrgHierarchy,SalesOrganization/ID,filter(Total gt 10),keep start)"];
+    XCTAssertEqual(grouped.status, 200, @"%@", grouped.text);
+    XCTAssertEqualObjects([grouped.json[@"value"] valueForKeyPath:@"SalesOrganization.ID"], @[ @"US East" ], @"%@", grouped.text);
+
+    // Example 87 (marked ⚠): a sub-hierarchy's total, over the nodes. Over
+    // the sales, as the definition has it, no sale is US's own, so there
+    // is no start node, and no total.
+    OISServiceResponse *r = [self get:@"SalesOrganizations?$apply=descendants($root/SalesOrganizations,SalesOrgHierarchy,ID,"
+                                       "filter(Name eq 'US'),keep start)/aggregate(Sales/Amount with sum as TotalAmount)"];
+    XCTAssertEqual(r.status, 200, @"%@", r.text);
+    XCTAssertEqualObjects(r.json[@"value"][0][@"TotalAmount"], @19, @"%@", r.text);
+    r = [self get:@"Sales?$apply=descendants($root/SalesOrganizations,SalesOrgHierarchy,SalesOrganization/ID,"
+                   "filter(SalesOrganization/Name eq 'US'),keep start)/aggregate(Amount with sum as TotalAmount)"];
+    XCTAssertEqualObjects(r.json[@"value"][0][@"TotalAmount"], [NSNull null], @"%@", r.text);
+
+    // What it reads back is what it read; what it refuses.
+    NSString *text = @"descendants($root/SalesOrganizations,SalesOrgHierarchy,ID,filter(Name eq 'US'),2,keep start)"
+                     @"/traverse($root/SalesOrganizations,SalesOrgHierarchy,ID,postorder,Name desc)";
+    NSError *error = nil;
+    NSArray *transformations = [ODataApplyTransformation transformationsWithString:text error:&error];
+    XCTAssertEqualObjects([ODataApplyTransformation stringForTransformations:transformations], text, @"%@", error);
+    XCTAssertEqual(([self get:[NSString stringWithFormat:@"SalesOrganizations?$filter=Aggregation.isroot(HierarchyNodes=$root/SalesOrganizations,"
+                                                        "HierarchyQualifier='Nope',Node=ID)"]].status), 400);
+    XCTAssertEqual(([self get:[NSString stringWithFormat:@"SalesOrganizations?$filter=Aggregation.isroot(HierarchyNodes=$root/Nope,"
+                                                        "HierarchyQualifier='SalesOrgHierarchy',Node=ID)"]].status), 400);
+    XCTAssertEqual(([self get:[NSString stringWithFormat:@"SalesOrganizations?$filter=Aggregation.isdescendant(%@,Node=ID,Ancestor=Name)", h]].status), 501);
+    // Through a collection (section 6.1): a product's nodes are those of
+    // its sales; example 88, each product once per node, with it.
+    r = [self get:@"Products?$apply=traverse($root/SalesOrganizations,SalesOrgHierarchy,Sales/SalesOrganization/ID,preorder,Name asc)&$select=ID"];
+    XCTAssertEqual(r.status, 200, @"%@", r.text);
+    XCTAssertEqualObjects([r.json[@"value"] valueForKey:@"ID"], (@[ @"P1", @"P3", @"P2", @"P3", @"P1", @"P2", @"P3" ]), @"%@", r.text);
+    XCTAssertEqualObjects([r.json[@"value"] valueForKey:@"Sales"],
+                          (@[ @[ @{ @"SalesOrganization": @{ @"ID": @"EMEA Central" } } ], @[ @{ @"SalesOrganization": @{ @"ID": @"EMEA Central" } } ],
+                              @[ @{ @"SalesOrganization": @{ @"ID": @"US East" } } ], @[ @{ @"SalesOrganization": @{ @"ID": @"US East" } } ],
+                              @[ @{ @"SalesOrganization": @{ @"ID": @"US West" } } ], @[ @{ @"SalesOrganization": @{ @"ID": @"US West" } } ],
+                              @[ @{ @"SalesOrganization": @{ @"ID": @"US West" } } ] ]), @"%@", r.text);
+    XCTAssertEqualObjects(ids(@"Products?$apply=descendants($root/SalesOrganizations,SalesOrgHierarchy,Sales/SalesOrganization/ID,"
+                               "filter(Name eq 'Coffee'),keep start)&$orderby=ID"), (@[ @"P1", @"P2", @"P3" ]), @"no Pencil: no sales");
+    XCTAssertEqualObjects(ids(@"Products?$apply=ancestors($root/SalesOrganizations,SalesOrgHierarchy,Sales/SalesOrganization/ID,"
+                               "filter(Name eq 'Coffee'))"), @[], @"none sold at US or Sales");
+    XCTAssertEqual(([self get:@"SalesOrganizations?$apply=ancestors($root/SalesOrganizations,SalesOrgHierarchy,ID,groupby((Name)))"].status), 501);
+  }
+}
+
+- (void)queryFinished:(ODataQuery *)query
+{
+  _finishedQuery = query;
+}
+
+// What a fetch request cannot say, sent as it is written: a query's rows
+// as the context's objects (or as dictionaries), and a $filter of one's
+// own within a fetch.
+- (void)testClientsSendQueriesAsWritten
+{
+  [self serveSalesOrganizationsInStoreOfType:NSInMemoryStoreType];
+  ODataSchema *schema = [ODataSchema schemaWithData:[self get:@"$metadata"].data error:NULL];
+  NSManagedObjectModel *model = [ODataModelBuilder modelWithSchema:schema];
+  [ODataIncrementalStore registerStore];
+  OISRecordingTransport *transport = [[OISRecordingTransport alloc] init];
+  transport.next = _service;
+  NSPersistentStoreCoordinator *client = [[NSPersistentStoreCoordinator alloc] initWithManagedObjectModel:model];
+  NSError *error = nil;
+  XCTAssertNotNil([client addPersistentStoreWithType:[ODataIncrementalStore storeType] configuration:nil URL:[NSURL URLWithString:@"http://example.test/odata/"]
+                                             options:@{ ODataIncrementalStoreTransportOption: transport } error:&error], @"%@", error);
+  NSManagedObjectContext *context = [[NSManagedObjectContext alloc] init];
+  context.persistentStoreCoordinator = client;
+  NSString *nodeKeyPath = nil;
+  NSRelationshipDescription *parent = nil;
+  NSEntityDescription *organization = [ODataHierarchyPredicate entityOfHierarchy:@"SalesOrgHierarchy" model:model mapper:[[ODataPropertyMapper alloc] init]
+                                                                     nodeKeyPath:&nodeKeyPath parent:&parent];
+
+  // Objects, in the service's order, the context's own, what $expand
+  // brought kept.
+  NSFetchRequest *all = [NSFetchRequest fetchRequestWithEntityName:organization.name];
+  NSArray *fetched = [context executeFetchRequest:all error:&error];
+  ODataQuery *query = [ODataQuery queryOfEntity:organization.name inContext:context];
+  query.options = @{ @"$apply": @"traverse($root/SalesOrganizations,SalesOrgHierarchy,ID,preorder)", @"$expand": @"Superordinate" };
+  NSString *sent = [[[query URL:&error] absoluteString] stringByRemovingPercentEncoding];
+  XCTAssertTrue([sent hasSuffix:@"SalesOrganizations?$apply=traverse($root/SalesOrganizations,SalesOrgHierarchy,ID,preorder)&$expand=Superordinate"], @"%@", sent);
+  NSArray *tree = [query execute:&error];
+  XCTAssertEqualObjects([tree valueForKeyPath:nodeKeyPath], (@[ @"Sales", @"EMEA", @"EMEA Central", @"US", @"US East", @"US West" ]), @"%@", error);
+  NSManagedObject *us = tree[3];
+  XCTAssertTrue([fetched indexOfObjectIdenticalTo:us] != NSNotFound, @"one object per entity");
+  NSUInteger requests = transport.requests.count;
+  XCTAssertEqualObjects([[us valueForKey:parent.name] valueForKeyPath:nodeKeyPath], @"Sales");
+  XCTAssertEqual(transport.requests.count, requests, @"the expanded parent came with it");
+
+  // Dictionaries, for rows that are no objects; which objects cannot be.
+  NSEntityDescription *sale = model.entitiesByName[@"Sale"];
+  query = [ODataQuery queryOfEntity:sale.name inContext:context];
+  query.options = @{ @"$apply": @"groupby((SalesOrganization/ID),aggregate(Amount with sum as Total))"
+                                 @"/traverse($root/SalesOrganizations,SalesOrgHierarchy,SalesOrganization/ID,preorder)" };
+  query.resultType = NSDictionaryResultType;
+  NSArray *totals = [query execute:&error];
+  XCTAssertEqualObjects([totals valueForKeyPath:@"SalesOrganization.ID"], (@[ @"EMEA Central", @"US East", @"US West" ]), @"%@", error);
+  XCTAssertEqualObjects([totals valueForKey:@"Total"], (@[ @5, @12, @7 ]));
+  XCTAssertNil(totals.firstObject[@"@odata.id"], @"no annotations");
+  query.resultType = NSManagedObjectResultType;
+  XCTAssertNil([query execute:&error], @"grouped rows are no objects");
+  XCTAssertTrue([error.localizedDescription containsString:@"ask for dictionaries"], @"%@", error);
+  query.options = @{ @"$apply": @"nonsense(1)" };
+  XCTAssertNil([query execute:&error]);
+  XCTAssertNotNil(error, @"the service's refusal");
+
+  // Without waiting.
+  query = [ODataQuery queryOfEntity:organization.name inContext:context];
+  query.options = @{ @"$filter": [NSString stringWithFormat:@"Aggregation.isleaf(HierarchyNodes=$root/SalesOrganizations,"
+                                                               "HierarchyQualifier='SalesOrgHierarchy',Node=ID)"], @"$orderby": @"ID desc" };
+  [query executeWithTarget:self action:@selector(queryFinished:)];
+  NSDate *deadline = [NSDate dateWithTimeIntervalSinceNow:10];
+  while (!_finishedQuery && [deadline timeIntervalSinceNow] > 0) {
+    [[NSRunLoop currentRunLoop] runMode:NSDefaultRunLoopMode beforeDate:[NSDate dateWithTimeIntervalSinceNow:0.05]];
+  }
+  XCTAssertEqualObjects([_finishedQuery.result valueForKeyPath:nodeKeyPath], (@[ @"US West", @"US East", @"EMEA Central" ]), @"%@", _finishedQuery.error);
+
+  // A $filter of one's own in a fetch: $these, with the rest translated.
+  NSString *saleKey = nil;
+  for (NSString *name in sale.attributesByName) if ([name caseInsensitiveCompare:@"id"] == NSOrderedSame) saleKey = name;
+  NSFetchRequest *fetch = [NSFetchRequest fetchRequestWithEntityName:sale.name];
+  fetch.sortDescriptors = @[ [NSSortDescriptor sortDescriptorWithKey:saleKey ascending:YES] ];
+  fetch.predicate = [NSCompoundPredicate andPredicateWithSubpredicates:@[
+    [ODataFilterPredicate predicateWithFilter:@"Amount mul 4 ge $these/aggregate(Amount with sum)"],
+    [NSPredicate predicateWithFormat:@"%K > 2", saleKey] ]];
+  NSArray *large = [context executeFetchRequest:fetch error:&error];
+  XCTAssertEqualObjects([large valueForKey:saleKey], @[ @4 ], @"%@", error);
+  NSString *filter = [[[transport.requests.lastObject URL] query] stringByRemovingPercentEncoding];
+  XCTAssertTrue([filter containsString:@"$filter=Amount mul 4 ge $these/aggregate(Amount with sum) and ID gt 2"], @"%@", filter);
+  XCTAssertFalse([fetch.predicate evaluateWithObject:large.firstObject], @"in memory, no object answers it");
+  // The same, typed: $these as an expression, in memory too.
+  NSString *(^named)(NSEntityDescription *, NSString *) = ^NSString *(NSEntityDescription *entity, NSString *name) {
+    for (NSString *property in entity.propertiesByName) if ([property caseInsensitiveCompare:name] == NSOrderedSame) return property;
+    return nil;
+  };
+  NSString *amount = named(sale, @"amount"), *seller = named(sale, @"salesOrganization"), *orgName = named(organization, @"name");
+  NSExpression *total = [ODataTheseExpression expressionForAggregate:@"sum" keyPath:amount];
+  NSPredicate *third = [NSComparisonPredicate predicateWithLeftExpression:[NSExpression expressionWithFormat:@"%K * 4", amount]
+                                                          rightExpression:total modifier:NSDirectPredicateModifier
+                                                                     type:NSGreaterThanOrEqualToPredicateOperatorType options:0];
+  fetch.predicate = [NSCompoundPredicate andPredicateWithSubpredicates:@[ third, [NSPredicate predicateWithFormat:@"%K > 2", saleKey] ]];
+  XCTAssertEqualObjects([[context executeFetchRequest:fetch error:&error] valueForKey:saleKey], @[ @4 ], @"%@", error);
+  filter = [[[transport.requests.lastObject URL] query] stringByRemovingPercentEncoding];
+  XCTAssertTrue([filter containsString:@"ge $these/aggregate(Amount with sum)"], @"%@", filter);
+  XCTAssertTrue([third evaluateWithObject:large.firstObject], @"in memory: 8 * 4 >= 24");
+#ifdef __APPLE__
+  NSString *subtract = @"from:subtract:";
+#else
+  NSString *subtract = @"_sub";  // gnustep-base's name for Apple's from:subtract:
+#endif
+  NSExpression *lastThree = [NSExpression expressionForFunction:subtract arguments:@[ [ODataTheseExpression expressionForCount],
+                                                                                               [NSExpression expressionForConstantValue:@3] ]];
+  fetch.predicate = [NSComparisonPredicate predicateWithLeftExpression:[NSExpression expressionForKeyPath:saleKey] rightExpression:lastThree
+                                                              modifier:NSDirectPredicateModifier type:NSGreaterThanPredicateOperatorType options:0];
+  XCTAssertEqualObjects([[context executeFetchRequest:fetch error:&error] valueForKey:saleKey], (@[ @6, @7, @8 ]), @"%@", error);
+
+  // $apply's steps, typed.
+  query = [ODataQuery queryOfEntity:organization.name inContext:context];
+  [query addDescendantsInHierarchy:@"SalesOrgHierarchy" nodeKeyPath:nil of:[NSPredicate predicateWithFormat:@"%K == 'US'", orgName]
+                       maxDistance:0 keepStart:YES];
+  [query addTraversalOfHierarchy:@"SalesOrgHierarchy" nodeKeyPath:nil postorder:NO
+                 sortDescriptors:@[ [NSSortDescriptor sortDescriptorWithKey:orgName ascending:NO] ]];
+  sent = [[[query URL:&error] absoluteString] stringByRemovingPercentEncoding];
+  XCTAssertTrue([sent hasSuffix:@"$apply=descendants($root/SalesOrganizations,SalesOrgHierarchy,ID,filter(Name eq 'US'),keep start)"
+                                 @"/traverse($root/SalesOrganizations,SalesOrgHierarchy,ID,preorder,Name desc)"], @"%@ %@", sent, error);
+  XCTAssertEqualObjects([[query execute:&error] valueForKeyPath:nodeKeyPath], (@[ @"US", @"US West", @"US East" ]), @"%@", error);
+  query = [ODataQuery queryOfEntity:sale.name inContext:context];
+  [query addAncestorsInHierarchy:@"SalesOrgHierarchy" nodeKeyPath:[NSString stringWithFormat:@"%@.%@", seller, nodeKeyPath]
+                              of:[NSPredicate predicateWithFormat:@"%K.%K CONTAINS 'East'", seller, orgName] maxDistance:0 keepStart:YES];
+  query.options = @{ @"$orderby": @"ID" };
+  XCTAssertEqualObjects([[query execute:&error] valueForKey:saleKey], (@[ @4, @5 ]), @"%@", error);
+  [query addTraversalOfHierarchy:@"Nope" nodeKeyPath:nil postorder:NO sortDescriptors:nil];
+  XCTAssertNil([query execute:&error], @"no such hierarchy");
+  XCTAssertTrue([error.localizedDescription containsString:@"Nope"], @"%@", error);
+
+  // A fetch request's query, typed: the store's own, to go on from.
+  NSFetchRequest *start = [NSFetchRequest fetchRequestWithEntityName:sale.name];
+  start.predicate = [NSPredicate predicateWithFormat:@"%K > 2", saleKey];
+  start.sortDescriptors = @[ [NSSortDescriptor sortDescriptorWithKey:saleKey ascending:YES] ];
+  query = [ODataQuery queryWithFetchRequest:start inContext:context error:&error];
+  XCTAssertEqualObjects(query.queryOptions.filter.description, @"ID gt 2", @"%@", error);
+  XCTAssertEqualObjects([query URL:&error], [(ODataIncrementalStore *)client.persistentStores.firstObject URLForFetchRequest:start error:NULL]);
+  ODataMutableQueryOptions *more = [query.queryOptions mutableCopy];
+  more.filter = [ODataExpression binary:@"and" left:more.filter
+                                   right:[ODataExpression binary:@"ge" left:[ODataExpression binary:@"mul" left:[ODataExpression member:@"Amount" of:nil]
+                                                                                              right:[ODataExpression literalWithValue:@4]]
+                                                            right:[ODataExpression aggregateOf:[ODataExpression variable:@"$these"] text:@"Amount with sum"]]];
+  query.queryOptions = more;
+  XCTAssertEqualObjects([[query execute:&error] valueForKey:saleKey], @[ @4 ], @"%@", error);
+  XCTAssertEqualObjects(query.options[@"$filter"], @"ID gt 2 and Amount mul 4 ge $these/aggregate(Amount with sum)");
+  XCTAssertNil([ODataQuery queryWithFetchRequest:[NSFetchRequest fetchRequestWithEntityName:@"Nope"] inContext:context error:&error]);
+  query.options = @{ @"$filter": @"ID eq (" };
+  XCTAssertNil([query execute:&error], @"options that are no OData");
+  XCTAssertNotNil(error);
+
+  NSData *archived = [NSKeyedArchiver archivedDataWithRootObject:[ODataFilterPredicate predicateWithFilter:@"ID eq 1"] requiringSecureCoding:YES error:NULL];
+  XCTAssertEqualObjects([NSKeyedUnarchiver unarchivedObjectOfClass:[ODataFilterPredicate class] fromData:archived error:NULL],
+                        [ODataFilterPredicate predicateWithFilter:@"ID eq 1"]);
+}
+
+// A client asks where nodes are in a hierarchy, with a model from
+// $metadata: in $filter, at the service; and in memory, alike.
+- (void)testClientsAskHierarchies
+{
+  [self serveSalesOrganizationsInStoreOfType:NSInMemoryStoreType];
+  ODataSchema *schema = [ODataSchema schemaWithData:[self get:@"$metadata"].data error:NULL];
+  NSManagedObjectModel *model = [ODataModelBuilder modelWithSchema:schema];
+  NSString *nodeKeyPath = nil;
+  NSRelationshipDescription *parent = nil;
+  NSEntityDescription *organization = [ODataHierarchyPredicate entityOfHierarchy:@"SalesOrgHierarchy" model:model mapper:[[ODataPropertyMapper alloc] init]
+                                                                     nodeKeyPath:&nodeKeyPath parent:&parent];
+  XCTAssertEqualObjects(organization.name, @"SalesOrganization");
+  XCTAssertNotNil(parent);
+  [ODataIncrementalStore registerStore];
+  OISRecordingTransport *transport = [[OISRecordingTransport alloc] init];
+  transport.next = _service;
+  NSPersistentStoreCoordinator *client = [[NSPersistentStoreCoordinator alloc] initWithManagedObjectModel:model];
+  NSError *error = nil;
+  XCTAssertNotNil([client addPersistentStoreWithType:[ODataIncrementalStore storeType] configuration:nil URL:[NSURL URLWithString:@"http://example.test/odata/"]
+                                             options:@{ ODataIncrementalStoreTransportOption: transport } error:&error], @"%@", error);
+  NSManagedObjectContext *context = [[NSManagedObjectContext alloc] init];
+  context.persistentStoreCoordinator = client;
+
+  NSFetchRequest *all = [NSFetchRequest fetchRequestWithEntityName:organization.name];
+  all.sortDescriptors = @[ [NSSortDescriptor sortDescriptorWithKey:nodeKeyPath ascending:YES] ];
+  NSArray *everyone = [context executeFetchRequest:all error:&error];
+  XCTAssertEqual(everyone.count, 6u, @"%@", error);
+  NSArray *tests = @[
+    [ODataHierarchyPredicate predicateWithTest:ODataHierarchyIsDescendant hierarchy:@"SalesOrgHierarchy" node:@"EMEA"],
+    [ODataHierarchyPredicate predicateWithTest:ODataHierarchyIsDescendant hierarchy:@"SalesOrgHierarchy" node:@"Sales" nodeKeyPath:nil maxDistance:1 includeSelf:YES],
+    [ODataHierarchyPredicate predicateWithTest:ODataHierarchyIsAncestor hierarchy:@"SalesOrgHierarchy" node:@"US East"],
+    [ODataHierarchyPredicate predicateWithTest:ODataHierarchyIsSibling hierarchy:@"SalesOrgHierarchy" node:@"US West"],
+    [ODataHierarchyPredicate predicateWithTest:ODataHierarchyIsRoot hierarchy:@"SalesOrgHierarchy" node:nil],
+    [ODataHierarchyPredicate predicateWithTest:ODataHierarchyIsLeaf hierarchy:@"SalesOrgHierarchy" node:nil],
+    [ODataHierarchyPredicate predicateWithTest:ODataHierarchyIsNode hierarchy:@"SalesOrgHierarchy" node:nil],
+  ];
+  NSArray *expected = @[ @[ @"EMEA Central" ], @[ @"EMEA", @"Sales", @"US" ], @[ @"Sales", @"US" ], @[ @"US East" ], @[ @"Sales" ],
+                         @[ @"EMEA Central", @"US East", @"US West" ], @[ @"EMEA", @"EMEA Central", @"Sales", @"US", @"US East", @"US West" ] ];
+  for (NSUInteger i = 0; i < tests.count; i++) {
+    NSFetchRequest *fetch = [all copy];
+    fetch.predicate = tests[i];
+    NSArray *rows = [context executeFetchRequest:fetch error:&error];
+    XCTAssertEqualObjects([rows valueForKeyPath:nodeKeyPath], expected[i], @"%@: %@", tests[i], error);
+    NSString *query = [[[transport.requests.lastObject URL] query] stringByRemovingPercentEncoding] ?: @"";
+    XCTAssertTrue([query containsString:[@"$filter=Org.OData.Aggregation.V1." stringByAppendingString:[tests[i] functionName]]], @"%@", query);
+    XCTAssertEqualObjects([[everyone filteredArrayUsingPredicate:tests[i]] valueForKeyPath:nodeKeyPath], expected[i], @"in memory: %@", tests[i]);
+  }
+  // With more of a predicate; of a related node.
+  NSFetchRequest *fetch = [all copy];
+  fetch.predicate = [NSCompoundPredicate andPredicateWithSubpredicates:@[ tests[5], [NSPredicate predicateWithFormat:@"%K BEGINSWITH 'US'", nodeKeyPath] ]];
+  XCTAssertEqualObjects([[context executeFetchRequest:fetch error:&error] valueForKeyPath:nodeKeyPath], (@[ @"US East", @"US West" ]), @"%@", error);
+  NSEntityDescription *sale = model.entitiesByName[@"Sale"];
+  NSString *seller = nil;
+  for (NSRelationshipDescription *relationship in sale.relationshipsByName.allValues) {
+    if (relationship.destinationEntity == organization) seller = relationship.name;
+  }
+  NSString *saleKey = nil;
+  for (NSString *name in sale.attributesByName) if ([name caseInsensitiveCompare:@"id"] == NSOrderedSame) saleKey = name;
+  fetch = [NSFetchRequest fetchRequestWithEntityName:sale.name];
+  fetch.sortDescriptors = @[ [NSSortDescriptor sortDescriptorWithKey:saleKey ascending:YES] ];
+  fetch.predicate = [ODataHierarchyPredicate predicateWithTest:ODataHierarchyIsDescendant hierarchy:@"SalesOrgHierarchy" node:@"EMEA"
+                                                   nodeKeyPath:[NSString stringWithFormat:@"%@.%@", seller, nodeKeyPath] maxDistance:0 includeSelf:NO];
+  NSArray *sales = [context executeFetchRequest:fetch error:&error];
+  XCTAssertEqualObjects([sales valueForKey:saleKey], (@[ @6, @7, @8 ]), @"%@", error);
+  NSFetchRequest *allSales = [NSFetchRequest fetchRequestWithEntityName:sale.name];
+  XCTAssertEqual([[[context executeFetchRequest:allSales error:NULL] filteredArrayUsingPredicate:fetch.predicate] count], 3u, @"in memory");
+
+  // Where it cannot be asked.
+  fetch = [NSFetchRequest fetchRequestWithEntityName:sale.name];
+  fetch.predicate = [ODataHierarchyPredicate predicateWithTest:ODataHierarchyIsRoot hierarchy:@"SalesOrgHierarchy" node:nil];
+  XCTAssertNil([context executeFetchRequest:fetch error:&error], @"a sale is no node");
+  fetch.predicate = [ODataHierarchyPredicate predicateWithTest:ODataHierarchyIsRoot hierarchy:@"Nope" node:nil];
+  XCTAssertNil([context executeFetchRequest:fetch error:&error], @"no such hierarchy");
+  NSError *archiving = nil, *unarchiving = nil;
+  NSData *archived = [NSKeyedArchiver archivedDataWithRootObject:tests[1] requiringSecureCoding:YES error:&archiving];
+  id unarchived = [NSKeyedUnarchiver unarchivedObjectOfClass:[ODataHierarchyPredicate class] fromData:archived error:&unarchiving];
+  XCTAssertEqualObjects(unarchived, tests[1], @"%lu bytes (%@), %@ (%@)", (unsigned long)archived.length, archiving, unarchived, unarchiving);
+  ODataTemporalPredicate *at = [ODataTemporalPredicate predicateFrom:[NSDate dateWithTimeIntervalSince1970:0] toInclusive:[NSDate dateWithTimeIntervalSince1970:86400]];
+  archived = [NSKeyedArchiver archivedDataWithRootObject:at requiringSecureCoding:YES error:NULL];
+  XCTAssertEqualObjects([NSKeyedUnarchiver unarchivedObjectOfClass:[ODataTemporalPredicate class] fromData:archived error:&unarchiving], at, @"%@", unarchiving);
+}
+
+// Aggregates as values (Data Aggregation section 3.6): of the current
+// collection ($these), and of a collection-valued path.
+- (void)testAggregatesInExpressions
+{
+  // Prices 18, 19, 10, 22, 21.35: the whole is 90.35.
+  OISServiceResponse *r = [self get:@"Products?$filter=UnitPrice mul 4.2 ge $these/aggregate(UnitPrice with sum)&$select=ProductName"];
+  XCTAssertEqual(r.status, 200, @"%@", r.text);
+  XCTAssertEqualObjects([r.json[@"value"] valueForKey:@"ProductName"], (@[ @"Chef Anton's Cajun Seasoning" ]), @"%@", r.text);
+  r = [self get:@"Products?$filter=UnitPrice gt $these/aggregate(UnitPrice with average)&$select=ProductName"];
+  XCTAssertEqualObjects([r.json[@"value"] valueForKey:@"ProductName"], (@[ @"Chang", @"Chef Anton's Cajun Seasoning", @"Chef Anton's Gumbo Mix" ]), @"%@", r.text);
+  r = [self get:@"Products?$compute=UnitPrice div $these/aggregate(UnitPrice with max) as Share&$select=ProductName,Share&$orderby=ProductID"];
+  XCTAssertEqual(r.status, 200, @"%@", r.text);
+  XCTAssertEqualWithAccuracy([r.json[@"value"][2][@"Share"] doubleValue], 10.0 / 22.0, 0.0001, @"%@", r.text);
+
+  // In $apply: the input of the transformation.
+  r = [self get:@"Products?$apply=filter(Discontinued eq false)/filter(UnitPrice lt $these/aggregate(UnitPrice with average))&$select=ProductName"];
+  XCTAssertEqual(r.status, 200, @"%@", r.text);
+  XCTAssertEqualObjects([r.json[@"value"] valueForKey:@"ProductName"], (@[ @"Aniseed Syrup" ]), @"%@", r.text);
+  r = [self get:@"Products?$apply=topcount($these/$count div 2,UnitPrice)&$select=ProductName"];
+  XCTAssertEqual(r.status, 200, @"%@", r.text);
+  XCTAssertEqualObjects([r.json[@"value"] valueForKey:@"ProductName"], (@[ @"Chef Anton's Cajun Seasoning", @"Chef Anton's Gumbo Mix" ]), @"%@", r.text);
+  r = [self get:@"Products?$apply=groupby((Category/CategoryName),aggregate(UnitPrice with sum as Total))"
+                 "/compute(Total div $these/aggregate(Total with sum) as Share)&$orderby=Category/CategoryName"];
+  XCTAssertEqual(r.status, 200, @"%@", r.text);
+  XCTAssertEqualWithAccuracy([r.json[@"value"][0][@"Share"] doubleValue], 37.0 / 90.35, 0.0001, @"%@", r.text);
+
+  // In an expansion: each category's own products (Beverages average
+  // 18.5, Condiments 17.78).
+  r = [self get:@"Categories?$expand=Products($filter=UnitPrice gt $these/aggregate(UnitPrice with average);$select=ProductName;$orderby=ProductName)"
+                 "&$select=CategoryName&$orderby=CategoryName"];
+  XCTAssertEqual(r.status, 200, @"%@", r.text);
+  XCTAssertEqualObjects([r.json[@"value"] valueForKeyPath:@"Products.ProductName"],
+                        (@[ @[ @"Chang" ], @[ @"Chef Anton's Cajun Seasoning", @"Chef Anton's Gumbo Mix" ] ]), @"%@", r.text);
+  r = [self get:@"Categories?$expand=Products($orderby=UnitPrice sub $these/aggregate(UnitPrice with max);$select=ProductName;$top=1)&$orderby=CategoryName"];
+  XCTAssertEqualObjects([r.json[@"value"] valueForKeyPath:@"Products.ProductName"], (@[ @[ @"Chai" ], @[ @"Aniseed Syrup" ] ]), @"%@", r.text);
+
+  // In $orderby: of what the $filter leaves.
+  r = [self get:@"Products?$filter=UnitPrice gt 15&$orderby=UnitPrice sub $these/aggregate(UnitPrice with min) desc&$select=ProductName&$top=2"];
+  XCTAssertEqual(r.status, 200, @"%@", r.text);
+  XCTAssertEqualObjects([r.json[@"value"] valueForKey:@"ProductName"], (@[ @"Chef Anton's Cajun Seasoning", @"Chef Anton's Gumbo Mix" ]), @"%@", r.text);
+  r = [self get:@"Products?$apply=orderby(UnitPrice sub $these/aggregate(UnitPrice with average) desc)/top(1)&$select=ProductName"];
+  XCTAssertEqualObjects([r.json[@"value"] valueForKey:@"ProductName"], @[ @"Chef Anton's Cajun Seasoning" ], @"%@", r.text);
+
+  // After $apply: of what it made (18, 19, 22, 21.35: the least is 18).
+  r = [self get:@"Products?$apply=filter(UnitPrice gt 15)&$filter=UnitPrice gt $these/aggregate(UnitPrice with min)&$select=ProductName&$orderby=ProductID"];
+  XCTAssertEqual(r.status, 200, @"%@", r.text);
+  XCTAssertEqualObjects([r.json[@"value"] valueForKey:@"ProductName"], (@[ @"Chang", @"Chef Anton's Cajun Seasoning", @"Chef Anton's Gumbo Mix" ]), @"%@", r.text);
+  r = [self get:@"Products?$apply=groupby((Category/CategoryName),aggregate(UnitPrice with sum as Total))"
+                 "&$filter=Total gt $these/aggregate(Total with average)"];
+  XCTAssertEqualObjects([r.json[@"value"] valueForKeyPath:@"Category.CategoryName"], @[ @"Condiments" ], @"%@", r.text);
+  r = [self get:@"Products?$apply=groupby((Category/CategoryName),aggregate(UnitPrice with sum as Total))"
+                 "&$orderby=Total sub $these/aggregate(Total with min) desc"];
+  XCTAssertEqual(r.status, 200, @"%@", r.text);
+  XCTAssertEqualObjects([r.json[@"value"] valueForKeyPath:@"Category.CategoryName"], (@[ @"Condiments", @"Beverages" ]), @"%@", r.text);
+
+  // Of a navigation: in the store, as a key path's collection operator.
+  r = [self get:@"Categories?$filter=Products/aggregate(UnitPrice with sum) gt 40&$select=CategoryName"];
+  XCTAssertEqual(r.status, 200, @"%@", r.text);
+  XCTAssertEqualObjects([r.json[@"value"] valueForKey:@"CategoryName"], @[ @"Condiments" ], @"%@", r.text);
+  r = [self get:@"Categories?$filter=Products/aggregate($count) eq 2&$select=CategoryName"];
+  XCTAssertEqualObjects([r.json[@"value"] valueForKey:@"CategoryName"], @[ @"Beverages" ], @"%@", r.text);
+  r = [self get:@"Categories?$compute=Products/aggregate(UnitPrice with max) as Top&$select=CategoryName,Top&$orderby=CategoryName"];
+  XCTAssertEqual(r.status, 200, @"%@", r.text);
+  XCTAssertEqualWithAccuracy([r.json[@"value"][0][@"Top"] doubleValue], 19.0, 0.001, @"%@", r.text);
+
+  // What it reads back is what it read; what it cannot do.
+  NSError *error = nil;
+  ODataExpression *e = [ODataExpression expressionWithString:@"Sales/aggregate(Amount mul $it/TaxRate with sum) gt $these/aggregate(Amount with sum)" error:&error];
+  XCTAssertEqualObjects(e.description, @"Sales/aggregate(Amount mul $it/TaxRate with sum) gt $these/aggregate(Amount with sum)", @"%@", error);
+  XCTAssertEqual([e aggregatesOfThese].count, 1u);
+  XCTAssertEqual([self get:@"Categories?$filter=Products/aggregate(ProductName with sum) gt 1"].status, 400, @"not a number");
+  XCTAssertEqual([self get:@"Categories?$filter=Products/aggregate(UnitPrice mul 2 with sum) gt 1"].status, 501);
+  XCTAssertEqual([self get:@"Products?$filter=UnitPrice gt $these/aggregate(Nothing with sum)"].status, 400);
+  XCTAssertEqual([self get:@"Categories?$apply=groupby((Products/ProductName))"].status, 400, @"CS04 groups by single-valued paths");
+
+  // SQLite (Apple's store) cannot compute with a collection's aggregate:
+  // what it refuses is refused, not raised.
+  [self serveModel:_coordinator.managedObjectModel storeType:NSSQLiteStoreType];
+  r = [self get:@"Categories?$filter=Products/aggregate(UnitPrice with sum) gt 40&$select=CategoryName"];
+  XCTAssertEqualObjects([r.json[@"value"] valueForKey:@"CategoryName"], @[ @"Condiments" ], @"%@", r.text);
+  r = [self get:@"Categories?$filter=Products/$count mul 20 gt 50"];
+#ifdef __APPLE__
+  XCTAssertEqual(r.status, 501, @"%@", r.text);
+  XCTAssertTrue([r.text containsString:@"The store cannot evaluate this"], @"%@", r.text);
+#else
+  // FreeCoreData's SQLite store evaluates it.
+  XCTAssertEqualObjects([r.json[@"value"] valueForKey:@"CategoryName"], @[ @"Condiments" ], @"%@", r.text);
+#endif
+}
+
+- (void)testJoin
+{
+  OISServiceResponse *r = [self get:@"Categories?$apply=join(Products as P)&$select=CategoryName&$expand=P($select=ProductName)"];
+  XCTAssertEqual(r.status, 200, @"%@", r.text);
+  NSArray *rows = r.json[@"value"];
+  XCTAssertEqualObjects([rows valueForKey:@"CategoryName"], (@[ @"Beverages", @"Beverages", @"Condiments", @"Condiments", @"Condiments" ]), @"%@", r.text);
+  XCTAssertEqualObjects([rows valueForKeyPath:@"P.ProductName"],
+                        (@[ @"Chai", @"Chang", @"Aniseed Syrup", @"Chef Anton's Cajun Seasoning", @"Chef Anton's Gumbo Mix" ]), @"%@", r.text);
+  XCTAssertNil([self get:@"Categories?$apply=join(Products as P)"].json[@"value"][0][@"P"], @"only where $expand names it");
+
+  // outerjoin keeps the rows with nothing related, with null.
+  r = [self get:@"Products?$apply=outerjoin(Stocks as S)&$select=ProductName&$expand=S($select=Quantity)&$orderby=ProductID"];
+  XCTAssertEqual(r.status, 200, @"%@", r.text);
+  rows = r.json[@"value"];
+  XCTAssertEqual(rows.count, 5u, @"%@", r.text);
+  XCTAssertEqualObjects(rows.firstObject[@"S"][@"Quantity"], @40, @"%@", r.text);
+  XCTAssertEqualObjects(rows.lastObject[@"S"], [NSNull null], @"%@", r.text);
+  XCTAssertEqual([[self get:@"Products?$apply=join(Stocks as S)"].json[@"value"] count], 1u, @"join leaves them out");
+
+  // Grouped and aggregated through the alias.
+  r = [self get:@"Categories?$apply=join(Products as P)/groupby((CategoryName),aggregate(P/UnitPrice with sum as T,$count as N))&$orderby=CategoryName"];
+  XCTAssertEqual(r.status, 200, @"%@", r.text);
+  rows = r.json[@"value"];
+  XCTAssertEqualWithAccuracy([rows.lastObject[@"T"] doubleValue], 53.35, 0.001, @"%@", r.text);
+  XCTAssertEqualObjects([rows valueForKey:@"N"], (@[ @2, @3 ]), @"%@", r.text);
+  r = [self get:@"Categories?$apply=join(Products as P)/groupby((P/Discontinued),aggregate($count as N))&$orderby=P/Discontinued"];
+  XCTAssertEqual(r.status, 200, @"%@", r.text);
+  XCTAssertEqualObjects([r.json[@"value"] valueForKeyPath:@"P.Discontinued"], (@[ @NO, @YES ]), @"%@", r.text);
+
+  // The join's own transformations, on each collection; a filter through the alias.
+  r = [self get:@"Suppliers?$apply=join(Products as P,filter(UnitPrice gt 20))/groupby((CompanyName),aggregate($count as N))"];
+  XCTAssertEqual(r.status, 200, @"%@", r.text);
+  XCTAssertEqualObjects([r.json[@"value"] valueForKey:@"CompanyName"], @[ @"New Orleans Cajun Delights" ], @"%@", r.text);
+  XCTAssertEqualObjects([r.json[@"value"] valueForKey:@"N"], @[ @2 ], @"%@", r.text);
+  r = [self get:@"Categories?$apply=join(Products as P)/filter(P/UnitPrice gt 20)&$select=CategoryName"];
+  XCTAssertEqualObjects([r.json[@"value"] valueForKey:@"CategoryName"], (@[ @"Condiments", @"Condiments" ]), @"%@", r.text);
+
+  // What cannot be joined; what it writes back is what it read.
+  XCTAssertEqual([self get:@"Categories?$apply=join(CategoryName as X)"].status, 400);
+  XCTAssertEqual([self get:@"Categories?$apply=join(Products as CategoryName)"].status, 400, @"an alias the rows have");
+  NSString *text = @"outerjoin(Products as P,filter(UnitPrice gt 20)/orderby(UnitPrice desc))";
+  NSArray *read = [ODataApplyTransformation transformationsWithString:text error:NULL];
+  XCTAssertEqualObjects([ODataApplyTransformation stringForTransformations:read], text);
+}
+
 #pragma mark Limits
 
 // What one request may ask of the service, and what a failure tells.
@@ -3391,11 +4383,16 @@ static NSString *OISHTTPDate(NSDate *date)
   XCTAssertEqual([self historyOf:@"D15"].count, 4u);
   XCTAssertTrue(guard.inserts > 0 && guard.updates > 0, @"%ld inserts, %ld updates", (long)guard.inserts, (long)guard.updates);
 
-  // One that answers later cannot take part in an action answered at once.
-  [_service setHandler:[[OISLaterWrites alloc] initWithEntity:entity] forEntitySet:@"Departments"];
-  XCTAssertEqual(([self send:@"POST" path:@"Departments/Temporal.Update" headers:nil body:@{
-    @"deltaTimeslices": @[ @{ @"Timeslice": @{ @"Department": @"D15", @"From": @"2015-06-01", @"Budget": @1 } } ] }].status), 501);
-  XCTAssertEqual([self historyOf:@"D15"].count, 4u);
+  // One that answers later: the action waits for each of its writes, and
+  // makes each once.
+  OISLaterWrites *later = [[OISLaterWrites alloc] initWithEntity:entity];
+  [_service setHandler:later forEntitySet:@"Departments"];
+  r = [self send:@"POST" path:@"Departments/Temporal.Update" headers:nil body:@{
+    @"deltaTimeslices": @[ @{ @"Timeslice": @{ @"Department": @"D15", @"From": @"2015-06-01", @"Budget": @1 } } ] }];
+  XCTAssertEqual(r.status, 200, @"%@", r.text);
+  XCTAssertEqual(later.inserts, 1, @"the slice split");
+  XCTAssertEqual(later.updates, 2, @"the slice it split from, and the one after");
+  XCTAssertEqual([self historyOf:@"D15"].count, 5u);
 }
 
 // Delete takes a period away, splitting a slice around it; Upsert fills a
@@ -3576,7 +4573,7 @@ static NSDate *OISDay(NSString *day)
     XCTAssertEqualWithAccuracy([rows.firstObject[@"twice"] doubleValue], 36.0, 0.001, @"%@: %@", version, rows);
     XCTAssertEqualWithAccuracy([rows.lastObject[@"twice"] doubleValue], 38.0, 0.001, @"%@: %@", version, rows);
     NSString *sent = [[transport.requests.lastObject URL].absoluteString stringByRemovingPercentEncoding];
-    BOOL computed = [sent containsString:@"$compute=(UnitPrice mul 2) as twice"];
+    BOOL computed = [sent containsString:@"$compute=UnitPrice mul 2 as twice"];
     XCTAssertEqual(computed, [version isEqualToString:@"4.01"], @"%@: %@", version, sent);
   }
 }
@@ -3826,6 +4823,25 @@ static NSDate *OISDay(NSString *day)
   NSManagedObjectContext *context = [[NSManagedObjectContext alloc] init];
   context.persistentStoreCoordinator = _coordinator;
   return context;
+}
+
+// A handler's own changes, with no persistent history: its tokens in the
+// delta links, its changes in the deltas.
+- (void)testDeltaLinksFromTheHandler
+{
+  [_service setHandler:[[OISFeedProducts alloc] initWithEntity:OISCatalogEntity(@"Product")] forEntitySet:@"Products"];
+  XCTAssertTrue([[self get:@"$metadata"].text containsString:@"ChangeTracking"]);
+  OISServiceResponse *read = [self send:@"GET" path:@"Products?$select=ProductName" headers:@{ @"Prefer": @"odata.track-changes" } body:nil];
+  XCTAssertEqual(read.status, 200, @"%@", read.text);
+  NSString *link = read.json[@"@odata.deltaLink"];
+  XCTAssertTrue([link containsString:@"$deltatoken=feed-1"], @"%@", read.text);
+  OISServiceResponse *delta = [self get:[self pathOfLink:link]];
+  XCTAssertEqual(delta.status, 200, @"%@", delta.text);
+  NSArray *values = delta.json[@"value"];
+  XCTAssertEqualObjects([[values subarrayWithRange:NSMakeRange(0, 2)] valueForKey:@"ProductName"], (@[ @"Chai", @"Chang" ]), @"%@", delta.text);
+  XCTAssertEqualObjects(values.lastObject[@"@odata.id"], @"Products(99)", @"%@", delta.text);
+  XCTAssertTrue([delta.json[@"@odata.deltaLink"] containsString:@"$deltatoken=feed-2"], @"%@", delta.text);
+  XCTAssertEqual([self get:@"Products?$deltatoken=other"].status, 400, @"the handler's own refusal");
 }
 
 // Part 1 section 11.3: Prefer: odata.track-changes gives the read a delta
@@ -4159,11 +5175,12 @@ static NSDate *OISDay(NSString *day)
                         @"filter alone: entities");
 
   XCTAssertEqual([self get:@"Products?$apply=nest(groupby((Category/CategoryName)) as Grouped)"].status, 501);
-  XCTAssertEqual([self get:@"Products?$apply=aggregate(UnitPrice with Custom.concat as X)"].status, 501);
+  XCTAssertEqual([self get:@"Products?$apply=aggregate(UnitPrice with Custom.concat as X)"].status, 400, @"a method the set does not have");
   XCTAssertEqual([self get:@"Products?$apply=aggregate(UnitPrice sum)"].status, 400);
   XCTAssertEqual([self get:@"Products?$apply=groupby((Nothing))"].status, 400);
   ODataSchema *schema = [ODataSchema schemaWithData:[self get:@"$metadata"].data error:NULL];
-  XCTAssertNotNil([schema annotation:@"Org.OData.Aggregation.V1.ApplySupported" forTarget:schema.containerName]);
+  XCTAssertNotNil([schema annotation:@"Org.OData.Aggregation.V1.ApplySupportedDefaults" forTarget:schema.containerName]);
+  XCTAssertNotNil([schema capability:@"Org.OData.Aggregation.V1.ApplySupported" forEntitySet:@"Products"], @"each set says it");
 }
 
 static NSExpressionDescription *OISAggregateOf(NSString *function, NSString *keyPath, NSString *name, NSAttributeType type)
@@ -4177,6 +5194,31 @@ static NSExpressionDescription *OISAggregateOf(NSString *function, NSString *key
 
 // Grouped and aggregated dictionary fetches: by $apply where the service
 // has it, here where it does not; the same rows either way.
+// A collection operator in a client's predicate: aggregate() where the
+// service has Data Aggregation.
+- (void)testClientsAggregateNavigations
+{
+  for (NSNumber *applies in @[ @YES, @NO ]) {
+    _service.containerAnnotations = applies.boolValue ? nil : @{ @"Aggregation.ApplySupportedDefaults": [NSNull null] };
+    OISRecordingTransport *transport = [[OISRecordingTransport alloc] init];
+    transport.next = _service;
+    NSError *error = nil;
+    NSManagedObjectContext *context = [self clientOver:transport options:nil error:&error];
+    XCTAssertNotNil(context, @"%@", error);
+    NSFetchRequest *fetch = [NSFetchRequest fetchRequestWithEntityName:@"Category"];
+    fetch.predicate = [NSPredicate predicateWithFormat:@"products.@sum.unitPrice > 40"];
+    NSArray *rows = [context executeFetchRequest:fetch error:&error];
+    NSString *query = [[[transport.requests.lastObject URL] query] stringByRemovingPercentEncoding] ?: @"";
+    if (applies.boolValue) {
+      XCTAssertEqualObjects([rows valueForKey:@"name"], @[ @"Condiments" ], @"%@", error);
+      XCTAssertTrue([query containsString:@"$filter=Products/aggregate(UnitPrice with sum) gt 40"], @"%@", query);
+    } else {
+      XCTAssertNil(rows, @"no aggregate() at a service without it");
+      XCTAssertEqual(error.code, ODataIncrementalStoreErrorUnsupportedExpression, @"%@", error);
+    }
+  }
+}
+
 - (void)testClientsGroupAndAggregate
 {
   // Every transformation; groupby, aggregate and filter only; none.
@@ -4184,9 +5226,9 @@ static NSExpressionDescription *OISAggregateOf(NSString *function, NSString *key
   for (NSString *mode in modes) {
     NSNumber *applies = @(![mode isEqualToString:@"none"]);
     if ([mode isEqualToString:@"some"]) {
-      _service.containerAnnotations = @{ @"Aggregation.ApplySupported": @{ @"Transformations": @[ @"filter", @"groupby", @"aggregate" ] } };
+      _service.containerAnnotations = @{ @"Aggregation.ApplySupportedDefaults": @{ @"Transformations": @[ @"filter", @"groupby", @"aggregate" ] } };
     }
-    if ([mode isEqualToString:@"none"]) _service.containerAnnotations = @{ @"Aggregation.ApplySupported": [NSNull null] };
+    if ([mode isEqualToString:@"none"]) _service.containerAnnotations = @{ @"Aggregation.ApplySupportedDefaults": [NSNull null] };
     OISRecordingTransport *transport = [[OISRecordingTransport alloc] init];
     transport.next = _service;
     NSError *error = nil;
@@ -4228,7 +5270,7 @@ static NSExpressionDescription *OISAggregateOf(NSString *function, NSString *key
     XCTAssertEqualObjects([rows valueForKey:@"category.name"], @[ @"Beverages" ], @"%@: %@", mode, error);
     query = [[[transport.requests.lastObject URL] query] stringByRemovingPercentEncoding] ?: @"";
     BOOL everything = [mode isEqualToString:@"all"];
-    XCTAssertEqual([query containsString:@"/filter((n ge 2) and (total ne null))"], applies.boolValue, @"%@: %@", mode, query);
+    XCTAssertEqual([query containsString:@"/filter(n ge 2 and total ne null)"], applies.boolValue, @"%@: %@", mode, query);
     XCTAssertEqual([query containsString:@"/orderby(total desc)/skip(1)/top(1)"], everything, @"%@: %@", mode, query);
 
     // A having predicate the rows' filter cannot say: here, and then the
@@ -4458,10 +5500,16 @@ static NSExpressionDescription *OISAggregateOf(NSString *function, NSString *key
 
 - (void)testRestrictionsInMetadata
 {
+  // Everything allowed: no insert restrictions; what updates and deletes
+  // take (Collection/$each after $filter(...) and cast segments, a delta
+  // payload).
   NSString *allowed = [self get:@"$metadata"].text;
-  for (NSString *restriction in @[ @"InsertRestrictions", @"UpdateRestrictions", @"DeleteRestrictions" ]) {
-    XCTAssertTrue([allowed rangeOfString:restriction].location == NSNotFound, @"everything allowed");
-  }
+  XCTAssertTrue([allowed rangeOfString:@"InsertRestrictions"].location == NSNotFound, @"everything allowed");
+  ODataSchema *all = [ODataSchema schemaWithData:[allowed dataUsingEncoding:NSUTF8StringEncoding] error:NULL];
+  XCTAssertEqualObjects([all annotation:@"Capabilities.UpdateRestrictions" forTarget:@"Default.Container/Products"],
+                        (@{ @"FilterSegmentSupported": @YES, @"TypecastSegmentSupported": @YES, @"DeltaUpdateSupported": @YES }));
+  XCTAssertEqualObjects([all annotation:@"Capabilities.DeleteRestrictions" forTarget:@"Default.Container/Products"],
+                        (@{ @"FilterSegmentSupported": @YES, @"TypecastSegmentSupported": @YES }));
   ODataEntitySetHandler *locations = [[ODataEntitySetHandler alloc] initWithEntity:OISCatalogEntity(@"Location")];
   [_service setHandler:locations forEntitySet:@"Locations"];
   locations.allowsInsert = NO;
@@ -4472,7 +5520,7 @@ static NSExpressionDescription *OISAggregateOf(NSString *function, NSString *key
   XCTAssertNotNil(schema, @"still reads");
   XCTAssertEqualObjects([schema annotation:@"Capabilities.InsertRestrictions" forTarget:@"Default.Container/Locations"], @{ @"Insertable": @NO }, @"%@", xml);
   XCTAssertEqualObjects([schema annotation:@"Capabilities.DeleteRestrictions" forTarget:@"Default.Container/Locations"], @{ @"Deletable": @NO });
-  XCTAssertNil([schema annotation:@"Capabilities.UpdateRestrictions" forTarget:@"Default.Container/Locations"]);
+  XCTAssertEqualObjects([[schema annotation:@"Capabilities.UpdateRestrictions" forTarget:@"Default.Container/Locations"] objectForKey:@"FilterSegmentSupported"], @YES);
   XCTAssertEqual(([self send:@"POST" path:@"Locations" headers:nil body:@{ @"LocationName": @"Shed" }].status), 405);
 }
 

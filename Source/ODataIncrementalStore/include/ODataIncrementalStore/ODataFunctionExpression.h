@@ -58,4 +58,31 @@ NS_ASSUME_NONNULL_BEGIN
 
 @end
 
+// An aggregate of the collection the predicate filters, its "current
+// collection" (Data Aggregation section 3.6): $these/aggregate(Amount with
+// sum), or $these/$count. A value like any other in a comparison or in
+// arithmetic, at a service that has Data Aggregation:
+//
+//   // Sales?$filter=Amount mul 3 ge $these/aggregate(Amount with sum)
+//   NSExpression *total = [ODataTheseExpression expressionForAggregate:@"sum" keyPath:@"amount"];
+//   fetch.predicate = [NSComparisonPredicate predicateWithLeftExpression:[NSExpression expressionWithFormat:@"amount * 3"]
+//                                                        rightExpression:total modifier:NSDirectPredicateModifier
+//                                                                   type:NSGreaterThanOrEqualToPredicateOperatorType options:0];
+//
+// The collection is the entity's set, as the caller may see it, before the
+// rest of the $filter. The aggregate is sum, average, min, max or
+// countdistinct, of a key path through to-one relationships to an
+// attribute. Evaluated in memory, it reads the entity's objects in the
+// evaluated object's context and aggregates them.
+@interface ODataTheseExpression : NSExpression <NSSecureCoding>
+
++ (instancetype)expressionForAggregate:(NSString *)method keyPath:(NSString *)keyPath;
++ (instancetype)expressionForCount;
+
+// nil for $count.
+@property (nonatomic, readonly, copy, nullable) NSString *method;
+@property (nonatomic, readonly, copy, nullable) NSString *aggregatedKeyPath;
+
+@end
+
 NS_ASSUME_NONNULL_END

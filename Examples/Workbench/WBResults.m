@@ -11,6 +11,7 @@
   NSFetchRequest *_paged;
   NSUInteger _nextOffset;
   NSUInteger _remaining;
+  BOOL _verbatim;  // an ODataQuery's rows, all at once
 }
 
 - (instancetype)initWithConnection:(WBConnection *)connection
@@ -35,10 +36,43 @@
 
 - (void)clear
 {
+  _verbatim = NO;
   _rows = @[];
   _paged = nil;
   _hasMore = NO;
   _total = nil;
+}
+
+static void WBFlatten(NSDictionary *json, NSString *prefix, NSMutableDictionary *into)
+{
+  for (NSString *key in json) {
+    NSString *path = prefix ? [NSString stringWithFormat:@"%@/%@", prefix, key] : key;
+    id value = json[key];
+    if ([value isKindOfClass:[NSDictionary class]]) WBFlatten(value, path, into);
+    else into[path] = value;
+  }
+}
+
+- (BOOL)runQuery:(ODataQuery *)query
+{
+  [self clear];
+  _verbatim = YES;
+  NSError *error = nil;
+  NSArray *rows = [query execute:&error];
+  _lastError = rows ? nil : ([error.localizedDescription copy] ?: @"The query failed.");
+  NSMutableArray *flat = [NSMutableArray array];
+  for (id row in rows ?: @[]) {
+    if (![row isKindOfClass:[NSDictionary class]]) {
+      [flat addObject:row];
+      continue;
+    }
+    NSMutableDictionary *one = [NSMutableDictionary dictionary];
+    WBFlatten(row, nil, one);
+    [flat addObject:one];
+  }
+  _rows = flat;
+  _total = rows ? @(rows.count) : nil;
+  return rows != nil;
 }
 
 - (BOOL)fetch:(NSFetchRequest *)request pageSize:(NSUInteger)pageSize
@@ -106,7 +140,7 @@
 - (NSString *)statusFor:(NSString *)entityName
 {
   if (_lastError) return _lastError;
-  if (!_paged) return [NSString stringWithFormat:@"count = %@", _rows.firstObject];
+  if (!_paged && !_verbatim) return [NSString stringWithFormat:@"count = %@", _rows.firstObject];
   NSString *shown = _total ? [NSString stringWithFormat:@"%lu of %@", (unsigned long)_rows.count, _total]
                            : [NSString stringWithFormat:@"%lu", (unsigned long)_rows.count];
   return [NSString stringWithFormat:@"%@ %@%@", shown, entityName, _hasMore ? @" — scroll for more" : @""];

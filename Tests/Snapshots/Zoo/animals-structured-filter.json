@@ -6,7 +6,7 @@
     "path": "Animals",
     "query": {
       "$select": "Born,Diet,Features,Home,Id,Name,Nicknames,PastHomes,Zoo.Lion/MaxRoar",
-      "$filter": "(Home/Zone eq 'Pride Rock') and (Nicknames/any(x0:x0 eq 'King')) and (PastHomes/any(x0:x0/Opened lt 2018-06-01))",
+      "$filter": "Home/Zone eq 'Pride Rock' and Nicknames/any(x0:x0 eq 'King') and PastHomes/any(x0:x0/Opened lt 2018-06-01)",
       "$expand": "Keeper($select=Code)"
     }
   },

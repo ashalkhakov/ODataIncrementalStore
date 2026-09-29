@@ -38,7 +38,7 @@ NSArray *products = [context executeFetchRequest:request error:&error];
 ```
 
 ```
-GET Products?$filter=(UnitPrice gt 20) and (Discontinued eq false)
+GET Products?$filter=UnitPrice gt 20 and Discontinued eq false
            &$orderby=ProductName,ProductID
            &$top=25
            &$expand=Category
@@ -107,6 +107,27 @@ with a merge policy settles it and saves again by itself:
 context.mergePolicy = NSMergeByPropertyObjectTrumpMergePolicy;   // my changes win, property by property
 ```
 
+**Batch updates and deletes** are Core Data's own requests, sent as 4.01's
+collection writes: one request for every row a predicate picks, which the
+service plans as one write, all or nothing.
+
+```objc
+NSBatchUpdateRequest *update = [NSBatchUpdateRequest batchUpdateRequestWithEntityName:@"Product"];
+update.predicate = [NSPredicate predicateWithFormat:@"unitPrice > 20"];
+update.propertiesToUpdate = @{ @"discontinued": @YES };
+update.resultType = NSUpdatedObjectIDsResultType;
+NSBatchUpdateResult *result = [context executeRequest:update error:&error];
+// PATCH Products/$filter(@f)/$each?@f=UnitPrice gt 20   {"Discontinued": true}
+[NSManagedObjectContext mergeChangesFromRemoteContextSave:@{ NSUpdatedObjectsKey: result.result } intoContexts:@[ context ]];
+```
+
+`NSBatchDeleteRequest` is `DELETE …/$each` likewise. A service that does
+not say it takes filter segments (`Capabilities.UpdateRestrictions` and
+`DeleteRestrictions`, `FilterSegmentSupported`), a 4.0 one, and a delete
+whose fetch has a limit, get the objects fetched and each written, in one
+change set. As with Core Data's own stores, no context is changed: merge
+the result's object IDs into those that hold the objects.
+
 ## Actions and functions
 
 A service's actions and functions are its entities' methods over the network,
@@ -146,6 +167,47 @@ once, for your own code.
   expressions is `$apply`, where the service has it, and its
   `havingPredicate`, sort, offset and limit follow the grouping there as
   `filter`, `orderby`, `skip` and `top`, as far as the service lists them.
+- **Aggregates of a relationship**: `products.@sum.unitPrice > 40` (and
+  `@avg`, `@min`, `@max`) is `Products/aggregate(UnitPrice with sum) gt 40`,
+  where the service has Data Aggregation (`Aggregation.ApplySupported`);
+  elsewhere the fetch fails, rather than reading every row to compute it.
+- **Recursive hierarchies**: `ODataHierarchyPredicate` asks where a node is
+  in a hierarchy the model declares (`Aggregation.RecursiveHierarchy`, which
+  a model from `$metadata` keeps): a node, a root, a leaf, an ancestor or a
+  descendant of another (within a distance), a sibling. Anywhere in a
+  predicate it is the Aggregation function in `$filter`; in memory it walks
+  the parent relationship.
+
+```objc
+// Sales booked anywhere below EMEA.
+fetch.predicate = [ODataHierarchyPredicate predicateWithTest:ODataHierarchyIsDescendant hierarchy:@"SalesOrgHierarchy"
+                                                        node:@"EMEA" nodeKeyPath:@"salesOrganization.id"
+                                                 maxDistance:0 includeSelf:NO];
+```
+
+- **What a fetch request cannot say**, in OData's own syntax, sent as it
+  is: `ODataQuery` reads an entity's set with query options as written
+  (`$apply=traverse(…)`, `$these`, any function the service has) and gives
+  the rows as the context's objects, one per entity, their rows and
+  expansions kept, as a fetch would; or as dictionaries, for grouped rows.
+  `ODataFilterPredicate` is a `$filter` expression of one's own inside an
+  ordinary fetch's predicate, the rest of which is translated as ever.
+  Typed, in the model's terms: `ODataTheseExpression` is `$these/aggregate(…)`
+  or `$these/$count` as a value in a predicate, and `ODataQuery`'s
+  `-addAncestorsInHierarchy:…`, `-addDescendantsInHierarchy:…`,
+  `-addTraversalOfHierarchy:…` and `-addFilter:` are `$apply` steps from
+  predicates, key paths and sort descriptors.
+
+```objc
+ODataQuery *query = [ODataQuery queryOfEntity:@"SalesOrganization" inContext:context];
+query.options = @{ @"$apply": @"traverse($root/SalesOrganizations,SalesOrgHierarchy,ID,preorder)" };
+NSArray *inTreeOrder = [query execute:&error];   // or -executeWithTarget:action:
+
+fetch.predicate = [NSCompoundPredicate andPredicateWithSubpredicates:@[
+  [ODataFilterPredicate predicateWithFilter:@"Amount mul 3 ge $these/aggregate(Amount with sum)"],
+  [NSPredicate predicateWithFormat:@"id > 2"] ]];
+```
+
 - **Computed values**: a dictionary fetch's non-aggregate expression
   descriptions (`unitPrice * 2`) are `$compute`, with a 4.01 service.
 - **Application time**: `ODataTemporalPredicate` is `$at` or `$from`/`$to`;

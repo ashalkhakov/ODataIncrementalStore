@@ -21,34 +21,11 @@ static BOOL WorkbenchLoadNib(NSString *name, id owner)
 #endif
 }
 
-// A button in a view's hierarchy, by its action.
-static NSButton *WBButtonWithAction(NSView *view, SEL action)
-{
-  for (NSView *sub in view.subviews) {
-    if ([sub isKindOfClass:[NSButton class]] && sel_isEqual(((NSButton *)sub).action, action)) return (NSButton *)sub;
-    NSButton *found = WBButtonWithAction(sub, action);
-    if (found) return found;
-  }
-  return nil;
-}
-
-static NSTextField *WBLabel(NSString *text, NSRect frame)
-{
-  NSTextField *label = [[NSTextField alloc] initWithFrame:frame];
-  label.stringValue = text;
-  label.editable = NO;
-  label.selectable = NO;
-  label.bordered = NO;
-  label.bezeled = NO;
-  label.drawsBackground = NO;
-  label.autoresizingMask = NSViewMinYMargin;
-  return label;
-}
-
 @implementation WorkbenchController {
   NSMutableDictionary *_pathItems;  // key path -> the one string the outline knows it by
   BOOL _loadingPage;
   BOOL _keepingLogSelection;  // the log's row chosen again after a reload: not shown again
+  BOOL _awake;  // the window's xib has loaded; the owner hears it again of each window of its own
 }
 
 - (instancetype)init
@@ -68,41 +45,57 @@ static NSTextField *WBLabel(NSString *text, NSRect frame)
 
 - (void)awakeFromNib
 {
+  if (_awake) return;
+  _awake = YES;
   if (self.mainMenu) [NSApp setMainMenu:self.mainMenu];
-  [self buildStoreMenu];
+  [self updateStoreMenu];
   self.tableView.dataSource = self;
   self.tableView.delegate = self;
   self.limitField.delegate = (id)self;
   self.skipField.delegate = (id)self;
   self.batchSizeField.delegate = (id)self;
   _pathItems = [NSMutableDictionary dictionary];
-  [self buildQueryPanel];
   [[NSNotificationCenter defaultCenter] addObserver:self
                                            selector:@selector(predicateChanged:)
                                                name:NSTextDidChangeNotification
                                              object:self.predicateView];
-  // What acts on the selected result, found by what it does.
-  _deleteButton = WBButtonWithAction(self.window.contentView, @selector(deleteSelected:));
-  _faultButton = WBButtonWithAction(self.window.contentView, @selector(fulfillFault:));
-  _fireButton = WBButtonWithAction(self.window.contentView, @selector(fireRelationships:));
   // Scrolled to the end: the next screenful.
   NSClipView *clip = self.tableView.enclosingScrollView.contentView;
   clip.postsBoundsChangedNotifications = YES;
   [[NSNotificationCenter defaultCenter] addObserver:self selector:@selector(resultsScrolled:)
                                                name:NSViewBoundsDidChangeNotification object:clip];
-  // The xib leaves the text views' colours to the platform, and GNUstep
-  // draws them black on black.
   _log = [NSMutableArray array];
-  [self buildLogTable];
-  for (NSTextView *view in @[ self.predicateView, self.inspectorView ]) {
-    view.drawsBackground = YES;
-    view.backgroundColor = [NSColor textBackgroundColor];
-    view.textColor = [NSColor textColor];
-    view.insertionPointColor = [NSColor textColor];
-    [self makeScrollable:view];
-  }
+  // A double click on an exchange shows it too.
+  _logTable.target = self;
+  _logTable.doubleAction = @selector(showExchange:);
+  [self keepScroller:_logTable.enclosingScrollView];
+  for (NSTextView *view in @[ self.predicateView, self.inspectorView ]) [self prepareTextView:view fixedPitch:NO];
+  [self rebuildStreams];
   [self.servicePopup selectItemAtIndex:WBServiceBuiltIn];
   [self serviceChanged:nil];
+}
+
+// The xibs leave the text views' colours to the platform, and GNUstep
+// draws them black on black; and they are the size of their scroll views
+// (below). An exchange and a plan are read in a fixed-pitch font.
+- (void)prepareTextView:(NSTextView *)view fixedPitch:(BOOL)fixedPitch
+{
+  view.drawsBackground = YES;
+  view.backgroundColor = [NSColor textBackgroundColor];
+  view.textColor = [NSColor textColor];
+  view.insertionPointColor = [NSColor textColor];
+  if (fixedPitch) view.font = [NSFont userFixedPitchFontOfSize:11];
+  [self makeScrollable:view];
+}
+
+// Off and on again: GNUstep leaves a scroller it hid, while what it holds
+// fitted, out of the view, and setting YES again does not bring it back.
+- (void)keepScroller:(NSScrollView *)scrollView
+{
+  scrollView.autohidesScrollers = NO;
+  scrollView.hasVerticalScroller = NO;
+  scrollView.hasVerticalScroller = YES;
+  [scrollView tile];
 }
 
 // The xib's text views are the size of their scroll views and stay so:
@@ -120,12 +113,7 @@ static NSTextField *WBLabel(NSString *text, NSRect frame)
   view.frame = NSMakeRect(0, 0, size.width, size.height);
   view.textContainer.containerSize = NSMakeSize(size.width, 1e7);
   view.textContainer.widthTracksTextView = YES;
-  // Off and on again: GNUstep leaves a scroller it hid, while the text
-  // fitted, out of the view, and setting YES again does not bring it back.
-  scrollView.autohidesScrollers = NO;
-  scrollView.hasVerticalScroller = NO;
-  scrollView.hasVerticalScroller = YES;
-  [scrollView tile];
+  [self keepScroller:scrollView];
 }
 
 // Text into a text view, which is resized to it (GNUstep does not do that
@@ -220,6 +208,7 @@ static NSTextField *WBLabel(NSString *text, NSRect frame)
 - (void)connectionDidConnect:(WBConnection *)connection
 {
   self.connectButton.enabled = YES;
+  _explainButton.enabled = connection.engine != nil;
   if (connection.failure) {
     self.statusField.stringValue = [NSString stringWithFormat:@"Could not connect: %@", connection.failure];
     return;
@@ -330,6 +319,11 @@ static NSTextField *WBLabel(NSString *text, NSRect frame)
   WBQuery *query = [self currentQuery];
   if (!query) return;
   NSError *error = nil;
+  if ([query isVerbatim]) {
+    NSURL *url = _connection.context ? [[query verbatimQueryInContext:_connection.context error:&error] URL:&error] : nil;
+    self.wireURLField.stringValue = url.absoluteString ?: (error.localizedDescription ?: @"");
+    return;
+  }
   NSFetchRequest *request = [query fetchRequestError:&error];
   if (!request) {
     self.wireURLField.stringValue = error.localizedDescription ?: @"bad predicate";
@@ -419,6 +413,35 @@ static NSTextField *WBLabel(NSString *text, NSRect frame)
     return;
   }
   NSError *error = nil;
+  if ([[self currentQuery] isVerbatim]) {
+    // As it is written: every row at once, the columns what they have.
+    ODataQuery *verbatim = [[self currentQuery] verbatimQueryInContext:_connection.context error:&error];
+    if (!verbatim) {
+      self.statusField.stringValue = error.localizedDescription;
+      return;
+    }
+    [self refreshTranslation];
+    [self.tableView deselectAll:nil];
+    [_results runQuery:verbatim];
+    [self rebuildColumns];
+    if ([_results.rows.firstObject isKindOfClass:[NSDictionary class]]) {
+      NSMutableArray *keys = [NSMutableArray array];
+      for (NSDictionary *row in _results.rows) {
+        for (NSString *key in [row.allKeys sortedArrayUsingSelector:@selector(compare:)]) if (![keys containsObject:key]) [keys addObject:key];
+      }
+      for (NSTableColumn *column in [self.tableView.tableColumns copy]) [self.tableView removeTableColumn:column];
+      for (NSString *key in keys) {
+        NSTableColumn *column = [[NSTableColumn alloc] initWithIdentifier:key];
+        column.title = key;
+        column.width = key.length > 6 ? 150 : 90;
+        [self.tableView addTableColumn:column];
+      }
+    }
+    [self.tableView reloadData];
+    self.statusField.stringValue = _results.lastError ?: [_results statusFor:[_query entity].name];
+    [self selectionChanged];
+    return;
+  }
   NSFetchRequest *request = [[self currentQuery] fetchRequestError:&error];
   if (!request) {
     self.statusField.stringValue = error.localizedDescription;
@@ -487,28 +510,6 @@ static NSTextField *WBLabel(NSString *text, NSRect frame)
     [_logTable selectRowIndexes:[NSIndexSet indexSetWithIndex:again] byExtendingSelection:NO];
     _keepingLogSelection = NO;
   }
-}
-
-- (void)buildLogTable
-{
-  NSScrollView *scrollView = self.logScrollView;
-  _logTable = [[NSTableView alloc] initWithFrame:NSMakeRect(0, 0, scrollView.contentSize.width, scrollView.contentSize.height)];
-  for (NSArray *spec in @[ @[ @"time", @"time", @86 ], @[ @"method", @"", @48 ], @[ @"status", @"", @32 ], @[ @"URL", @"request", @360 ] ]) {
-    NSTableColumn *column = [[NSTableColumn alloc] initWithIdentifier:spec[0]];
-    column.title = spec[1];
-    column.width = [spec[2] doubleValue];
-    column.editable = NO;
-    [_logTable addTableColumn:column];
-  }
-  _logTable.dataSource = self;
-  _logTable.delegate = self;
-  _logTable.target = self;
-  _logTable.doubleAction = @selector(showExchange:);
-  scrollView.documentView = _logTable;
-  scrollView.autohidesScrollers = NO;
-  scrollView.hasVerticalScroller = NO;  // off and on: see -makeScrollable:
-  scrollView.hasVerticalScroller = YES;
-  [scrollView tile];
 }
 
 - (id)logValueForColumn:(NSTableColumn *)column row:(NSInteger)row
@@ -587,44 +588,14 @@ static NSString *WBRawHeaders(NSDictionary *headers)
                                     WBRawHeaders(entry.responseHeaders), WBRawBody(entry.responseData)];
 }
 
-- (NSTextView *)exchangeTextViewIn:(NSSplitView *)split
+// A window of its own xib, loaded when it is first shown.
+- (void)loadWindowNib:(NSString *)name textViews:(NSArray<NSTextView *> *(^)(void))textViews
 {
-  NSScrollView *scrollView = [[NSScrollView alloc] initWithFrame:NSMakeRect(0, 0, split.bounds.size.width, split.bounds.size.height / 2)];
-  scrollView.borderType = NSBezelBorder;
-  scrollView.autoresizingMask = NSViewWidthSizable | NSViewHeightSizable;
-  NSTextView *view = [[NSTextView alloc] initWithFrame:NSMakeRect(0, 0, scrollView.contentSize.width, scrollView.contentSize.height)];
-  view.editable = NO;
-  view.selectable = YES;
-  view.richText = NO;
-  view.font = [NSFont userFixedPitchFontOfSize:11];
-  view.drawsBackground = YES;
-  view.backgroundColor = [NSColor textBackgroundColor];
-  view.textColor = [NSColor textColor];
-  scrollView.documentView = view;
-  [split addSubview:scrollView];
-  [self makeScrollable:view];
-  return view;
-}
-
-// One exchange, whole: the request above, the response below.
-- (void)buildExchangeWindow
-{
-  _exchangeWindow = [[NSWindow alloc] initWithContentRect:NSMakeRect(120, 120, 860, 640)
-                                                styleMask:NSTitledWindowMask | NSClosableWindowMask | NSResizableWindowMask | NSMiniaturizableWindowMask
-                                                  backing:NSBackingStoreBuffered defer:NO];
-  _exchangeWindow.releasedWhenClosed = NO;
-  NSView *content = _exchangeWindow.contentView;
-  NSSplitView *split = [[NSSplitView alloc] initWithFrame:NSMakeRect(8, 30, content.bounds.size.width - 16, content.bounds.size.height - 38)];
-  split.vertical = NO;
-  split.autoresizingMask = NSViewWidthSizable | NSViewHeightSizable;
-  [content addSubview:split];
-  _requestView = [self exchangeTextViewIn:split];
-  _responseView = [self exchangeTextViewIn:split];
-  [split adjustSubviews];
-  NSTextField *note = WBLabel(@"As the store sent and received it. The URL loading system may add headers of its own (Host, "
-                              @"Content-Length) and undoes compression.", NSMakeRect(8, 6, content.bounds.size.width - 16, 18));
-  note.autoresizingMask = NSViewWidthSizable | NSViewMaxYMargin;
-  [content addSubview:note];
+  if (!WorkbenchLoadNib(name, self)) {
+    NSLog(@"Workbench: failed to load %@.xib", name);
+    return;
+  }
+  for (NSTextView *view in textViews()) [self prepareTextView:view fixedPitch:YES];
 }
 
 - (IBAction)showExchange:(id)sender
@@ -633,12 +604,72 @@ static NSString *WBRawHeaders(NSDictionary *headers)
   NSInteger row = _logTable.selectedRow;
   if (row < 0 || (NSUInteger)row >= _log.count) return;
   WorkbenchLogEntry *entry = _log[(NSUInteger)row];
-  if (!_exchangeWindow) [self buildExchangeWindow];
+  if (!_exchangeWindow) [self loadWindowNib:@"ExchangeWindow" textViews:^{ return @[ self.requestView, self.responseView ]; }];
   _exchangeWindow.title = [NSString stringWithFormat:@"%@ %@ — %@ (%.0f ms)", entry.method, [self logValueForColumn:[_logTable tableColumnWithIdentifier:@"URL"] row:row],
                                                      entry.status ? [NSString stringWithFormat:@"%ld", (long)entry.status] : @"no answer", entry.duration * 1000];
   [self show:[self rawRequestOf:entry] in:_requestView];
   [self show:[self rawResponseOf:entry] in:_responseView];
   [_exchangeWindow makeKeyAndOrderFront:nil];
+}
+
+#pragma mark - Explain
+
+// The built-in service's plan for the GET the store would send: the same
+// URL under $explain/, which the service answers with the plans instead of
+// the rows. Another service has no $explain.
+- (IBAction)explainQuery:(id)sender
+{
+  (void)sender;
+  WorkbenchEngine *engine = _connection.engine;
+  if (!engine) {
+    self.statusField.stringValue = @"Explain asks the built-in service for its plan; other services have no $explain.";
+    return;
+  }
+  [self refreshTranslation];
+  NSString *root = engine.serviceRoot.absoluteString;
+  if (![root hasSuffix:@"/"]) root = [root stringByAppendingString:@"/"];
+  NSString *wire = self.wireURLField.stringValue;
+  if (![wire hasPrefix:root]) {
+    self.statusField.stringValue = [NSString stringWithFormat:@"Nothing to explain: %@", wire.length ? wire : @"no query"];
+    return;
+  }
+  NSURL *url = [NSURL URLWithString:[NSString stringWithFormat:@"%@$explain/%@", root, [wire substringFromIndex:root.length]]];
+  NSMutableURLRequest *request = [NSMutableURLRequest requestWithURL:url];
+  [request setValue:@"application/json" forHTTPHeaderField:@"Accept"];
+  [request setValue:@"4.01" forHTTPHeaderField:@"OData-MaxVersion"];
+  ODataExchange *exchange = [[ODataExchange alloc] initWithRequest:request target:self action:@selector(didExplain:)];
+  [engine startExchange:exchange];
+}
+
+- (void)didExplain:(ODataExchange *)exchange
+{
+  if (![NSThread isMainThread]) {
+    [self performSelectorOnMainThread:_cmd withObject:exchange waitUntilDone:NO];
+    return;
+  }
+  NSInteger status = [exchange.URLResponse isKindOfClass:[NSHTTPURLResponse class]] ? ((NSHTTPURLResponse *)exchange.URLResponse).statusCode : 0;
+  id json = exchange.data.length ? [NSJSONSerialization JSONObjectWithData:exchange.data options:0 error:NULL] : nil;
+  NSDictionary *body = [json isKindOfClass:[NSDictionary class]] ? json : nil;
+  if (status != 200 || ![body[@"physical"] isKindOfClass:[NSString class]]) {
+    NSString *why = [body[@"error"] isKindOfClass:[NSDictionary class]] ? body[@"error"][@"message"] : exchange.error.localizedDescription;
+    self.statusField.stringValue = [NSString stringWithFormat:@"The service did not explain it (%ld): %@", (long)status, why ?: @"no answer"];
+    return;
+  }
+  if (!_planWindow) {
+    [self loadWindowNib:@"PlanWindow" textViews:^{ return @[ self.explainedView, self.physicalPlanView, self.logicalPlanView ]; }];
+  }
+  // The request as the store would send it, decoded: the URL without
+  // $explain/.
+  NSString *path = [exchange.request.URL.absoluteString stringByRemovingPercentEncoding] ?: exchange.request.URL.absoluteString;
+  NSRange explain = [path rangeOfString:@"$explain/"];
+  if (explain.location != NSNotFound) path = [path stringByReplacingCharactersInRange:explain withString:@""];
+  _planWindow.title = @"Plan";
+  [self show:[@"GET " stringByAppendingString:path] in:_explainedView];
+  [self show:[@"Physical plan\n\n" stringByAppendingString:body[@"physical"]] in:_physicalPlanView];
+  NSString *logical = [body[@"logical"] isKindOfClass:[NSString class]] ? body[@"logical"] : @"(the same as the physical plan)";
+  [self show:[@"Logical plan\n\n" stringByAppendingString:logical] in:_logicalPlanView];
+  [_planWindow makeKeyAndOrderFront:nil];
+  self.statusField.stringValue = @"Explained: the plan is in its own window.";
 }
 
 #pragma mark - The table
@@ -770,99 +801,6 @@ static NSString *WBRawHeaders(NSDictionary *headers)
 }
 
 #pragma mark - The query panel
-
-// A list in a scroll view: columns of (identifier, title, width, a
-// checkbox?); an outline view's first text column is its outline column.
-- (id)addList:(Class)class frame:(NSRect)frame columns:(NSArray *)columns
-{
-  NSScrollView *scrollView = [[NSScrollView alloc] initWithFrame:frame];
-  scrollView.borderType = NSBezelBorder;
-  scrollView.hasVerticalScroller = YES;
-  scrollView.autoresizingMask = NSViewMinYMargin;
-  NSTableView *list = [[class alloc] initWithFrame:NSMakeRect(0, 0, scrollView.contentSize.width, scrollView.contentSize.height)];
-  for (NSArray *spec in columns) {
-    NSTableColumn *column = [[NSTableColumn alloc] initWithIdentifier:spec[0]];
-    column.title = spec[1];
-    column.width = [spec[2] doubleValue];
-    column.editable = YES;
-    if ([spec[3] boolValue]) {
-      NSButtonCell *box = [[NSButtonCell alloc] init];
-      [box setButtonType:NSSwitchButton];
-      box.title = @"";
-      column.dataCell = box;
-    }
-    [list addTableColumn:column];
-    if ([list isKindOfClass:[NSOutlineView class]] && ![spec[3] boolValue] && !((NSOutlineView *)list).outlineTableColumn) {
-      ((NSOutlineView *)list).outlineTableColumn = column;
-    }
-  }
-  list.dataSource = (id)self;
-  list.delegate = (id)self;
-  scrollView.documentView = list;
-  [self.window.contentView addSubview:scrollView];
-  return list;
-}
-
-- (NSButton *)addButton:(NSString *)title frame:(NSRect)frame action:(SEL)action
-{
-  NSButton *button = [[NSButton alloc] initWithFrame:frame];
-  button.title = title;
-  button.bezelStyle = NSRoundedBezelStyle;
-  button.target = self;
-  button.action = action;
-  button.autoresizingMask = NSViewMinYMargin;
-  [self.window.contentView addSubview:button];
-  return button;
-}
-
-// Everything a fetch request can ask of the store, as lists: sort keys
-// ($orderby, through to-one relationships), relationships to prefetch
-// ($expand, nested as deep as you open them), and properties ($select,
-// for dictionary results).
-- (void)buildQueryPanel
-{
-  NSView *content = self.window.contentView;
-  // Frames as laid out for the xib's 860-point-high window, from its top:
-  // a window the screen made shorter has already moved the xib's views.
-  CGFloat dy = content.bounds.size.height - 860;
-  [content addSubview:WBLabel(@"Sort ($orderby): key paths, first first", NSMakeRect(16, 664 + dy, 300, 16))];
-  _sortTable = [self addList:[NSTableView class] frame:NSMakeRect(16, 576 + dy, 300, 86)
-                     columns:@[ @[ @"key", @"key path", @220, @NO ], @[ @"descending", @"desc", @50, @YES ] ]];
-  [self addButton:@"+" frame:NSMakeRect(320, 640 + dy, 32, 22) action:@selector(addSort:)];
-  [self addButton:@"-" frame:NSMakeRect(320, 618 + dy, 32, 22) action:@selector(removeSort:)];
-  // Which key sorts first: the selected one moved up or down.
-  [self addButton:@"↑" frame:NSMakeRect(320, 598 + dy, 32, 22) action:@selector(moveSortUp:)];
-  [self addButton:@"↓" frame:NSMakeRect(320, 576 + dy, 32, 22) action:@selector(moveSortDown:)];
-  [content addSubview:WBLabel(@"Prefetch ($expand): open to nest", NSMakeRect(362, 664 + dy, 360, 16))];
-  _expandOutline = [self addList:[NSOutlineView class] frame:NSMakeRect(362, 576 + dy, 360, 86)
-                         columns:@[ @[ @"include", @"", @24, @YES ], @[ @"relationship", @"relationship", @300, @NO ] ]];
-  [content addSubview:WBLabel(@"Properties ($select, dictionary results)", NSMakeRect(734, 664 + dy, 366, 16))];
-  _selectTable = [self addList:[NSTableView class] frame:NSMakeRect(734, 576 + dy, 366, 86)
-                       columns:@[ @[ @"include", @"", @24, @YES ], @[ @"property", @"property", @300, @NO ] ]];
-  // Under them, what the lists cannot say.
-  [content addSubview:WBLabel(@"$search", NSMakeRect(16, 551 + dy, 54, 16))];
-  _searchField = [self addField:NSMakeRect(70, 548 + dy, 190, 22) hint:@"tea OR \"green tea\""];
-  [content addSubview:WBLabel(@"compute", NSMakeRect(270, 551 + dy, 58, 16))];
-  _computeField = [self addField:NSMakeRect(328, 548 + dy, 230, 22) hint:@"unitPrice * 2 as twice"];
-  [content addSubview:WBLabel(@"group by", NSMakeRect(568, 551 + dy, 60, 16))];
-  _groupField = [self addField:NSMakeRect(628, 548 + dy, 170, 22) hint:@"category.name"];
-  [content addSubview:WBLabel(@"aggregate", NSMakeRect(808, 551 + dy, 66, 16))];
-  _aggregateField = [self addField:NSMakeRect(874, 548 + dy, 226, 22) hint:@"sum:(unitPrice) as total"];
-  // Application time, beside the other options: a day, or from..to.
-  [content addSubview:WBLabel(@"application time", NSMakeRect(836, 792 + dy, 120, 16))];
-  _timeField = [self addField:NSMakeRect(836, 768 + dy, 118, 22) hint:@"2024-10-01, a..b"];
-  [self buildStreamControls];
-}
-
-- (NSTextField *)addField:(NSRect)frame hint:(NSString *)hint
-{
-  NSTextField *field = [[NSTextField alloc] initWithFrame:frame];
-  [field.cell setPlaceholderString:hint];
-  field.delegate = (id)self;
-  field.autoresizingMask = NSViewMinYMargin;
-  [self.window.contentView addSubview:field];
-  return field;
-}
 
 - (void)reloadQueryPanel
 {
@@ -1137,26 +1075,6 @@ static NSString *WBRawHeaders(NSDictionary *headers)
 
 // Beside the inspector, which gives up some of its width: the stream, and
 // Download and Upload.
-- (void)buildStreamControls
-{
-  NSScrollView *inspector = self.inspectorView.enclosingScrollView;
-  NSRect frame = inspector.frame;
-  CGFloat right = NSMaxX(frame);
-  frame.size.width -= 144;
-  inspector.frame = frame;
-  CGFloat x = right - 132;
-  NSTextField *label = WBLabel(@"Stream", NSMakeRect(x, NSMaxY(frame) - 18, 132, 16));
-  label.autoresizingMask = NSViewMinXMargin | NSViewMaxYMargin;
-  [self.window.contentView addSubview:label];
-  _streamPopup = [[NSPopUpButton alloc] initWithFrame:NSMakeRect(x, NSMaxY(frame) - 46, 132, 24) pullsDown:NO];
-  _streamPopup.autoresizingMask = NSViewMinXMargin | NSViewMaxYMargin;
-  [self.window.contentView addSubview:_streamPopup];
-  _downloadButton = [self addButton:@"Download" frame:NSMakeRect(x, NSMaxY(frame) - 80, 132, 28) action:@selector(downloadStream:)];
-  _uploadButton = [self addButton:@"Upload…" frame:NSMakeRect(x, NSMaxY(frame) - 112, 132, 28) action:@selector(uploadStream:)];
-  for (NSView *view in @[ _downloadButton, _uploadButton ]) view.autoresizingMask = NSViewMinXMargin | NSViewMaxYMargin;
-  [self rebuildStreams];
-}
-
 - (void)rebuildStreams
 {
   [_streamPopup removeAllItems];
@@ -1221,34 +1139,6 @@ static NSString *WBRawHeaders(NSDictionary *headers)
 }
 
 #pragma mark - The Store menu
-
-- (NSMenuItem *)addStoreItem:(NSString *)title action:(SEL)action tag:(NSInteger)tag
-{
-  NSMenuItem *item = [[NSMenuItem alloc] initWithTitle:title action:action keyEquivalent:@""];
-  item.target = self;
-  item.tag = tag;
-  [_storeMenu addItem:item];
-  return item;
-}
-
-// What the store does on a conflict, and how it talks to the service; and
-// another client's change, at the built-in service.
-- (void)buildStoreMenu
-{
-  _storeMenu = [[NSMenu alloc] initWithTitle:@"Store"];
-  [self addStoreItem:@"On a conflict: refuse the save" action:@selector(setMergePolicy:) tag:0];
-  [self addStoreItem:@"On a conflict: my changes win" action:@selector(setMergePolicy:) tag:1];
-  [self addStoreItem:@"On a conflict: the service's changes win" action:@selector(setMergePolicy:) tag:2];
-  [_storeMenu addItem:[NSMenuItem separatorItem]];
-  [self addStoreItem:@"Prefer respond-async (reconnects)" action:@selector(toggleRespondAsync:) tag:10];
-  [self addStoreItem:@"JSON $batch with a 4.01 service (reconnects)" action:@selector(toggleJSONBatch:) tag:11];
-  [_storeMenu addItem:[NSMenuItem separatorItem]];
-  [self addStoreItem:@"Change at the Service (another client)" action:@selector(changeAtTheService:) tag:20];
-  NSMenuItem *top = [[NSMenuItem alloc] initWithTitle:@"Store" action:NULL keyEquivalent:@""];
-  top.submenu = _storeMenu;
-  [self.mainMenu ?: [NSApp mainMenu] addItem:top];
-  [self updateStoreMenu];
-}
 
 - (void)updateStoreMenu
 {

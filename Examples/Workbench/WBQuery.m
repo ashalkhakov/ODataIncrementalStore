@@ -31,6 +31,117 @@ static NSDictionary *WBPresetWith(NSDictionary *preset, NSString *search, NSStri
   return more;
 }
 
+// The predicate field: NSPredicate's syntax, with the hierarchy tests of
+// Data Aggregation (ODataHierarchyPredicate) as functions of their own,
+// among the rest:
+//   ISDESCENDANT(SalesOrgHierarchy, 'EMEA')
+//   ISANCESTOR(SalesOrgHierarchy, 'US East', SELF)          and itself
+//   ISDESCENDANT(SalesOrgHierarchy, 'Sales', 1)              within 1
+//   ISDESCENDANT(SalesOrgHierarchy, 'US', salesOrganization.id)  a related node
+//   ISNODE, ISROOT, ISLEAF(SalesOrgHierarchy); ISSIBLING(SalesOrgHierarchy, 'US')
+static NSArray<NSString *> *WBArguments(NSString *text)
+{
+  NSMutableArray *arguments = [NSMutableArray array];
+  NSMutableString *current = [NSMutableString string];
+  unichar quote = 0;
+  for (NSUInteger i = 0; i < text.length; i++) {
+    unichar c = [text characterAtIndex:i];
+    if (quote) {
+      if (c == quote) quote = 0;
+    } else if (c == '\'' || c == '"') {
+      quote = c;
+    } else if (c == ',') {
+      [arguments addObject:[current stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceCharacterSet]]];
+      [current setString:@""];
+      continue;
+    }
+    [current appendFormat:@"%C", c];
+  }
+  [arguments addObject:[current stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceCharacterSet]]];
+  return arguments;
+}
+
+static NSPredicate *WBHierarchyPredicate(NSString *function, NSString *inside, NSError **error)
+{
+  NSDictionary *tests = @{ @"ISNODE": @(ODataHierarchyIsNode), @"ISROOT": @(ODataHierarchyIsRoot), @"ISLEAF": @(ODataHierarchyIsLeaf),
+                           @"ISANCESTOR": @(ODataHierarchyIsAncestor), @"ISDESCENDANT": @(ODataHierarchyIsDescendant),
+                           @"ISSIBLING": @(ODataHierarchyIsSibling) };
+  ODataHierarchyTest test = [tests[function.uppercaseString] integerValue];
+  NSArray<NSString *> *arguments = WBArguments(inside);
+  BOOL related = test == ODataHierarchyIsAncestor || test == ODataHierarchyIsDescendant || test == ODataHierarchyIsSibling;
+  if (!arguments.firstObject.length || (related && arguments.count < 2)) {
+    if (error) *error = WBError(9, [NSString stringWithFormat:@"%@: the hierarchy's qualifier%@", function, related ? @", and a node" : @""]);
+    return nil;
+  }
+  id node = nil;
+  NSUInteger next = 1;
+  if (related) {
+    NSString *text = arguments[1];
+    if (text.length >= 2 && ([text hasPrefix:@"'"] || [text hasPrefix:@"\""])) {
+      node = [text substringWithRange:NSMakeRange(1, text.length - 2)];
+    } else {
+      NSScanner *scanner = [NSScanner scannerWithString:text];
+      long long integer = 0;
+      node = [scanner scanLongLong:&integer] && scanner.isAtEnd ? @(integer) : text;
+    }
+    next = 2;
+  }
+  NSString *keyPath = nil;
+  NSUInteger distance = 0;
+  BOOL includeSelf = NO;
+  for (NSUInteger i = next; i < arguments.count; i++) {
+    NSString *argument = arguments[i];
+    if ([argument caseInsensitiveCompare:@"SELF"] == NSOrderedSame) includeSelf = YES;
+    else if (argument.integerValue > 0) distance = (NSUInteger)argument.integerValue;
+    else if (argument.length) keyPath = argument;
+  }
+  return [ODataHierarchyPredicate predicateWithTest:test hierarchy:arguments[0] node:node nodeKeyPath:keyPath maxDistance:distance includeSelf:includeSelf];
+}
+
+// Each $__wbhN == 1 the text stood in for, as its hierarchy predicate.
+static NSPredicate *WBReplacingPlaceholders(NSPredicate *predicate, NSArray *hierarchies)
+{
+  if ([predicate isKindOfClass:[NSCompoundPredicate class]]) {
+    NSCompoundPredicate *compound = (NSCompoundPredicate *)predicate;
+    NSMutableArray *subpredicates = [NSMutableArray array];
+    for (NSPredicate *sub in compound.subpredicates) [subpredicates addObject:WBReplacingPlaceholders(sub, hierarchies)];
+    return [[NSCompoundPredicate alloc] initWithType:compound.compoundPredicateType subpredicates:subpredicates];
+  }
+  if ([predicate isKindOfClass:[NSComparisonPredicate class]]) {
+    NSExpression *left = ((NSComparisonPredicate *)predicate).leftExpression;
+    if (left.expressionType == NSVariableExpressionType && [left.variable hasPrefix:@"__wbh"]) {
+      NSUInteger index = (NSUInteger)[[left.variable substringFromIndex:5] integerValue];
+      if (index < hierarchies.count) return hierarchies[index];
+    }
+  }
+  return predicate;
+}
+
+static NSPredicate *WBPredicate(NSString *format, NSError **error)
+{
+  NSRegularExpression *call = [NSRegularExpression regularExpressionWithPattern:@"\\b(IS(?:NODE|ROOT|LEAF|ANCESTOR|DESCENDANT|SIBLING))\\s*\\(([^()]*)\\)"
+                                                                        options:NSRegularExpressionCaseInsensitive error:NULL];
+  NSArray<NSTextCheckingResult *> *matches = [call matchesInString:format options:0 range:NSMakeRange(0, format.length)];
+  NSMutableArray *hierarchies = [NSMutableArray array];
+  NSMutableString *text = [format mutableCopy];
+  for (NSTextCheckingResult *match in matches) {
+    NSPredicate *hierarchy = WBHierarchyPredicate([format substringWithRange:[match rangeAtIndex:1]], [format substringWithRange:[match rangeAtIndex:2]], error);
+    if (!hierarchy) return nil;
+    [hierarchies addObject:hierarchy];
+  }
+  for (NSUInteger i = matches.count; i > 0; i--) {
+    [text replaceCharactersInRange:matches[i - 1].range withString:[NSString stringWithFormat:@"$__wbh%lu == 1", (unsigned long)(i - 1)]];
+  }
+  NSPredicate *predicate = nil;
+  @try {
+    predicate = [NSPredicate predicateWithFormat:text];
+  } @catch (NSException *ex) {
+    if (error) *error = WBError(1, ex.reason ?: @"bad predicate");
+    return nil;
+  }
+  return hierarchies.count ? WBReplacingPlaceholders(predicate, hierarchies) : predicate;
+}
+
 static NSArray *WBKnownPresets(WBService service)
 {
   switch (service) {
@@ -61,6 +172,22 @@ static NSArray *WBKnownPresets(WBService service)
                      @{ @"time": @"2024-01-01..2025-01-01" }),
         WBPreset(@"Budgets over time (Temporal actions)", @"Budget", nil, @"category, from", YES, nil, nil, nil),
         WBPreset(@"Pictures (a media entity: Download, Upload)", @"Picture", nil, @"id", YES, nil, nil, nil),
+        WBPreset(@"Categories over 90 in all (aggregate())", @"Category", @"products.@sum.unitPrice > 90", @"name", YES, @"products", nil, nil),
+        WBPreset(@"Hierarchy: below EMEA (isdescendant)", @"SalesOrganization", @"ISDESCENDANT(SalesOrgHierarchy, 'EMEA')", @"id", YES,
+                 @"superordinate", nil, nil),
+        WBPreset(@"Hierarchy: US East and above (isancestor)", @"SalesOrganization", @"ISANCESTOR(SalesOrgHierarchy, 'US East', SELF)", @"id", YES,
+                 @"superordinate", nil, nil),
+        WBPreset(@"Hierarchy: the leaves in the US (isleaf)", @"SalesOrganization", @"ISLEAF(SalesOrgHierarchy) AND id BEGINSWITH \"US\"", @"id", YES,
+                 nil, nil, nil),
+        WBPreset(@"Hierarchy: sales anywhere below US (a related node)", @"Sale",
+                 @"ISDESCENDANT(SalesOrgHierarchy, 'US', salesOrganization.id)", @"id", YES, @"salesOrganization", nil, nil),
+        WBPreset(@"As written: the tree in preorder ($apply=traverse)", @"SalesOrganization",
+                 @"$apply=traverse($root/SalesOrganizations,SalesOrgHierarchy,ID,preorder,Name asc)&$expand=Superordinate", nil, YES, nil, nil, nil),
+        WBPreset(@"As written: totals in tree order (dictionaries)", @"Sale",
+                 @"$apply=groupby((SalesOrganization/ID),aggregate(Amount with sum as Total))"
+                 @"/traverse($root/SalesOrganizations,SalesOrgHierarchy,SalesOrganization/ID,preorder)", nil, YES, nil, @"dictionary", nil),
+        WBPresetWith(WBPreset(@"Sales by organization (grouped)", @"Sale", nil, @"salesOrganization.name", YES, nil, @"dictionary", nil),
+                     nil, @"salesOrganization.name", @"sum:(amount) as total, count:(id) as sales"),
       ];
     case WBServiceNorthwind:
       return @[
@@ -343,6 +470,46 @@ static NSArray *WBItems(NSString *text)
 
 #pragma mark The request
 
+- (BOOL)isVerbatim
+{
+  return [[_predicateText stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceAndNewlineCharacterSet]] hasPrefix:@"$"];
+}
+
+// name=value&name=value, split where & is outside quotes and parentheses.
+- (ODataQuery *)verbatimQueryInContext:(NSManagedObjectContext *)context error:(NSError **)error
+{
+  NSString *text = [_predicateText stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceAndNewlineCharacterSet]];
+  NSMutableArray *parts = [NSMutableArray array];
+  NSInteger depth = 0;
+  BOOL quoted = NO;
+  NSUInteger start = 0;
+  for (NSUInteger i = 0; i <= text.length; i++) {
+    unichar c = i < text.length ? [text characterAtIndex:i] : '&';
+    if (c == '\'') quoted = !quoted;
+    if (quoted) continue;
+    if (c == '(') depth++;
+    if (c == ')') depth--;
+    if (c == '&' && depth == 0) {
+      [parts addObject:[text substringWithRange:NSMakeRange(start, i - start)]];
+      start = i + 1;
+    }
+  }
+  NSMutableDictionary *options = [NSMutableDictionary dictionary];
+  for (NSString *part in parts) {
+    NSRange equals = [part rangeOfString:@"="];
+    NSString *name = equals.location == NSNotFound ? nil : [part substringToIndex:equals.location];
+    if (!name.length) {
+      if (error) *error = WBError(10, [NSString stringWithFormat:@"\"%@\" is no query option: $name=value", part]);
+      return nil;
+    }
+    options[[name stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceCharacterSet]]] = [part substringFromIndex:NSMaxRange(equals)];
+  }
+  ODataQuery *query = [ODataQuery queryOfEntity:[self entity].name inContext:context];
+  query.options = options;
+  query.resultType = _resultType == NSDictionaryResultType ? NSDictionaryResultType : NSManagedObjectResultType;
+  return query;
+}
+
 - (NSFetchRequest *)fetchRequestError:(NSError **)error
 {
   NSEntityDescription *entity = [self entity];
@@ -354,12 +521,8 @@ static NSArray *WBItems(NSString *text)
   NSCharacterSet *space = [NSCharacterSet whitespaceCharacterSet];
   NSString *format = [_predicateText stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceAndNewlineCharacterSet]];
   if (format.length) {
-    @try {
-      request.predicate = [NSPredicate predicateWithFormat:format];
-    } @catch (NSException *ex) {
-      if (error) *error = WBError(1, ex.reason ?: @"bad predicate");
-      return nil;
-    }
+    request.predicate = WBPredicate(format, error);
+    if (!request.predicate) return nil;
   }
   // Application time: a day ($at), or from..to ($from and $to), ..= to
   // include the end.
@@ -428,12 +591,14 @@ static NSArray *WBItems(NSString *text)
 
 - (void)reset
 {
+  // The grouping first: while there is one, the columns are its keys, and
+  // a sort by one would outlive it.
+  _searchText = _computeText = _groupText = _aggregateText = _timeText = @"";
+  [_prefetch removeAllObjects];
+  [_select removeAllObjects];
   [_sorts removeAllObjects];
   NSString *first = [self columnNames].firstObject;
   if (first) [_sorts addObject:[@{ @"key": first, @"descending": @NO } mutableCopy]];
-  [_prefetch removeAllObjects];
-  [_select removeAllObjects];
-  _searchText = _computeText = _groupText = _aggregateText = _timeText = @"";
 }
 
 - (void)applyPreset:(NSDictionary *)p

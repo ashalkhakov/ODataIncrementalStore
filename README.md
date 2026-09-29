@@ -126,6 +126,8 @@ attaches both to each release — [its README](Examples/Workbench/README.md).
 - **Server**: all of the above served over any Core Data store, with limits
   on what one request may ask, authentication as a relying party (OpenID
   Connect, JWTs, a trusted proxy), and 4.0 or 4.01 by what the client asks.
+  Reads and writes are planned as a database plans them, and can be
+  explained; 4.01's collection writes (`$each`, a delta payload).
 - **Checked**: against the snapshot suite on every push, both platforms, and
   against Microsoft's public Northwind and TripPin services.
 
@@ -203,6 +205,7 @@ flowchart LR
 
 - [Building](docs/building.md): toolchains, GNUstep, Xcode, tests
 - [Client guide](docs/client.md) · [Server guide and design](docs/server-design.md)
+- [Query plans](docs/query-plan.md) · [Write plans](docs/write-plan.md): how the service plans reads and writes
 - [How it works](docs/how-it-works.md): the mapping, query translation, what runs where
 - [Client conformance](docs/odata-conformance.md): OData v4, item by item
 - [Workbench](Examples/Workbench/README.md)

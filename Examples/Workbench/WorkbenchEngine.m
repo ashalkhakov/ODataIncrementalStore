@@ -149,6 +149,19 @@ static NSEntityDescription *WBEntity(NSString *name, NSString *set, NSDictionary
   return entity;
 }
 
+static NSRelationshipDescription *WBRelationship(NSString *name, NSString *wire, NSEntityDescription *to, BOOL many)
+{
+  NSRelationshipDescription *relationship = [[NSRelationshipDescription alloc] init];
+  relationship.name = name;
+  relationship.destinationEntity = to;
+  relationship.minCount = 0;
+  relationship.maxCount = many ? 0 : 1;
+  relationship.optional = YES;
+  relationship.deleteRule = NSNullifyDeleteRule;
+  relationship.userInfo = @{ @"OData.property": wire };
+  return relationship;
+}
+
 NSManagedObjectModel *WorkbenchBuiltInModel(NSURL *catalogURL)
 {
   NSManagedObjectModel *model = [[[NSManagedObjectModel alloc] initWithContentsOfURL:catalogURL] copy];
@@ -167,7 +180,28 @@ NSManagedObjectModel *WorkbenchBuiltInModel(NSURL *catalogURL)
     WBAttribute(@"name", NSStringAttributeType, @"Name", YES, nil),
     WBAttribute(@"content", NSBinaryDataAttributeType, @"Content", YES, @{ @"OData.contentType": @"contentType" }),
     WBAttribute(@"contentType", NSStringAttributeType, @"ContentType", YES, nil) ]);
-  model.entities = [model.entities arrayByAddingObjectsFromArray:@[ budget, picture ]];
+  // Sales organizations, a recursive hierarchy (Data Aggregation section
+  // 5.5.1: the node identifier, and the parent), and their sales: the Data
+  // Aggregation spec's example data.
+  NSString *hierarchy = @"{\"Aggregation.RecursiveHierarchy#SalesOrgHierarchy\": {\"NodeProperty\": {\"$PropertyPath\": \"ID\"}, "
+                        @"\"ParentNavigationProperty\": {\"$NavigationPropertyPath\": \"Superordinate\"}}}";
+  NSEntityDescription *organization = WBEntity(@"SalesOrganization", @"SalesOrganizations", @{ @"OData.annotations": hierarchy }, @[
+    WBAttribute(@"id", NSStringAttributeType, @"ID", NO, @{ @"OData.key": @"YES" }),
+    WBAttribute(@"name", NSStringAttributeType, @"Name", YES, nil) ]);
+  NSEntityDescription *sale = WBEntity(@"Sale", @"Sales", nil, @[
+    WBAttribute(@"id", NSInteger32AttributeType, @"ID", NO, @{ @"OData.key": @"YES" }),
+    WBAttribute(@"amount", NSDecimalAttributeType, @"Amount", YES, nil) ]);
+  NSRelationshipDescription *superordinate = WBRelationship(@"superordinate", @"Superordinate", organization, NO);
+  NSRelationshipDescription *subordinates = WBRelationship(@"subordinates", @"Subordinates", organization, YES);
+  NSRelationshipDescription *sales = WBRelationship(@"sales", @"Sales", sale, YES);
+  NSRelationshipDescription *seller = WBRelationship(@"salesOrganization", @"SalesOrganization", organization, NO);
+  superordinate.inverseRelationship = subordinates;
+  subordinates.inverseRelationship = superordinate;
+  sales.inverseRelationship = seller;
+  seller.inverseRelationship = sales;
+  organization.properties = [organization.properties arrayByAddingObjectsFromArray:@[ superordinate, subordinates, sales ]];
+  sale.properties = [sale.properties arrayByAddingObject:seller];
+  model.entities = [model.entities arrayByAddingObjectsFromArray:@[ budget, picture, organization, sale ]];
   // A deleted row's key stays in its tombstone: delta links can name it.
   for (NSEntityDescription *entity in model.entities) {
     for (NSAttributeDescription *attribute in entity.attributesByName.allValues) {
@@ -302,6 +336,8 @@ static NSDate *WBDay(NSString *day)
   ODataService *service = [[ODataService alloc] initWithPersistentStoreCoordinator:coordinator serviceRoot:_serviceRoot];
   service.namespaceName = @"Catalog";
   service.serviceOperations = [[WorkbenchCatalogOperations alloc] init];
+  // GET <root>/$explain/<path>: the Explain button's plans.
+  service.explains = YES;
   for (NSString *problem in service.operationProblems) NSLog(@"Workbench: %@", problem);
   _service = service;
   return YES;
@@ -382,6 +418,20 @@ static NSManagedObject *WBInsert(NSManagedObjectContext *context, NSString *enti
       if (row[2] != [NSNull null]) [budget setValue:WBDay(row[2]) forKey:@"to"];
     }
     WBInsert(context, @"Picture", @{ @"id": @1, @"name": @"Swatch", @"content": WBPicturePNG(), @"contentType": @"image/png" });
+    // The sales organizations, each under its superordinate, and their sales.
+    NSMutableDictionary *organizations = [NSMutableDictionary dictionary];
+    NSArray *organizationRows = @[ @[ @"Sales", @"Corporate Sales", @"" ], @[ @"US", @"US", @"Sales" ], @[ @"US West", @"US West", @"US" ],
+                                   @[ @"US East", @"US East", @"US" ], @[ @"EMEA", @"EMEA", @"Sales" ], @[ @"EMEA Central", @"EMEA Central", @"EMEA" ] ];
+    for (NSArray *row in organizationRows) {
+      NSManagedObject *organization = WBInsert(context, @"SalesOrganization", @{ @"id": row[0], @"name": row[1] });
+      if ([row[2] length]) [organization setValue:organizations[row[2]] forKey:@"superordinate"];
+      organizations[row[0]] = organization;
+    }
+    NSArray *saleRows = @[ @[ @1, @"US West", @"1" ], @[ @2, @"US West", @"2" ], @[ @3, @"US West", @"4" ], @[ @4, @"US East", @"8" ],
+                           @[ @5, @"US East", @"4" ], @[ @6, @"EMEA Central", @"2" ], @[ @7, @"EMEA Central", @"1" ], @[ @8, @"EMEA Central", @"2" ] ];
+    for (NSArray *row in saleRows) {
+      WBInsert(context, @"Sale", @{ @"id": row[0], @"salesOrganization": organizations[row[1]], @"amount": [NSDecimalNumber decimalNumberWithString:row[2]] });
+    }
     NSError *error = nil;
     if (![context save:&error]) NSLog(@"Workbench: seeding the built-in service failed: %@", error);
   }];

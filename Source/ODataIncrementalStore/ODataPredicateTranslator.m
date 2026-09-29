@@ -1,7 +1,10 @@
 // Copyright (C) 2026 OIS contributors
 // SPDX-License-Identifier: LGPL-2.1-or-later
 
+#import "ODataHierarchyPredicate.h"
+#import "ODataQuery.h"
 #import "ODataPredicateTranslator.h"
+#import <ODataKit/ODataRegex.h>
 #import "ODataError.h"
 #import "ODataFunctionExpression.h"
 #include <string.h>
@@ -90,44 +93,162 @@ static NSArray<NSEntityDescription *> *OISEntitiesIn(NSExpression *expression)
 
 - (NSString *)translatePredicate:(NSPredicate *)predicate error:(NSError **)error
 {
+  return [self expressionForPredicate:predicate error:error].description;
+}
+
+- (NSString *)translateExpression:(NSExpression *)expression error:(NSError **)error
+{
+  return [self expressionForValue:expression error:error].description;
+}
+
+- (ODataPredicateTranslator *)innerFor:(NSEntityDescription *)entity
+{
+  ODataPredicateTranslator *inner = [[ODataPredicateTranslator alloc] initWithMapper:self.mapper entity:entity];
+  inner.lambdaDepth = self.lambdaDepth + 1;
+  inner.keysForObjectID = self.keysForObjectID;
+  inner.version = self.version;
+  inner.writesAggregates = self.writesAggregates;
+  return inner;
+}
+
+// a and b and c, left to right, as the parser reads it; none is `empty`.
+static ODataExpression *OISJoined(NSArray<ODataExpression *> *parts, NSString *op, BOOL empty)
+{
+  if (!parts.count) return [ODataExpression literalWithValue:@(empty)];
+  ODataExpression *out = parts.firstObject;
+  for (NSUInteger i = 1; i < parts.count; i++) out = [ODataExpression binary:op left:out right:parts[i]];
+  return out;
+}
+
+static ODataExpression *OISCall1(NSString *name, ODataExpression *argument)
+{
+  return [ODataExpression call:name arguments:@[ argument ]];
+}
+
+// A path as OData writes it (Category/Name, Zoo.Lion/MaxRoar, Address/City)
+// on from an expression (nil: from $it): a segment with a dot is a type
+// cast.
+static ODataExpression *OISAlongPath(ODataExpression *from, NSString *path)
+{
+  ODataExpression *e = from;
+  for (NSString *segment in [path componentsSeparatedByString:@"/"]) {
+    if (!segment.length) continue;
+    e = [segment rangeOfString:@"."].location != NSNotFound ? [ODataExpression cast:segment of:e] : [ODataExpression member:segment of:e];
+  }
+  return e;
+}
+
+// A literal as the value coder writes it, typed.
+- (ODataExpression *)literalFromText:(NSString *)text error:(NSError **)error
+{
+  ODataExpression *e = text ? [ODataExpression literalWithText:text] : nil;
+  if (!e && error) *error = OISError(ODataIncrementalStoreErrorUnsupportedExpression, [NSString stringWithFormat:@"No literal: %@", text]);
+  return e;
+}
+
+- (ODataExpression *)expressionForPredicate:(NSPredicate *)predicate error:(NSError **)error
+{
   if ([predicate isKindOfClass:[NSCompoundPredicate class]]) {
     return [self translateCompound:(NSCompoundPredicate *)predicate error:error];
   }
   if ([predicate isKindOfClass:[NSComparisonPredicate class]]) {
     return [self translateComparison:(NSComparisonPredicate *)predicate error:error];
   }
-  if ([predicate.predicateFormat isEqualToString:@"TRUEPREDICATE"]) return @"true";
-  if ([predicate.predicateFormat isEqualToString:@"FALSEPREDICATE"]) return @"false";
+  if ([predicate isKindOfClass:[ODataFilterPredicate class]]) {
+    // As it is written: the caller's OData, read.
+    NSString *filter = ((ODataFilterPredicate *)predicate).filter;
+    ODataExpression *e = [ODataExpression expressionWithString:filter error:error];
+    if (!e && error && !*error) *error = OISError(ODataIncrementalStoreErrorSyntax, filter);
+    return e;
+  }
+  if ([predicate isKindOfClass:[ODataHierarchyPredicate class]]) {
+    return [self translateHierarchy:(ODataHierarchyPredicate *)predicate error:error];
+  }
+  if ([predicate.predicateFormat isEqualToString:@"TRUEPREDICATE"]) return [ODataExpression literalWithValue:@YES];
+  if ([predicate.predicateFormat isEqualToString:@"FALSEPREDICATE"]) return [ODataExpression literalWithValue:@NO];
   if (error) *error = OISError(ODataIncrementalStoreErrorUnsupportedPredicate, predicate.description);
   return nil;
 }
 
-- (NSString *)translateCompound:(NSCompoundPredicate *)compound error:(NSError **)error
+// Aggregation.isdescendant(HierarchyNodes=$root/Set,HierarchyQualifier='Q',
+// Node=path,Ancestor=...) and the rest (Data Aggregation section 5.5.1.1).
+- (ODataExpression *)translateHierarchy:(ODataHierarchyPredicate *)h error:(NSError **)error
+{
+  if (!self.writesAggregates) {
+    if (error) *error = OISError(ODataIncrementalStoreErrorUnsupportedPredicate,
+                                 [NSString stringWithFormat:@"%@: the service has no Data Aggregation (Aggregation.ApplySupported)", h]);
+    return nil;
+  }
+  NSString *nodeKeyPath = nil;
+  NSEntityDescription *entity = [ODataHierarchyPredicate entityOfHierarchy:h.qualifier model:self.entity.managedObjectModel
+                                                                    mapper:self.mapper nodeKeyPath:&nodeKeyPath parent:NULL];
+  if (!entity || (!h.nodeKeyPath && ![self.entity isKindOfEntity:entity])) {
+    if (error) *error = OISError(ODataIncrementalStoreErrorUnsupportedPredicate,
+                                 entity ? [NSString stringWithFormat:@"%@: %@ is no node of it; say which key path leads to one", h, self.entity.name]
+                                        : [NSString stringWithFormat:@"%@: no entity has the recursive hierarchy %@ (Aggregation.RecursiveHierarchy)", h, h.qualifier]);
+    return nil;
+  }
+  ODataExpression *node = [self mapKeyPath:h.nodeKeyPath ?: nodeKeyPath error:error];
+  if (!node) return nil;
+  NSEntityDescription *root = entity;
+  while (root.superentity) root = root.superentity;
+  NSMutableDictionary *parameters = [NSMutableDictionary dictionary];
+  parameters[@"HierarchyNodes"] = [ODataExpression member:[self.mapper entitySetForEntity:root] of:[ODataExpression variable:@"$root"]];
+  parameters[@"HierarchyQualifier"] = [ODataExpression literalWithValue:h.qualifier];
+  parameters[@"Node"] = node;
+  NSString *other = h.test == ODataHierarchyIsAncestor ? @"Descendant" : h.test == ODataHierarchyIsDescendant ? @"Ancestor"
+                  : h.test == ODataHierarchyIsSibling ? @"Other" : nil;
+  if (other) {
+    if (!h.node) {
+      if (error) *error = OISError(ODataIncrementalStoreErrorUnsupportedPredicate, [NSString stringWithFormat:@"%@: which node?", h]);
+      return nil;
+    }
+    NSAttributeDescription *identifier = (NSAttributeDescription *)[self propertyAtKeyPath:nodeKeyPath of:entity];
+    ODataExpression *literal = [self literalFromText:[self.mapper.values literalForValue:h.node attribute:identifier] error:error];
+    if (!literal) return nil;
+    parameters[other] = literal;
+    if (h.maxDistance && h.test != ODataHierarchyIsSibling) parameters[@"MaxDistance"] = [ODataExpression literalWithValue:@(h.maxDistance)];
+    if (h.includeSelf && h.test != ODataHierarchyIsSibling) parameters[@"IncludeSelf"] = [ODataExpression literalWithValue:@YES];
+  }
+  return [ODataExpression call:[@"Org.OData.Aggregation.V1." stringByAppendingString:h.functionName] of:nil namedArguments:parameters];
+}
+
+- (NSPropertyDescription *)propertyAtKeyPath:(NSString *)keyPath of:(NSEntityDescription *)entity
+{
+  NSPropertyDescription *property = nil;
+  for (NSString *name in [keyPath componentsSeparatedByString:@"."]) {
+    property = entity.propertiesByName[name];
+    entity = [property isKindOfClass:[NSRelationshipDescription class]] ? ((NSRelationshipDescription *)property).destinationEntity : nil;
+  }
+  return property;
+}
+
+- (ODataExpression *)translateCompound:(NSCompoundPredicate *)compound error:(NSError **)error
 {
   NSMutableArray *parts = [NSMutableArray array];
   for (NSPredicate *sub in compound.subpredicates) {
-    NSString *t = [self translatePredicate:sub error:error];
+    ODataExpression *t = [self expressionForPredicate:sub error:error];
     if (!t) return nil;
-    [parts addObject:[NSString stringWithFormat:@"(%@)", t]];
+    [parts addObject:t];
   }
   switch (compound.compoundPredicateType) {
-    case NSAndPredicateType: return [parts componentsJoinedByString:@" and "];
-    case NSOrPredicateType: return [parts componentsJoinedByString:@" or "];
+    case NSAndPredicateType: return OISJoined(parts, @"and", YES);
+    case NSOrPredicateType: return OISJoined(parts, @"or", NO);
     case NSNotPredicateType:
-      return parts.count ? [NSString stringWithFormat:@"not %@", parts.firstObject] : @"false";
+      return parts.count ? [ODataExpression unary:@"not" operand:parts.firstObject] : [ODataExpression literalWithValue:@NO];
     default:
       if (error) *error = OISError(ODataIncrementalStoreErrorUnsupportedPredicate, compound.description);
       return nil;
   }
 }
 
-- (NSString *)function:(NSString *)name left:(NSString *)lhs right:(NSString *)rhs caseInsensitive:(BOOL)ci
+- (ODataExpression *)function:(NSString *)name left:(ODataExpression *)lhs right:(ODataExpression *)rhs caseInsensitive:(BOOL)ci
 {
-  if (ci) return [NSString stringWithFormat:@"%@(tolower(%@), tolower(%@))", name, lhs, rhs];
-  return [NSString stringWithFormat:@"%@(%@, %@)", name, lhs, rhs];
+  if (ci) return [ODataExpression call:name arguments:@[ OISCall1(@"tolower", lhs), OISCall1(@"tolower", rhs) ]];
+  return [ODataExpression call:name arguments:@[ lhs, rhs ]];
 }
 
-- (NSString *)translateComparison:(NSComparisonPredicate *)cmp error:(NSError **)error
+- (ODataExpression *)translateComparison:(NSComparisonPredicate *)cmp error:(NSError **)error
 {
   // OData has no diacritic-insensitive comparison, and dropping [d] would
   // fetch fewer rows than Core Data would match.
@@ -146,14 +267,14 @@ static NSArray<NSEntityDescription *> *OISEntitiesIn(NSExpression *expression)
     return [self translatePattern:cmp error:error];
   }
   BOOL handled = NO;
-  NSString *special = [self translateTypeTest:cmp handled:&handled error:error];
+  ODataExpression *special = [self translateTypeTest:cmp handled:&handled error:error];
   if (handled) return special;
   special = [self translateCount:cmp handled:&handled error:error];
   if (handled) return special;
   self.comparedAttribute = [self attributeAtExpression:cmp.leftExpression] ?: [self attributeAtExpression:cmp.rightExpression];
   self.comparedType = [self typeAtExpression:cmp.leftExpression] ?: [self typeAtExpression:cmp.rightExpression];
-  NSString *lhs = [self translateExpression:cmp.leftExpression error:error];
-  NSString *rhs = lhs ? [self translateExpression:cmp.rightExpression error:error] : nil;
+  ODataExpression *lhs = [self expressionForValue:cmp.leftExpression error:error];
+  ODataExpression *rhs = lhs ? [self expressionForValue:cmp.rightExpression error:error] : nil;
   if (!rhs) {
     self.comparedAttribute = nil;
     self.comparedType = nil;
@@ -161,21 +282,21 @@ static NSArray<NSEntityDescription *> *OISEntitiesIn(NSExpression *expression)
   }
   BOOL ci = (cmp.options & NSCaseInsensitivePredicateOption) != 0;
   // ==[c] as tolower on both sides, as startswith and the others have it.
-  NSString *lowered = ci ? [NSString stringWithFormat:@"tolower(%@)", lhs] : lhs;
-  NSString *loweredRight = ci ? [NSString stringWithFormat:@"tolower(%@)", rhs] : rhs;
+  ODataExpression *lowered = ci ? OISCall1(@"tolower", lhs) : lhs;
+  ODataExpression *loweredRight = ci ? OISCall1(@"tolower", rhs) : rhs;
   switch (cmp.predicateOperatorType) {
     case NSEqualToPredicateOperatorType:
-      return [NSString stringWithFormat:@"%@ eq %@", lowered, loweredRight];
+      return [ODataExpression binary:@"eq" left:lowered right:loweredRight];
     case NSNotEqualToPredicateOperatorType:
-      return [NSString stringWithFormat:@"%@ ne %@", lowered, loweredRight];
+      return [ODataExpression binary:@"ne" left:lowered right:loweredRight];
     case NSLessThanPredicateOperatorType:
-      return [NSString stringWithFormat:@"%@ lt %@", lhs, rhs];
+      return [ODataExpression binary:@"lt" left:lhs right:rhs];
     case NSLessThanOrEqualToPredicateOperatorType:
-      return [NSString stringWithFormat:@"%@ le %@", lhs, rhs];
+      return [ODataExpression binary:@"le" left:lhs right:rhs];
     case NSGreaterThanPredicateOperatorType:
-      return [NSString stringWithFormat:@"%@ gt %@", lhs, rhs];
+      return [ODataExpression binary:@"gt" left:lhs right:rhs];
     case NSGreaterThanOrEqualToPredicateOperatorType:
-      return [NSString stringWithFormat:@"%@ ge %@", lhs, rhs];
+      return [ODataExpression binary:@"ge" left:lhs right:rhs];
     case NSBeginsWithPredicateOperatorType:
       return [self function:@"startswith" left:lhs right:rhs caseInsensitive:ci];
     case NSEndsWithPredicateOperatorType:
@@ -190,10 +311,11 @@ static NSArray<NSEntityDescription *> *OISEntitiesIn(NSExpression *expression)
       if (cmp.rightExpression.expressionType == NSAggregateExpressionType) {
         NSArray *col = cmp.rightExpression.collection;
         if ([col isKindOfClass:[NSArray class]] && col.count == 2) {
-          NSString *low = [self translateExpression:col[0] error:error];
-          NSString *high = [self translateExpression:col[1] error:error];
-          if (!low || !high) return nil;
-          return [NSString stringWithFormat:@"(%@ ge %@ and %@ le %@)", lhs, low, lhs, high];
+          ODataExpression *low = [self expressionForValue:col[0] error:error];
+          ODataExpression *high = low ? [self expressionForValue:col[1] error:error] : nil;
+          if (!high) return nil;
+          return [ODataExpression binary:@"and" left:[ODataExpression binary:@"ge" left:lhs right:low]
+                                   right:[ODataExpression binary:@"le" left:lhs right:high]];
         }
       }
       if (error) *error = OISError(ODataIncrementalStoreErrorUnsupportedPredicate, cmp.description);
@@ -209,25 +331,25 @@ static NSArray<NSEntityDescription *> *OISEntitiesIn(NSExpression *expression)
   return [self.version compare:@"4.01" options:NSNumericSearch] != NSOrderedAscending;
 }
 
-// x in (a, b) in 4.01 (Part 2 section 5.1.1.1.12); (x eq a or x eq b) in
+// x in (a, b) in 4.01 (Part 2 section 5.1.1.1.12); x eq a or x eq b in
 // 4.0, which has no `in`. Nothing to be in is false.
-- (NSString *)membership:(NSString *)lhs literals:(NSArray *)literals
+- (ODataExpression *)membership:(ODataExpression *)lhs literals:(NSArray<ODataExpression *> *)literals
 {
-  if (!literals.count) return @"false";
-  if (literals.count == 1) return [NSString stringWithFormat:@"%@ eq %@", lhs, literals[0]];
-  if (self.speaks401) return [NSString stringWithFormat:@"%@ in (%@)", lhs, [literals componentsJoinedByString:@", "]];
+  if (!literals.count) return [ODataExpression literalWithValue:@NO];
+  if (literals.count == 1) return [ODataExpression binary:@"eq" left:lhs right:literals[0]];
+  if (self.speaks401) return [ODataExpression binary:@"in" left:lhs right:[ODataExpression list:literals]];
   NSMutableArray *parts = [NSMutableArray array];
-  for (NSString *literal in literals) [parts addObject:[NSString stringWithFormat:@"%@ eq %@", lhs, literal]];
-  return [NSString stringWithFormat:@"(%@)", [parts componentsJoinedByString:@" or "]];
+  for (ODataExpression *literal in literals) [parts addObject:[ODataExpression binary:@"eq" left:lhs right:literal]];
+  return OISJoined(parts, @"or", NO);
 }
 
 // The members of IN's right side, each as a literal.
-- (NSArray *)literalsInExpression:(NSExpression *)expression error:(NSError **)error
+- (NSArray<ODataExpression *> *)literalsInExpression:(NSExpression *)expression error:(NSError **)error
 {
   NSMutableArray *literals = [NSMutableArray array];
   if (expression.expressionType == NSAggregateExpressionType && [expression.collection isKindOfClass:[NSArray class]]) {
     for (NSExpression *e in expression.collection) {
-      NSString *t = [self translateExpression:e error:error];
+      ODataExpression *t = [self expressionForValue:e error:error];
       if (!t) return nil;
       [literals addObject:t];
     }
@@ -239,67 +361,20 @@ static NSArray<NSEntityDescription *> *OISEntitiesIn(NSExpression *expression)
     if (error) *error = OISError(ODataIncrementalStoreErrorUnsupportedExpression, [NSString stringWithFormat:@"IN needs a collection: %@", expression]);
     return nil;
   }
-  for (id v in value) [literals addObject:[self literal:v]];
-  return literals;
-}
-
-// Any one character as NSPredicate's LIKE and MATCHES (ICU) take it, in
-// ECMAScript: line terminators included, and \r\n as one - both halves or
-// neither ("a?\n" does not match "a\r\n").
-static NSString * const OISAnyCharacter = @"(?:\\r\\n|\\r(?!\\n)|[^\\r])";
-
-// An ICU pattern, as MATCHES reads it, in ECMAScript, which matchesPattern
-// reads; nil, with why, for what the two do not read alike: ^ and $ (at
-// line boundaries in Apple's MATCHES, not in ECMAScript), \d \w \s \b and
-// the other letter escapes (Unicode in ICU, ASCII in ECMAScript), and
-// inline flags. "." is any character, as OISAnyCharacter; \A and \z are
-// ECMAScript's ^ and $.
-static NSString *OISECMAScriptPatternFromICU(NSString *pattern, NSString **why)
-{
-  NSMutableString *out = [NSMutableString string];
-  BOOL inBrackets = NO;
-  for (NSUInteger i = 0; i < pattern.length; i++) {
-    unichar c = [pattern characterAtIndex:i];
-    if (c == '\\' && i + 1 < pattern.length) {
-      unichar next = [pattern characterAtIndex:++i];
-      if (!inBrackets && next == 'A') { [out appendString:@"^"]; continue; }
-      if (!inBrackets && next == 'z') { [out appendString:@"$"]; continue; }
-      BOOL letter = (next >= 'a' && next <= 'z') || (next >= 'A' && next <= 'Z') || (next >= '0' && next <= '9');
-      if (letter && next != 'n' && next != 't' && next != 'r' && next != 'f') {
-        *why = [NSString stringWithFormat:@"\\%C means something else in OData's ECMAScript patterns", next];
-        return nil;
-      }
-      [out appendFormat:@"\\%C", next];
-      continue;
-    }
-    if (inBrackets) {
-      if (c == '[') { *why = @"a set inside a set is ICU's alone"; return nil; }
-      if (c == ']') inBrackets = NO;
-      [out appendFormat:@"%C", c];
-    } else if (c == '[') {
-      inBrackets = YES;
-      [out appendString:@"["];
-      if (i + 1 < pattern.length && [pattern characterAtIndex:i + 1] == '^') [out appendFormat:@"%C", [pattern characterAtIndex:++i]];
-    } else if (c == '^' || c == '$') {
-      *why = @"^ and $ match at line boundaries in MATCHES, and at the ends only in OData's ECMAScript patterns: use \\A and \\z";
-      return nil;
-    } else if (c == '(' && i + 2 < pattern.length && [pattern characterAtIndex:i + 1] == '?') {
-      unichar kind = [pattern characterAtIndex:i + 2];
-      if (kind != ':' && kind != '=' && kind != '!' && kind != '<') { *why = @"inline flags are ICU's alone"; return nil; }
-      [out appendString:@"("];
-    } else if (c == '.') {
-      [out appendString:OISAnyCharacter];
-    } else {
-      [out appendFormat:@"%C", c];
-    }
+  for (id v in value) {
+    ODataExpression *literal = [self literal:v error:error];
+    if (!literal) return nil;
+    [literals addObject:literal];
   }
-  return out;
+  return literals;
 }
 
 // LIKE and MATCHES: matchesPattern with an ECMAScript regular expression,
 // anchored, since both match the whole string (Part 2 section
-// 5.1.1.5.4, 4.01 only).
-- (NSString *)translatePattern:(NSComparisonPredicate *)cmp error:(NSError **)error
+// 5.1.1.5.4, 4.01 only). The pattern is read as the platform's NSPredicate
+// reads it and written as OData's, or refused where the two cannot say
+// the same (ODataRegex.h).
+- (ODataExpression *)translatePattern:(NSComparisonPredicate *)cmp error:(NSError **)error
 {
   BOOL like = cmp.predicateOperatorType == NSLikePredicateOperatorType;
   BOOL ci = (cmp.options & NSCaseInsensitivePredicateOption) != 0;
@@ -308,65 +383,57 @@ static NSString *OISECMAScriptPatternFromICU(NSString *pattern, NSString **why)
   if (!self.speaks401) why = @"needs OData 4.01 (matchesPattern), and the service speaks 4.0";
   else if (![pattern isKindOfClass:[NSString class]]) why = @"needs a constant pattern";
   else if (ci && !like) why = @"cannot be case-insensitive: a regular expression cannot be lowercased safely";
-  NSString *converted = nil;
-  if (!why && !like) converted = OISECMAScriptPatternFromICU(pattern, &why);
+  NSString *regex = nil;
+  if (!why) {
+    NSError *failure = nil;
+    ODataRegex *read = [ODataRegex regexWithString:ci ? [pattern lowercaseString] : pattern
+                                           dialect:like ? ODataRegexLike : ODataRegexMatches error:&failure];
+    regex = [[read whole] stringInDialect:ODataRegexECMAScript error:&failure];
+    if (!regex) why = failure.localizedDescription;
+  }
   if (why) {
     if (error) *error = OISError(ODataIncrementalStoreErrorUnsupportedPredicate,
                                  [NSString stringWithFormat:@"%@ %@: %@", like ? @"LIKE" : @"MATCHES", why, cmp]);
     return nil;
   }
-  NSString *lhs = [self translateExpression:cmp.leftExpression error:error];
+  ODataExpression *lhs = [self expressionForValue:cmp.leftExpression error:error];
   if (!lhs) return nil;
-  NSString *regex;
-  if (like) {
-    // * is any run, ? any one character, \ escapes; the rest is itself.
-    NSMutableString *out = [NSMutableString stringWithString:@"^"];
-    NSString *source = ci ? [pattern lowercaseString] : pattern;
-    for (NSUInteger i = 0; i < source.length; i++) {
-      unichar c = [source characterAtIndex:i];
-      if (c == '\\' && i + 1 < source.length) c = [source characterAtIndex:++i];
-      else if (c == '*') { [out appendFormat:@"%@*", OISAnyCharacter]; continue; }
-      else if (c == '?') { [out appendString:OISAnyCharacter]; continue; }
-      if (c < 128 && strchr("\\^$.|?*+()[]{}/", (int)c)) [out appendString:@"\\"];
-      [out appendFormat:@"%C", c];
-    }
-    [out appendString:@"$"];
-    regex = out;
-  } else {
-    regex = [NSString stringWithFormat:@"^(?:%@)$", converted];
-  }
-  NSString *literal = [NSString stringWithFormat:@"'%@'", [regex stringByReplacingOccurrencesOfString:@"'" withString:@"''"]];
-  return [NSString stringWithFormat:@"matchesPattern(%@, %@)", ci ? [NSString stringWithFormat:@"tolower(%@)", lhs] : lhs, literal];
+  return [ODataExpression call:@"matchesPattern" arguments:@[ ci ? OISCall1(@"tolower", lhs) : lhs, [ODataExpression literalWithValue:regex] ]];
 }
 
-- (NSString *)translateExpression:(NSExpression *)expression error:(NSError **)error
+- (ODataExpression *)expressionForValue:(NSExpression *)expression error:(NSError **)error
 {
   switch (expression.expressionType) {
     case NSConstantValueExpressionType:
       // gnustep-base rewrites BETWEEN into >= AND <= and wraps each bound,
       // already an NSExpression, in a second constant expression.
       if ([expression.constantValue isKindOfClass:[NSExpression class]]) {
-        return [self translateExpression:expression.constantValue error:error];
+        return [self expressionForValue:expression.constantValue error:error];
       }
-      return [self literal:expression.constantValue];
+      return [self literal:expression.constantValue error:error];
     case NSKeyPathExpressionType:
       return [self mapKeyPath:expression.keyPath error:error];
     case NSEvaluatedObjectExpressionType:
-      return self.lambdaVariable ?: @"$it";
+      return [ODataExpression variable:self.lambdaVariable ?: @"$it"];
     case NSVariableExpressionType:
-      if (self.subqueryVariable && [expression.variable isEqualToString:self.subqueryVariable]) return self.lambdaVariable;
+      if (self.subqueryVariable && [expression.variable isEqualToString:self.subqueryVariable]) return [ODataExpression variable:self.lambdaVariable];
       if (error) *error = OISError(ODataIncrementalStoreErrorUnsupportedExpression, expression.description);
       return nil;
     case NSFunctionExpressionType: {
-      NSString *variablePath = [self translateVariablePath:expression error:error];
+      NSError *pathError = nil;
+      ODataExpression *variablePath = [self translateVariablePath:expression handled:NULL error:&pathError];
       if (variablePath) return variablePath;
+      if (pathError) {
+        if (error) *error = pathError;
+        return nil;
+      }
       return [self translateFunction:expression error:error];
     }
 #if !defined(__APPLE__)
     case NSKeyPathCompositionExpressionType: {
-      NSString *variablePath = [self translateVariablePath:expression error:error];
+      ODataExpression *variablePath = [self translateVariablePath:expression handled:NULL error:error];
       if (variablePath) return variablePath;
-      if (error) *error = OISError(ODataIncrementalStoreErrorUnsupportedExpression, expression.description);
+      if (error && !*error) *error = OISError(ODataIncrementalStoreErrorUnsupportedExpression, expression.description);
       return nil;
     }
 #endif
@@ -378,11 +445,11 @@ static NSString *OISECMAScriptPatternFromICU(NSString *pattern, NSString **why)
       }
       NSMutableArray *inner = [NSMutableArray array];
       for (NSExpression *e in col) {
-        NSString *t = [self translateExpression:e error:error];
+        ODataExpression *t = [self expressionForValue:e error:error];
         if (!t) return nil;
         [inner addObject:t];
       }
-      return [NSString stringWithFormat:@"(%@)", [inner componentsJoinedByString:@", "]];
+      return [ODataExpression list:inner];
     }
     default:
       if (error) *error = OISError(ODataIncrementalStoreErrorUnsupportedExpression, expression.description);
@@ -390,28 +457,49 @@ static NSString *OISECMAScriptPatternFromICU(NSString *pattern, NSString **why)
   }
 }
 
-- (NSString *)translateFunction:(NSExpression *)expression error:(NSError **)error
+// $these/aggregate(Amount with sum), $these/$count.
+- (ODataExpression *)translateThese:(ODataTheseExpression *)expression error:(NSError **)error
 {
+  if (!self.writesAggregates || self.lambdaVariable) {
+    if (error) *error = OISError(ODataIncrementalStoreErrorUnsupportedExpression,
+                                 [NSString stringWithFormat:@"%@: %@", expression,
+                                  self.lambdaVariable ? @"only of the collection the fetch filters, not inside ANY or ALL"
+                                                      : @"the service has no Data Aggregation (Aggregation.ApplySupported)"]);
+    return nil;
+  }
+  ODataExpression *these = [ODataExpression variable:@"$these"];
+  if (!expression.method) return [ODataExpression countOf:these];
+  if (![@[ @"sum", @"average", @"min", @"max", @"countdistinct" ] containsObject:expression.method] ||
+      ![self attributeAtKeyPath:expression.aggregatedKeyPath entity:self.entity]) {
+    if (error) *error = OISError(ODataIncrementalStoreErrorUnsupportedExpression,
+                                 [NSString stringWithFormat:@"%@: sum, average, min, max or countdistinct of an attribute of %@", expression, self.entity.name]);
+    return nil;
+  }
+  return [ODataExpression aggregateOf:these text:[NSString stringWithFormat:@"%@ with %@",
+                                                  [self.mapper propertyPathForKeyPath:expression.aggregatedKeyPath entity:self.entity], expression.method]];
+}
+
+- (ODataExpression *)translateFunction:(NSExpression *)expression error:(NSError **)error
+{
+  if ([expression isKindOfClass:[ODataTheseExpression class]]) return [self translateThese:(ODataTheseExpression *)expression error:error];
   if ([expression isKindOfClass:[ODataFunctionExpression class]]) {
     return [self translateODataFunction:(ODataFunctionExpression *)expression type:NULL attribute:NULL error:error];
   }
   NSString *name = expression.function;
   NSArray *args = expression.arguments ?: @[];
   if ([name isEqualToString:@"lowercase:"] || [name isEqualToString:@"uppercase:"]) {
-    NSString *inner = [self translateExpression:args.firstObject error:error];
+    ODataExpression *inner = [self expressionForValue:args.firstObject error:error];
     if (!inner) return nil;
-    return [name hasPrefix:@"lower"]
-      ? [NSString stringWithFormat:@"tolower(%@)", inner]
-      : [NSString stringWithFormat:@"toupper(%@)", inner];
+    return OISCall1([name hasPrefix:@"lower"] ? @"tolower" : @"toupper", inner);
   }
   // Arithmetic, as Apple and gnustep-base each name it.
   NSDictionary *operators = @{ @"add:to:": @"add", @"from:subtract:": @"sub", @"multiply:by:": @"mul", @"divide:by:": @"div",
                                @"modulus:by:": @"mod", @"_add": @"add", @"_sub": @"sub", @"_mul": @"mul", @"_div": @"div" };
   NSString *op = operators[name];
   if (op && args.count == 2) {
-    NSString *left = [self translateExpression:args[0] error:error];
-    NSString *right = left ? [self translateExpression:args[1] error:error] : nil;
-    return right ? [NSString stringWithFormat:@"(%@ %@ %@)", left, op, right] : nil;
+    ODataExpression *left = [self expressionForValue:args[0] error:error];
+    ODataExpression *right = left ? [self expressionForValue:args[1] error:error] : nil;
+    return right ? [ODataExpression binary:op left:left right:right] : nil;
   }
   if (error) *error = OISError(ODataIncrementalStoreErrorUnsupportedExpression, expression.description);
   return nil;
@@ -421,15 +509,15 @@ static NSString *OISECMAScriptPatternFromICU(NSString *pattern, NSString **why)
 // lambda: relationships and attributes (a complex value's members after
 // its attribute) as the mapper names them, a subentity's property after a
 // cast to it (Default.Manager/Budget), @count after a to-many relationship
-// as $count, length after a string attribute as length(). Anything else is
-// no property of the model, and an error, not a guess.
-- (NSString *)mapKeyPath:(NSString *)path error:(NSError **)error
+// as $count, @sum, @avg, @min and @max after one as aggregate() where the
+// service has it (Products/aggregate(UnitPrice with sum)), length after a
+// string attribute as length(). Anything else is no property of the model,
+// and an error, not a guess.
+- (ODataExpression *)mapKeyPath:(NSString *)path error:(NSError **)error
 {
-  NSMutableArray *mapped = [NSMutableArray array];
-  if (self.lambdaVariable) [mapped addObject:self.lambdaVariable];
+  ODataExpression *mapped = self.lambdaVariable ? [ODataExpression variable:self.lambdaVariable] : nil;
   if (self.elementType) {
-    [mapped addObject:[self.mapper memberPath:[path componentsSeparatedByString:@"."] ofType:self.elementType memberType:NULL]];
-    return [mapped componentsJoinedByString:@"/"];
+    return OISAlongPath(mapped, [self.mapper memberPath:[path componentsSeparatedByString:@"."] ofType:self.elementType memberType:NULL]);
   }
   NSArray<NSString *> *parts = [path componentsSeparatedByString:@"."];
   NSEntityDescription *current = self.entity;
@@ -437,9 +525,30 @@ static NSString *OISECMAScriptPatternFromICU(NSString *pattern, NSString **why)
   for (NSUInteger i = 0; i < parts.count; i++) {
     NSString *part = parts[i];
     BOOL last = i + 1 == parts.count;
-    if ([part isEqualToString:@"@count"] && last && collection) {
-      [mapped addObject:@"$count"];
-      return [mapped componentsJoinedByString:@"/"];
+    if ([part isEqualToString:@"@count"] && last && collection) return [ODataExpression countOf:mapped];
+    NSString *method = @{ @"@sum": @"sum", @"@avg": @"average", @"@min": @"min", @"@max": @"max" }[part];
+    if (method && collection && !last) {
+      if (!self.writesAggregates) {
+        if (error) *error = OISError(ODataIncrementalStoreErrorUnsupportedExpression,
+                                     [NSString stringWithFormat:@"%@: the service has no aggregate() (Aggregation.ApplySupported)", path]);
+        return nil;
+      }
+      NSString *rest = [[parts subarrayWithRange:NSMakeRange(i + 1, parts.count - i - 1)] componentsJoinedByString:@"."];
+      NSPropertyDescription *end = nil;
+      NSEntityDescription *at = current;
+      for (NSString *name in [rest componentsSeparatedByString:@"."]) {
+        end = at.propertiesByName[name];
+        NSRelationshipDescription *through = [end isKindOfClass:[NSRelationshipDescription class]] ? (NSRelationshipDescription *)end : nil;
+        if (through.isToMany) end = nil;
+        if (!end) break;
+        at = through.destinationEntity;
+      }
+      if (![end isKindOfClass:[NSAttributeDescription class]]) {
+        if (error) *error = OISError(ODataIncrementalStoreErrorUnsupportedExpression,
+                                     [NSString stringWithFormat:@"%@: %@ is no attribute of %@ through to-one relationships", path, rest, current.name]);
+        return nil;
+      }
+      return [ODataExpression aggregateOf:mapped text:[NSString stringWithFormat:@"%@ with %@", [self.mapper propertyPathForKeyPath:rest entity:current], method]];
     }
     if (collection) break;
     NSPropertyDescription *property = current.propertiesByName[part];
@@ -453,7 +562,7 @@ static NSString *OISECMAScriptPatternFromICU(NSString *pattern, NSString **why)
         if (property) {
           NSString *cast = [self.mapper qualifiedTypeForEntity:sub];
           if (!cast) break;
-          [mapped addObject:cast];
+          mapped = [ODataExpression cast:cast of:mapped];
           current = sub;
         } else {
           [queue addObjectsFromArray:sub.subentities];
@@ -463,16 +572,16 @@ static NSString *OISECMAScriptPatternFromICU(NSString *pattern, NSString **why)
     if ([property isKindOfClass:[NSAttributeDescription class]]) {
       NSAttributeDescription *attribute = (NSAttributeDescription *)property;
       NSArray *rest = [parts subarrayWithRange:NSMakeRange(i + 1, parts.count - i - 1)];
-      [mapped addObject:[self.mapper propertyForAttribute:attribute]];
+      mapped = [ODataExpression member:[self.mapper propertyForAttribute:attribute] of:mapped];
       if (rest.count == 1 && [rest[0] isEqualToString:@"length"] && attribute.attributeType == NSStringAttributeType) {
-        return [NSString stringWithFormat:@"length(%@)", [mapped componentsJoinedByString:@"/"]];
+        return OISCall1(@"length", mapped);
       }
-      if (rest.count) [mapped addObject:[self.mapper memberPath:rest ofType:[self.mapper.values typeNameOfAttribute:attribute] memberType:NULL]];
-      return [mapped componentsJoinedByString:@"/"];
+      if (rest.count) mapped = OISAlongPath(mapped, [self.mapper memberPath:rest ofType:[self.mapper.values typeNameOfAttribute:attribute] memberType:NULL]);
+      return mapped;
     }
     if ([property isKindOfClass:[NSRelationshipDescription class]]) {
       NSRelationshipDescription *relationship = (NSRelationshipDescription *)property;
-      [mapped addObject:[self.mapper propertyForRelationship:relationship]];
+      mapped = [ODataExpression member:[self.mapper propertyForRelationship:relationship] of:mapped];
       current = relationship.destinationEntity;
       collection = relationship.isToMany;
       continue;
@@ -495,11 +604,12 @@ static NSString *OISECMAScriptPatternFromICU(NSString *pattern, NSString **why)
     }
     walk = relationship.destinationEntity;
   }
-  return [mapped componentsJoinedByString:@"/"];
+  return mapped ?: [ODataExpression variable:@"$it"];
 }
 
-// $s.city inside a SUBQUERY: the lambda variable's path.
-- (NSString *)translateVariablePath:(NSExpression *)expression error:(NSError **)error
+// $s.city inside a SUBQUERY: the lambda variable's path; nil for any other
+// expression (an error only where it is one and cannot be written).
+- (ODataExpression *)translateVariablePath:(NSExpression *)expression handled:(BOOL *)handled error:(NSError **)error
 {
   NSExpression *base = nil;
   NSString *keyPath = nil;
@@ -513,7 +623,7 @@ static NSString *OISECMAScriptPatternFromICU(NSString *pattern, NSString **why)
 // isof for `entity == E` (E and not its subentities) and `entity IN {...}`,
 // of the object or one it reaches (manager.entity). The entities that are
 // the set's own, and those under them not in it, as isof and not isof.
-- (NSString *)translateTypeTest:(NSComparisonPredicate *)cmp handled:(BOOL *)handled error:(NSError **)error
+- (ODataExpression *)translateTypeTest:(NSComparisonPredicate *)cmp handled:(BOOL *)handled error:(NSError **)error
 {
   *handled = NO;
   NSExpression *left = cmp.leftExpression;
@@ -534,19 +644,19 @@ static NSString *OISECMAScriptPatternFromICU(NSString *pattern, NSString **why)
                                  [NSString stringWithFormat:@"a type test compares entity with an entity, or one of some: %@", cmp]);
     return nil;
   }
-  NSString *object = nil;
+  ODataExpression *object = nil;
   if ([keyPath hasSuffix:@".entity"]) {
     object = [self mapKeyPath:[keyPath substringToIndex:keyPath.length - 7] error:error];
     if (!object) return nil;
   } else if (self.lambdaVariable) {
-    object = self.lambdaVariable;
+    object = [ODataExpression variable:self.lambdaVariable];
   }
   NSSet *set = [NSSet setWithArray:entities];
   NSMutableArray *clauses = [NSMutableArray array];
   for (NSEntityDescription *entity in entities) {
     if (entity.superentity && [set containsObject:entity.superentity]) continue;
     NSMutableArray *terms = [NSMutableArray array];
-    NSString *root = [self isof:entity object:object error:error];
+    ODataExpression *root = [self isof:entity object:object error:error];
     if (!root) return nil;
     [terms addObject:root];
     NSMutableArray *walk = [NSMutableArray arrayWithObject:entity];
@@ -557,31 +667,32 @@ static NSString *OISECMAScriptPatternFromICU(NSString *pattern, NSString **why)
         if ([set containsObject:sub]) {
           [walk addObject:sub];
         } else {
-          NSString *excluded = [self isof:sub object:object error:error];
+          ODataExpression *excluded = [self isof:sub object:object error:error];
           if (!excluded) return nil;
-          [terms addObject:[@"not " stringByAppendingString:excluded]];
+          [terms addObject:[ODataExpression unary:@"not" operand:excluded]];
         }
       }
     }
-    [clauses addObject:terms.count == 1 ? terms[0] : [NSString stringWithFormat:@"(%@)", [terms componentsJoinedByString:@" and "]]];
+    [clauses addObject:OISJoined(terms, @"and", YES)];
   }
-  NSString *test = clauses.count == 1 ? clauses[0] : [NSString stringWithFormat:@"(%@)", [clauses componentsJoinedByString:@" or "]];
-  return type == NSNotEqualToPredicateOperatorType ? [NSString stringWithFormat:@"not %@", test] : test;
+  ODataExpression *test = OISJoined(clauses, @"or", NO);
+  return type == NSNotEqualToPredicateOperatorType ? [ODataExpression unary:@"not" operand:test] : test;
 }
 
-- (NSString *)isof:(NSEntityDescription *)entity object:(NSString *)object error:(NSError **)error
+- (ODataExpression *)isof:(NSEntityDescription *)entity object:(ODataExpression *)object error:(NSError **)error
 {
   NSString *type = [self.mapper qualifiedTypeForEntity:entity];
   if (!type) {
     if (error) *error = OISError(ODataIncrementalStoreErrorUnsupportedPredicate, [NSString stringWithFormat:@"%@ has no entity type to test for", entity.name]);
     return nil;
   }
-  return object ? [NSString stringWithFormat:@"isof(%@,%@)", object, type] : [NSString stringWithFormat:@"isof(%@)", type];
+  ODataExpression *named = [ODataExpression cast:type of:nil];
+  return [ODataExpression call:@"isof" arguments:object ? @[ object, named ] : @[ named ]];
 }
 
 // count:(collection) and collection.@count as $count; a SUBQUERY's count
 // against nought as any (or not any, or all).
-- (NSString *)translateCount:(NSComparisonPredicate *)cmp handled:(BOOL *)handled error:(NSError **)error
+- (ODataExpression *)translateCount:(NSComparisonPredicate *)cmp handled:(BOOL *)handled error:(NSError **)error
 {
   *handled = NO;
   NSExpression *left = cmp.leftExpression, *right = cmp.rightExpression;
@@ -630,7 +741,7 @@ static NSString *OISECMAScriptPatternFromICU(NSString *pattern, NSString **why)
     walk = relationship.destinationEntity;
     element = relationship.isToMany ? walk : element;
   }
-  NSString *path = [self mapKeyPath:collection.keyPath error:error];
+  ODataExpression *path = [self mapKeyPath:collection.keyPath error:error];
   if (!path) return nil;
   if (!element) {
     if (error) *error = OISError(ODataIncrementalStoreErrorUnsupportedPredicate, [NSString stringWithFormat:@"%@ is not a collection", collection.keyPath]);
@@ -644,16 +755,13 @@ static NSString *OISECMAScriptPatternFromICU(NSString *pattern, NSString **why)
     function = @"all";
     none = NO;
   }
-  ODataPredicateTranslator *inner = [[ODataPredicateTranslator alloc] initWithMapper:self.mapper entity:element];
+  ODataPredicateTranslator *inner = [self innerFor:element];
   inner.lambdaVariable = [NSString stringWithFormat:@"x%lu", (unsigned long)self.lambdaDepth];
-  inner.lambdaDepth = self.lambdaDepth + 1;
   inner.subqueryVariable = counted.variable;
-  inner.keysForObjectID = self.keysForObjectID;
-  inner.version = self.version;
-  NSString *test = [inner translatePredicate:body error:error];
+  ODataExpression *test = [inner expressionForPredicate:body error:error];
   if (!test) return nil;
-  NSString *lambda = [NSString stringWithFormat:@"%@/%@(%@:%@)", path, function, inner.lambdaVariable, test];
-  return none ? [NSString stringWithFormat:@"not %@", lambda] : lambda;
+  ODataExpression *lambda = [ODataExpression lambda:function of:path variable:inner.lambdaVariable body:test];
+  return none ? [ODataExpression unary:@"not" operand:lambda] : lambda;
 }
 
 // What an expression counts: the SUBQUERY of count:(SUBQUERY(...)) or
@@ -687,10 +795,10 @@ static NSString *OISECMAScriptPatternFromICU(NSString *pattern, NSString **why)
 // key path leads to (or to a collection, when it ends in a to-many
 // relationship), and the path into its result. Through type and
 // attribute, what the path ends at, for the literal it is compared with.
-- (NSString *)translateODataFunction:(ODataFunctionExpression *)expression
-                                type:(NSString **)typeOut
-                           attribute:(NSAttributeDescription **)attributeOut
-                               error:(NSError **)error
+- (ODataExpression *)translateODataFunction:(ODataFunctionExpression *)expression
+                                       type:(NSString **)typeOut
+                                  attribute:(NSAttributeDescription **)attributeOut
+                                      error:(NSError **)error
 {
   NSString *why = nil;
   ODataSchema *schema = self.mapper.schema;
@@ -716,7 +824,7 @@ static NSString *OISECMAScriptPatternFromICU(NSString *pattern, NSString **why)
     why = [NSString stringWithFormat:@"is no function bound to %@%@", collection ? @"a collection of " : @"", boundType.qualifiedName];
   }
 
-  NSMutableArray *arguments = [NSMutableArray array];
+  NSMutableDictionary *arguments = [NSMutableDictionary dictionary];
   for (NSString *given in why ? @[] : [expression.parameters.allKeys sortedArrayUsingSelector:@selector(compare:)]) {
     ODataSchemaParameter *parameter = nil;
     for (ODataSchemaParameter *p in function.callerParameters) {
@@ -726,8 +834,12 @@ static NSString *OISECMAScriptPatternFromICU(NSString *pattern, NSString **why)
       why = [NSString stringWithFormat:@"has no parameter %@", given];
       break;
     }
-    [arguments addObject:[NSString stringWithFormat:@"%@=%@", parameter.name,
-                                                     [self.mapper.values literalForValue:expression.parameters[given] typeName:parameter.type]]];
+    ODataExpression *literal = [ODataExpression literalWithText:[self.mapper.values literalForValue:expression.parameters[given] typeName:parameter.type]];
+    if (!literal) {
+      why = [NSString stringWithFormat:@"cannot take %@ for %@", expression.parameters[given], given];
+      break;
+    }
+    arguments[parameter.name] = literal;
   }
 
   // Into the result: an entity's properties, a complex value's members.
@@ -755,10 +867,10 @@ static NSString *OISECMAScriptPatternFromICU(NSString *pattern, NSString **why)
     return nil;
   }
 
-  NSString *call = [NSString stringWithFormat:@"%@(%@)", function.qualifiedName, [arguments componentsJoinedByString:@","]];
-  NSString *prefix = expression.bindingKeyPath ? [self mapKeyPath:expression.bindingKeyPath error:NULL] : self.lambdaVariable;
-  if (prefix.length) call = [NSString stringWithFormat:@"%@/%@", prefix, call];
-  if (resultPath.length) call = [NSString stringWithFormat:@"%@/%@", call, resultPath];
+  ODataExpression *prefix = expression.bindingKeyPath ? [self mapKeyPath:expression.bindingKeyPath error:NULL]
+                          : self.lambdaVariable ? [ODataExpression variable:self.lambdaVariable] : nil;
+  ODataExpression *call = [ODataExpression call:function.qualifiedName of:prefix namedArguments:arguments];
+  if (resultPath.length) call = OISAlongPath(call, resultPath);
   if (typeOut) *typeOut = attribute ? nil : resultType;
   if (attributeOut) *attributeOut = attribute;
   return call;
@@ -770,7 +882,7 @@ static NSString *OISECMAScriptPatternFromICU(NSString *pattern, NSString **why)
 // The key path splits at its first to-many relationship: what comes before
 // is the collection, what comes after is compared inside the lambda. A
 // further to-many step nests another lambda.
-- (NSString *)translateLambda:(NSComparisonPredicate *)cmp error:(NSError **)error
+- (ODataExpression *)translateLambda:(NSComparisonPredicate *)cmp error:(NSError **)error
 {
   NSString *function = nil;
   switch (cmp.comparisonPredicateModifier) {
@@ -827,17 +939,14 @@ static NSString *OISECMAScriptPatternFromICU(NSString *pattern, NSString **why)
   // No collection on the path: ANY and ALL of one value is the value.
   if (!elementEntity && !elementType) return [self translateComparison:direct error:error];
 
-  NSString *collection = [self mapKeyPath:[[parts subarrayWithRange:NSMakeRange(0, i + 1)] componentsJoinedByString:@"."] error:error];
+  ODataExpression *collection = [self mapKeyPath:[[parts subarrayWithRange:NSMakeRange(0, i + 1)] componentsJoinedByString:@"."] error:error];
   if (!collection) return nil;
   NSArray *rest = [parts subarrayWithRange:NSMakeRange(i + 1, parts.count - i - 1)];
   NSString *variable = [NSString stringWithFormat:@"x%lu", (unsigned long)self.lambdaDepth];
 
-  ODataPredicateTranslator *inner = [[ODataPredicateTranslator alloc] initWithMapper:self.mapper entity:elementEntity ?: self.entity];
+  ODataPredicateTranslator *inner = [self innerFor:elementEntity ?: self.entity];
   inner.elementType = elementType;
   inner.lambdaVariable = variable;
-  inner.lambdaDepth = self.lambdaDepth + 1;
-  inner.keysForObjectID = self.keysForObjectID;
-  inner.version = self.version;
   NSExpression *innerLeft = rest.count
       ? [NSExpression expressionForKeyPath:[rest componentsJoinedByString:@"."]]
       : [NSExpression expressionForEvaluatedObject];
@@ -849,9 +958,9 @@ static NSString *OISECMAScriptPatternFromICU(NSString *pattern, NSString **why)
                                                 modifier:(rest.count ? cmp.comparisonPredicateModifier : NSDirectPredicateModifier)
                                                     type:cmp.predicateOperatorType
                                                  options:cmp.options];
-  NSString *body = [inner translatePredicate:innerPredicate error:error];
+  ODataExpression *body = [inner expressionForPredicate:innerPredicate error:error];
   if (!body) return nil;
-  return [NSString stringWithFormat:@"%@/%@(%@:%@)", collection, function, variable, body];
+  return [ODataExpression lambda:function of:collection variable:variable body:body];
 }
 
 #pragma mark - Managed objects as constants
@@ -919,28 +1028,28 @@ static NSArray *OISObjectsInExpression(NSExpression *expression)
 
 // A key written as its attribute's type: a Guid key, kept as a string,
 // is still an unquoted Guid literal.
-- (NSString *)keyLiteral:(id)value property:(NSString *)wire entity:(NSEntityDescription *)entity
+- (ODataExpression *)keyLiteral:(id)value property:(NSString *)wire entity:(NSEntityDescription *)entity error:(NSError **)error
 {
   for (NSAttributeDescription *attr in [self.mapper keyAttributesForEntity:entity]) {
     if ([[self.mapper propertyForAttribute:attr] isEqualToString:wire]) {
-      return [self.mapper.values literalForValue:value attribute:attr];
+      return [self literalFromText:[self.mapper.values literalForValue:value attribute:attr] error:error];
     }
   }
-  return [self.mapper.values literalForValue:value attribute:nil];
+  return [self literalFromText:[self.mapper.values literalForValue:value attribute:nil] error:error];
 }
 
 // category == %@  ->  Category/CategoryID eq 2
 // self IN %@      ->  ProductID in (1, 2)
 // Objects compare by key, over the path to them; a compound key compares
 // each part.
-- (NSString *)translateObjectComparison:(NSComparisonPredicate *)cmp error:(NSError **)error
+- (ODataExpression *)translateObjectComparison:(NSComparisonPredicate *)cmp error:(NSError **)error
 {
   NSExpression *left = cmp.leftExpression;
   NSEntityDescription *target = nil;
-  NSString *path = nil;
+  ODataExpression *path = nil;
   if (left.expressionType == NSEvaluatedObjectExpressionType) {
     target = self.entity;
-    path = self.lambdaVariable;
+    path = self.lambdaVariable ? [ODataExpression variable:self.lambdaVariable] : nil;
   } else if (left.expressionType == NSKeyPathExpressionType) {
     NSEntityDescription *current = self.entity;
     for (NSString *part in [left.keyPath componentsSeparatedByString:@"."]) {
@@ -969,13 +1078,14 @@ static NSArray *OISObjectsInExpression(NSExpression *expression)
     if (!keys) return nil;
     NSMutableArray *parts = [NSMutableArray array];
     for (NSString *wire in [keys.allKeys sortedArrayUsingSelector:@selector(compare:)]) {
-      NSString *property = path.length ? [NSString stringWithFormat:@"%@/%@", path, wire] : wire;
-      NSString *literal = [self keyLiteral:keys[wire] property:wire entity:target];
-      [parts addObject:[NSString stringWithFormat:@"%@ eq %@", property, literal]];
+      ODataExpression *property = [ODataExpression member:wire of:path];
+      ODataExpression *literal = [self keyLiteral:keys[wire] property:wire entity:target error:error];
+      if (!literal) return nil;
+      [parts addObject:[ODataExpression binary:@"eq" left:property right:literal]];
       if (keys.count == 1) [singles addObject:@[ property, literal ]];
     }
     singleKey = singleKey && keys.count == 1;
-    [clauses addObject:parts.count == 1 ? parts[0] : [NSString stringWithFormat:@"(%@)", [parts componentsJoinedByString:@" and "]]];
+    [clauses addObject:OISJoined(parts, @"and", YES)];
   }
 
   switch (cmp.predicateOperatorType) {
@@ -983,7 +1093,7 @@ static NSArray *OISObjectsInExpression(NSExpression *expression)
       if (clauses.count == 1) return clauses[0];
       break;
     case NSNotEqualToPredicateOperatorType:
-      if (clauses.count == 1) return [NSString stringWithFormat:@"not (%@)", clauses[0]];
+      if (clauses.count == 1) return [ODataExpression unary:@"not" operand:clauses[0]];
       break;
     case NSInPredicateOperatorType: {
       if (singleKey) {
@@ -991,7 +1101,7 @@ static NSArray *OISObjectsInExpression(NSExpression *expression)
         for (NSArray *pair in singles) [literals addObject:pair[1]];
         return [self membership:singles.firstObject[0] literals:literals];
       }
-      return [NSString stringWithFormat:@"(%@)", [clauses componentsJoinedByString:@" or "]];
+      return OISJoined(clauses, @"or", NO);
     }
     default:
       break;
@@ -1002,7 +1112,7 @@ static NSArray *OISObjectsInExpression(NSExpression *expression)
 
 #pragma mark - Literals
 
-- (NSString *)literal:(id)value
+- (ODataExpression *)literal:(id)value error:(NSError **)error
 {
   // gnustep-base parses {1, 3} into a constant array of constant
   // expressions.
@@ -1011,11 +1121,16 @@ static NSArray *OISObjectsInExpression(NSExpression *expression)
   }
   if ([value isKindOfClass:[NSArray class]] || [value isKindOfClass:[NSSet class]]) {
     NSMutableArray *parts = [NSMutableArray array];
-    for (id v in value) [parts addObject:[self literal:v]];
-    return [parts componentsJoinedByString:@", "];
+    for (id v in value) {
+      ODataExpression *part = [self literal:v error:error];
+      if (!part) return nil;
+      [parts addObject:part];
+    }
+    return [ODataExpression list:parts];
   }
-  if (self.comparedType) return [self.mapper.values literalForValue:value typeName:self.comparedType];
-  return [self.mapper.values literalForValue:value attribute:self.comparedAttribute];
+  NSString *text = self.comparedType ? [self.mapper.values literalForValue:value typeName:self.comparedType]
+                                     : [self.mapper.values literalForValue:value attribute:self.comparedAttribute];
+  return [self literalFromText:text error:error];
 }
 
 // The type a key path ends at when that is no attribute: a complex value's
@@ -1044,6 +1159,13 @@ static NSArray *OISObjectsInExpression(NSExpression *expression)
     NSAttributeDescription *attribute = nil;
     [self translateODataFunction:(ODataFunctionExpression *)expression type:NULL attribute:&attribute error:NULL];
     return attribute;
+  }
+  if ([expression isKindOfClass:[ODataTheseExpression class]]) {
+    // What a sum, min or max of an attribute compares as; an average or a
+    // count is a number of its own.
+    ODataTheseExpression *these = (ODataTheseExpression *)expression;
+    BOOL same = [@[ @"sum", @"min", @"max" ] containsObject:these.method ?: @""];
+    return same ? [self attributeAtKeyPath:these.aggregatedKeyPath entity:self.entity] : nil;
   }
   if (expression.expressionType != NSKeyPathExpressionType || self.elementType) return nil;
   return [self attributeAtKeyPath:expression.keyPath entity:self.entity];

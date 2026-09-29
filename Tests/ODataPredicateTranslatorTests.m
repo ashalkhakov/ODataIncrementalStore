@@ -67,9 +67,9 @@
 - (void)testLogicalConnectives
 {
   [self assertPredicate:@"unitPrice > 20 AND discontinued == NO"
-                 filter:@"(UnitPrice gt 20) and (Discontinued eq false)"];
+                 filter:@"UnitPrice gt 20 and Discontinued eq false"];
   [self assertPredicate:@"unitPrice < 10 OR unitPrice > 100"
-                 filter:@"(UnitPrice lt 10) or (UnitPrice gt 100)"];
+                 filter:@"UnitPrice lt 10 or UnitPrice gt 100"];
   [self assertPredicate:@"NOT discontinued == YES" filter:@"not (Discontinued eq true)"];
 }
 
@@ -102,22 +102,16 @@
 {
   // 4.0 has no `in`: Northwind answers it with 400, TripPin with 500.
   [self assertPredicate:@"name IN {\"Chai\", \"Chang\"}"
-                 filter:@"(ProductName eq 'Chai' or ProductName eq 'Chang')"];
+                 filter:@"ProductName eq 'Chai' or ProductName eq 'Chang'"];
   [self assertPredicate:@"name IN %@" filter:@"ProductName eq 'Chai'" arguments:@[ @[ @"Chai" ] ]];
   [self assertPredicate:@"name IN %@" filter:@"false" arguments:@[ @[] ]];
   _translator.version = @"4.01";
   [self assertPredicate:@"name IN {\"Chai\", \"Chang\"}"
-                 filter:@"ProductName in ('Chai', 'Chang')"];
+                 filter:@"ProductName in ('Chai','Chang')"];
   _translator.version = @"4.0";
   // gnustep-base's parser rewrites BETWEEN as >= AND <= before the
-  // translator sees it. Both filters select the same rows.
-  NSError *error = nil;
-  NSPredicate *between = [NSPredicate predicateWithFormat:@"unitPrice BETWEEN {10, 20}"];
-  NSString *got = [_translator translatePredicate:between error:&error];
-  XCTAssertNil(error);
-  NSArray *accepted = @[ @"(UnitPrice ge 10 and UnitPrice le 20)",
-                         @"(UnitPrice ge 10) and (UnitPrice le 20)" ];
-  XCTAssertTrue([accepted containsObject:got], @"BETWEEN → %@", got);
+  // translator sees it; the tree, and so the filter, is the same.
+  [self assertPredicate:@"unitPrice BETWEEN {10, 20}" filter:@"UnitPrice ge 10 and UnitPrice le 20"];
 }
 
 - (void)assertPredicate:(NSString *)format filter:(NSString *)expected arguments:(NSArray *)arguments
@@ -136,13 +130,18 @@
   NSString *any = @"(?:\\r\\n|\\r(?!\\n)|[^\\r])";
   [self assertPredicate:@"name LIKE %@" filter:[NSString stringWithFormat:@"matchesPattern(ProductName, '^Ch%@*a%@$')", any, any] arguments:@[ @"Ch*a?" ]];
   [self assertPredicate:@"name LIKE[c] %@" filter:[NSString stringWithFormat:@"matchesPattern(tolower(ProductName), '^o''b\\.%@*$')", any] arguments:@[ @"O'B.*" ]];
-  [self assertPredicate:@"name MATCHES %@" filter:@"matchesPattern(ProductName, '^(?:C[a-z]+)$')" arguments:@[ @"C[a-z]+" ]];
-  [self assertPredicate:@"name MATCHES %@" filter:[NSString stringWithFormat:@"matchesPattern(ProductName, '^(?:^C%@\\.(?:x|y)$)$')", any] arguments:@[ @"\\AC.\\.(?:x|y)\\z" ]];
+  [self assertPredicate:@"name MATCHES %@" filter:@"matchesPattern(ProductName, '^C[a-z]+$')" arguments:@[ @"C[a-z]+" ]];
+  [self assertPredicate:@"name MATCHES %@" filter:[NSString stringWithFormat:@"matchesPattern(ProductName, '^C%@\\.(?:x|y)$')", any] arguments:@[ @"\\AC.\\.(?:x|y)\\z" ]];
   NSError *error = nil;
   XCTAssertNil([_translator translatePredicate:[NSPredicate predicateWithFormat:@"name MATCHES[c] 'c.*'"] error:&error]);
   XCTAssertEqual(error.code, ODataIncrementalStoreErrorUnsupportedPredicate);
-  // What ICU and ECMAScript read differently is refused, not guessed.
-  for (NSString *pattern in @[ @"^C.*", @"C.*$", @"\\d+", @"\\w+", @"(?i)chai", @"[[a-z]]" ]) {
+  // What ICU and ECMAScript read differently is refused, not guessed: ^
+  // and $ where this platform's MATCHES has them at each line (Apple's,
+  // gnustep-base's with its fix), \d and \w (Unicode in ICU), inline
+  // flags, sets within sets.
+  NSMutableArray *refusals = [NSMutableArray arrayWithObjects:@"\\d+", @"\\w+", @"(?i)chai", @"[[a-z]]", nil];
+  if ([ODataRegex matchesAnchorsMatchLines]) [refusals addObjectsFromArray:@[ @"^C.*", @"C.*$" ]];
+  for (NSString *pattern in refusals) {
     error = nil;
     NSPredicate *refused = [NSPredicate predicateWithFormat:@"name MATCHES %@", pattern];
     NSString *written = [_translator translatePredicate:refused error:&error];
@@ -217,7 +216,37 @@
   [self assertPredicate:@"SUBQUERY(suppliers, $s, NOT ($s.country == 'UK')).@count == 0"
                  filter:@"Suppliers/all(x0:x0/Country eq 'UK')"];
   [self assertPredicate:@"name.length > 10" filter:@"length(ProductName) gt 10"];
-  [self assertPredicate:@"unitPrice + 1 > 20" filter:@"(UnitPrice add 1) gt 20"];
+  [self assertPredicate:@"unitPrice + 1 > 20" filter:@"UnitPrice add 1 gt 20"];
+}
+
+// A collection operator after a to-many relationship is Data
+// Aggregation's aggregate(), where the service has it; else refused.
+- (void)testCollectionOperatorsAreAggregates
+{
+  ODataPredicateTranslator *categories = [[ODataPredicateTranslator alloc] initWithMapper:[[ODataPropertyMapper alloc] init]
+                                                                                  entity:OISCatalogEntity(@"Category")];
+  NSPredicate *sum = [NSPredicate predicateWithFormat:@"products.@sum.unitPrice > 40"];
+  NSError *error = nil;
+  XCTAssertNil([categories translatePredicate:sum error:&error]);
+  XCTAssertEqual(error.code, ODataIncrementalStoreErrorUnsupportedExpression);
+  XCTAssertTrue([error.localizedDescription containsString:@"ApplySupported"], @"%@", error);
+
+  categories.writesAggregates = YES;
+  NSDictionary *cases = @{
+    @"products.@sum.unitPrice > 40": @"Products/aggregate(UnitPrice with sum) gt 40",
+    @"products.@avg.unitPrice < 20": @"Products/aggregate(UnitPrice with average) lt 20",
+    @"products.@max.unitPrice >= products.@min.unitPrice": @"Products/aggregate(UnitPrice with max) ge Products/aggregate(UnitPrice with min)",
+    @"products.@count > 2": @"Products/$count gt 2",
+  };
+  for (NSString *format in cases) {
+    error = nil;
+    NSString *got = [categories translatePredicate:[NSPredicate predicateWithFormat:format] error:&error];
+    XCTAssertEqualObjects(got, cases[format], @"%@: %@", format, error);
+    [self assertParses:got];
+  }
+  error = nil;
+  XCTAssertNil([categories translatePredicate:[NSPredicate predicateWithFormat:@"products.@sum.suppliers > 1"] error:&error], @"not an attribute");
+  XCTAssertNotNil(error);
 }
 
 - (void)testUnknownNamesAreErrorsNotGuesses

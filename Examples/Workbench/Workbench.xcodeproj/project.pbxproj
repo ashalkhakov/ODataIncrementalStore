@@ -15,6 +15,8 @@
 		AA000000000000000000008E /* WorkbenchEngine.m in Sources */ = {isa = PBXBuildFile; fileRef = AA000000000000000000008F /* WorkbenchEngine.m */; };
 		AA0000000000000000000090 /* Catalog.xcdatamodeld in Resources */ = {isa = PBXBuildFile; fileRef = AA0000000000000000000091 /* Catalog.xcdatamodeld */; };
 		AA00000000000000000000B2 /* WorkbenchWindow.xib in Resources */ = {isa = PBXBuildFile; fileRef = AA00000000000000000000B1 /* WorkbenchWindow.xib */; };
+		AA0000000000000000000E04 /* PlanWindow.xib in Resources */ = {isa = PBXBuildFile; fileRef = AA0000000000000000000E03 /* PlanWindow.xib */; };
+		AA0000000000000000000E02 /* ExchangeWindow.xib in Resources */ = {isa = PBXBuildFile; fileRef = AA0000000000000000000E01 /* ExchangeWindow.xib */; };
 		AB00000000000000000000C2 /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = AB00000000000000000000C1 /* Assets.xcassets */; };
 		AA0000000000000000000092 /* ODataIncrementalStore.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = AA0000000000000000000093 /* ODataIncrementalStore.framework */; };
 		AA0000000000000000000094 /* Cocoa.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = AA0000000000000000000095 /* Cocoa.framework */; };
@@ -102,6 +104,8 @@
 		AA000000000000000000009F /* WorkbenchEngine.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = WorkbenchEngine.h; sourceTree = "<group>"; };
 		AA0000000000000000000091 /* Catalog.xcdatamodeld */ = {isa = PBXFileReference; lastKnownFileType = wrapper.xcdatamodeld; name = Catalog.xcdatamodeld; path = ../Catalog/Catalog.xcdatamodeld; sourceTree = "<group>"; };
 		AA00000000000000000000B1 /* WorkbenchWindow.xib */ = {isa = PBXFileReference; lastKnownFileType = file.xib; path = WorkbenchWindow.xib; sourceTree = "<group>"; };
+		AA0000000000000000000E03 /* PlanWindow.xib */ = {isa = PBXFileReference; lastKnownFileType = file.xib; path = PlanWindow.xib; sourceTree = "<group>"; };
+		AA0000000000000000000E01 /* ExchangeWindow.xib */ = {isa = PBXFileReference; lastKnownFileType = file.xib; path = ExchangeWindow.xib; sourceTree = "<group>"; };
 		AB00000000000000000000C1 /* Assets.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; path = Assets.xcassets; sourceTree = "<group>"; };
 		AA00000000000000000000C2 /* WorkbenchController+SelfTest.m */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.objc; path = "WorkbenchController+SelfTest.m"; sourceTree = "<group>"; };
 		AA00000000000000000000C4 /* WBConnection.m */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.objc; path = "WBConnection.m"; sourceTree = "<group>"; };
@@ -161,6 +165,8 @@
 				AA00000000000000000000D5 /* WorkbenchController+Private.h */,
 				AA000000000000000000009F /* WorkbenchEngine.h */,
 				AA00000000000000000000B1 /* WorkbenchWindow.xib */,
+				AA0000000000000000000E03 /* PlanWindow.xib */,
+				AA0000000000000000000E01 /* ExchangeWindow.xib */,
 				AB00000000000000000000C1 /* Assets.xcassets */,
 				AA0000000000000000000091 /* Catalog.xcdatamodeld */,
 			);
@@ -297,6 +303,8 @@
 			files = (
 				AA0000000000000000000090 /* Catalog.xcdatamodeld in Resources */,
 				AA00000000000000000000B2 /* WorkbenchWindow.xib in Resources */,
+				AA0000000000000000000E04 /* PlanWindow.xib in Resources */,
+				AA0000000000000000000E02 /* ExchangeWindow.xib in Resources */,
 				AB00000000000000000000C2 /* Assets.xcassets in Resources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;

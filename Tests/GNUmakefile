@@ -31,6 +31,7 @@ ODataIncrementalStoreTests_OBJC_FILES = \
 	ODataSchemaTests.m \
 	ODataOperationTests.m \
 	ODataExpressionTests.m \
+	ODataRegexTests.m \
 	ODataHistoryTests.m \
 	ODataModelBuilderTests.m \
 	ODataResourceIdentifierTests.m \

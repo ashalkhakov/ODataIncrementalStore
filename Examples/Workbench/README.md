@@ -13,7 +13,9 @@ Pick a service at the top:
   suppliers, stock at locations), seeded with a few of Northwind's rows,
   and what the Catalog does not show (`WorkbenchBuiltInModel`): products
   with a version (ETags, so conflicts), budgets over time (application
-  time), and pictures (a media entity). Its store is SQLite with
+  time), pictures (a media entity), and the Data Aggregation spec's sales
+  organizations, a recursive hierarchy (`SalesOrgHierarchy`), with their
+  sales. Its store is SQLite with
   persistent history, in a temporary file, so its sets have delta links.
   Its operations are declared in protocols in `WorkbenchEngine.m`:
   `DiscountedPriceByPercent` and `RaisePriceByPercent` on a product,
@@ -32,7 +34,16 @@ runtime: nothing is known about the service in advance.
 What you can do:
 
 - Choose a preset, or build the query: an entity, a predicate (`NSPredicate`
-  syntax), `$top`, `$skip`, a page size, sub-entities or not, and a result
+  syntax: `products.@sum.unitPrice > 90` is `aggregate()` where the service
+  has it; and a hierarchy's tests, `ODataHierarchyPredicate`, as functions
+  of their own: `ISDESCENDANT(SalesOrgHierarchy, 'EMEA')`,
+  `ISANCESTOR(SalesOrgHierarchy, 'US East', SELF)`, with a distance
+  (`'Sales', 1`), or a related node's key path (`'US',
+  salesOrganization.id`); `ISNODE`, `ISROOT`, `ISLEAF` and `ISSIBLING`
+  too; or, beginning with `$`, OData query options sent as they are
+  written, by an `ODataQuery`: `$apply=traverse(…)&$expand=Superordinate`,
+  objects, or dictionaries for that result type, the other fields unused),
+  `$top`, `$skip`, a page size, sub-entities or not, and a result
   type (objects, object IDs, dictionaries, a count). The panel below holds
   the rest of what a fetch request can say: sort keys, as many as you like,
   through to-one relationships (`$orderby`); relationships to prefetch,
@@ -50,6 +61,13 @@ What you can do:
   `$to`; `..=` to include the end; `2024-01-01..` from then on). The GET the store will send is shown
   before you execute it: `$apply` where the service has it, else the read
   of the rows the store groups itself.
+- Explain, at the built-in service: how the service plans that GET, in
+  a window of its own. Above, the physical plan, what runs: `Store scan`,
+  `Store aggregate` and `Store count` are what the store does, through the
+  set's handler, and the rest runs in the service; below, the logical
+  plan, the request as it reads (`docs/query-plan.md`). It is the same
+  URL under `$explain/`, which the service answers with the plans instead
+  of the rows, and the wire log shows it.
 - Execute. Rows are real managed objects; select one to see its attributes,
   fire its faults, or its relationships. Each prefetched relationship is a
   column, showing what came with the row. Fire relationships reads every
@@ -116,9 +134,21 @@ prints a line per check (CI runs it); with `WORKBENCH_SHOTS=<dir>` it also
 saves the window as a PDF per service. `Workbench --self-test builtin` tests
 the built-in service alone, with no network.
 
-The window is `WorkbenchWindow.xib` (File's Owner `WorkbenchController`),
-Xcode 5 format, springs and struts, no Auto Layout; GNUstep loads it with
-`GSXib5Loader`.
+The interface is in XIBs, File's Owner `WorkbenchController` in each:
+`WorkbenchWindow.xib` (the window, every control in it, and the main menu
+with the Store menu), `ExchangeWindow.xib` (one exchange, whole) and
+`PlanWindow.xib` (Explain's plans), the last two loaded when first shown.
+As Xcode saves them: fixed frames with springs and struts and no
+constraints, which `ibtool` turns into constraints and GNUstep's
+`GSXib5Loader` reads as they are (`checkResizing` in the self-test sees
+the window's contents follow its size). Written by hand, three things are
+easy to miss: a split view's `<holdingPriorities>`, which Xcode's `ibtool`
+needs (it fails without them, saying nothing) and GNUstep does not; a
+table column's `minWidth` and `maxWidth`, without which Apple's draws it
+with no width at all; and a checkbox's `<behavior>`, without which Xcode
+makes it a bevel button when it saves the file (`checkSwitches`). The code makes no views: what it
+fills in is what depends on the service (the results' columns, the
+presets, the operations, the streams).
 
 The code follows the screen, which is three things, each without views:
 `WBConnection` (the service, the store over it, the Store menu's choices),
@@ -140,5 +170,5 @@ openapp ./Workbench.app
 
 Apple: open `ODataKit.xcworkspace` at the library root, scheme
 **Workbench**. The app embeds `ODataKit.framework`,
-`ODataIncrementalStore.framework` and `ODataService.framework`, copies
-`WorkbenchWindow.xib`, and compiles `Catalog.xcdatamodeld`.
+`ODataIncrementalStore.framework` and `ODataService.framework`, compiles
+the three XIBs, and compiles `Catalog.xcdatamodeld`.
