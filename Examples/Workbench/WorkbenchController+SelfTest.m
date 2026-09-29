@@ -195,6 +195,66 @@ static void WBCheck(BOOL ok, NSString *what, NSString *detail)
   [self runFetch:nil];
 }
 
+// Choosing a preset, as a person does (the popup's own action), shows
+// every part of it in the panel.
+- (void)checkPresetsFillThePanel
+{
+  NSMutableArray *wrong = [NSMutableArray array];
+  for (NSUInteger i = 0; i < self.presets.count; i++) {
+    NSDictionary *p = self.presets[i];
+    [self.presetsPopup selectItemAtIndex:(NSInteger)i];
+    [self.presetsPopup sendAction:self.presetsPopup.action to:self.presetsPopup.target];
+    NSString *type = p[@"type"] ?: @"objects";
+    NSDictionary *shown = @{
+      @"entity": @[ self.entityPopup.titleOfSelectedItem ?: @"", p[@"entity"] ?: @"" ],
+      @"type": @[ self.resultTypePopup.titleOfSelectedItem ?: @"", [type isEqualToString:@"objects"] ? @"objects" : type ],
+      @"predicate": @[ self.predicateView.string ?: @"", p[@"predicate"] ?: @"" ],
+      @"limit": @[ self.limitField.stringValue ?: @"", p[@"limit"] ?: @"" ],
+      @"search": @[ self.searchField.stringValue ?: @"", p[@"search"] ?: @"" ],
+      @"compute": @[ self.computeField.stringValue ?: @"", p[@"compute"] ?: @"" ],
+      @"group": @[ self.groupField.stringValue ?: @"", p[@"group"] ?: @"" ],
+      @"aggregate": @[ self.aggregateField.stringValue ?: @"", p[@"aggregate"] ?: @"" ],
+      @"time": @[ self.timeField.stringValue ?: @"", p[@"time"] ?: @"" ],
+    };
+    for (NSString *part in [shown.allKeys sortedArrayUsingSelector:@selector(compare:)]) {
+      if (![shown[part][0] isEqual:shown[part][1]]) {
+        [wrong addObject:[NSString stringWithFormat:@"%@: %@ shows \"%@\", not \"%@\"", p[@"label"], part, shown[part][0], shown[part][1]]];
+      }
+    }
+    NSUInteger sorts = 0;
+    for (NSString *item in [p[@"sort"] ?: @"" componentsSeparatedByString:@","]) {
+      if ([item stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceCharacterSet]].length) sorts++;
+    }
+    if ((NSUInteger)self.sortTable.numberOfRows != sorts) {
+      [wrong addObject:[NSString stringWithFormat:@"%@: %ld sort keys shown, not %lu", p[@"label"], (long)self.sortTable.numberOfRows, (unsigned long)sorts]];
+    }
+  }
+  WBCheck(!wrong.count, @"a preset chosen fills the panel", [wrong componentsJoinedByString:@"; "]);
+  // A field being typed in when a preset is chosen shows the preset, and
+  // keeps it once the editing ends.
+  [self runPreset:[self presetLabelled:@"All products"]];
+  [self.window makeFirstResponder:self.limitField];
+  NSText *editor = [self.window fieldEditor:YES forObject:self.limitField];
+  editor.string = @"7";
+  NSUInteger top5 = [self presetLabelled:@"Top 5"];
+  [self.presetsPopup selectItemAtIndex:(NSInteger)top5];
+  [self.presetsPopup sendAction:self.presetsPopup.action to:self.presetsPopup.target];
+  [self.window makeFirstResponder:nil];
+  WBCheck([self.limitField.stringValue isEqualToString:@"5"] && [self.query.limitText isEqualToString:@"5"],
+          @"a preset chosen while a field is being edited replaces what was typed",
+          [NSString stringWithFormat:@"$top shows \"%@\", the query has \"%@\"", self.limitField.stringValue, self.query.limitText]);
+  // Another entity after a grouped preset: nothing of the grouping stays,
+  // not even a sort by one of its keys.
+  [self runPreset:[self presetLabelled:@"Sales by organization"]];
+  [self.entityPopup selectItemWithTitle:@"Product"];
+  [self entityChanged:self.entityPopup];
+  NSArray *keys = [self.query.sorts valueForKey:@"key"];
+  WBCheck([keys isEqual:@[ @"id" ]] && !self.groupField.stringValue.length, @"another entity after a grouped preset starts afresh",
+          [NSString stringWithFormat:@"sort keys %@, group by \"%@\"", keys, self.groupField.stringValue]);
+  // Back to the first, which the checks after this start from.
+  [self runPreset:0];
+}
+
 // $search beside the predicate, and a grouping with its aggregates, as
 // the built-in service answers them: $search, and $apply.
 - (void)checkSearchAndGrouping
@@ -500,6 +560,7 @@ static void WBCheck(BOOL ok, NSString *what, NSString *detail)
       WBCheck([[self.results.rows.firstObject valueForKey:@"name"] isEqual:first] && ![self.results pendingCount], @"Revert drops an edit",
               self.statusField.stringValue);
       [self checkScrolling];
+      [self checkPresetsFillThePanel];
       [self checkQueryPanel];
       [self checkBuiltInOperations];
       [self checkSearchAndGrouping];

@@ -1,0 +1,76 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<document type="com.apple.InterfaceBuilder3.Cocoa.XIB" version="3.0" toolsVersion="21507" targetRuntime="MacOSX.Cocoa" propertyAccessControl="none" useAutolayout="NO" customObjectInstantitationMethod="direct">
+    <dependencies>
+        <deployment identifier="macosx"/>
+        <plugIn identifier="com.apple.InterfaceBuilder.CocoaPlugin" version="21507"/>
+    </dependencies>
+    <objects>
+        <customObject id="-2" userLabel="File's Owner" customClass="WorkbenchController">
+            <connections>
+                <outlet property="exchangeWindow" destination="XWIN" id="oXWIN"/>
+                <outlet property="requestView" destination="XREQ" id="oXREQ"/>
+                <outlet property="responseView" destination="XRES" id="oXRES"/>
+            </connections>
+        </customObject>
+        <customObject id="-1" userLabel="First Responder" customClass="FirstResponder"/>
+        <customObject id="-3" userLabel="Application" customClass="NSObject"/>
+        <window title="Exchange" releasedWhenClosed="NO" visibleAtLaunch="NO" id="XWIN">
+            <windowStyleMask key="styleMask" titled="YES" closable="YES" miniaturizable="YES" resizable="YES"/>
+            <rect key="contentRect" x="120" y="120" width="860" height="640"/>
+            <view key="contentView" id="XWINV">
+                <rect key="frame" x="0.0" y="0.0" width="860" height="640"/>
+                <autoresizingMask key="autoresizingMask" widthSizable="YES" heightSizable="YES"/>
+                <subviews>
+                    <splitView id="XSPL">
+                        <rect key="frame" x="8" y="30" width="844" height="602"/>
+                        <autoresizingMask key="autoresizingMask" widthSizable="YES" heightSizable="YES"/>
+                        <subviews>
+                            <scrollView borderType="bezelBorder" autohidesScrollers="YES" hasVerticalScroller="YES" hasHorizontalScroller="NO" id="XREQS">
+                                <rect key="frame" x="0" y="306" width="844" height="296"/>
+                                <autoresizingMask key="autoresizingMask" widthSizable="YES" heightSizable="YES"/>
+                                <clipView key="contentView" id="XREQCL">
+                                    <rect key="frame" x="1" y="1" width="842" height="294"/>
+                                    <autoresizingMask key="autoresizingMask" widthSizable="YES" heightSizable="YES"/>
+                                    <subviews>
+                                        <textView editable="NO" importsGraphics="NO" richText="NO" id="XREQ">
+                                            <rect key="frame" x="0.0" y="0.0" width="842" height="294"/>
+                                            <autoresizingMask key="autoresizingMask" widthSizable="YES" heightSizable="YES"/>
+                                        </textView>
+                                    </subviews>
+                                </clipView>
+                                <scroller key="verticalScroller" verticalHuggingPriority="750" id="XREQVS"/>
+                            </scrollView>
+                            <scrollView borderType="bezelBorder" autohidesScrollers="YES" hasVerticalScroller="YES" hasHorizontalScroller="NO" id="XRESS">
+                                <rect key="frame" x="0" y="0" width="844" height="296"/>
+                                <autoresizingMask key="autoresizingMask" widthSizable="YES" heightSizable="YES"/>
+                                <clipView key="contentView" id="XRESCL">
+                                    <rect key="frame" x="1" y="1" width="842" height="294"/>
+                                    <autoresizingMask key="autoresizingMask" widthSizable="YES" heightSizable="YES"/>
+                                    <subviews>
+                                        <textView editable="NO" importsGraphics="NO" richText="NO" id="XRES">
+                                            <rect key="frame" x="0.0" y="0.0" width="842" height="294"/>
+                                            <autoresizingMask key="autoresizingMask" widthSizable="YES" heightSizable="YES"/>
+                                        </textView>
+                                    </subviews>
+                                </clipView>
+                                <scroller key="verticalScroller" verticalHuggingPriority="750" id="XRESVS"/>
+                            </scrollView>
+                        </subviews>
+                        <holdingPriorities>
+                            <real value="250"/>
+                            <real value="250"/>
+                        </holdingPriorities>
+                    </splitView>
+                    <textField id="XNOTE">
+                        <rect key="frame" x="8" y="6" width="844" height="18"/>
+                        <autoresizingMask key="autoresizingMask" widthSizable="YES" flexibleMaxY="YES"/>
+                        <textFieldCell key="cell" title="As the store sent and received it. The URL loading system may add headers of its own (Host, Content-Length) and undoes compression." id="XNOTEC">
+    <font key="font" metaFont="system"/>
+    <color key="textColor" name="labelColor" catalog="System" colorSpace="catalog"/>
+</textFieldCell>
+                    </textField>
+                </subviews>
+            </view>
+        </window>
+    </objects>
+</document>

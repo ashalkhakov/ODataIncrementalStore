@@ -134,9 +134,17 @@ prints a line per check (CI runs it); with `WORKBENCH_SHOTS=<dir>` it also
 saves the window as a PDF per service. `Workbench --self-test builtin` tests
 the built-in service alone, with no network.
 
-The window is `WorkbenchWindow.xib` (File's Owner `WorkbenchController`),
-Xcode 5 format, springs and struts, no Auto Layout; GNUstep loads it with
-`GSXib5Loader`.
+The interface is in XIBs, File's Owner `WorkbenchController` in each:
+`WorkbenchWindow.xib` (the window, every control in it, and the main menu
+with the Store menu), `ExchangeWindow.xib` (one exchange, whole) and
+`PlanWindow.xib` (Explain's plans), the last two loaded when first shown.
+Xcode 5 format, springs and struts, no Auto Layout; GNUstep loads them
+with `GSXib5Loader`. A split view has its `<holdingPriorities>`, which
+Xcode's `ibtool` needs (it fails without them, saying nothing) and GNUstep
+does not; a table column has its `minWidth` and `maxWidth`, without which
+Apple's draws it with no width at all. The code makes no views: what it
+fills in is what depends on the service (the results' columns, the
+presets, the operations, the streams).
 
 The code follows the screen, which is three things, each without views:
 `WBConnection` (the service, the store over it, the Store menu's choices),
@@ -158,5 +166,5 @@ openapp ./Workbench.app
 
 Apple: open `ODataKit.xcworkspace` at the library root, scheme
 **Workbench**. The app embeds `ODataKit.framework`,
-`ODataIncrementalStore.framework` and `ODataService.framework`, copies
-`WorkbenchWindow.xib`, and compiles `Catalog.xcdatamodeld`.
+`ODataIncrementalStore.framework` and `ODataService.framework`, compiles
+the three XIBs, and compiles `Catalog.xcdatamodeld`.

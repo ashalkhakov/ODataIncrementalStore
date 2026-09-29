@@ -591,12 +591,14 @@ static NSArray *WBItems(NSString *text)
 
 - (void)reset
 {
+  // The grouping first: while there is one, the columns are its keys, and
+  // a sort by one would outlive it.
+  _searchText = _computeText = _groupText = _aggregateText = _timeText = @"";
+  [_prefetch removeAllObjects];
+  [_select removeAllObjects];
   [_sorts removeAllObjects];
   NSString *first = [self columnNames].firstObject;
   if (first) [_sorts addObject:[@{ @"key": first, @"descending": @NO } mutableCopy]];
-  [_prefetch removeAllObjects];
-  [_select removeAllObjects];
-  _searchText = _computeText = _groupText = _aggregateText = _timeText = @"";
 }
 
 - (void)applyPreset:(NSDictionary *)p

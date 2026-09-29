@@ -1,7 +1,7 @@
 # AppKit workbench on GNUstep. Requires FreeCoreData + gnustep-gui.
 # Try out an OData v4 service: the built-in in-memory one, Northwind,
 # TripPin, or any other.
-# UI is WorkbenchWindow.xib (GSXib5Loader).
+# UI is WorkbenchWindow.xib, ExchangeWindow.xib and PlanWindow.xib (GSXib5Loader).
 ifeq ($(GNUSTEP_MAKEFILES),)
 $(error Set GNUSTEP_MAKEFILES (source GNUstep.sh).)
 endif
@@ -18,7 +18,7 @@ Workbench_INCLUDE_DIRS = -I../../Source/ODataKit/include -I../../Source/ODataInc
 Workbench_LIB_DIRS = -L../../obj -L../..
 Workbench_OBJC_LIBS += -lODataService -lODataIncrementalStore -lODataKit -lCoreData -ldispatch
 Workbench_TOOL_LIBS += -lODataService -lODataIncrementalStore -lODataKit -lCoreData -ldispatch
-Workbench_RESOURCE_FILES = WorkbenchWindow.xib Workbench.png
+Workbench_RESOURCE_FILES = WorkbenchWindow.xib ExchangeWindow.xib PlanWindow.xib Workbench.png
 Workbench_APPLICATION_ICON = Workbench.png
 
 ADDITIONAL_OBJCFLAGS += -fobjc-arc -fblocks -fobjc-runtime=gnustep-2.0 \

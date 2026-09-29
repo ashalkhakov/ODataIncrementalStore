@@ -1,0 +1,92 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<document type="com.apple.InterfaceBuilder3.Cocoa.XIB" version="3.0" toolsVersion="21507" targetRuntime="MacOSX.Cocoa" propertyAccessControl="none" useAutolayout="NO" customObjectInstantitationMethod="direct">
+    <dependencies>
+        <deployment identifier="macosx"/>
+        <plugIn identifier="com.apple.InterfaceBuilder.CocoaPlugin" version="21507"/>
+    </dependencies>
+    <objects>
+        <customObject id="-2" userLabel="File's Owner" customClass="WorkbenchController">
+            <connections>
+                <outlet property="planWindow" destination="PWIN" id="oPWIN"/>
+                <outlet property="explainedView" destination="PREQ" id="oPREQ"/>
+                <outlet property="physicalPlanView" destination="PPHY" id="oPPHY"/>
+                <outlet property="logicalPlanView" destination="PLOG" id="oPLOG"/>
+            </connections>
+        </customObject>
+        <customObject id="-1" userLabel="First Responder" customClass="FirstResponder"/>
+        <customObject id="-3" userLabel="Application" customClass="NSObject"/>
+        <window title="Plan" releasedWhenClosed="NO" visibleAtLaunch="NO" id="PWIN">
+            <windowStyleMask key="styleMask" titled="YES" closable="YES" miniaturizable="YES" resizable="YES"/>
+            <rect key="contentRect" x="160" y="160" width="860" height="640"/>
+            <view key="contentView" id="PWINV">
+                <rect key="frame" x="0.0" y="0.0" width="860" height="640"/>
+                <autoresizingMask key="autoresizingMask" widthSizable="YES" heightSizable="YES"/>
+                <subviews>
+                    <scrollView borderType="bezelBorder" autohidesScrollers="YES" hasVerticalScroller="YES" hasHorizontalScroller="NO" id="PREQS">
+                        <rect key="frame" x="8" y="572" width="844" height="60"/>
+                        <autoresizingMask key="autoresizingMask" widthSizable="YES" flexibleMinY="YES"/>
+                        <clipView key="contentView" id="PREQCL">
+                            <rect key="frame" x="1" y="1" width="842" height="58"/>
+                            <autoresizingMask key="autoresizingMask" widthSizable="YES" heightSizable="YES"/>
+                            <subviews>
+                                <textView editable="NO" importsGraphics="NO" richText="NO" id="PREQ">
+                                    <rect key="frame" x="0.0" y="0.0" width="842" height="58"/>
+                                    <autoresizingMask key="autoresizingMask" widthSizable="YES" heightSizable="YES"/>
+                                </textView>
+                            </subviews>
+                        </clipView>
+                        <scroller key="verticalScroller" verticalHuggingPriority="750" id="PREQVS"/>
+                    </scrollView>
+                    <splitView id="PSPL">
+                        <rect key="frame" x="8" y="30" width="844" height="534"/>
+                        <autoresizingMask key="autoresizingMask" widthSizable="YES" heightSizable="YES"/>
+                        <subviews>
+                            <scrollView borderType="bezelBorder" autohidesScrollers="YES" hasVerticalScroller="YES" hasHorizontalScroller="NO" id="PPHYS">
+                                <rect key="frame" x="0" y="272" width="844" height="262"/>
+                                <autoresizingMask key="autoresizingMask" widthSizable="YES" heightSizable="YES"/>
+                                <clipView key="contentView" id="PPHYCL">
+                                    <rect key="frame" x="1" y="1" width="842" height="260"/>
+                                    <autoresizingMask key="autoresizingMask" widthSizable="YES" heightSizable="YES"/>
+                                    <subviews>
+                                        <textView editable="NO" importsGraphics="NO" richText="NO" id="PPHY">
+                                            <rect key="frame" x="0.0" y="0.0" width="842" height="260"/>
+                                            <autoresizingMask key="autoresizingMask" widthSizable="YES" heightSizable="YES"/>
+                                        </textView>
+                                    </subviews>
+                                </clipView>
+                                <scroller key="verticalScroller" verticalHuggingPriority="750" id="PPHYVS"/>
+                            </scrollView>
+                            <scrollView borderType="bezelBorder" autohidesScrollers="YES" hasVerticalScroller="YES" hasHorizontalScroller="NO" id="PLOGS">
+                                <rect key="frame" x="0" y="0" width="844" height="262"/>
+                                <autoresizingMask key="autoresizingMask" widthSizable="YES" heightSizable="YES"/>
+                                <clipView key="contentView" id="PLOGCL">
+                                    <rect key="frame" x="1" y="1" width="842" height="260"/>
+                                    <autoresizingMask key="autoresizingMask" widthSizable="YES" heightSizable="YES"/>
+                                    <subviews>
+                                        <textView editable="NO" importsGraphics="NO" richText="NO" id="PLOG">
+                                            <rect key="frame" x="0.0" y="0.0" width="842" height="260"/>
+                                            <autoresizingMask key="autoresizingMask" widthSizable="YES" heightSizable="YES"/>
+                                        </textView>
+                                    </subviews>
+                                </clipView>
+                                <scroller key="verticalScroller" verticalHuggingPriority="750" id="PLOGVS"/>
+                            </scrollView>
+                        </subviews>
+                        <holdingPriorities>
+                            <real value="250"/>
+                            <real value="250"/>
+                        </holdingPriorities>
+                    </splitView>
+                    <textField id="PNOTE">
+                        <rect key="frame" x="8" y="6" width="844" height="18"/>
+                        <autoresizingMask key="autoresizingMask" widthSizable="YES" flexibleMaxY="YES"/>
+                        <textFieldCell key="cell" title="Store operators go to the store, through the set's handler; the rest runs in the service." id="PNOTEC">
+    <font key="font" metaFont="system"/>
+    <color key="textColor" name="labelColor" catalog="System" colorSpace="catalog"/>
+</textFieldCell>
+                    </textField>
+                </subviews>
+            </view>
+        </window>
+    </objects>
+</document>

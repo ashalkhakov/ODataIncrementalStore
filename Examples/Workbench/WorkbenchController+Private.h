@@ -17,38 +17,40 @@
 // The service's canned queries, as the presets menu lists them.
 @property (nonatomic, copy) NSArray<NSDictionary *> *presets;
 
-// The query panel's lists and fields.
-@property (nonatomic, strong) NSTableView *sortTable;
-@property (nonatomic, strong) NSOutlineView *expandOutline;
-@property (nonatomic, strong) NSTableView *selectTable;
-@property (nonatomic, strong) NSTextField *searchField;
-@property (nonatomic, strong) NSTextField *computeField;
-@property (nonatomic, strong) NSTextField *groupField;
-@property (nonatomic, strong) NSTextField *aggregateField;
-@property (nonatomic, strong) NSTextField *timeField;
+// The query panel's lists and fields (WorkbenchWindow.xib).
+@property (nonatomic, strong) IBOutlet NSTableView *sortTable;
+@property (nonatomic, strong) IBOutlet NSOutlineView *expandOutline;
+@property (nonatomic, strong) IBOutlet NSTableView *selectTable;
+@property (nonatomic, strong) IBOutlet NSTextField *searchField;
+@property (nonatomic, strong) IBOutlet NSTextField *computeField;
+@property (nonatomic, strong) IBOutlet NSTextField *groupField;
+@property (nonatomic, strong) IBOutlet NSTextField *aggregateField;
+@property (nonatomic, strong) IBOutlet NSTextField *timeField;
 
 // What acts on the selected result.
-@property (nonatomic, strong) NSButton *deleteButton;
-@property (nonatomic, strong) NSButton *faultButton;
-@property (nonatomic, strong) NSButton *fireButton;
-@property (nonatomic, strong) NSPopUpButton *streamPopup;
-@property (nonatomic, strong) NSButton *downloadButton;
-@property (nonatomic, strong) NSButton *uploadButton;
+@property (nonatomic, strong) IBOutlet NSButton *deleteButton;
+@property (nonatomic, strong) IBOutlet NSButton *faultButton;
+@property (nonatomic, strong) IBOutlet NSButton *fireButton;
+@property (nonatomic, strong) IBOutlet NSPopUpButton *streamPopup;
+@property (nonatomic, strong) IBOutlet NSButton *downloadButton;
+@property (nonatomic, strong) IBOutlet NSButton *uploadButton;
 
-// The wire log, newest first, and the window that shows one exchange.
+// The wire log, newest first, and the window that shows one exchange
+// (ExchangeWindow.xib, loaded when first shown).
 @property (nonatomic, strong) NSMutableArray *log;
-@property (nonatomic, strong) NSTableView *logTable;
-@property (nonatomic, strong) NSWindow *exchangeWindow;
-@property (nonatomic, strong) NSTextView *requestView;
-@property (nonatomic, strong) NSTextView *responseView;
-@property (nonatomic, strong) NSMenu *storeMenu;
+@property (nonatomic, strong) IBOutlet NSTableView *logTable;
+@property (nonatomic, strong) IBOutlet NSWindow *exchangeWindow;
+@property (nonatomic, strong) IBOutlet NSTextView *requestView;
+@property (nonatomic, strong) IBOutlet NSTextView *responseView;
+@property (nonatomic, strong) IBOutlet NSMenu *storeMenu;
 
-// Explain: the built-in service's plan for the query, physical and logical.
-@property (nonatomic, strong) NSButton *explainButton;
-@property (nonatomic, strong) NSWindow *planWindow;
-@property (nonatomic, strong) NSTextView *explainedView;
-@property (nonatomic, strong) NSTextView *physicalPlanView;
-@property (nonatomic, strong) NSTextView *logicalPlanView;
+// Explain: the built-in service's plan for the query, physical and logical
+// (PlanWindow.xib, loaded when first shown).
+@property (nonatomic, strong) IBOutlet NSButton *explainButton;
+@property (nonatomic, strong) IBOutlet NSWindow *planWindow;
+@property (nonatomic, strong) IBOutlet NSTextView *explainedView;
+@property (nonatomic, strong) IBOutlet NSTextView *physicalPlanView;
+@property (nonatomic, strong) IBOutlet NSTextView *logicalPlanView;
 
 // How many rows a screen holds, as a test says; 0: as the table's height says.
 @property (nonatomic) NSUInteger screenfulForTests;
