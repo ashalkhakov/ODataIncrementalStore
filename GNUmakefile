@@ -49,6 +49,7 @@ ODataKit_OBJC_FILES = \
 	Source/ODataKit/ODataExpression.m \
 	Source/ODataKit/ODataLexer.m \
 	Source/ODataKit/ODataPropertyMapper.m \
+	Source/ODataKit/ODataPredicateBuilder.m \
 	Source/ODataKit/ODataRegex.m \
 	Source/ODataKit/ODataSchema.m \
 	Source/ODataKit/ODataTransport.m \
@@ -61,6 +62,7 @@ ODataKit_HEADER_FILES = \
 	ODataError.h \
 	ODataExpression.h \
 	ODataKit.h \
+	ODataPredicateBuilder.h \
 	ODataPropertyMapper.h \
 	ODataRegex.h \
 	ODataSchema.h \
@@ -127,7 +129,6 @@ ODataService_OBJC_FILES = \
 	Source/ODataService/ODataAuthentication.m \
 	Source/ODataService/ODataMetadataWriter.m \
 	Source/ODataService/ODataOperationCatalog.m \
-	Source/ODataService/ODataPredicateBuilder.m \
 	Source/ODataService/ODataService.m \
 	Source/ODataService/ODataServiceBatch.m \
 	Source/ODataService/ODataTimeline.m \
@@ -139,7 +140,6 @@ ODataService_OBJC_FILES = \
 ODataService_HEADER_FILES = \
 	ODataAuthentication.h \
 	ODataMetadataWriter.h \
-	ODataPredicateBuilder.h \
 	ODataService.h
 
 ODataService_HEADER_FILES_DIR = Source/ODataService/include/ODataService

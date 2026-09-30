@@ -2,13 +2,13 @@
 // Copyright (C) 2026 OIS contributors
 // SPDX-License-Identifier: LGPL-2.1-or-later
 //
-// The server's half of ODataPredicateTranslator: a $filter or $orderby tree
-// (ODataExpression.h) becomes an NSPredicate or sort descriptors over an
-// entity's key paths. Everything is built from NSComparisonPredicate,
-// NSCompoundPredicate and NSExpression objects, and request text is never
-// formatted into a predicate string: the one format string is the key path
-// off a lambda's variable, made of a generated variable name and the
-// model's own property names.
+// The service's half of ODataPredicateTranslator, and anyone's who holds a
+// parsed $filter or $orderby (ODataExpression.h): it becomes an NSPredicate
+// or sort descriptors over an entity's key paths. Everything is built from
+// NSComparisonPredicate, NSCompoundPredicate and NSExpression objects, and
+// request text is never formatted into a predicate string: the one format
+// string is the key path off a lambda's variable, made of a generated
+// variable name and the model's own property names.
 //
 // Literals are typed by what they are compared with: 2018-02-11 against a
 // Date attribute is an NSDate, 'x' against a UUID attribute an NSUUID, by

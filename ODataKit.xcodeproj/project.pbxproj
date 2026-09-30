@@ -319,6 +319,7 @@
 				BC4150830A60E511EDFED020 /* ODataExpression.m */,
 				BC40C0C255657A288601624F /* ODataLexer.m */,
 				B4E08C88136730A6E67CF2C4 /* ODataPropertyMapper.m */,
+				B5181AA8755FAB53B3668708 /* ODataPredicateBuilder.m */,
 				B7C84FC11DD7261A0B3709F7 /* ODataSchema.m */,
 				BB661710CE4123B5519A3D44 /* ODataTransport.m */,
 				BC2A4D85AAF3941E049BB375 /* ODataValue.m */,
@@ -332,7 +333,6 @@
 			children = (
 				B5D9A994642F530EDFA9A0A6 /* ODataAuthentication.h */,
 				B4560315BDB2AE56BE9BCE17 /* ODataMetadataWriter.h */,
-				B0AA8F4082DCB7C43D0890C0 /* ODataPredicateBuilder.h */,
 				B819C7A9F0C4AD1745DBA5AB /* ODataService.h */,
 			);
 			path = include/ODataService;
@@ -400,6 +400,7 @@
 				B3CAB60E43B84AA3A08DEE26 /* ODataExpression.h */,
 				B313072022835CC670C3B02E /* ODataKit.h */,
 				B79B75970DACDB3F20CB0BAB /* ODataPropertyMapper.h */,
+				B0AA8F4082DCB7C43D0890C0 /* ODataPredicateBuilder.h */,
 				B233C550667A3AE3794DC078 /* ODataSchema.h */,
 				BA496A27A63D29266C0986D0 /* ODataTransport.h */,
 				B9F38C2E717E0720D785C25D /* ODataValue.h */,
@@ -460,7 +461,6 @@
 				B2FB262C55182612B9FC4702 /* ODataAuthentication.m */,
 				B231A9C1DC572C8F92288D90 /* ODataMetadataWriter.m */,
 				BA2EB602AA25995D34810903 /* ODataOperationCatalog.m */,
-				B5181AA8755FAB53B3668708 /* ODataPredicateBuilder.m */,
 				B50F95B0017EBAF55BEFC746 /* ODataService.m */,
 				BCFA68AC1F779AD086BBF30F /* ODataServiceBatch.m */,
 				BBF1AE089209C214D9E6D32B /* ODataTimeline.m */,
@@ -528,6 +528,7 @@
 				B056C28D90E548DB0DE4533D /* ODataExpression.h in Headers */,
 				B72C96816FACDF88B4F7DCA7 /* ODataKit.h in Headers */,
 				BB2BF34FB6588288B4B1D001 /* ODataPropertyMapper.h in Headers */,
+				BA4A0899B0CF8FC6175304FD /* ODataPredicateBuilder.h in Headers */,
 				BCF5DA096F6F5533BCE201E6 /* ODataSchema.h in Headers */,
 				B495F2F31718763EDE6FF61A /* ODataTransport.h in Headers */,
 				BC8D312BFD572BADCEDA503E /* ODataValue.h in Headers */,
@@ -565,7 +566,6 @@
 			files = (
 				BDDD168F1D1E0B4A80E2EF7D /* ODataAuthentication.h in Headers */,
 				BE917EA201D75F17121BF885 /* ODataMetadataWriter.h in Headers */,
-				BA4A0899B0CF8FC6175304FD /* ODataPredicateBuilder.h in Headers */,
 				B0CC462EB67116ACAD0811D3 /* ODataService.h in Headers */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
@@ -780,7 +780,6 @@
 				B6418E7931C73E169294969C /* ODataAuthentication.m in Sources */,
 				B1BAAA965DEB43CE5A73BB46 /* ODataMetadataWriter.m in Sources */,
 				BF79F82E6E0F4202CAE3D0B8 /* ODataOperationCatalog.m in Sources */,
-				B246A689DF785A799BAAA7F7 /* ODataPredicateBuilder.m in Sources */,
 				BE9903CE28D7A94C675A726A /* ODataService.m in Sources */,
 				B28C550E4A1FC5534F7C90C5 /* ODataServiceBatch.m in Sources */,
 				B50B5458D6BAD80153377672 /* ODataTimeline.m in Sources */,
@@ -803,6 +802,7 @@
 				BA39A0E142501F3F8733AACA /* ODataExpression.m in Sources */,
 				B393644308DD23BC62AFC5FA /* ODataLexer.m in Sources */,
 				B7B8F887EC14B3DE237D2293 /* ODataPropertyMapper.m in Sources */,
+				B246A689DF785A799BAAA7F7 /* ODataPredicateBuilder.m in Sources */,
 				B7853E4CF8ED2915675F57EF /* ODataSchema.m in Sources */,
 				B113AFB12161139866678838 /* ODataTransport.m in Sources */,
 				BC0BBC5190FF7556BC42A7FE /* ODataValue.m in Sources */,

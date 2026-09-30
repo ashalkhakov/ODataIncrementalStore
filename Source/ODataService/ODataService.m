@@ -7,7 +7,7 @@
 #import "ODataValue.h"
 #import "ODataSchema.h"
 #import "ODataMetadataWriter.h"
-#import "ODataPredicateBuilder.h"
+#import <ODataKit/ODataPredicateBuilder.h>
 #import "ODataOperationCatalog.h"
 #import "ODataServiceBatch.h"
 #import "ODataApply.h"

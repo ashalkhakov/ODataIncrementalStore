@@ -391,5 +391,5 @@ NS_ASSUME_NONNULL_END
 
 // The rest of the server library, for those who import it by this name.
 #import "ODataAuthentication.h"
-#import "ODataPredicateBuilder.h"
+#import <ODataKit/ODataPredicateBuilder.h>
 #import "ODataMetadataWriter.h"

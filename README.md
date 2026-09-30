@@ -12,7 +12,7 @@ service's schema.
 |---|---|
 | `ODataIncrementalStore` | The client: an `NSIncrementalStore`. Fetch requests become `$filter`, `$orderby`, `$expand` and the rest; saves become POST, PATCH, DELETE and `$batch`; ETags become merge conflicts. |
 | `ODataService` | The server: OData 4.01 (and 4.0) over any Core Data store. `ois-serve` runs it behind a reverse proxy. |
-| `ODataKit` | What both share: the model mapping, CSDL, values, the URL and `$filter` grammar, `$batch`. |
+| `ODataKit` | What both share: the model mapping, CSDL, values, the URL and `$filter` grammar, `$filter` and `$orderby` as Core Data predicates and sort descriptors, `$batch`. |
 
 ![The Workbench](Examples/Workbench/Workbench.png)
 
