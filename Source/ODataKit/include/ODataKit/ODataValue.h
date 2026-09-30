@@ -44,7 +44,7 @@ typedef NS_ENUM(NSInteger, ODataEdmType) {
                            // attribute, member values on an integer one
   ODataEdmComplex,         // a schema complex type: an NSDictionary
   ODataEdmCollection,      // Collection(...): an NSArray
-  ODataEdmJSON             // Org.OData.JSON.V1.JSON: any JSON value, kept as it is
+  ODataEdmJSON             // Org.OData.JSON.V1.JSON or Edm.Untyped: any JSON value, kept as it is
                            // (a Transformable attribute) or as its text (a String one)
 };
 
@@ -87,6 +87,22 @@ typedef NS_ENUM(NSInteger, ODataEdmType) {
 - (nullable id)valueForJSON:(id)json typeName:(nullable NSString *)typeName;
 - (id)JSONForValue:(nullable id)value typeName:(nullable NSString *)typeName;
 - (NSString *)literalForValue:(nullable id)value typeName:(nullable NSString *)typeName;
+
+// Dynamic properties, an open type's, which no schema types (JSON Format
+// section 4.6.3). The type a value is written as where its JSON does not
+// tell it: Edm.DateTimeOffset for an NSDate, Edm.Decimal, Edm.Int32 or
+// Edm.Int64, Edm.Double, Edm.Guid for an NSUUID, Edm.Binary for NSData;
+// nil for a string, a boolean, a dictionary or an array.
+- (nullable NSString *)dynamicTypeNameOfValue:(id)value;
+// The members of an entity's JSON that are none of these names, nor
+// control information or annotations: its dynamic properties, each
+// decoded as its type annotation (Name@odata.type, or 4.01's Name@type)
+// says -- a Guid as an NSUUID -- or kept as it came. null is no value.
+- (NSDictionary<NSString *, id> *)dynamicPropertiesInJSON:(NSDictionary<NSString *, id> *)json
+                                                 declared:(NSSet<NSString *> *)declared;
+// And back: each value into json, annotated with its type where
+// -dynamicTypeNameOfValue: gives one; NSNull as null, which removes it.
+- (void)addDynamicProperties:(NSDictionary<NSString *, id> *)values toJSON:(NSMutableDictionary<NSString *, id> *)json;
 
 @end
 

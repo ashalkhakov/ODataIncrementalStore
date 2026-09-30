@@ -162,6 +162,8 @@ static NSPredicate *OISCompare(NSExpression *left, NSPredicateOperatorType type,
 @property (nonatomic, strong) NSMutableDictionary<NSString *, OISTerm *> *scope;
 @property (nonatomic, copy) NSDictionary<NSString *, NSEntityDescription *> *entitiesByTypeName;
 @property (nonatomic, copy) NSSet * (^restrictedProperties)(NSEntityDescription *entity, BOOL sorting);
+@property (nonatomic, copy) ODataDynamicPropertyPredicate dynamicProperty;
+@property (nonatomic, strong, nullable) id userInfo;
 @property (nonatomic) BOOL sorting;
 // $compute's names, and how deep one stands for another.
 @property (nonatomic, copy) NSDictionary<NSString *, ODataExpression *> *computed;
@@ -855,6 +857,12 @@ static BOOL OISWidens(NSString *from, NSString *to)
       }
       // fall through: a function that returns a boolean value
     default: {
+      NSArray *dynamicPath = [self dynamicPathOf:e];
+      if (dynamicPath) {
+        // A dynamic property on its own: is it true?
+        ODataExpression *yes = [ODataExpression literalWithValue:@YES];
+        return [self dynamic:dynamicPath type:NSEqualToPredicateOperatorType literal:yes];
+      }
       OISTerm *t = [self term:e];
       if (!t) return nil;
       if (t.kind == OISTermValue && t.attribute.attributeType == NSBooleanAttributeType) {
@@ -891,8 +899,56 @@ static NSString *OISConstantString(OISTerm *t)
   return OISCompare(inner, type, [NSExpression expressionForConstantValue:text], NSCaseInsensitivePredicateOption);
 }
 
+#pragma mark Dynamic properties
+
+// The names of a property the entity does not have, from $it: a name that
+// is not one of its properties, and the members of it after. nil for
+// anything else, or when nothing gives such properties a meaning.
+- (NSArray<NSString *> *)dynamicPathOf:(ODataExpression *)e
+{
+  if (!self.dynamicProperty || self.sorting) return nil;
+  NSMutableArray<NSString *> *path = [NSMutableArray array];
+  for (e = [self resolve:e]; e.kind == ODataExpressionMember; e = e.operand) {
+    [path insertObject:e.name atIndex:0];
+    if (!e.operand) break;
+  }
+  if (e.kind != ODataExpressionMember && !(e.kind == ODataExpressionVariable && [e.name isEqualToString:@"$it"])) return nil;
+  if (!path.count || self.computed[path[0]] || [self.mapper propertyForWireName:path[0] entity:self.root]) return nil;
+  return path;
+}
+
+// A dynamic property compared with a value, as the entity's handler says.
+- (NSPredicate *)dynamic:(NSArray<NSString *> *)path type:(NSPredicateOperatorType)type literal:(ODataExpression *)literal
+{
+  NSString *name = [path componentsJoinedByString:@"/"];
+  if (self.scope.count) return [self unsupported:[NSString stringWithFormat:@"The dynamic property %@ inside any or all", name]];
+  literal = [self resolve:literal];
+  if (!literal) return nil;
+  if (literal.kind != ODataExpressionLiteral) {
+    return [self unsupported:[NSString stringWithFormat:@"Comparing the dynamic property %@ with anything but a value", name]];
+  }
+  BOOL ok;
+  id value = [self valueOfLiteral:literal attribute:nil ok:&ok];
+  if (!ok) return nil;
+  NSError *error = nil;
+  NSPredicate *p = self.dynamicProperty(self.root, path, type, value, self.userInfo, &error);
+  if (p) return p;
+  if (error) {
+    if (!self.error) self.error = error;
+    return nil;
+  }
+  return [self fail:400 message:[NSString stringWithFormat:@"%@ has no property %@", self.root.name, name]];
+}
+
 - (NSPredicate *)compare:(NSString *)op left:(ODataExpression *)left right:(ODataExpression *)right
 {
+  NSArray *dynamicLeft = [self dynamicPathOf:left];
+  NSArray *dynamicRight = dynamicLeft ? nil : [self dynamicPathOf:right];
+  if (dynamicLeft || dynamicRight) {
+    if (dynamicLeft && [self dynamicPathOf:right]) return [self unsupported:@"Comparing two dynamic properties"];
+    return dynamicLeft ? [self dynamic:dynamicLeft type:OISComparisonOperator(op) literal:right]
+                       : [self dynamic:dynamicRight type:OISComparisonOperator(OISSwapped(op)) literal:left];
+  }
   OISTerm *l = [self term:left];
   OISTerm *r = l ? [self term:right] : nil;
   if (!r) return nil;
@@ -1498,6 +1554,20 @@ static const NSUInteger OISMaxDateRanges = 200;
 
 - (NSPredicate *)in:(ODataExpression *)left list:(ODataExpression *)list
 {
+  NSArray *dynamicPath = [self dynamicPathOf:left];
+  if (dynamicPath) {
+    // Each, as eq.
+    list = [self resolve:list];
+    if (!list) return nil;
+    if (list.kind != ODataExpressionList) return [self unsupported:@"in with anything but a list of values"];
+    NSMutableArray *each = [NSMutableArray array];
+    for (ODataExpression *item in list.arguments) {
+      NSPredicate *p = [self dynamic:dynamicPath type:NSEqualToPredicateOperatorType literal:item];
+      if (!p) return nil;
+      [each addObject:p];
+    }
+    return [NSCompoundPredicate orPredicateWithSubpredicates:each];
+  }
   OISTerm *l = [self term:left];
   if (!l) return nil;
   list = [self resolve:list];
@@ -1606,6 +1676,16 @@ static const NSUInteger OISMaxDateRanges = 200;
   return self;
 }
 
+- (instancetype)builderWithUserInfo:(id)userInfo
+{
+  ODataPredicateBuilder *builder = [[[self class] alloc] initWithMapper:self.mapper];
+  builder.entitiesByTypeName = self.entitiesByTypeName;
+  builder.restrictedProperties = self.restrictedProperties;
+  builder.dynamicProperty = self.dynamicProperty;
+  builder->_userInfo = userInfo;
+  return builder;
+}
+
 - (OISPredicateBuild *)buildForEntity:(NSEntityDescription *)entity aliases:(NSDictionary *)aliases
 {
   OISPredicateBuild *build = [[OISPredicateBuild alloc] init];
@@ -1615,6 +1695,8 @@ static const NSUInteger OISMaxDateRanges = 200;
   build.scope = [NSMutableDictionary dictionary];
   build.entitiesByTypeName = self.entitiesByTypeName ?: @{};
   build.restrictedProperties = self.restrictedProperties;
+  build.dynamicProperty = self.dynamicProperty;
+  build.userInfo = self.userInfo;
   return build;
 }
 

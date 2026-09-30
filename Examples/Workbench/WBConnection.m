@@ -137,8 +137,9 @@ static NSURL *WBTripPinSession(void)
   _wire = _engine;
   NSPersistentStoreCoordinator *psc = [[NSPersistentStoreCoordinator alloc] initWithManagedObjectModel:model];
   NSError *error = nil;
+  // The configuration the service serves: the client's store holds it.
   ODataIncrementalStore *store = (ODataIncrementalStore *)[psc addPersistentStoreWithType:[ODataIncrementalStore storeType]
-                                                                             configuration:nil URL:root
+                                                                             configuration:WorkbenchServedConfiguration URL:root
                                                                                    options:[self storeOptionsWithTransport:_engine] error:&error];
   [self finishWithModel:model coordinator:psc store:store root:root error:error];
 }

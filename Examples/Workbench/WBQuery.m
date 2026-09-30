@@ -264,7 +264,7 @@ static NSArray *WBKnownPresets(WBService service)
 - (NSArray *)entityNames
 {
   NSMutableArray *names = [NSMutableArray array];
-  for (NSEntityDescription *e in _model.entities) {
+  for (NSEntityDescription *e in _configurationName ? [_model entitiesForConfiguration:_configurationName] : _model.entities) {
     if (e.name) [names addObject:e.name];
   }
   return [names sortedArrayUsingSelector:@selector(compare:)];

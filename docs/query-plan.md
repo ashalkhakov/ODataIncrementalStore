@@ -76,6 +76,10 @@ some operators are fused into what the store does:
   relationship, then the members), then split; the nested options'
   filter and order in that read, or where they ask for each parent's own
   `$these` or compute, run per parent here.
+- **Dynamic properties**(set): the last step, for each open type's set
+  among what the plan writes: the dynamic properties of all its
+  entities there, rows and nested members alike, asked of its handler
+  at once (`-dynamicPropertiesOfObjects:request:reply:`).
 
 Everything else runs here, over what the store gave. `maxRowsInMemory`
 bounds each operator that holds rows.

@@ -220,7 +220,7 @@ typedef NS_ENUM(NSInteger, OISWriteMode) {
   configuration.repeatable = [repeatable isEqual:@YES];
   _builder.version = configuration.version;
   NSManagedObjectModel *model = self.persistentStoreCoordinator.managedObjectModel;
-  _metadataProblems = _schema ? [_mapper problemsWithModel:model] : @[ schemaError.localizedDescription ?: @"$metadata could not be read" ];
+  _metadataProblems = _schema ? [_mapper problemsWithModel:model configuration:self.configurationName] : @[ schemaError.localizedDescription ?: @"$metadata could not be read" ];
   if (_metadataProblems.count && [self.options[ODataIncrementalStoreRequireMatchingModelOption] boolValue]) {
     if (error) *error = OISError(ODataIncrementalStoreErrorModelMismatch,
                                  [@"The model does not match the service's $metadata: " stringByAppendingString:[_metadataProblems componentsJoinedByString:@"; "]]);
@@ -774,11 +774,26 @@ static BOOL OISIsAggregate(NSExpressionDescription *description)
   return !([support isKindOfClass:[NSDictionary class]] && OISRefused(support[@"ComputeSupported"]));
 }
 
+// Whether a dictionary fetch names a dynamic property (dynamicProperties.Size),
+// which $select can ask for by its name.
+- (BOOL)selectsDynamicProperties:(NSFetchRequest *)fetch
+{
+  NSEntityDescription *entity = fetch.entity;
+  for (id property in fetch.propertiesToFetch) {
+    NSString *path = [property isKindOfClass:[NSString class]] ? property
+                   : [property isKindOfClass:[NSExpressionDescription class]] ? OISKeyPathOf(property) : nil;
+    NSArray *parts = [path componentsSeparatedByString:@"."];
+    if (parts.count > 1 && [_mapper attributeHoldsDynamicProperties:entity.attributesByName[parts[0]]]) return YES;
+  }
+  return NO;
+}
+
 // FreeCoreData shapes grouped, aggregated and computed dictionary fetches
-// itself unless the store says it does; this one does.
+// itself unless the store says it does; this one does, and those that
+// name a dynamic property, which $select asks the service for.
 - (BOOL)_canShapeDictionaryRequest:(NSFetchRequest *)request
 {
-  return [self aggregates:request] || [self computes:request];
+  return [self aggregates:request] || [self computes:request] || [self selectsDynamicProperties:request];
 }
 
 // Where the service computes nothing: the rows, and each value computed
@@ -1390,6 +1405,18 @@ static void OISSetKeyPath(NSMutableDictionary *row, NSString *keyPath, id value)
       return nil;
     }
     NSAttributeDescription *attribute = (NSAttributeDescription *)property;
+    if ([_mapper attributeHoldsDynamicProperties:attribute]) {
+      // Each entry set on every object; the rest left as they are, which
+      // one PATCH cannot know.
+      if (![value isKindOfClass:[NSDictionary class]]) {
+        if (error) *error = OISError(ODataIncrementalStoreErrorUnsupportedRequest,
+                                     [NSString stringWithFormat:@"%@.%@: a batch update sets dynamic properties from a dictionary of them (NSNull removes one)", entity.name, name]);
+        return nil;
+      }
+      [_mapper.values addDynamicProperties:value toJSON:body];
+      [names addObject:name];
+      continue;
+    }
     body[[_mapper propertyForAttribute:attribute]] = value ? [_mapper.values JSONForCoreDataValue:value attribute:attribute] : [NSNull null];
     [names addObject:name];
   }
@@ -1522,7 +1549,9 @@ static void OISSetKeyPath(NSMutableDictionary *row, NSString *keyPath, id value)
     }
     return entities;
   }
-  for (NSEntityDescription *entity in [model.entities sortedArrayUsingComparator:^NSComparisonResult(id a, id b) {
+  // The store's configuration's: the rest is another store's.
+  NSArray *all = self.configurationName ? [model entitiesForConfiguration:self.configurationName] ?: @[] : model.entities;
+  for (NSEntityDescription *entity in [all sortedArrayUsingComparator:^NSComparisonResult(id a, id b) {
          return [[a name] compare:[b name]];
        }]) {
     if ([self trackedEntityFor:entity] != entity) continue;
@@ -1556,6 +1585,10 @@ static BOOL OISSameRow(NSDictionary *a, NSDictionary *b)
 {
   NSMutableSet *names = [NSMutableSet set];
   for (NSAttributeDescription *attr in entity.attributesByName.allValues) {
+    if ([_mapper attributeHoldsDynamicProperties:attr]) {
+      if (![[self dynamicPropertiesInPayload:old entity:entity] isEqual:[self dynamicPropertiesInPayload:row entity:entity]]) [names addObject:attr.name];
+      continue;
+    }
     NSString *wire = [_mapper propertyForAttribute:attr];
     id a = old[wire], b = row[wire];
     if (b && !(a == b || [a isEqual:b])) [names addObject:attr.name];
@@ -2033,6 +2066,22 @@ static BOOL OISKeyIsSet(id value)
   return [value isKindOfClass:[NSManagedObject class]] ? [value objectID] : value;
 }
 
+// What a PATCH says of dynamic properties that were old and are now new:
+// each one that differs, and null for each one gone (a POST: old is nil).
+static NSDictionary *OISDynamicChanges(id old, id now)
+{
+  NSDictionary *before = [old isKindOfClass:[NSDictionary class]] ? old : @{};
+  NSDictionary *after = [now isKindOfClass:[NSDictionary class]] ? now : @{};
+  NSMutableDictionary *changes = [NSMutableDictionary dictionary];
+  for (NSString *name in after) {
+    if (![after[name] isEqual:before[name]]) changes[name] = after[name];
+  }
+  for (NSString *name in before) {
+    if (!after[name]) changes[name] = [NSNull null];
+  }
+  return changes;
+}
+
 - (OISWrite *)writeForObject:(NSManagedObject *)object mode:(OISWriteMode)mode assigned:(NSDictionary *)assigned
 {
   OISWrite *write = [[OISWrite alloc] init];
@@ -2062,6 +2111,11 @@ static BOOL OISKeyIsSet(id value)
         continue;
       }
       if (mode == OISWriteUpdate && !changed[name]) continue;
+      if ([_mapper attributeHoldsDynamicProperties:attr]) {
+        NSDictionary *old = mode == OISWriteUpdate ? [object committedValuesForKeys:@[ name ]][name] : nil;
+        [_mapper.values addDynamicProperties:OISDynamicChanges(old, value) toJSON:write.body];
+        continue;
+      }
       // What the service sets (Core.Computed, read only), and after the
       // entity is made, what it will not change (Core.Immutable).
       if ([_mapper attributeIsComputed:attr]) continue;
@@ -2178,6 +2232,14 @@ static BOOL OISKeyIsSet(id value)
     }
     NSString *name = [prop isKindOfClass:[NSPropertyDescription class]] ? [prop name] : prop;
     NSString *attributeName = [prop isKindOfClass:[NSExpressionDescription class]] ? OISKeyPathOf(prop) : name;
+    NSArray *parts = [attributeName componentsSeparatedByString:@"."];
+    if (parts.count && [_mapper attributeHoldsDynamicProperties:entity.attributesByName[parts[0]]]) {
+      // The bag, or one of its entries (dynamicProperties.Nickname).
+      id value = [self dynamicPropertiesInPayload:payload entity:entity];
+      for (NSUInteger i = 1; i < parts.count; i++) value = [value isKindOfClass:[NSDictionary class]] ? value[parts[i]] : nil;
+      if (value) out[name] = value;
+      continue;
+    }
     if (attributeName && [attributeName rangeOfString:@"."].location != NSNotFound) {
       // Through to-one relationships: in the expanded rows.
       id value = [self valueAtKeyPath:attributeName inPayload:payload entity:entity];
@@ -2257,6 +2319,35 @@ static BOOL OISKeyIsSet(id value)
   return oid;
 }
 
+// What an entity's JSON names that is declared: the model's properties,
+// what it could not map (OData.unmapped), and, with $metadata, every
+// property of the type and its base types. An open type's dynamic
+// properties are the rest.
+- (NSSet<NSString *> *)declaredNamesOfEntity:(NSEntityDescription *)entity
+{
+  NSMutableSet *names = [NSMutableSet set];
+  for (NSAttributeDescription *attr in entity.attributesByName.allValues) {
+    if (![_mapper attributeHoldsDynamicProperties:attr]) [names addObject:[_mapper propertyForAttribute:attr]];
+  }
+  for (NSRelationshipDescription *rel in entity.relationshipsByName.allValues) [names addObject:[_mapper propertyForRelationship:rel]];
+  for (NSEntityDescription *e = entity; e; e = e.superentity) {
+    NSString *unmapped = e.userInfo[ODataUserInfoUnmapped];
+    if ([unmapped isKindOfClass:[NSString class]] && unmapped.length) [names addObjectsFromArray:[unmapped componentsSeparatedByString:@","]];
+  }
+  ODataSchema *schema = _mapper.schema;
+  for (ODataSchemaEntityType *t = [_mapper entityTypeForEntity:entity]; t; t = t.baseType ? [schema entityTypeNamed:t.baseType] : nil) {
+    [names addObjectsFromArray:t.declaredProperties.allKeys];
+    [names addObjectsFromArray:t.declaredNavigationProperties.allKeys];
+  }
+  return names;
+}
+
+// An open type's dynamic properties, from its JSON.
+- (NSDictionary *)dynamicPropertiesInPayload:(NSDictionary *)payload entity:(NSEntityDescription *)entity
+{
+  return [_mapper.values dynamicPropertiesInJSON:payload declared:[self declaredNamesOfEntity:entity]];
+}
+
 - (NSIncrementalStoreNode *)cacheNodeForObjectID:(NSManagedObjectID *)objectID
                                           entity:(NSEntityDescription *)entity
                                          payload:(NSDictionary *)payload
@@ -2269,6 +2360,10 @@ static BOOL OISKeyIsSet(id value)
     NSString *name = key;
     NSAttributeDescription *attr = obj;
     (void)stop;
+    if ([self->_mapper attributeHoldsDynamicProperties:attr]) {
+      values[name] = [self dynamicPropertiesInPayload:payload entity:entity];
+      return;
+    }
     id raw = payload[[self->_mapper propertyForAttribute:attr]];
     id value = raw ? [self->_mapper.values coreDataValueForJSON:raw attribute:attr] : nil;
     // A value that cannot be this attribute's type (a date that does not
@@ -2631,6 +2726,10 @@ static BOOL OISKeyIsSet(id value)
         return nil;
       }
       id value = delta[name];
+      if ([_mapper attributeHoldsDynamicProperties:attribute]) {
+        if ([value isKindOfClass:[NSDictionary class]]) [_mapper.values addDynamicProperties:value toJSON:json];
+        continue;
+      }
       json[[_mapper propertyForAttribute:attribute]] = value == [NSNull null] ? value : [_mapper.values JSONForCoreDataValue:value attribute:attribute];
     }
     [slices addObject:@{ @"Timeslice": json }];

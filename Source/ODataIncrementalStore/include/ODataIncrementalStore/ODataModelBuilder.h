@@ -28,8 +28,12 @@
 // with their Edm type, Guid and enumerations held as strings. Complex
 // values and collections are Transformable attributes marked with their
 // type (NS.Address, Collection(Edm.String)): an NSDictionary and an
-// NSArray, see ODataValue.h. Stream and spatial properties have no
-// attribute; they are listed in the entity's userInfo under OData.unmapped.
+// NSArray, see ODataValue.h. An open type's dynamic properties are held
+// in a Transformable attribute of its own, dynamicProperties, an
+// NSDictionary marked OData.dynamicProperties (see ODataPropertyMapper.h):
+// the property bag Core Data's own models keep what they do not declare
+// in. Stream and spatial properties have no attribute; they are listed in
+// the entity's userInfo under OData.unmapped.
 
 #pragma once
 #import <ODataKit/OISCoreData.h>

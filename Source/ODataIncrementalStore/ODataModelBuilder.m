@@ -251,7 +251,8 @@ static void OISApplyVocabularies(NSDictionary<NSString *, id> *annotations, ODat
   NSMutableString *canonical = [NSMutableString string];
   for (NSString *name in [schema.entityTypes.allKeys sortedArrayUsingSelector:@selector(compare:)]) {
     ODataSchemaEntityType *type = schema.entityTypes[name];
-    [canonical appendFormat:@"E %@ %@ %d %@\n", name, type.baseType ?: @"", type.isAbstract, [type.declaredKey componentsJoinedByString:@","]];
+    [canonical appendFormat:@"E %@ %@ %d %@%@\n", name, type.baseType ?: @"", type.isAbstract, [type.declaredKey componentsJoinedByString:@","],
+                            type.isOpen ? @" open" : @""];
     for (NSString *p in [type.declaredProperties.allKeys sortedArrayUsingSelector:@selector(compare:)]) {
       ODataSchemaProperty *property = type.declaredProperties[p];
       [canonical appendFormat:@"P %@ %@ %d\n", p, property.type, property.nullable];
@@ -378,6 +379,18 @@ static void OISApplyVocabularies(NSDictionary<NSString *, id> *annotations, ODat
                                      : property.isCollection ? @"NSArray" : @"NSDictionary";
       }
       [own addObject:attr];
+    }
+    // An open type's dynamic properties: a bag of them, which its derived
+    // types inherit.
+    if (type.isOpen && !(base && [schema entityTypeIsOpen:schema.entityTypes[base]])) {
+      NSAttributeDescription *bag = [[NSAttributeDescription alloc] init];
+      bag.name = OISPropertyName(@"DynamicProperties", names);
+      bag.attributeType = NSTransformableAttributeType;
+      bag.optional = YES;
+      bag.valueTransformerName = @"NSSecureUnarchiveFromData";
+      bag.attributeValueClassName = @"NSDictionary";
+      bag.userInfo = @{ ODataUserInfoDynamicProperties: @"YES" };
+      [own addObject:bag];
     }
     for (NSString *wire in [type.declaredNavigationProperties.allKeys sortedArrayUsingSelector:@selector(compare:)]) {
       ODataSchemaNavigationProperty *navigation = type.declaredNavigationProperties[wire];

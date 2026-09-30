@@ -93,8 +93,12 @@ FOUNDATION_EXPORT NSString * const ODataUserInfoETag;  // @"OData.etag"
 // parameter's class: int32_t is Edm.Int32, int64_t Edm.Int64, int16_t
 // Edm.Int16, double Edm.Double, float Edm.Single, BOOL Edm.Boolean,
 // NSString Edm.String, NSDate Edm.DateTimeOffset, NSDecimalNumber
-// Edm.Decimal, NSUUID Edm.Guid, NSData Edm.Binary, a managed object class
-// its entity type. What the runtime cannot see, a collection's element type
+// Edm.Decimal, NSUUID Edm.Guid, NSData Edm.Binary, NSDictionary
+// Edm.Untyped, a managed object class its entity type. An Edm.Untyped (or
+// Org.OData.JSON.V1.JSON) value is any JSON, passed as NSJSONSerialization
+// reads it and written as it would write it (4.0's $metadata says
+// Org.OData.JSON.V1.JSON for Edm.Untyped, which is CSDL 4.01's); declare
+// an id or NSArray parameter so to take one. What the runtime cannot see, a collection's element type
 // or which number an NSNumber is, the class says in a class method, and it
 // can rename what the rules get wrong:
 //
@@ -176,7 +180,8 @@ FOUNDATION_EXPORT NSString * const ODataUserInfoETag;  // @"OData.etag"
 @property (nonatomic, readonly) NSEntityDescription *entity;
 @property (nonatomic, readonly, weak, nullable) ODataService *service;
 
-// What the set allows. A method it does not is answered with 405.
+// What the set allows. A method it does not is answered with 405. A
+// read-only service's sets allow none of them, whatever they are set to.
 @property (nonatomic) BOOL allowsInsert;
 @property (nonatomic) BOOL allowsUpdate;
 @property (nonatomic) BOOL allowsDelete;
@@ -236,6 +241,62 @@ FOUNDATION_EXPORT NSString * const ODataUserInfoETag;  // @"OData.etag"
 // (ODataServiceError), one it can no longer answer for a 410: the caller
 // reads the set again. The default: the persistent history since it.
 - (nullable ODataChanges *)changesSince:(NSString *)token request:(ODataRequest *)request reply:(ODataReply *)reply;
+
+// Whether the set's entity type is open (OpenType in $metadata): its
+// entities may have dynamic properties, properties the model does not
+// declare, which -dynamicPropertiesOfObjects:request:reply: gives,
+// -writeDynamicProperties:... keeps, and -predicateForDynamicProperty:...
+// filters by. $select may name one, and
+// an entity without it leaves it out. NO by default.
+@property (nonatomic, getter=isOpenType) BOOL openType;
+// The dynamic properties of the set's entities a response writes, read
+// at once, after its rows and their expansions (the plan's last step):
+// by object ID, each entity's by name, each a value the service writes as
+// it would an attribute's of its class (a dictionary or an array as JSON;
+// a date, a decimal, a UUID or data annotated with its type). An entity
+// with none may be left out; the names of its declared properties are
+// ignored. Asked once a response for an open type only, inside the
+// request context's -performBlockAndWait:, with the objects in the order
+// they are written. The answer now, or nil and later through the reply
+// (-[ODataReply returned:], or -failWithError: to fail the request). The
+// default: none.
+- (nullable NSDictionary<NSManagedObjectID *, NSDictionary<NSString *, id> *> *)
+    dynamicPropertiesOfObjects:(NSArray<NSManagedObject *> *)objects
+                       request:(ODataRequest *)request
+                         reply:(ODataReply *)reply;
+// The dynamic properties a write gives the set's entities: of every one
+// its bodies insert or update (a deep insert's and a delta's included),
+// asked at once, after the declared properties are set and before the
+// save; values[i] are objects[i]'s, by name, each decoded as its type
+// annotation says (Since@odata.type: #DateTimeOffset is an NSDate) or as
+// its JSON is, NSNull for one the body sets to null, which removes it. A
+// PUT replaces an entity: the dynamic properties its body leaves out go
+// too (request.method says which). Keep them where they are kept: what
+// the handler changes in the request context is saved with the rest.
+// Answer anything but nil (@YES) now, or later through the reply; an
+// error (-failWithError:) fails the write, and nothing of it is saved. The
+// default refuses them (400): an open type whose dynamic properties can
+// be written overrides it.
+- (nullable id)writeDynamicProperties:(NSArray<NSDictionary<NSString *, id> *> *)values
+                            ofObjects:(NSArray<NSManagedObject *> *)objects
+                              request:(ODataRequest *)request
+                                reply:(ODataReply *)reply;
+// $filter's comparison of a dynamic property with a value, as a predicate
+// over the set's entity: Priority gt 2, or Variables/amount ge 100 (a path,
+// the property's name first). The operator reads with the property on the
+// left; eq, ne, gt, ge, lt and le are asked for, in as each value's eq, and
+// the property alone as a condition its eq true. The value is the
+// literal's: a number, string, boolean, NSDate ..., nil for null. The
+// predicate is evaluated by the store, or in memory, so it may not fetch;
+// a subquery over rows the entity reaches is how rows kept elsewhere
+// answer. nil, with an error (ODataServiceError), refuses it; nil without
+// one says there is no such property (400). Asked of an open type only,
+// in the request's filter; the default: nil.
+- (nullable NSPredicate *)predicateForDynamicProperty:(NSArray<NSString *> *)path
+                                             operator:(NSPredicateOperatorType)type
+                                                value:(nullable id)value
+                                              request:(ODataRequest *)request
+                                                error:(NSError **)error;
 
 // The rows the caller may see at all, however they are reached: fetched,
 // by key, through navigation or $expand. nil: every row.
@@ -365,6 +426,22 @@ FOUNDATION_EXPORT NSString * const ODataUserInfoETag;  // @"OData.etag"
 // Entities and properties are annotated from the model (see
 // ODataMetadataWriter.h), how to sign in from the authenticator.
 @property (nonatomic, copy, nullable) NSDictionary<NSString *, id> *containerAnnotations;
+// A service that writes nothing of itself: every entity set refuses
+// insert, update and delete (405), whatever its handler allows, as
+// $metadata says. Actions still write: what one changes in the request
+// context it is handed is saved, as in any service. Default: NO.
+@property (nonatomic, getter=isReadOnly) BOOL readOnly;
+// The model's configuration whose entities it serves: each root entity
+// the configuration lists, with its sub-entities, which the configuration
+// lists too. nil, the default: every entity that has a key. One not served
+// has no entity set, type or handler, and nothing reaches it: a
+// relationship to it is no property of the types that have it (see
+// ODataPropertyMapper's servedEntityNames), so naming it anywhere -- a
+// path, a query option, a body -- is an error as for any unknown name.
+// A configuration that lists a sub-entity without its root, or a root
+// without all its sub-entities, or that the model has not, is among
+// metadataProblems. Set it before the first request.
+@property (nonatomic, copy, nullable) NSString *configurationName;
 // The object whose methods are the service's unbound operations; see
 // ODataFunctions. Set it before the first request.
 @property (nonatomic, strong, nullable) id serviceOperations;
@@ -391,5 +468,5 @@ NS_ASSUME_NONNULL_END
 
 // The rest of the server library, for those who import it by this name.
 #import "ODataAuthentication.h"
-#import "ODataPredicateBuilder.h"
+#import <ODataKit/ODataPredicateBuilder.h>
 #import "ODataMetadataWriter.h"

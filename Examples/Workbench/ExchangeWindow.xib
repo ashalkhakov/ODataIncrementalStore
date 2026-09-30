@@ -38,7 +38,7 @@
                                             <rect key="frame" x="0.0" y="0.0" width="842" height="1"/>
                                             <autoresizingMask key="autoresizingMask" widthSizable="YES" heightSizable="YES"/>
                                             <size key="minSize" width="842" height="1"/>
-                                            <size key="maxSize" width="844" height="296"/>
+                                            <size key="maxSize" width="844" height="297"/>
                                         </textView>
                                     </subviews>
                                 </clipView>

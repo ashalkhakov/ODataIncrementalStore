@@ -10,7 +10,7 @@
 #import "ODataValue.h"
 #import "ODataSchema.h"
 #import "ODataMetadataWriter.h"
-#import "ODataPredicateBuilder.h"
+#import <ODataKit/ODataPredicateBuilder.h>
 #import "ODataOperationCatalog.h"
 #import "ODataApply.h"
 #import "ODataTimeline.h"
@@ -38,6 +38,8 @@ NS_ASSUME_NONNULL_BEGIN
 @property (nonatomic, strong) NSMutableDictionary<NSString *, NSString *> *metadataByVersion;
 @property (nonatomic, strong) ODataMetadataWriter *writer;
 @property (nonatomic, strong) OISOperationCatalog *catalog;
+// What configurationName could not say, one sentence each.
+@property (nonatomic, copy) NSArray<NSString *> *configurationProblems;
 @property (nonatomic) BOOL prepared;
 - (ODataEntitySetHandler *)handlerForEntity:(NSEntityDescription *)entity;
 - (BOOL)isComputedAttribute:(NSAttributeDescription *)attribute;
@@ -181,6 +183,8 @@ typedef NS_ENUM(NSInteger, OISTargetKind) {
 // The spans of the dates month() and the rest range over, as the plan read them.
 @property (nonatomic, copy, nullable) NSDictionary<NSString *, NSArray *> *planSpans;
 @property (nonatomic, strong, nullable) NSMapTable *nestResults;
+// The dynamic properties of the open types' entities written, by object ID.
+@property (nonatomic, copy, nullable) NSDictionary<NSManagedObjectID *, NSDictionary<NSString *, id> *> *planDynamic;
 @property (nonatomic, strong, nullable) NSMutableSet<NSString *> *nestVisited;
 // GET <root>/$explain/...: the plan is the answer.
 @property (nonatomic) BOOL explaining;
@@ -224,6 +228,8 @@ typedef NS_ENUM(NSInteger, OISTargetKind) {
 // The call's own machinery, which the plan uses.
 @interface OISServiceCall (Machinery)
 - (ODataPropertyMapper *)mapper;
+// The service's predicate builder, this request its userInfo.
+- (ODataPredicateBuilder *)predicates;
 - (ODataReply *)replyWithAction:(SEL)action;
 - (void)respondJSON:(id)json status:(NSInteger)status headers:(nullable NSDictionary *)headers;
 - (void)respondError:(NSError *)error;

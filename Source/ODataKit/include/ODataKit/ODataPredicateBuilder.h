@@ -2,13 +2,13 @@
 // Copyright (C) 2026 OIS contributors
 // SPDX-License-Identifier: LGPL-2.1-or-later
 //
-// The server's half of ODataPredicateTranslator: a $filter or $orderby tree
-// (ODataExpression.h) becomes an NSPredicate or sort descriptors over an
-// entity's key paths. Everything is built from NSComparisonPredicate,
-// NSCompoundPredicate and NSExpression objects, and request text is never
-// formatted into a predicate string: the one format string is the key path
-// off a lambda's variable, made of a generated variable name and the
-// model's own property names.
+// The service's half of ODataPredicateTranslator, and anyone's who holds a
+// parsed $filter or $orderby (ODataExpression.h): it becomes an NSPredicate
+// or sort descriptors over an entity's key paths. Everything is built from
+// NSComparisonPredicate, NSCompoundPredicate and NSExpression objects, and
+// request text is never formatted into a predicate string: the one format
+// string is the key path off a lambda's variable, made of a generated
+// variable name and the model's own property names.
 //
 // Literals are typed by what they are compared with: 2018-02-11 against a
 // Date attribute is an NSDate, 'x' against a UUID attribute an NSUUID, by
@@ -23,6 +23,18 @@
 
 NS_ASSUME_NONNULL_BEGIN
 
+// A property an entity does not have (a dynamic property of an open type),
+// compared with a value: its path of names from the entity (Priority, or
+// Variables/amount), the operator (equal, not equal, greater, greater or
+// equal, less, less or equal) as the comparison reads with the property
+// on the left, and the value (a number, string, boolean, NSDate, ...; nil
+// for null). The predicate over the entity it stands for; nil with an
+// error to refuse the comparison, nil without one for a property that is
+// not there (400). userInfo is the builder's (a service's: the request).
+typedef NSPredicate * _Nullable (^ODataDynamicPropertyPredicate)(NSEntityDescription *entity, NSArray<NSString *> *path,
+                                                                 NSPredicateOperatorType type, id _Nullable value,
+                                                                 id _Nullable userInfo, NSError **error);
+
 @interface ODataPredicateBuilder : NSObject
 
 - (instancetype)initWithMapper:(ODataPropertyMapper *)mapper NS_DESIGNATED_INITIALIZER;
@@ -33,6 +45,20 @@ NS_ASSUME_NONNULL_BEGIN
 // Properties (Core Data names) of an entity that $filter (sorting: NO) or
 // $orderby (YES) may not use; a use is a 400.
 @property (nonatomic, copy, nullable) NSSet<NSString *> * _Nullable (^restrictedProperties)(NSEntityDescription *entity, BOOL sorting);
+// What $filter's comparisons of a name the entity does not have -- on
+// its own, or members after it -- with a value stand for: eq ne gt ge lt
+// le, in (each value as eq), and the name alone as a condition (eq true).
+// Only of $it, not inside any or all (501), and a dynamic property is
+// compared with a value, not another property; anything else it is used
+// in is a 400, as an unknown name's. nil, the default: every such name is
+// unknown.
+@property (nonatomic, copy, nullable) ODataDynamicPropertyPredicate dynamicProperty;
+// What the blocks are handed: whatever one use of the builder is for (a
+// service's, the request it answers). nil, the default.
+@property (nonatomic, strong, nullable, readonly) id userInfo;
+// A builder like this one, the same in all but its userInfo: cheap, for
+// the length of one request.
+- (instancetype)builderWithUserInfo:(nullable id)userInfo;
 
 // A boolean expression over the entity's properties: eq ne gt ge lt le in,
 // and or not, add sub mul div (and mod, on Apple), contains startswith

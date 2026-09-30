@@ -154,11 +154,20 @@ static BOOL OISYes(id value)
   return entity;
 }
 
+// Whether the entity is written: its root has a key, and is among
+// entityNames when they are given.
+- (BOOL)writes:(NSEntityDescription *)entity
+{
+  NSEntityDescription *root = [self rootOf:entity];
+  if (self.entityNames && ![self.entityNames containsObject:root.name]) return NO;
+  return [self.mapper keyAttributesForEntity:root].count > 0;
+}
+
 - (NSArray *)entities
 {
   NSMutableArray *entities = [NSMutableArray array];
   for (NSEntityDescription *entity in self.model.entities) {
-    if ([self.mapper keyAttributesForEntity:[self rootOf:entity]].count) [entities addObject:entity];
+    if ([self writes:entity]) [entities addObject:entity];
   }
   return entities;
 }
@@ -443,6 +452,9 @@ static void OISAddChildren(NSXMLElement *parent, NSArray<NSXMLElement *> *childr
   NSXMLElement *type = OISElement(@"EntityType", @[ @"Name", OISSimpleNameOf(qualified) ]);
   if (entity.superentity) [type addAttribute:[NSXMLNode attributeWithName:@"BaseType" stringValue:[self typeNameForEntity:entity.superentity]]];
   if (entity.isAbstract) [type addAttribute:[NSXMLNode attributeWithName:@"Abstract" stringValue:@"true"]];
+  if ([self.openEntityNames containsObject:[self rootOf:entity].name]) {
+    [type addAttribute:[NSXMLNode attributeWithName:@"OpenType" stringValue:@"true"]];
+  }
   if ([self mediaAttributeOfEntity:entity] && (!entity.superentity || ![self mediaAttributeOfEntity:entity.superentity])) {
     [type addAttribute:[NSXMLNode attributeWithName:@"HasStream" stringValue:@"true"]];
   }
@@ -484,7 +496,7 @@ static void OISAddChildren(NSXMLElement *parent, NSArray<NSXMLElement *> *childr
     } else if ([property isKindOfClass:[NSRelationshipDescription class]]) {
       NSRelationshipDescription *rel = (NSRelationshipDescription *)property;
       NSEntityDescription *target = rel.destinationEntity;
-      if (!target || ![self.mapper keyAttributesForEntity:[self rootOf:target]].count) continue;
+      if (!target || ![self writes:target]) continue;
       NSString *targetType = [self typeNameForEntity:target];
       NSString *navigationType = rel.isToMany ? [NSString stringWithFormat:@"Collection(%@)", targetType] : targetType;
       NSXMLElement *navigation = OISElement(@"NavigationProperty", @[ @"Name", [self.mapper propertyForRelationship:rel], @"Type", navigationType ]);
@@ -605,13 +617,32 @@ static NSString * const OISEdm = @"http://docs.oasis-open.org/odata/ns/edm";
   NSMutableSet *usedTypes = [NSMutableSet set];
   for (NSEntityDescription *entity in self.model.entities) {
     if (![self.entities containsObject:entity]) {
-      [_problems addObject:[NSString stringWithFormat:@"%@ has no key: give an attribute OData.key, or name it id", entity.name]];
+      // One it was not asked to write is no problem.
+      if (!self.entityNames || [self.entityNames containsObject:[self rootOf:entity].name]) {
+        [_problems addObject:[NSString stringWithFormat:@"%@ has no key: give an attribute OData.key, or name it id", entity.name]];
+      }
       continue;
     }
     [self writeEntity:entity into:schemas used:usedTypes];
   }
   [self writeSchemaTypes:usedTypes into:schemas];
-  for (NSXMLElement *element in self.additionalSchemaElements) [self append:[element copy] toNamespace:self.namespaceName in:schemas];
+  // Edm.Untyped is CSDL 4.01's: 4.0 has JSON's vocabulary say "any JSON".
+  BOOL untyped = ![version isEqualToString:@"4.0"];
+  for (NSXMLElement *original in self.additionalSchemaElements) {
+    NSXMLElement *element = [original copy];
+    // An operation's JSON parameter or result references the vocabulary.
+    for (NSXMLNode *child in element.children) {
+      if (child.kind != NSXMLElementKind) continue;
+      NSXMLNode *attribute = [(NSXMLElement *)child attributeForName:@"Type"];
+      NSString *type = attribute.stringValue;
+      if (!untyped && [OISElementTypeOf(type) isEqualToString:@"Edm.Untyped"]) {
+        type = [type isEqualToString:@"Edm.Untyped"] ? @"Org.OData.JSON.V1.JSON" : @"Collection(Org.OData.JSON.V1.JSON)";
+        attribute.stringValue = type;
+      }
+      if ([OISElementTypeOf(type) isEqualToString:@"Org.OData.JSON.V1.JSON"]) [self useTerm:@"Org.OData.JSON.V1.JSON"];
+    }
+    [self append:element toNamespace:self.namespaceName in:schemas];
+  }
   [self append:[self container] toNamespace:self.namespaceName in:schemas];
 
   NSXMLElement *edmx = [[NSXMLElement alloc] initWithName:@"edmx:Edmx" URI:OISEdmx];

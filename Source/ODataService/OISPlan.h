@@ -164,6 +164,9 @@ typedef NS_ENUM(NSInteger, OISPlanOperator) {
 // month() and the rest range over: read before anything else.
 @property (nonatomic, copy) NSArray<OISPlanNode *> *closures;
 @property (nonatomic, copy) NSArray<OISPlanNode *> *spans;
+// The entity sets of open types whose dynamic properties are read, once
+// the rows and their expansions are: those it may write.
+@property (nonatomic, copy) NSArray<NSString *> *dynamicSets;
 // The same read before rewriting, for explain.
 @property (nonatomic, strong, nullable) OISPlan *logical;
 // A write's: its Commit, and the read of what it answers with.

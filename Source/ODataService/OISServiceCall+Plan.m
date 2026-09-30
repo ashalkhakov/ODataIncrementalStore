@@ -50,7 +50,7 @@ static NSManagedObject *OISObjectOfRow(id row)
     [names addObject:[NSString stringWithFormat:@"%@ of the %@", self.navigation.name, self.parent.entity.name]];
   }
   for (ODataExpression *filter in self.pathFilters) {
-    NSPredicate *predicate = [self.service.predicates predicateForExpression:filter entity:self.entity aliases:self.request.options.aliases
+    NSPredicate *predicate = [self.predicates predicateForExpression:filter entity:self.entity aliases:self.request.options.aliases
                                                                     computed:nil spans:self.planSpans error:error];
     if (!predicate) return nil;
     [fixed addObject:predicate];
@@ -145,7 +145,7 @@ static void OISAddFilters(NSArray<ODataApplyTransformation *> *transformations, 
   if (options.filter) [filters addObject:options.filter];
   OISAddFilters(options.apply, filters);
   for (ODataExpression *filter in filters) {
-    NSArray *attributes = [self.service.predicates spanAttributesOfExpression:OISPlanningStandIns(filter) entity:entity
+    NSArray *attributes = [self.predicates spanAttributesOfExpression:OISPlanningStandIns(filter) entity:entity
                                                                       aliases:self.request.options.aliases computed:[self computedNamesOf:options]];
     for (NSAttributeDescription *attribute in attributes) {
       NSString *key = [ODataPredicateBuilder spanKeyOfAttribute:attribute];
@@ -239,7 +239,7 @@ static void OISAddFilters(NSArray<ODataApplyTransformation *> *transformations, 
     if (OISTheseOfOrder(options).count) {
       here = YES;
     } else {
-      NSArray *descriptors = [self.service.predicates sortDescriptorsForOrderBy:options.orderBy entity:self.entity computed:scan.computed
+      NSArray *descriptors = [self.predicates sortDescriptorsForOrderBy:options.orderBy entity:self.entity computed:scan.computed
                                                                        inMemory:&here error:&error];
       if (!descriptors) {
         [self respondError:error];
@@ -583,7 +583,10 @@ static BOOL OISNestsPerParent(ODataQueryOptions *options)
 
 - (void)runPlan:(OISPlan *)plan then:(SEL)after
 {
+  if (!plan.write) plan.dynamicSets = [self dynamicSetsOf:plan];
+  if (plan.returning) plan.returning.dynamicSets = [self dynamicSetsOf:plan.returning];
   self.plan = plan;
+  self.planDynamic = nil;
   self.planAfter = after;
   self.planMemo = [NSMutableDictionary dictionary];
   self.nestResults = [NSMapTable mapTableWithKeyOptions:NSPointerFunctionsObjectPointerPersonality | NSPointerFunctionsStrongMemory
@@ -642,6 +645,7 @@ static BOOL OISNestsPerParent(ODataQueryOptions *options)
     if (![self runNest:nest over:result.rows computed:result.computed levels:0]) return;
   }
   if (self.done) return;
+  if (plan.dynamicSets.count && ![self readDynamicPropertiesOf:result]) return;
   self.planResult = result;
   SEL after = self.planAfter;
   self.planAfter = NULL;
@@ -654,18 +658,24 @@ static BOOL OISNestsPerParent(ODataQueryOptions *options)
 // that answers at once is known by the time this returns).
 - (id)answerFor:(NSString *)key ask:(OISStoreAsk)ask fetch:(NSFetchRequest *)fetch handler:(ODataEntitySetHandler *)handler
 {
+  ODataEntitySetHandler *asked = handler ?: self.handler;
+  return [self answerFor:key asking:^(ODataReply *reply) {
+    switch (ask) {
+      case OISAskObjects: [reply returned:[asked objectsForFetchRequest:fetch request:self.request reply:reply]]; break;
+      case OISAskCount: [reply returned:[asked countForFetchRequest:fetch request:self.request reply:reply]]; break;
+      case OISAskGrouped: [reply returned:[asked groupedRowsForFetchRequest:fetch request:self.request reply:reply]]; break;
+      case OISAskChanges: [reply returned:[asked changesSince:self.deltaToken request:self.request reply:reply]]; break;
+    }
+  }];
+}
+
+- (id)answerFor:(NSString *)key asking:(void (^)(ODataReply *reply))ask
+{
   id known = self.planMemo[key];
   if (known) return known;
   if (self.planPending || self.done) return nil;
   self.planPendingKey = key;
-  ODataReply *reply = [self replyWithAction:@selector(planDidReply:)];
-  ODataEntitySetHandler *asked = handler ?: self.handler;
-  switch (ask) {
-    case OISAskObjects: [reply returned:[asked objectsForFetchRequest:fetch request:self.request reply:reply]]; break;
-    case OISAskCount: [reply returned:[asked countForFetchRequest:fetch request:self.request reply:reply]]; break;
-    case OISAskGrouped: [reply returned:[asked groupedRowsForFetchRequest:fetch request:self.request reply:reply]]; break;
-    case OISAskChanges: [reply returned:[asked changesSince:self.deltaToken request:self.request reply:reply]]; break;
-  }
+  ask([self replyWithAction:@selector(planDidReply:)]);
   known = self.planMemo[key];
   if (known) return known;
   if (!self.done) {
@@ -719,7 +729,7 @@ static BOOL OISNestsPerParent(ODataQueryOptions *options)
   ODataQueryOptions *options = self.request.options;
   for (ODataExpression *filter in node.filters) {
     NSError *error = nil;
-    NSPredicate *predicate = [self.service.predicates predicateForExpression:[self expression:filter bound:values] entity:node.entity
+    NSPredicate *predicate = [self.predicates predicateForExpression:[self expression:filter bound:values] entity:node.entity
                                                                      aliases:options.aliases computed:node.computed
                                                                         spans:self.planSpans error:&error];
     if (!predicate) {
@@ -772,7 +782,7 @@ static BOOL OISNestsPerParent(ODataQueryOptions *options)
     }
     BOOL inMemory = NO;
     NSError *error = nil;
-    NSArray *descriptors = [self.service.predicates sortDescriptorsForOrderBy:items entity:node.entity computed:node.computed
+    NSArray *descriptors = [self.predicates sortDescriptorsForOrderBy:items entity:node.entity computed:node.computed
                                                                      inMemory:&inMemory error:&error];
     if (!descriptors || inMemory) {
       if (descriptors) error = ODataServiceError(500, @"An order the store was to sort by is not one it sorts by");
@@ -1091,7 +1101,8 @@ static BOOL OISNestsPerParent(ODataQueryOptions *options)
         return NO;
       }
       NSPropertyDescription *property = [self.mapper propertyForWireName:item.path[0] entity:object.entity];
-      if (![property isKindOfClass:[NSRelationshipDescription class]]) {
+      if (![property isKindOfClass:[NSRelationshipDescription class]]
+          || ![self.service handlerForEntity:((NSRelationshipDescription *)property).destinationEntity]) {
         [self fail:400 message:[NSString stringWithFormat:@"%@ has no navigation property %@", object.entity.name, item.path[0]]];
         return NO;
       }
@@ -1135,7 +1146,7 @@ static BOOL OISNestsPerParent(ODataQueryOptions *options)
       if (options.orderBy.count) {
         BOOL inMemory = NO;
         NSError *error = nil;
-        NSArray *descriptors = [self.service.predicates sortDescriptorsForOrderBy:[self resolvedOrder:options.orderBy options:options] entity:destination
+        NSArray *descriptors = [self.predicates sortDescriptorsForOrderBy:[self resolvedOrder:options.orderBy options:options] entity:destination
                                                                          computed:reading.computed inMemory:&inMemory error:&error];
         if (!descriptors) {
           [self respondError:error];
@@ -1301,6 +1312,108 @@ static BOOL OISNestsPerParent(ODataQueryOptions *options)
   }
   self.deltaRemoved = removed;
   return [OISRelation relationOfRows:objects];
+}
+
+#pragma mark - Dynamic properties
+
+// The open types' entity sets a plan may write: its rows', and its
+// expansions' destinations (a star's, each served relationship's).
+- (NSArray<NSString *> *)dynamicSetsOf:(OISPlan *)plan
+{
+  NSMutableSet *entities = [NSMutableSet set];
+  OISPlanNode *node = plan.root;
+  while (node && !node.entity) node = node.input;
+  if (node.entity) [entities addObject:node.entity];
+  [self addDestinationsOf:plan.nests into:entities depth:0];
+  NSMutableSet *sets = [NSMutableSet set];
+  for (NSEntityDescription *entity in entities) {
+    if ([self.service handlerForEntity:entity].isOpenType) [sets addObject:[self.service entitySetForEntity:OISRootEntity(entity)]];
+  }
+  return [sets.allObjects sortedArrayUsingSelector:@selector(compare:)];
+}
+
+- (void)addDestinationsOf:(NSArray<OISPlanNode *> *)nests into:(NSMutableSet *)entities depth:(NSInteger)depth
+{
+  if (depth > OISNestMaxLevels) return;
+  for (OISPlanNode *nest in nests) {
+    NSMutableArray *destinations = [NSMutableArray array];
+    if (nest.item.isStar) {
+      for (NSRelationshipDescription *relationship in nest.entity.relationshipsByName.allValues) {
+        if ([self.service handlerForEntity:relationship.destinationEntity]) [destinations addObject:relationship.destinationEntity];
+      }
+    } else {
+      NSPropertyDescription *property = nest.item.path.count == 1 ? [self.mapper propertyForWireName:nest.item.path[0] entity:nest.entity] : nil;
+      if ([property isKindOfClass:[NSRelationshipDescription class]]) [destinations addObject:((NSRelationshipDescription *)property).destinationEntity];
+    }
+    for (NSEntityDescription *destination in destinations) {
+      [entities addObjectsFromArray:[destination.subentitiesByName.allValues arrayByAddingObject:destination]];
+      NSArray *inner = nest.nests.count ? nest.nests : [self nestsOf:nest.item.options entity:destination];
+      [self addDestinationsOf:inner into:entities depth:depth + 1];
+    }
+  }
+}
+
+// Rows, and the members of their expansions, as they are written: each
+// row, then what it expands to, and theirs.
+- (void)addWritten:(NSArray *)rows items:(NSArray<ODataExpandItem *> *)items to:(void (^)(id))add walked:(NSMutableSet *)walked
+{
+  for (id row in rows) {
+    add(row);
+    NSManagedObject *object = OISObjectOfRow(row);
+    if (!object) continue;
+    for (ODataExpandItem *item in items) {
+      NSDictionary *byRelationship = [self.nestResults objectForKey:item];
+      for (NSString *name in [byRelationship.allKeys sortedArrayUsingSelector:@selector(compare:)]) {
+        NSDictionary *entry = byRelationship[name][object.objectID];
+        NSString *step = [NSString stringWithFormat:@"%p/%@/%@", (void *)item, name, object.objectID.URIRepresentation];
+        if (!entry || [walked containsObject:step]) continue;
+        [walked addObject:step];
+        // Their own expansions, and more of this one's levels.
+        [self addWritten:entry[@"members"] items:[(item.options.expand ?: @[]) arrayByAddingObject:item] to:add walked:walked];
+      }
+    }
+  }
+}
+
+// The dynamic properties of the entities written, rows and expansions'
+// members, asked of each open type's handler at once. NO until known, or
+// once answered with the error.
+- (BOOL)readDynamicPropertiesOf:(OISRelation *)result
+{
+  NSMutableDictionary<NSString *, NSMutableArray *> *bySet = [NSMutableDictionary dictionary];
+  NSMutableSet *seen = [NSMutableSet set];
+  void (^add)(id) = ^(id row) {
+    NSManagedObject *object = OISObjectOfRow(row);
+    if (!object || [seen containsObject:object.objectID]) return;
+    if (![self.service handlerForEntity:object.entity].isOpenType) return;
+    [seen addObject:object.objectID];
+    NSString *set = [self.service entitySetForEntity:OISRootEntity(object.entity)];
+    if (!bySet[set]) bySet[set] = [NSMutableArray array];
+    [bySet[set] addObject:object];
+  };
+  NSMutableArray *items = [NSMutableArray array];
+  for (OISPlanNode *nest in self.plan.nests) if (nest.item) [items addObject:nest.item];
+  [self addWritten:result.rows items:items to:add walked:[NSMutableSet set]];
+  // Anything the walk did not come to, in no particular order.
+  for (NSDictionary *byRelationship in [[self.nestResults objectEnumerator] allObjects]) {
+    for (NSDictionary *byParent in byRelationship.allValues) {
+      for (NSDictionary *entry in byParent.allValues) {
+        for (id member in entry[@"members"]) add(member);
+      }
+    }
+  }
+  NSMutableDictionary *dynamic = [NSMutableDictionary dictionary];
+  for (NSString *set in [bySet.allKeys sortedArrayUsingSelector:@selector(compare:)]) {
+    ODataEntitySetHandler *handler = [self.service handlerForEntitySet:set];
+    NSArray *objects = bySet[set];
+    id answer = [self answerFor:[@"dynamic/" stringByAppendingString:set] asking:^(ODataReply *reply) {
+      [reply returned:[handler dynamicPropertiesOfObjects:objects request:self.request reply:reply]];
+    }];
+    if (!answer) return NO;
+    if ([answer isKindOfClass:[NSDictionary class]]) [dynamic addEntriesFromDictionary:answer];
+  }
+  self.planDynamic = dynamic;
+  return YES;
 }
 
 @end

@@ -22,6 +22,11 @@ static id OISFailed(NSError **error, NSInteger status, NSString *message)
   return nil;
 }
 
+// Where a body's dynamic properties (an open type's) wait among its
+// values, by a name no Core Data property has: taken out before a handler
+// sees the values, and handed to it at the commit, all at once.
+static NSString * const OISDynamicKey = @"@dynamic";
+
 static BOOL OISIsIntegerAttribute(NSAttributeDescription *attribute)
 {
   NSAttributeType type = attribute.attributeType;
@@ -172,6 +177,8 @@ static BOOL OISIsWrite(OISPlanNode *node)
                                       inputs:(NSMutableArray *)inputs error:(NSError **)error
 {
   NSMutableDictionary *values = [NSMutableDictionary dictionary];
+  NSMutableDictionary *dynamic = [NSMutableDictionary dictionary];
+  BOOL open = [self.service handlerForEntity:entity].isOpenType;
   for (NSString *key in [body.allKeys sortedArrayUsingSelector:@selector(compare:)]) {
     if ([key hasPrefix:@"@"]) continue;
     NSRange at = [key rangeOfString:@"@"];
@@ -180,8 +187,23 @@ static BOOL OISIsWrite(OISPlanNode *node)
     if ([annotation hasPrefix:@"odata."]) annotation = [annotation substringFromIndex:6];
     if (annotation && ![annotation isEqualToString:@"bind"] && ![annotation isEqualToString:@"delta"]) continue;
     NSPropertyDescription *property = [self.mapper propertyForWireName:name entity:entity];
-    if (!property) return OISFailed(error, 400, [NSString stringWithFormat:@"%@ has no property %@", entity.name, name]);
     id value = body[key];
+    if (!property && open && !annotation) {
+      // A dynamic property: typed as its annotation says; null removes it.
+      if (value == [NSNull null]) {
+        dynamic[name] = value;
+        continue;
+      }
+      NSMutableDictionary *one = [NSMutableDictionary dictionaryWithObject:value forKey:name];
+      for (NSString *typeKey in @[ [name stringByAppendingString:@"@odata.type"], [name stringByAppendingString:@"@type"] ]) {
+        if (body[typeKey]) one[typeKey] = body[typeKey];
+      }
+      id decoded = [self.coder dynamicPropertiesInJSON:one declared:[NSSet set]][name];
+      if (!decoded) return OISFailed(error, 400, [NSString stringWithFormat:@"%@ is not a value of %@", value, name]);
+      dynamic[name] = decoded;
+      continue;
+    }
+    if (!property) return OISFailed(error, 400, [NSString stringWithFormat:@"%@ has no property %@", entity.name, name]);
     if ([property isKindOfClass:[NSAttributeDescription class]]) {
       if (annotation) return OISFailed(error, 400, [NSString stringWithFormat:@"%@ is not a navigation property", name]);
       NSAttributeDescription *attribute = (NSAttributeDescription *)property;
@@ -240,6 +262,7 @@ static BOOL OISIsWrite(OISPlanNode *node)
     }
     values[relationship.name] = [OISPlanMembers membersOf:nodes removing:@[] adding:updating];
   }
+  if (dynamic.count) values[OISDynamicKey] = dynamic;
   return values;
 }
 
@@ -807,6 +830,10 @@ static BOOL OISConditionAllows(NSString *condition, NSString *current)
     NSDictionary *v = [self plannedValuesOfBody:slice entity:self.entity updating:NO inputs:inputs error:&error];
     if (!v) {
       [self failPlanning:error];
+      return;
+    }
+    if (v[OISDynamicKey]) {
+      [self fail:400 message:@"A time slice takes the properties its type declares"];
       return;
     }
     for (id value in v.allValues) {
@@ -1466,6 +1493,7 @@ static BOOL OISConditionAllows(NSString *condition, NSString *current)
   NSMutableDictionary *resolved = [NSMutableDictionary dictionary];
   for (NSString *name in values) {
     id value = values[name];
+    if ([name isEqualToString:OISDynamicKey]) continue;  // the commit's
     if ([value isKindOfClass:[OISPlanNode class]]) {
       resolved[name] = [self resultOf:value] ?: [NSNull null];
     } else if ([value isKindOfClass:[OISPlanMembers class]]) {
@@ -1524,6 +1552,49 @@ static BOOL OISConditionAllows(NSString *condition, NSString *current)
   return nil;
 }
 
+// Each write's dynamic properties, as the writes went: those under node.
+- (void)collectDynamicUnder:(OISPlanNode *)node into:(NSMutableArray *)pairs seen:(NSHashTable *)seen
+{
+  if (!node || [seen containsObject:node]) return;
+  [seen addObject:node];
+  if (node.op == OISPlanMerge) [self collectDynamicUnder:[self chosenOf:node] into:pairs seen:seen];
+  for (OISPlanNode *child in [self childrenOf:node]) [self collectDynamicUnder:child into:pairs seen:seen];
+  NSArray *mine = self.planMemo[OISWriteKey(@"y", node)];
+  if (mine) [pairs addObjectsFromArray:mine];
+}
+
+// The dynamic properties the write gives, asked of each open type's
+// handler at once. NO until each has answered (or once one failed).
+- (BOOL)writeDynamicPropertiesUnder:(OISPlanNode *)commit
+{
+  NSMutableArray *pairs = [NSMutableArray array];
+  [self collectDynamicUnder:commit into:pairs seen:[NSHashTable hashTableWithOptions:NSPointerFunctionsObjectPointerPersonality]];
+  NSMutableDictionary *bySet = [NSMutableDictionary dictionary];
+  NSMutableArray *sets = [NSMutableArray array];
+  for (NSArray *pair in pairs) {
+    NSManagedObject *object = pair[0];
+    NSString *set = [self.service entitySetForEntity:OISRootEntity(object.entity)];
+    if (!bySet[set]) {
+      bySet[set] = @[ [NSMutableArray array], [NSMutableArray array] ];
+      [sets addObject:set];
+    }
+    [bySet[set][0] addObject:object];
+    [bySet[set][1] addObject:pair[1]];
+  }
+  for (NSString *set in sets) {
+    NSArray *objects = bySet[set][0], *values = bySet[set][1];
+    NSManagedObject *first = objects.firstObject;
+    OISPlanNode *asking = [OISPlanNode operator:OISPlanCommit input:nil];
+    asking.handler = [self.service handlerForEntitySet:set];
+    id answer = [self ask:[@"dynamic/" stringByAppendingString:set] node:asking entity:OISRootEntity(first.entity)
+                     call:^id(ODataEntitySetHandler *handler, ODataReply *reply) {
+                       return [handler writeDynamicProperties:values ofObjects:objects request:self.request reply:reply];
+                     }];
+    if (!answer) return NO;
+  }
+  return YES;
+}
+
 // The writes, those a write depends on first: its rows, once written; nil
 // until the handlers have answered (or once one failed).
 - (id)writeFor:(OISPlanNode *)node
@@ -1549,17 +1620,20 @@ static BOOL OISConditionAllows(NSString *condition, NSString *current)
       if (!made) return nil;
       written = [self objectAnswered:made what:@"created" entity:node.entity];
       if (!written) return nil;
+      if (node.values[OISDynamicKey]) self.planMemo[OISWriteKey(@"y", node)] = @[ @[ written, node.values[OISDynamicKey] ] ];
       break;
     }
     case OISPlanUpdate: {
       NSArray *objects = [self rowsOf:node.target];
       NSArray *all = self.planMemo[OISWriteKey(@"v", node)];
       NSMutableArray *rows = [NSMutableArray array];
+      NSMutableArray *dynamic = [NSMutableArray array];
       for (NSUInteger i = 0; i < objects.count; i++) {
         NSManagedObject *object = objects[i];
         NSDictionary *values = [self rowsIn:all[i] object:object];
+        if (all[i][OISDynamicKey]) [dynamic addObject:@[ object, all[i][OISDynamicKey] ]];
         if (!values.count) {
-          [rows addObject:object];  // only named: linked, not changed
+          [rows addObject:object];  // only named, or only dynamic properties: not changed here
           continue;
         }
         NSString *asked = [NSString stringWithFormat:@"%@/%lu", key, (unsigned long)i];
@@ -1572,6 +1646,7 @@ static BOOL OISConditionAllows(NSString *condition, NSString *current)
         [rows addObject:row];
       }
       written = rows;
+      if (dynamic.count) self.planMemo[OISWriteKey(@"y", node)] = dynamic;
       break;
     }
     case OISPlanDelete: {
@@ -1646,6 +1721,7 @@ static BOOL OISConditionAllows(NSString *condition, NSString *current)
       break;
     }
     case OISPlanCommit:
+      if (![self writeDynamicPropertiesUnder:node]) return nil;
       if (![self save]) return nil;
       written = @YES;
       break;

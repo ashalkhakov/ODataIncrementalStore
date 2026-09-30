@@ -245,6 +245,11 @@ static void WBFlatten(NSDictionary *json, NSString *prefix, NSMutableDictionary 
   if (!attr || ((WBIsKey(attr) || [key isEqualToString:@"id"]) && !isNew)) {
     return attr ? @"A saved object's key is the service's: it cannot be changed." : @"Not an attribute.";
   }
+  if (WBIsDynamic(attr)) {
+    // A new dictionary: Core Data sees no change made to one in place.
+    [obj setValue:WBDynamicFromText([value description], [obj valueForKey:key]) forKey:key];
+    return nil;
+  }
   if (attr.attributeType == NSTransformableAttributeType || attr.attributeType == NSBinaryDataAttributeType) {
     return @"Complex values, collections and binary data are not edited here.";
   }

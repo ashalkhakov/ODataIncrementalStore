@@ -20,6 +20,7 @@ the client reads back.
 | To-one / to-many relationship | Navigation property, single / `Collection(…)` | An inverse is a partner |
 | Integer attribute with `OData.etag` | The ETag, `W/"<version>"` | The server increments it on every update. Without one, the ETag is a hash of the values |
 | Transformable attribute | Complex value, or `Collection(…)` | Members are key paths past the attribute: `address.city` → `Address/City` |
+| Transformable attribute with `OData.dynamicProperties` | An open type's dynamic properties | An `NSDictionary`; each entry is a property of its own on the wire: `dynamicProperties.Nickname` → `Nickname` |
 | Binary attribute with `OData.stream` | `Edm.Stream` property | Read and written at its own URL, never in a body |
 | Binary attribute named by the entity's `OData.mediaStream` | Media entity (`HasStream`), at `$value` | |
 | Entity with `OData.periodStart`/`periodEnd` | Timeline entity set (`Temporal.TimelineVisible`) | Each row is a time slice of an object |
@@ -67,6 +68,7 @@ types are not mapped.
 | `OData.objectKey` | entity | The attributes that say which object a time slice belongs to |
 | `OData.closedClosedPeriods` | entity | `YES`: the period's end is its last day (`Edm.Date` only) |
 | `OData.unmapped` | entity | Written by `ois-model`: what could not be mapped (spatial types) |
+| `OData.dynamicProperties` | Transformable attribute | `YES`: the property bag of an open type's dynamic properties |
 
 `$metadata` fills in whatever the model does not say. When both say
 something, the model's `userInfo` wins.

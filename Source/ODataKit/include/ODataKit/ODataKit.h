@@ -17,6 +17,7 @@
 #import "ODataValue.h"
 #import "ODataPropertyMapper.h"
 #import "ODataExpression.h"
+#import "ODataPredicateBuilder.h"
 #import "ODataRegex.h"
 #import "ODataApply.h"
 #import "ODataCSDL.h"

@@ -572,6 +572,15 @@ static ODataExpression *OISAlongPath(ODataExpression *from, NSString *path)
     if ([property isKindOfClass:[NSAttributeDescription class]]) {
       NSAttributeDescription *attribute = (NSAttributeDescription *)property;
       NSArray *rest = [parts subarrayWithRange:NSMakeRange(i + 1, parts.count - i - 1)];
+      if ([self.mapper attributeHoldsDynamicProperties:attribute]) {
+        // dynamicProperties.Nickname: the dynamic property Nickname.
+        if (!rest.count) {
+          if (error) *error = OISError(ODataIncrementalStoreErrorUnsupportedExpression,
+                                       [NSString stringWithFormat:@"%@: name a dynamic property in %@ (%@.Name)", path, part, part]);
+          return nil;
+        }
+        return OISAlongPath(mapped, [rest componentsJoinedByString:@"/"]);
+      }
       mapped = [ODataExpression member:[self.mapper propertyForAttribute:attribute] of:mapped];
       if (rest.count == 1 && [rest[0] isEqualToString:@"length"] && attribute.attributeType == NSStringAttributeType) {
         return OISCall1(@"length", mapped);

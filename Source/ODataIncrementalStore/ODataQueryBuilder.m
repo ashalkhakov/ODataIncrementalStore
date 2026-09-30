@@ -150,7 +150,8 @@ static NSArray<ODataSelectItem *> *OISSelectItems(NSArray<NSString *> *paths)
 // service's type has too, and each subentity's own behind its type cast
 // (Zoo.Lion/MaxRoar), so a service sends nothing the store would drop.
 // nil, for every property, without $metadata, when a subentity names no
-// type, or when the set's Capabilities.SelectSupport says it has none.
+// type, when the set's Capabilities.SelectSupport says it has none, or
+// for an open type, whose dynamic properties no $select can name ahead.
 - (NSArray<ODataSelectItem *> *)selectForEntity:(NSEntityDescription *)entity
 {
   ODataSchema *schema = self.mapper.schema;
@@ -171,6 +172,7 @@ static NSArray<ODataSelectItem *> *OISSelectItems(NSArray<NSString *> *paths)
   NSMutableArray *own = [NSMutableArray array];
   for (NSAttributeDescription *attribute in entity.attributesByName.allValues) {
     if (attribute.isTransient) continue;
+    if ([self.mapper attributeHoldsDynamicProperties:attribute]) return NO;
     if (cast && entity.superentity.attributesByName[attribute.name]) continue;  // the base type's, selected already
     NSString *wire = [self.mapper propertyForAttribute:attribute];
     if (![self.mapper.schema property:wire ofEntityType:type]) continue;
@@ -390,10 +392,20 @@ static ODataSearchExpression *OISAllOf(NSArray<ODataSearchExpression *> *searche
   if (fetch.resultType == NSDictionaryResultType && fetch.propertiesToFetch.count) {
     NSMutableArray *names = [NSMutableArray array];
     NSMutableArray *computed = [NSMutableArray array];
+    // The bag itself: every dynamic property, which no $select names.
+    BOOL all = NO;
     for (id prop in fetch.propertiesToFetch) {
       NSString *path = [prop isKindOfClass:[NSString class]] ? prop
                      : [prop isKindOfClass:[NSExpressionDescription class]] && [(NSExpressionDescription *)prop expression].expressionType == NSKeyPathExpressionType
                        ? [(NSExpressionDescription *)prop expression].keyPath : nil;
+      if ([prop isKindOfClass:[NSAttributeDescription class]]) path = [prop name];
+      NSString *first = [path componentsSeparatedByString:@"."].firstObject;
+      if (first && [self.mapper attributeHoldsDynamicProperties:entity.attributesByName[first]]) {
+        // One dynamic property, by its name.
+        if ([path isEqualToString:first]) all = YES;
+        else [names addObject:[self.mapper propertyPathForKeyPath:path entity:entity]];
+        continue;
+      }
       if (path && [path rangeOfString:@"."].location != NSNotFound) {
         if (![self addPath:path entity:entity to:through error:error]) return nil;
         continue;
@@ -421,7 +433,7 @@ static ODataSearchExpression *OISAllOf(NSArray<ODataSearchExpression *> *searche
     if (!names.count && through.count) {
       for (NSAttributeDescription *key in [self.mapper keyAttributesForEntity:entity]) [names addObject:[self.mapper propertyForAttribute:key]];
     }
-    if (names.count) options.select = OISSelectItems(names);
+    if (names.count && !all) options.select = OISSelectItems(names);
   } else if (fetch.resultType == NSManagedObjectResultType || fetch.resultType == NSManagedObjectIDResultType) {
     // Object IDs too: their rows are cached the same.
     NSArray *select = [self selectForEntity:entity];

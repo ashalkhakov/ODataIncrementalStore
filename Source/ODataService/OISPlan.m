@@ -254,6 +254,7 @@ static NSString *OISJoined(NSArray *items, NSString *separator)
   _nests = @[];
   _closures = @[];
   _spans = @[];
+  _dynamicSets = @[];
   _givenKeys = [NSMutableDictionary dictionary];
   return self;
 }
@@ -279,6 +280,7 @@ static NSString *OISJoined(NSArray *items, NSString *separator)
     [text appendString:@"$count :=\n"];
     [self.count describeInto:text depth:1];
   }
+  for (NSString *set in self.dynamicSets) [text appendFormat:@"Dynamic properties (%@)\n", set];
   return text;
 }
 

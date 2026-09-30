@@ -214,6 +214,7 @@ static BOOL WorkbenchLoadNib(NSString *name, id owner)
     return;
   }
   _query = [[WBQuery alloc] initWithModel:connection.model builtIn:[self builtIn]];
+  _query.configurationName = connection.store.configurationName;
   _results = [[WBResults alloc] initWithConnection:connection];
   [self updateStoreMenu];
   [self.entityPopup removeAllItems];
@@ -705,6 +706,7 @@ static NSString *WBRawHeaders(NSDictionary *headers)
         return [NSString stringWithFormat:@"%lu: %@", (unsigned long)titles.count, [titles componentsJoinedByString:@", "]];
       }
       id value = [obj valueForKey:column.identifier];
+      if (WBIsDynamic([obj entity].attributesByName[column.identifier])) return WBDynamicText(value);
       if ([[obj entity].attributesByName[column.identifier] attributeType] == NSBooleanAttributeType && value) {
         return [value boolValue] ? @"true" : @"false";
       }
