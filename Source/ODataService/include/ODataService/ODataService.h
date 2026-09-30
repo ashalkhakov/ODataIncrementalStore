@@ -365,6 +365,13 @@ FOUNDATION_EXPORT NSString * const ODataUserInfoETag;  // @"OData.etag"
 // Entities and properties are annotated from the model (see
 // ODataMetadataWriter.h), how to sign in from the authenticator.
 @property (nonatomic, copy, nullable) NSDictionary<NSString *, id> *containerAnnotations;
+// The entities it serves, by name: each a root entity, served with its
+// sub-entities. nil, the default: every entity that has a key. One left
+// out has no entity set, type or handler, and nothing reaches it: a
+// relationship to it is left out of the types that have it, and naming it
+// in a path, $filter, $orderby, $expand or $select is an error. Set it
+// before the first request.
+@property (nonatomic, copy, nullable) NSSet<NSString *> *exposedEntities;
 // The object whose methods are the service's unbound operations; see
 // ODataFunctions. Set it before the first request.
 @property (nonatomic, strong, nullable) id serviceOperations;

@@ -4551,6 +4551,7 @@ static NSNumber *OISScalarReturnValue(NSInvocation *invocation, char type)
   @synchronized (self) {
     if (self.prepared) return;
     ODataMetadataWriter *writer = [[ODataMetadataWriter alloc] initWithModel:self.model mapper:self.mapper];
+    writer.entityNames = self.exposedEntities;
     writer.namespaceName = self.namespaceName;
     writer.containerName = self.containerName;
     NSMutableDictionary *concurrency = [NSMutableDictionary dictionary];
@@ -4580,8 +4581,12 @@ static NSNumber *OISScalarReturnValue(NSInvocation *invocation, char type)
       ODataService *service = weakService;
       ODataEntitySetHandler *handler = [service handlerForEntity:entity];
       NSSet *wire = sorting ? handler.nonSortableProperties : handler.nonFilterableProperties;
-      if (!wire.count) return nil;
       NSMutableSet *names = [NSMutableSet set];
+      // What leads to an entity it does not serve.
+      for (NSRelationshipDescription *relationship in entity.relationshipsByName.allValues) {
+        if (![service handlerForEntity:relationship.destinationEntity]) [names addObject:relationship.name];
+      }
+      if (!wire.count) return names.count ? names : nil;
       for (NSPropertyDescription *property in entity.properties) {
         NSString *name = [property isKindOfClass:[NSAttributeDescription class]]
             ? [service.mapper propertyForAttribute:(NSAttributeDescription *)property]
@@ -4590,15 +4595,21 @@ static NSNumber *OISScalarReturnValue(NSInvocation *invocation, char type)
       }
       return names;
     };
+    NSMutableSet *served = [NSMutableSet set];
     for (NSEntityDescription *entity in writer.entities) {
       if (entity.superentity) continue;
       NSString *set = [self.mapper entitySetForEntity:entity];
+      [served addObject:set];
       ODataEntitySetHandler *handler = self.handlers[set];
       if (!handler) {
         handler = [[ODataEntitySetHandler alloc] initWithEntity:entity];
         self.handlers[set] = handler;
       }
       handler.service = self;
+    }
+    // A handler for a set it does not serve serves nothing.
+    for (NSString *set in self.handlers.allKeys) {
+      if (![served containsObject:set]) [self.handlers removeObjectForKey:set];
     }
     self.prepared = YES;
   }

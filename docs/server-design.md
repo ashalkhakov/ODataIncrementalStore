@@ -791,6 +791,13 @@ The server uses the same annotations the client reads, and the same
 
 `$metadata` (CSDL XML) is generated from the model, not written by hand.
 
+A service need not serve all of a model. `exposedEntities` names the
+entities it does serve (each a root entity, with its sub-entities); the
+rest have no entity set, type or handler, a relationship to one of them
+is left out of the types that have it, and a path, `$filter`, `$orderby`
+or `$expand` that names one is an error. An application whose model also
+holds its own bookkeeping serves only what its clients are meant to see.
+
 Requests map onto fetch requests, the reverse of `ODataQueryBuilder`:
 
 | OData | Core Data |

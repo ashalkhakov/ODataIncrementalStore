@@ -1091,7 +1091,8 @@ static BOOL OISNestsPerParent(ODataQueryOptions *options)
         return NO;
       }
       NSPropertyDescription *property = [self.mapper propertyForWireName:item.path[0] entity:object.entity];
-      if (![property isKindOfClass:[NSRelationshipDescription class]]) {
+      if (![property isKindOfClass:[NSRelationshipDescription class]]
+          || ![self.service handlerForEntity:((NSRelationshipDescription *)property).destinationEntity]) {
         [self fail:400 message:[NSString stringWithFormat:@"%@ has no navigation property %@", object.entity.name, item.path[0]]];
         return NO;
       }

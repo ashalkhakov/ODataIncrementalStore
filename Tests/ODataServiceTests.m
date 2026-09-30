@@ -4150,6 +4150,40 @@ static NSString *OISHTTPDate(NSDate *date)
   XCTAssertEqualObjects([ODataApplyTransformation stringForTransformations:read], text);
 }
 
+#pragma mark Serving part of a model
+
+// Only Products and Categories: Stocks, Locations and Suppliers are not
+// there, nor is anything that leads to them.
+- (void)testOnlyTheExposedEntities
+{
+  _service.exposedEntities = [NSSet setWithObjects:@"Product", @"Category", nil];
+  [_service setHandler:[[ODataEntitySetHandler alloc] initWithEntity:OISCatalogEntity(@"Supplier")] forEntitySet:@"Suppliers"];
+  OISServiceResponse *doc = [self get:@""];
+  XCTAssertEqualObjects([[doc.json[@"value"] valueForKey:@"name"] sortedArrayUsingSelector:@selector(compare:)],
+                        (@[ @"Categories", @"Products" ]), @"a handler for a set it does not serve serves nothing");
+  XCTAssertEqualObjects(_service.entitySets, (@[ @"Categories", @"Products" ]));
+  ODataSchema *schema = [ODataSchema schemaWithData:[self get:@"$metadata"].data error:NULL];
+  ODataSchemaEntityType *product = [schema entityTypeNamed:@"Default.Product"];
+  XCTAssertNotNil([schema navigationProperty:@"Category" ofEntityType:product]);
+  XCTAssertNil([schema navigationProperty:@"Suppliers" ofEntityType:product]);
+  XCTAssertNil([schema navigationProperty:@"Stocks" ofEntityType:product]);
+  XCTAssertNil([schema entityTypeNamed:@"Default.Supplier"]);
+  XCTAssertEqualObjects(_service.metadataProblems, @[]);
+
+  XCTAssertEqual([self get:@"Suppliers"].status, 404);
+  XCTAssertEqual([self get:@"Products(1)/Suppliers"].status, 404);
+  XCTAssertEqual([self get:@"Products?$expand=Suppliers"].status, 400);
+  XCTAssertEqual([self get:@"Products?$filter=Suppliers/any(s: s/City eq 'London')"].status, 400);
+  XCTAssertEqual([self get:@"Products?$orderby=Stocks/$count"].status, 400);
+  OISServiceResponse *all = [self get:@"Products(1)?$expand=*"];
+  XCTAssertEqual(all.status, 200, @"%@", all.text);
+  XCTAssertNotNil(all.json[@"Category"]);
+  XCTAssertNil(all.json[@"Suppliers"]);
+  XCTAssertEqual(([self send:@"PATCH" path:@"Products(1)" headers:nil
+                        body:@{ @"Suppliers@odata.bind": @[ @"Suppliers(2)" ] }].status), 400);
+  XCTAssertEqualObjects([self get:@"Categories(1)/Products/$count"].text, @"2", @"what it serves works as before");
+}
+
 #pragma mark Limits
 
 // What one request may ask of the service, and what a failure tells.
