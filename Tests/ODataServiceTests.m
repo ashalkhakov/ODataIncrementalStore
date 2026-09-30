@@ -4920,6 +4920,82 @@ static NSManagedObjectModel *OISCatalogKeeping(NSArray<NSString *> *names)
   XCTAssertEqualObjects([self get:@"Categories(1)/CategoryName"].json[@"value"], @"Drinks", @"not saved");
 }
 
+// Dynamic properties kept by default: in the entity's bag, a
+// Transformable (OData.dynamicProperties), with no handler to write.
+// Filters on them are evaluated here, the store keeping an archive.
+- (void)testDynamicPropertiesKeptInTheModel
+{
+  for (NSString *storeType in @[ NSInMemoryStoreType, NSSQLiteStoreType ]) {
+    NSManagedObjectModel *model = [OISCatalogModel() conformsToProtocol:@protocol(NSCopying)]
+        ? [OISCatalogModel() copy]
+        : [[NSManagedObjectModel alloc] initWithContentsOfURL:OISCatalogModelURL()];
+    NSEntityDescription *category = model.entitiesByName[@"Category"];
+    NSAttributeDescription *bag = [[NSAttributeDescription alloc] init];
+    bag.name = @"extras";
+    bag.attributeType = NSTransformableAttributeType;
+    bag.valueTransformerName = @"NSSecureUnarchiveFromData";
+    bag.attributeValueClassName = @"NSDictionary";
+    bag.optional = YES;
+    bag.userInfo = @{ ODataUserInfoDynamicProperties: @"YES" };
+    category.properties = [category.properties arrayByAddingObject:bag];
+    [self serveModel:model storeType:storeType];
+    _service.explains = YES;
+
+    NSString *metadata = [self get:@"$metadata"].text;
+    XCTAssertTrue([metadata containsString:@"<EntityType Name=\"Category\" OpenType=\"true\">"], @"%@: %@", storeType, metadata);
+    XCTAssertFalse([metadata containsString:@"Extras"], @"the bag is no property");
+    NSString *before = [self get:@"Categories(1)"].headers[@"ETag"];
+    OISServiceResponse *r = [self send:@"PATCH" path:@"Categories(1)" headers:nil
+                                  body:@{ @"Mood": @"calm", @"Opened@odata.type": @"#DateTimeOffset", @"Opened": @"2026-01-02T03:04:05Z",
+                                          @"Weight@odata.type": @"#Decimal", @"Weight": @"1.5", @"Visits": @3 }];
+    XCTAssertTrue(r.status < 300, @"%@: %ld %@", storeType, (long)r.status, r.text);
+    XCTAssertNotEqualObjects([self get:@"Categories(1)"].headers[@"ETag"], before, @"a change of them is a change of the entity");
+    XCTAssertTrue(([self send:@"PATCH" path:@"Categories(2)" headers:nil body:@{ @"Mood": @"hot", @"Visits": @5 }].status < 300));
+
+    // Kept in the store, typed.
+    NSManagedObjectContext *context = [[NSManagedObjectContext alloc] init];
+    context.persistentStoreCoordinator = _coordinator;
+    NSFetchRequest *fetch = [NSFetchRequest fetchRequestWithEntityName:@"Category"];
+    fetch.predicate = [NSPredicate predicateWithFormat:@"id == 1"];
+    NSDictionary *kept = [[[context executeFetchRequest:fetch error:NULL] firstObject] valueForKey:@"extras"];
+    XCTAssertTrue([kept[@"Opened"] isKindOfClass:[NSDate class]], @"%@: %@", storeType, kept);
+    XCTAssertEqualObjects(kept[@"Weight"], [NSDecimalNumber decimalNumberWithString:@"1.5"]);
+    NSDictionary *beverages = [self get:@"Categories(1)"].json;
+    XCTAssertEqualObjects(beverages[@"Mood"], @"calm");
+    XCTAssertEqualObjects(beverages[@"Opened"], @"2026-01-02T03:04:05Z");
+    XCTAssertEqualObjects(beverages[@"Opened@odata.type"], @"#DateTimeOffset");
+    XCTAssertNil(beverages[@"Extras"]);
+
+    // Filtered by, here: every row read, then filtered, ordered and paged.
+    NSArray *(^names)(NSString *) = ^NSArray *(NSString *path) {
+      OISServiceResponse *answer = [self get:path];
+      XCTAssertEqual(answer.status, 200, @"%@ %@: %@", storeType, path, answer.text);
+      return [answer.json[@"value"] valueForKey:@"CategoryName"];
+    };
+    XCTAssertEqualObjects(names(@"Categories?$filter=Mood eq 'calm'"), @[ @"Beverages" ]);
+    XCTAssertEqualObjects(names(@"Categories?$filter=Visits gt 2 and CategoryName ne 'Seafood'&$orderby=CategoryName desc"),
+                          (@[ @"Condiments", @"Beverages" ]));
+    XCTAssertEqualObjects(names(@"Categories?$filter=Mood ne null&$orderby=CategoryName&$top=1"), @[ @"Beverages" ]);
+    XCTAssertEqualObjects([self get:@"Categories?$filter=Visits ge 3&$count=true&$top=1"].json[@"@odata.count"], @2);
+    XCTAssertEqualObjects([self get:@"Categories/$count?$filter=Mood eq 'hot'"].text, @"1");
+    XCTAssertEqualObjects(names(@"Categories?$apply=filter(Mood eq 'hot')"), @[ @"Condiments" ]);
+    NSArray *expanded = [[self get:@"Products?$filter=ProductID eq 1&$expand=Category($filter=Mood eq 'calm')"].json[@"value"] valueForKeyPath:@"Category.CategoryName"];
+    XCTAssertEqualObjects(expanded, @[ @"Beverages" ]);
+    NSString *plan = [self get:@"$explain/Categories?$filter=Mood eq 'calm' and CategoryName ne 'Seafood'"].json[@"physical"];
+    NSRange here = [plan rangeOfString:@"filter(Mood eq 'calm')"], store = [plan rangeOfString:@"CategoryName ne 'Seafood'"];
+    XCTAssertTrue(here.location != NSNotFound && store.location != NSNotFound && store.location > here.location,
+                  @"the dynamic part here, over the store's scan with the rest: %@", plan);
+
+    // null removes one; a PUT replaces them all.
+    XCTAssertTrue(([self send:@"PATCH" path:@"Categories(2)" headers:nil body:@{ @"Mood": [NSNull null] }].status < 300));
+    NSDictionary *condiments = [self get:@"Categories(2)"].json;
+    XCTAssertNil(condiments[@"Mood"]);
+    XCTAssertEqualObjects(condiments[@"Visits"], @5);
+    XCTAssertTrue(([self send:@"PUT" path:@"Categories(1)" headers:nil body:@{ @"CategoryName": @"Beverages" }].status < 300));
+    XCTAssertNil([self get:@"Categories(1)"].json[@"Mood"], @"%@", storeType);
+  }
+}
+
 // Nothing is written but by the application's actions.
 - (void)testAReadOnlyService
 {

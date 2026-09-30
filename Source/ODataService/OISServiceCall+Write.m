@@ -1435,6 +1435,9 @@ static BOOL OISConditionAllows(NSString *condition, NSString *current)
     values[name] = value;
   }
   NSAttributeDescription *version = [self.service versionAttributeOfEntity:entity];
+  // A PUT replaces an open type's dynamic properties too: with none, when
+  // the body gives none.
+  if (update.replace && !values[OISDynamicKey] && [self.service handlerForEntity:entity].isOpenType) values[OISDynamicKey] = @{};
   if (update.replace) {
     // PUT: what the body leaves out goes back to its default.
     for (NSAttributeDescription *attribute in [self servedAttributesOf:entity]) {

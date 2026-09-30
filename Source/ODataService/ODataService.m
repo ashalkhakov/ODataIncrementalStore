@@ -274,7 +274,10 @@ static NSArray *OISFetch(NSManagedObjectContext *context, NSFetchRequest *fetchR
 
 @end
 
-@implementation ODataEntitySetHandler
+@implementation ODataEntitySetHandler {
+  BOOL _storeFiltersDynamicProperties;
+  BOOL _storeFiltersDynamicPropertiesSet;
+}
 
 - (instancetype)initWithEntity:(NSEntityDescription *)entity
 {
@@ -292,9 +295,44 @@ static NSArray *OISFetch(NSManagedObjectContext *context, NSFetchRequest *fetchR
   return self;
 }
 
+- (NSAttributeDescription *)dynamicPropertiesAttribute
+{
+  for (NSEntityDescription *entity = self.entity; entity; entity = entity.superentity) {
+    for (NSAttributeDescription *attribute in entity.attributesByName.allValues) {
+      id flag = attribute.userInfo[ODataUserInfoDynamicProperties];
+      if (attribute.attributeType == NSTransformableAttributeType && ([flag isEqual:@"YES"] || [flag isEqual:@YES])) return attribute;
+    }
+  }
+  return nil;
+}
+
+- (BOOL)isOpenType
+{
+  return _openType || self.dynamicPropertiesAttribute != nil;
+}
+
+- (BOOL)storeFiltersDynamicProperties
+{
+  return _storeFiltersDynamicPropertiesSet ? _storeFiltersDynamicProperties : !self.dynamicPropertiesAttribute;
+}
+
+- (void)setStoreFiltersDynamicProperties:(BOOL)filters
+{
+  _storeFiltersDynamicProperties = filters;
+  _storeFiltersDynamicPropertiesSet = YES;
+}
+
+// Each object's, from its bag.
 - (NSDictionary *)dynamicPropertiesOfObjects:(NSArray<NSManagedObject *> *)objects request:(ODataRequest *)request reply:(ODataReply *)reply
 {
-  return @{};
+  NSAttributeDescription *bag = self.dynamicPropertiesAttribute;
+  if (!bag) return @{};
+  NSMutableDictionary *answer = [NSMutableDictionary dictionary];
+  for (NSManagedObject *object in objects) {
+    id kept = [object valueForKey:bag.name];
+    if ([kept isKindOfClass:[NSDictionary class]]) answer[object.objectID] = kept;
+  }
+  return answer;
 }
 
 - (NSPredicate *)predicateForDynamicProperty:(NSArray<NSString *> *)path
@@ -303,12 +341,35 @@ static NSArray *OISFetch(NSManagedObjectContext *context, NSFetchRequest *fetchR
                                      request:(ODataRequest *)request
                                        error:(NSError **)error
 {
-  return nil;
+  // The bag's entry, compared as it is kept: evaluated here, not by the
+  // store (storeFiltersDynamicProperties).
+  NSAttributeDescription *bag = self.dynamicPropertiesAttribute;
+  if (!bag) return nil;
+  NSString *keyPath = [[@[ bag.name ] arrayByAddingObjectsFromArray:path] componentsJoinedByString:@"."];
+  return [NSComparisonPredicate predicateWithLeftExpression:[NSExpression expressionForKeyPath:keyPath]
+                                            rightExpression:[NSExpression expressionForConstantValue:value]
+                                                   modifier:NSDirectPredicateModifier type:type options:0];
 }
 
 - (id)writeDynamicProperties:(NSArray<NSDictionary *> *)values ofObjects:(NSArray<NSManagedObject *> *)objects
                      request:(ODataRequest *)request reply:(ODataReply *)reply
 {
+  NSAttributeDescription *bag = self.dynamicPropertiesAttribute;
+  if (bag) {
+    // A new dictionary each: Core Data sees no change made to one in place.
+    BOOL replacing = [request.method isEqualToString:@"PUT"];
+    for (NSUInteger i = 0; i < objects.count; i++) {
+      id kept = replacing ? nil : [objects[i] valueForKey:bag.name];
+      NSMutableDictionary *dynamic = [kept isKindOfClass:[NSDictionary class]] ? [kept mutableCopy] : [NSMutableDictionary dictionary];
+      [values[i] enumerateKeysAndObjectsUsingBlock:^(id name, id value, BOOL *stop) {
+        (void)stop;
+        if (value == [NSNull null]) [dynamic removeObjectForKey:name];
+        else dynamic[name] = value;
+      }];
+      [objects[i] setValue:dynamic.count ? [dynamic copy] : nil forKey:bag.name];
+    }
+    return @YES;
+  }
   NSMutableSet *names = [NSMutableSet set];
   for (NSDictionary *each in values) [names addObjectsFromArray:each.allKeys];
   [reply failWithError:ODataServiceError(400, [NSString stringWithFormat:@"%@ has no property %@", self.entity.name,
@@ -1674,8 +1735,10 @@ static NSUInteger OISExpandDepth(ODataQueryOptions *options)
   for (NSString *name in names) {
     NSAttributeDescription *attribute = object.entity.attributesByName[name];
     if (attribute.isTransient) continue;
-    // Streams have ETags of their own.
-    if (![self.service.writer typeNameForAttribute:attribute] || [self.service.writer isStreamAttribute:attribute]) continue;
+    // Streams have ETags of their own. The bag of dynamic properties is
+    // served, as they are.
+    BOOL bag = [self.mapper attributeHoldsDynamicProperties:attribute];
+    if ((!bag && ![self.service.writer typeNameForAttribute:attribute]) || [self.service.writer isStreamAttribute:attribute]) continue;
     id json = [self.coder JSONForCoreDataValue:[object valueForKey:name] attribute:attribute];
     NSString *text = [NSString stringWithFormat:@"%@=%@;", name, json];
     NSData *bytes = [text dataUsingEncoding:NSUTF8StringEncoding];

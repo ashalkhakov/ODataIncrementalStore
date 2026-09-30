@@ -122,6 +122,7 @@ static BOOL OISYes(id value)
 {
   if (attribute.isTransient) return nil;
   if (![self.mapper servesProperty:attribute]) return nil;
+  if ([self.mapper attributeHoldsDynamicProperties:attribute]) return nil;  // its entries are properties, it is none
   if ([self isPartOfStream:attribute]) return nil;
   if ([self isStreamAttribute:attribute]) return @"Edm.Stream";
   NSString *declared = attribute.userInfo[ODataUserInfoType];

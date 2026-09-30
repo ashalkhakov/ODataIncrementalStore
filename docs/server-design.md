@@ -878,6 +878,42 @@ its `userInfo`. Only comparisons with a value are handed over (and
 `in`, and the property alone as a condition); sorting by a dynamic
 property, or computing with one, is refused.
 
+Where dynamic properties are kept is the handler's to say. By default,
+in the entity itself: a Transformable attribute marked
+`OData.dynamicProperties` (an `NSDictionary`, the property bag the
+client's generated models have too) makes its set an open type with no
+code at all. The bag is no property on the wire; its entries are read
+from it, written into it (a new dictionary each time, `null` removing
+one, a `PUT` replacing them all), and change the entity's ETag.
+
+**The caveat is filtering.** A Transformable is an archive, on Apple and
+FreeCoreData alike, which no store filters by, and no store keeps JSON
+it can query into. So a filter that names a dynamic property kept there
+is evaluated here: the rows the rest of the request allows are read
+(`maxRowsInMemory` at most, then `400`, to be narrowed by the rest of
+the filter), filtered, ordered and paged in
+memory, and counted there (`$count`, `/$count`). A nested `$expand`
+filter does the same per parent, and a `$apply` stops pushing filters to
+the store at the first that names one. `$explain` shows it: the filter
+is an `Apply` over the store scan rather than part of it. Fine for sets
+of a few thousand; for a set that grows, keep them elsewhere and
+override the handler's methods and `storeFiltersDynamicProperties`:
+
+- **Rows of their own**, one per property, related to the entity: a
+  name, a type, and a column for each kind of value, natively typed --
+  text, a whole number, a real number (a date as seconds), bytes -- as a
+  workflow engine keeps its variables (Camunda's `ACT_RU_VARIABLE`, or
+  UDWorkflow's `WFVariable`: `textValue`, `wholeNumber`, `realNumber`,
+  `bytesValue`). A filter is a `SUBQUERY` over them, which the store
+  runs as SQL, and an index on the name and a value column serves it.
+  A number may be in either numeric column, so a comparison asks both.
+- **Computed** from what the entity already has (the tests' `Size`, a
+  count of products), or **elsewhere** altogether, another service's:
+  the handler asks, and may answer later through the reply.
+
+Core Data's composite attributes (Apple, macOS 14) hold only members the
+model declares, so they are no place for these.
+
 Requests map onto fetch requests, the reverse of `ODataQueryBuilder`:
 
 | OData | Core Data |
