@@ -4920,30 +4920,76 @@ static NSManagedObjectModel *OISCatalogKeeping(NSArray<NSString *> *names)
   XCTAssertEqualObjects([self get:@"Categories(1)/CategoryName"].json[@"value"], @"Drinks", @"not saved");
 }
 
+// A copy of the Catalog whose categories keep dynamic properties in a
+// bag, extras.
+static NSManagedObjectModel *OISCatalogWithBag(void)
+{
+  NSManagedObjectModel *model = [OISCatalogModel() conformsToProtocol:@protocol(NSCopying)]
+      ? [OISCatalogModel() copy]
+      : [[NSManagedObjectModel alloc] initWithContentsOfURL:OISCatalogModelURL()];
+  NSEntityDescription *category = model.entitiesByName[@"Category"];
+  NSAttributeDescription *bag = [[NSAttributeDescription alloc] init];
+  bag.name = @"extras";
+  bag.attributeType = NSTransformableAttributeType;
+  bag.valueTransformerName = @"NSSecureUnarchiveFromData";
+  bag.attributeValueClassName = @"NSDictionary";
+  bag.optional = YES;
+  bag.userInfo = @{ ODataUserInfoDynamicProperties: @"YES" };
+  category.properties = [category.properties arrayByAddingObject:bag];
+  return model;
+}
+
+// A client that shares the model: the service's bag is its bag too.
+- (void)testAClientSharingTheBag
+{
+  NSManagedObjectModel *model = OISCatalogWithBag();
+  [self serveModel:model];
+  OISRecordingTransport *transport = [[OISRecordingTransport alloc] init];
+  transport.next = _service;
+  [ODataIncrementalStore registerStore];
+  NSPersistentStoreCoordinator *client = [[NSPersistentStoreCoordinator alloc] initWithManagedObjectModel:model];
+  NSError *error = nil;
+  ODataIncrementalStore *store = (ODataIncrementalStore *)[client addPersistentStoreWithType:[ODataIncrementalStore storeType] configuration:nil
+                                                                                        URL:[NSURL URLWithString:@"http://example.test/odata/"]
+                                                                                    options:@{ ODataIncrementalStoreTransportOption: transport } error:&error];
+  XCTAssertNotNil(store, @"%@", error);
+  XCTAssertEqualObjects(store.metadataProblems, @[]);
+  NSManagedObjectContext *context = [[NSManagedObjectContext alloc] init];
+  context.persistentStoreCoordinator = client;
+  NSFetchRequest *fetch = [NSFetchRequest fetchRequestWithEntityName:@"Category"];
+  fetch.predicate = [NSPredicate predicateWithFormat:@"id == 1"];
+  NSManagedObject *beverages = [[context executeFetchRequest:fetch error:&error] firstObject];
+  XCTAssertNotNil(beverages, @"%@", error);
+  XCTAssertEqualObjects([beverages valueForKey:@"extras"], @{}, @"none yet");
+
+  [beverages setValue:@{ @"Mood": @"calm", @"Opened": ODataDateFromString(@"2026-01-02T03:04:05Z") } forKey:@"extras"];
+  XCTAssertTrue([context save:&error], @"%@", error);
+  NSDictionary *body = [NSJSONSerialization JSONObjectWithData:transport.requests.lastObject.HTTPBody options:0 error:NULL];
+  XCTAssertEqualObjects(body, (@{ @"Mood": @"calm", @"Opened": @"2026-01-02T03:04:05Z", @"Opened@odata.type": @"#DateTimeOffset" }));
+  [store discardCachedRowsForObjectIDs:nil];
+  [context refreshObject:beverages mergeChanges:NO];
+  XCTAssertEqualObjects([beverages valueForKey:@"extras"][@"Opened"], ODataDateFromString(@"2026-01-02T03:04:05Z"), @"kept by the service");
+
+  NSFetchRequest *calm = [NSFetchRequest fetchRequestWithEntityName:@"Category"];
+  calm.predicate = [NSPredicate predicateWithFormat:@"extras.Mood == 'calm'"];
+  XCTAssertEqualObjects([[context executeFetchRequest:calm error:&error] valueForKey:@"name"], @[ @"Beverages" ], @"%@", error);
+  NSString *query = [transport.requests.lastObject.URL.query stringByRemovingPercentEncoding];
+  XCTAssertTrue([query containsString:@"$filter=Mood eq 'calm'"], @"%@", query);
+}
+
 // Dynamic properties kept by default: in the entity's bag, a
 // Transformable (OData.dynamicProperties), with no handler to write.
 // Filters on them are evaluated here, the store keeping an archive.
 - (void)testDynamicPropertiesKeptInTheModel
 {
   for (NSString *storeType in @[ NSInMemoryStoreType, NSSQLiteStoreType ]) {
-    NSManagedObjectModel *model = [OISCatalogModel() conformsToProtocol:@protocol(NSCopying)]
-        ? [OISCatalogModel() copy]
-        : [[NSManagedObjectModel alloc] initWithContentsOfURL:OISCatalogModelURL()];
-    NSEntityDescription *category = model.entitiesByName[@"Category"];
-    NSAttributeDescription *bag = [[NSAttributeDescription alloc] init];
-    bag.name = @"extras";
-    bag.attributeType = NSTransformableAttributeType;
-    bag.valueTransformerName = @"NSSecureUnarchiveFromData";
-    bag.attributeValueClassName = @"NSDictionary";
-    bag.optional = YES;
-    bag.userInfo = @{ ODataUserInfoDynamicProperties: @"YES" };
-    category.properties = [category.properties arrayByAddingObject:bag];
-    [self serveModel:model storeType:storeType];
+    [self serveModel:OISCatalogWithBag() storeType:storeType];
     _service.explains = YES;
 
     NSString *metadata = [self get:@"$metadata"].text;
     XCTAssertTrue([metadata containsString:@"<EntityType Name=\"Category\" OpenType=\"true\">"], @"%@: %@", storeType, metadata);
     XCTAssertFalse([metadata containsString:@"Extras"], @"the bag is no property");
+    XCTAssertEqualObjects(_service.metadataProblems, @[]);
     NSString *before = [self get:@"Categories(1)"].headers[@"ETag"];
     OISServiceResponse *r = [self send:@"PATCH" path:@"Categories(1)" headers:nil
                                   body:@{ @"Mood": @"calm", @"Opened@odata.type": @"#DateTimeOffset", @"Opened": @"2026-01-02T03:04:05Z",

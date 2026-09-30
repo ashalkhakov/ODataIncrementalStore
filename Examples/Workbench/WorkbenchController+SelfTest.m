@@ -53,6 +53,44 @@ static void WBCheck(BOOL ok, NSString *what, NSString *detail)
   fprintf(stderr, "%s  %s%s%s\n", ok ? "PASS" : "FAIL", what.UTF8String, detail.length ? " — " : "", detail.UTF8String ?: "");
 }
 
+// The built-in EquipmentUnits: an open type whose dynamic properties the
+// service keeps in a Transformable, so a filter on one is evaluated by
+// the service, the rest of it by the store; edited in the cell.
+- (void)checkBuiltInOpenType
+{
+  [self runPreset:[self presetLabelled:@"Forklifts over 2 t"]];
+  NSString *wire = [self.wireURLField.stringValue stringByRemovingPercentEncoding];
+  NSArray *names = [self.results.rows valueForKey:@"name"];
+  WBCheck(!self.results.lastError && [names isEqual:@[ @"Forklift FL-1" ]] &&
+          [wire rangeOfString:@"$filter=Kind eq 'Forklift' and LoadCapacityKg gt 2000"].location != NSNotFound,
+          @"open type: filtered by a dynamic property", self.results.lastError ?: [NSString stringWithFormat:@"%@ %@", names, wire]);
+  [self explainQuery:nil];
+  [[NSRunLoop currentRunLoop] runMode:NSDefaultRunLoopMode beforeDate:[NSDate dateWithTimeIntervalSinceNow:0.2]];
+  NSString *physical = self.physicalPlanView.string;
+  NSRange here = [physical rangeOfString:@"LoadCapacityKg gt 2000"];
+  NSRange store = [physical rangeOfString:@"Store scan EquipmentUnit where Kind eq 'Forklift'"];
+  WBCheck(here.location != NSNotFound && store.location != NSNotFound && here.location < store.location &&
+          [[physical substringFromIndex:store.location] rangeOfString:@"LoadCapacityKg"].location == NSNotFound,
+          @"open type: explain filters the dynamic property here, over the store's scan", physical);
+  [self.planWindow orderOut:nil];
+
+  [self runPreset:[self presetLabelled:@"Equipment ("]];
+  NSUInteger scale = [self rowWhere:@"name" is:@"Scale SC-1"];
+  [self editColumn:@"dynamicProperties" row:scale value:@"MaxWeightKg=350; Calibrated=2026-03-01"];
+  [self saveChanges:nil];
+  WBCheck([self.statusField.stringValue hasPrefix:@"Saved: 0 inserted (POST), 1 updated"], @"open type: dynamic properties saved (PATCH)",
+          self.statusField.stringValue);
+  [self runPreset:[self presetLabelled:@"Equipment ("]];
+  scale = [self rowWhere:@"name" is:@"Scale SC-1"];
+  if (scale != NSNotFound) [self.tableView selectRowIndexes:[NSIndexSet indexSetWithIndex:scale] byExtendingSelection:NO];
+  [self inspectSelection];
+  NSString *shown = self.inspectorView.string;
+  WBCheck([shown rangeOfString:@"MaxWeightKg = 350"].location != NSNotFound && [shown rangeOfString:@"Calibrated = 2026-03-01"].location != NSNotFound &&
+          [shown rangeOfString:@"Certificate"].location == NSNotFound,
+          @"open type: kept by the service, one left out removed", shown);
+  [self shoot:@"Equipment"];
+}
+
 // TripPin's Person is an open type: dynamic properties, set in the cell,
 // saved, read back typed, and filtered by.
 - (void)checkDynamicProperties
@@ -666,6 +704,7 @@ static void WBCheck(BOOL ok, NSString *what, NSString *detail)
       [self checkBuiltInOperations];
       [self checkSearchAndGrouping];
       [self checkBuiltInFeatures];
+      [self checkBuiltInOpenType];
     }
     if (service != WBServiceBuiltIn) WBCheck(![self.explainButton isEnabled], @"explain: only at the built-in service", nil);
     if (service != WBServiceTripPin) continue;

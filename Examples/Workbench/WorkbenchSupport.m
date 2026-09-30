@@ -125,6 +125,7 @@ NSArray<NSString *> *WBColumnNames(NSEntityDescription *entity, BOOL builtIn)
     if ([name isEqualToString:@"Location"]) return @[ @"id", @"name", @"city", @"country" ];
     if ([name isEqualToString:@"Stock"]) return @[ @"id", @"quantity" ];
     if ([name isEqualToString:@"Category"]) return @[ @"id", @"name" ];
+    if ([name isEqualToString:@"EquipmentUnit"]) return @[ @"id", @"name", @"kind", @"dynamicProperties" ];
   }
   NSMutableArray *keys = [NSMutableArray array], *names = [NSMutableArray array], *plain = [NSMutableArray array];
   NSMutableArray *references = [NSMutableArray array], *rest = [NSMutableArray array];

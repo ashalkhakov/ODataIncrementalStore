@@ -482,7 +482,7 @@ static void OISAddChildren(NSXMLElement *parent, NSArray<NSXMLElement *> *childr
       NSAttributeDescription *attr = (NSAttributeDescription *)property;
       NSString *edm = [self typeNameForAttribute:attr];
       if (!edm) {
-        if (!attr.isTransient && ![self isPartOfStream:attr]) {
+        if (!attr.isTransient && ![self isPartOfStream:attr] && ![self.mapper attributeHoldsDynamicProperties:attr]) {
           [_problems addObject:[NSString stringWithFormat:@"%@.%@ has no Edm type: give it an OData.type", entity.name, attr.name]];
         }
         continue;
