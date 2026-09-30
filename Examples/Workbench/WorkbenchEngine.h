@@ -22,6 +22,10 @@ NS_ASSUME_NONNULL_BEGIN
 // media entities (Download, Upload). Keys are kept in a deletion's
 // tombstone, so its sets' changes can be followed by delta links.
 FOUNDATION_EXPORT NSManagedObjectModel * _Nullable WorkbenchBuiltInModel(NSURL *catalogURL);
+// The configuration of it the built-in service serves (and the client's
+// store holds): every entity but AuditEntry, the application's own record
+// of what its actions did.
+FOUNDATION_EXPORT NSString * const WorkbenchServedConfiguration;
 
 // One exchange, as it went over the wire: nothing shortened.
 @interface WorkbenchLogEntry : NSObject

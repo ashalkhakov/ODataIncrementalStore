@@ -689,6 +689,59 @@ static NSString *OISElementType(NSString *typeName)
   return [self encode:value edm:[self edmTypeNamed:typeName] typeName:typeName];
 }
 
+#pragma mark Dynamic properties
+
+- (NSString *)dynamicTypeNameOfValue:(id)value
+{
+  if ([value isKindOfClass:[@YES class]]) return nil;
+  if ([value isKindOfClass:[NSDecimalNumber class]]) return @"Edm.Decimal";
+  if ([value isKindOfClass:[NSNumber class]]) {
+    const char *t = [value objCType];
+    if (t && (t[0] == 'd' || t[0] == 'f')) return @"Edm.Double";
+    long long n = [value longLongValue];
+    return n >= INT32_MIN && n <= INT32_MAX ? @"Edm.Int32" : @"Edm.Int64";
+  }
+  if ([value isKindOfClass:[NSDate class]]) return @"Edm.DateTimeOffset";
+  if ([value isKindOfClass:[NSUUID class]]) return @"Edm.Guid";
+  if ([value isKindOfClass:[NSData class]]) return @"Edm.Binary";
+  return nil;
+}
+
+// A type annotation's name, qualified: #Int32 is Edm.Int32, and
+// #Collection(Int32) Collection(Edm.Int32).
+static NSString *OISAnnotatedTypeName(id annotation)
+{
+  if (![annotation isKindOfClass:[NSString class]]) return nil;
+  NSString *name = ODataTypeNameFromControlInformation(annotation);
+  NSString *element = OISElementType(name);
+  if (element) return [element rangeOfString:@"."].location == NSNotFound ? [NSString stringWithFormat:@"Collection(Edm.%@)", element] : name;
+  return [name rangeOfString:@"."].location == NSNotFound ? [@"Edm." stringByAppendingString:name] : name;
+}
+
+- (NSDictionary *)dynamicPropertiesInJSON:(NSDictionary *)json declared:(NSSet *)declared
+{
+  NSMutableDictionary *values = [NSMutableDictionary dictionary];
+  for (NSString *name in json) {
+    if ([name rangeOfString:@"@"].location != NSNotFound || [declared containsObject:name]) continue;
+    id member = json[name];
+    if (member == [NSNull null]) continue;
+    NSString *type = OISAnnotatedTypeName(json[[name stringByAppendingString:@"@odata.type"]] ?: json[[name stringByAppendingString:@"@type"]]);
+    id value = type ? [self decode:member edm:[self edmTypeNamed:type] typeName:type enumAsInteger:NO asUUID:YES] : member;
+    if (value && value != [NSNull null]) values[name] = value;
+  }
+  return values;
+}
+
+- (void)addDynamicProperties:(NSDictionary *)values toJSON:(NSMutableDictionary *)json
+{
+  for (NSString *name in values) {
+    id value = values[name];
+    NSString *type = value == [NSNull null] ? nil : [self dynamicTypeNameOfValue:value];
+    json[name] = [self JSONForValue:value typeName:type];
+    if (type) json[[name stringByAppendingString:@"@odata.type"]] = [@"#" stringByAppendingString:[type substringFromIndex:4]];
+  }
+}
+
 #pragma mark Literals
 
 - (NSString *)literal:(id)value edm:(ODataEdmType)edm typeName:(NSString *)typeName

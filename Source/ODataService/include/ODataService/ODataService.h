@@ -244,8 +244,9 @@ FOUNDATION_EXPORT NSString * const ODataUserInfoETag;  // @"OData.etag"
 
 // Whether the set's entity type is open (OpenType in $metadata): its
 // entities may have dynamic properties, properties the model does not
-// declare, which -dynamicPropertiesOfObjects:request:reply: gives and
-// -predicateForDynamicProperty:... filters by. $select may name one, and
+// declare, which -dynamicPropertiesOfObjects:request:reply: gives,
+// -writeDynamicProperties:... keeps, and -predicateForDynamicProperty:...
+// filters by. $select may name one, and
 // an entity without it leaves it out. NO by default.
 @property (nonatomic, getter=isOpenType) BOOL openType;
 // The dynamic properties of the set's entities a response writes, read
@@ -263,6 +264,23 @@ FOUNDATION_EXPORT NSString * const ODataUserInfoETag;  // @"OData.etag"
     dynamicPropertiesOfObjects:(NSArray<NSManagedObject *> *)objects
                        request:(ODataRequest *)request
                          reply:(ODataReply *)reply;
+// The dynamic properties a write gives the set's entities: of every one
+// its bodies insert or update (a deep insert's and a delta's included),
+// asked at once, after the declared properties are set and before the
+// save; values[i] are objects[i]'s, by name, each decoded as its type
+// annotation says (Since@odata.type: #DateTimeOffset is an NSDate) or as
+// its JSON is, NSNull for one the body sets to null, which removes it. A
+// PUT replaces an entity: the dynamic properties its body leaves out go
+// too (request.method says which). Keep them where they are kept: what
+// the handler changes in the request context is saved with the rest.
+// Answer anything but nil (@YES) now, or later through the reply; an
+// error (-failWithError:) fails the write, and nothing of it is saved. The
+// default refuses them (400): an open type whose dynamic properties can
+// be written overrides it.
+- (nullable id)writeDynamicProperties:(NSArray<NSDictionary<NSString *, id> *> *)values
+                            ofObjects:(NSArray<NSManagedObject *> *)objects
+                              request:(ODataRequest *)request
+                                reply:(ODataReply *)reply;
 // $filter's comparison of a dynamic property with a value, as a predicate
 // over the set's entity: Priority gt 2, or Variables/amount ge 100 (a path,
 // the property's name first). The operator reads with the property on the

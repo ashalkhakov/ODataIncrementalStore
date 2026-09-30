@@ -20,6 +20,7 @@ NSString * const ODataUserInfoPeriodStart = @"OData.periodStart";
 NSString * const ODataUserInfoPeriodEnd = @"OData.periodEnd";
 NSString * const ODataUserInfoObjectKey = @"OData.objectKey";
 NSString * const ODataUserInfoClosedClosedPeriods = @"OData.closedClosedPeriods";
+NSString * const ODataUserInfoDynamicProperties = @"OData.dynamicProperties";
 
 @implementation ODataPropertyMapper
 
@@ -395,6 +396,20 @@ static NSError *OISViolation(NSManagedObject *object, NSString *key, NSString *m
   return [self schemaName:[self wireName:relationship.name] inEntity:relationship.entity navigation:YES];
 }
 
+- (BOOL)attributeHoldsDynamicProperties:(NSAttributeDescription *)attribute
+{
+  id flag = attribute.userInfo[ODataUserInfoDynamicProperties];
+  return [flag isEqual:@"YES"] || [flag isEqual:@YES];
+}
+
+- (NSAttributeDescription *)dynamicPropertiesAttributeOfEntity:(NSEntityDescription *)entity
+{
+  for (NSAttributeDescription *attribute in entity.attributesByName.allValues) {
+    if ([self attributeHoldsDynamicProperties:attribute]) return attribute;
+  }
+  return nil;
+}
+
 - (BOOL)servesRelationship:(NSRelationshipDescription *)relationship
 {
   if (!self.servedEntityNames) return YES;
@@ -408,6 +423,7 @@ static NSError *OISViolation(NSManagedObject *object, NSString *key, NSString *m
   for (NSPropertyDescription *property in entity.properties) {
     NSString *wire = nil;
     if ([property isKindOfClass:[NSAttributeDescription class]]) {
+      if ([self attributeHoldsDynamicProperties:(NSAttributeDescription *)property]) continue;
       wire = [self propertyForAttribute:(NSAttributeDescription *)property];
     } else if ([property isKindOfClass:[NSRelationshipDescription class]]) {
       if (![self servesRelationship:(NSRelationshipDescription *)property]) continue;
@@ -478,6 +494,11 @@ static NSError *OISViolation(NSManagedObject *object, NSString *key, NSString *m
     NSString *part = parts[i];
     NSAttributeDescription *attr = current.attributesByName[part];
     NSRelationshipDescription *rel = attr ? nil : current.relationshipsByName[part];
+    if (attr && [self attributeHoldsDynamicProperties:attr]) {
+      // A dynamic property: by its own name, and on into its members.
+      [mapped addObjectsFromArray:[parts subarrayWithRange:NSMakeRange(i + 1, parts.count - i - 1)]];
+      break;
+    }
     if (attr) {
       [mapped addObject:[self propertyForAttribute:attr]];
       if (i + 1 < parts.count) {
@@ -567,9 +588,16 @@ static NSString *OISJoinedSorted(NSSet *names)
 
 - (NSArray *)problemsWithModel:(NSManagedObjectModel *)model
 {
+  return [self problemsWithModel:model configuration:nil];
+}
+
+- (NSArray *)problemsWithModel:(NSManagedObjectModel *)model configuration:(NSString *)configuration
+{
   if (!self.schema) return @[];
   NSMutableArray *problems = [NSMutableArray array];
-  NSArray *entities = [model.entities sortedArrayUsingComparator:^NSComparisonResult(id a, id b) {
+  NSArray *all = configuration ? [model entitiesForConfiguration:configuration] ?: @[] : model.entities;
+  NSSet *checked = [NSSet setWithArray:all];
+  NSArray *entities = [all sortedArrayUsingComparator:^NSComparisonResult(id a, id b) {
     return [[a name] compare:[b name]];
   }];
   for (NSEntityDescription *entity in entities) {
@@ -596,6 +624,12 @@ static NSString *OISJoinedSorted(NSSet *names)
     for (NSString *name in [entity.attributesByName.allKeys sortedArrayUsingSelector:@selector(compare:)]) {
       NSAttributeDescription *attr = entity.attributesByName[name];
       if (attr.isTransient || parent.attributesByName[name]) continue;
+      if ([self attributeHoldsDynamicProperties:attr]) {
+        if (![self.schema entityTypeIsOpen:type]) {
+          [problems addObject:[NSString stringWithFormat:@"%@.%@: dynamic properties, but %@ is not an open type", entity.name, name, type.qualifiedName]];
+        }
+        continue;
+      }
       NSString *wire = [self propertyForAttribute:attr];
       ODataSchemaProperty *property = [self.schema property:wire ofEntityType:type];
       if (!property) {
@@ -618,6 +652,8 @@ static NSString *OISJoinedSorted(NSSet *names)
     for (NSString *name in [entity.relationshipsByName.allKeys sortedArrayUsingSelector:@selector(compare:)]) {
       NSRelationshipDescription *rel = entity.relationshipsByName[name];
       if (parent.relationshipsByName[name]) continue;
+      // One out of the configuration leads to what the service does not serve.
+      if (configuration && ![checked containsObject:rel.destinationEntity]) continue;
       NSString *wire = [self propertyForRelationship:rel];
       ODataSchemaNavigationProperty *navigation = [self.schema navigationProperty:wire ofEntityType:type];
       if (!navigation) {

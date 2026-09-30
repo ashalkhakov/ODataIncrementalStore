@@ -587,6 +587,13 @@
 @interface OISOpenCategoriesHandler : ODataEntitySetHandler
 @property (nonatomic, strong) NSMutableArray<NSArray *> *batches;
 @property (nonatomic) BOOL later;
+// What writes gave, by category ID (NSNull: removed); those a PUT
+// replaced, which keep none of the rest; each write's categories; and
+// whether writes are refused, as by default.
+@property (nonatomic, strong) NSMutableDictionary *written;
+@property (nonatomic, strong) NSMutableSet *replaced;
+@property (nonatomic, strong) NSMutableArray<NSArray *> *writeBatches;
+@property (nonatomic) BOOL refusesWrites;
 @end
 
 @implementation OISOpenCategoriesHandler
@@ -595,8 +602,33 @@
   if ((self = [super initWithEntity:entity])) {
     self.openType = YES;
     _batches = [NSMutableArray array];
+    _written = [NSMutableDictionary dictionary];
+    _replaced = [NSMutableSet set];
+    _writeBatches = [NSMutableArray array];
   }
   return self;
+}
+- (id)writeDynamicProperties:(NSArray<NSDictionary *> *)values ofObjects:(NSArray<NSManagedObject *> *)objects
+                     request:(ODataRequest *)request reply:(ODataReply *)reply
+{
+  if (self.refusesWrites) return [super writeDynamicProperties:values ofObjects:objects request:request reply:reply];
+  [self.writeBatches addObject:[objects valueForKey:@"name"]];
+  for (NSUInteger i = 0; i < objects.count; i++) {
+    id key = [objects[i] valueForKey:@"id"];
+    if ([request.method isEqualToString:@"PUT"]) {
+      [self.replaced addObject:key];
+      [self.written removeObjectForKey:key];
+    }
+    NSMutableDictionary *kept = self.written[key] ?: [NSMutableDictionary dictionary];
+    [kept addEntriesFromDictionary:values[i]];
+    self.written[key] = kept;
+  }
+  if (!self.later) return @YES;
+  [reply defer];
+  dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(10 * NSEC_PER_MSEC)), dispatch_get_global_queue(0, 0), ^{
+    [reply finishWithResult:@YES];
+  });
+  return nil;
 }
 - (NSDictionary *)dynamicPropertiesOfObjects:(NSArray<NSManagedObject *> *)objects request:(ODataRequest *)request reply:(ODataReply *)reply
 {
@@ -605,9 +637,17 @@
   for (NSManagedObject *object in objects) {
     NSMutableDictionary *prices = [NSMutableDictionary dictionary];
     for (NSManagedObject *product in [object valueForKey:@"products"]) prices[[product valueForKey:@"name"]] = [product valueForKey:@"unitPrice"];
-    answer[object.objectID] = @{ @"Prices": prices, @"Size": @([[object valueForKey:@"products"] count]), @"CategoryName": @"not this",
-                                 @"Reviewed": ODataDateFromString(@"2025-03-01T12:00:00Z"), @"Share": [NSDecimalNumber decimalNumberWithString:@"0.5"],
-                                 @"Note": @"kept", @"Listed": @YES };
+    id key = [object valueForKey:@"id"];
+    NSMutableDictionary *dynamic = [self.replaced containsObject:key] ? [NSMutableDictionary dictionary] : [@{
+      @"Prices": prices, @"Size": @([[object valueForKey:@"products"] count]), @"CategoryName": @"not this",
+      @"Reviewed": ODataDateFromString(@"2025-03-01T12:00:00Z"), @"Share": [NSDecimalNumber decimalNumberWithString:@"0.5"],
+      @"Note": @"kept", @"Listed": @YES } mutableCopy];
+    NSDictionary *written = self.written[key];
+    for (NSString *name in written) {
+      if (written[name] == [NSNull null]) [dynamic removeObjectForKey:name];
+      else dynamic[name] = written[name];
+    }
+    answer[object.objectID] = dynamic;
   }
   if (!self.later) return answer;
   [reply defer];
@@ -4329,6 +4369,26 @@ static NSString *OISHTTPDate(NSDate *date)
   XCTAssertEqual(([self send:@"PATCH" path:@"Products(1)" headers:nil
                         body:@{ @"Suppliers@odata.bind": @[ @"Suppliers(2)" ] }].status), 400);
   XCTAssertEqualObjects([self get:@"Categories(1)/Products/$count"].text, @"2", @"what it serves works as before");
+
+  // A client of the same model: a store of the same configuration answers
+  // for its entities, and looks for changes to them alone.
+  [ODataIncrementalStore registerStore];
+  NSURL *root = [NSURL URLWithString:@"http://example.test/odata/"];
+  NSError *error = nil;
+  NSPersistentStoreCoordinator *client = [[NSPersistentStoreCoordinator alloc] initWithManagedObjectModel:_coordinator.managedObjectModel];
+  ODataIncrementalStore *shop = (ODataIncrementalStore *)[client addPersistentStoreWithType:[ODataIncrementalStore storeType] configuration:@"Shop"
+                                                                                       URL:root options:@{ ODataIncrementalStoreTransportOption: _service }
+                                                                                     error:&error];
+  XCTAssertNotNil(shop, @"%@", error);
+  XCTAssertEqualObjects(shop.metadataProblems, @[]);
+  NSManagedObjectContext *context = [[NSManagedObjectContext alloc] init];
+  context.persistentStoreCoordinator = client;
+  XCTAssertNotNil([shop fetchRemoteChanges:&error], @"%@", error);
+  NSPersistentStoreCoordinator *whole = [[NSPersistentStoreCoordinator alloc] initWithManagedObjectModel:_coordinator.managedObjectModel];
+  ODataIncrementalStore *every = (ODataIncrementalStore *)[whole addPersistentStoreWithType:[ODataIncrementalStore storeType] configuration:nil
+                                                                                     URL:root options:@{ ODataIncrementalStoreTransportOption: _service }
+                                                                                   error:&error];
+  XCTAssertTrue([every.metadataProblems containsObject:@"Supplier: no entity type Supplier in $metadata"], @"%@", every.metadataProblems);
 }
 
 // Stocks without their Locations: every way to a location is closed, and
@@ -4475,6 +4535,164 @@ static NSString *OISHTTPDate(NSDate *date)
   [_service setHandler:[[OISOpenCategoriesHandler alloc] initWithEntity:OISCatalogEntity(@"Category")] forEntitySet:@"Categories"];
   XCTAssertEqualObjects(names(@"Prices/Chai eq 18"), @[ @"Beverages" ]);
   XCTAssertEqualObjects(names(@"Size ge 3 or Prices/Chang gt 20"), @[ @"Condiments" ]);
+}
+
+// The client over an open type: a model from $metadata with a property
+// bag, filled from what each row has that the type does not declare,
+// typed as annotated; filtered by; and written back, entry by entry.
+- (void)testTheClientsPropertyBag
+{
+  [_service setHandler:[[OISOpenCategoriesHandler alloc] initWithEntity:OISCatalogEntity(@"Category")] forEntitySet:@"Categories"];
+  OISRecordingTransport *transport = [[OISRecordingTransport alloc] init];
+  transport.next = _service;
+  NSURL *root = [NSURL URLWithString:@"http://example.test/odata/"];
+  NSDictionary *options = @{ ODataIncrementalStoreTransportOption: transport };
+  NSError *error = nil;
+  [ODataIncrementalStore registerStore];
+  NSManagedObjectModel *model = [ODataIncrementalStore modelForServiceAtURL:root options:options error:&error];
+  XCTAssertNotNil(model, @"%@", error);
+  NSEntityDescription *categoryEntity = model.entitiesByName[@"Category"], *productEntity = model.entitiesByName[@"Product"];
+  NSAttributeDescription *bag = categoryEntity.attributesByName[@"dynamicProperties"];
+  XCTAssertEqual(bag.attributeType, NSTransformableAttributeType);
+  XCTAssertNil(productEntity.attributesByName[@"dynamicProperties"], @"Products is not open");
+  NSPersistentStoreCoordinator *client = [[NSPersistentStoreCoordinator alloc] initWithManagedObjectModel:model];
+  XCTAssertNotNil([client addPersistentStoreWithType:[ODataIncrementalStore storeType] configuration:nil URL:root options:options error:&error],
+                  @"%@", error);
+  NSManagedObjectContext *context = [[NSManagedObjectContext alloc] init];
+  context.persistentStoreCoordinator = client;
+
+  NSFetchRequest *fetch = [NSFetchRequest fetchRequestWithEntityName:@"Category"];
+  fetch.sortDescriptors = @[ [NSSortDescriptor sortDescriptorWithKey:@"categoryName" ascending:YES] ];
+  NSArray *rows = [context executeFetchRequest:fetch error:&error];
+  XCTAssertEqual(rows.count, 2u, @"%@", error);
+  XCTAssertTrue([transport.requests.lastObject.URL.query rangeOfString:@"select"].location == NSNotFound,
+                @"no $select can name them: %@", transport.requests.lastObject.URL);
+  NSManagedObject *beverages = rows.firstObject;
+  NSDictionary *dynamic = [beverages valueForKey:@"dynamicProperties"];
+  XCTAssertEqualObjects(dynamic[@"Size"], @2);
+  XCTAssertEqualObjects(dynamic[@"Reviewed"], ODataDateFromString(@"2025-03-01T12:00:00Z"), @"a date, as its annotation says");
+  XCTAssertTrue([dynamic[@"Share"] isKindOfClass:[NSDecimalNumber class]], @"%@", [dynamic[@"Share"] class]);
+  XCTAssertEqualObjects(dynamic[@"Share"], [NSDecimalNumber decimalNumberWithString:@"0.5"]);
+  // Nested, a value is what its JSON is: no annotation says more.
+  XCTAssertEqualObjects([dynamic[@"Prices"][@"Chang"] description], @"19");
+  XCTAssertEqualObjects(dynamic[@"Note"], @"kept");
+  XCTAssertEqualObjects(dynamic[@"Listed"], @YES);
+  XCTAssertNil(dynamic[@"CategoryName"], @"a declared property is no dynamic one");
+  XCTAssertEqualObjects([beverages valueForKey:@"categoryName"], @"Beverages");
+
+  // Filtered by one: the service is asked.
+  NSFetchRequest *big = [NSFetchRequest fetchRequestWithEntityName:@"Category"];
+  // (SIZE is a word of the predicate syntax: %K, to name it.)
+  big.predicate = [NSPredicate predicateWithFormat:@"%K >= 3", @"dynamicProperties.Size"];
+  XCTAssertEqualObjects([[context executeFetchRequest:big error:&error] valueForKey:@"categoryName"], @[ @"Condiments" ], @"%@", error);
+  NSString *query = [transport.requests.lastObject.URL.query stringByRemovingPercentEncoding];
+  XCTAssertTrue([query rangeOfString:@"$filter=Size ge 3"].location != NSNotFound, @"%@", query);
+  // One asked for in a dictionary result: $select names it.
+  NSFetchRequest *sizes = [NSFetchRequest fetchRequestWithEntityName:@"Category"];
+  sizes.resultType = NSDictionaryResultType;
+  NSExpressionDescription *size = [[NSExpressionDescription alloc] init];
+  size.name = @"size";
+  size.expression = [NSExpression expressionForKeyPath:@"dynamicProperties.Size"];
+  size.expressionResultType = NSUndefinedAttributeType;
+  sizes.propertiesToFetch = @[ @"categoryName", size ];
+  sizes.sortDescriptors = fetch.sortDescriptors;
+  NSArray *pairs = [context executeFetchRequest:sizes error:&error];
+  XCTAssertEqualObjects([pairs valueForKey:@"size"], (@[ @2, @3 ]), @"%@ %@", pairs, error);
+  query = [transport.requests.lastObject.URL.query stringByRemovingPercentEncoding];
+  XCTAssertTrue([query rangeOfString:@"$select=CategoryName,Size"].location != NSNotFound, @"%@", query);
+
+  // Changed: what changed, typed where JSON does not say; one removed, null.
+  NSMutableDictionary *changed = [dynamic mutableCopy];
+  [changed removeObjectForKey:@"Note"];
+  changed[@"Size"] = @4;
+  changed[@"Opened"] = ODataDateFromString(@"2026-01-02T03:04:05Z");
+  [beverages setValue:changed forKey:@"dynamicProperties"];
+  XCTAssertTrue([context save:&error], @"%@", error);
+  NSURLRequest *patch = [self lastRequest:@"PATCH" in:transport];
+  XCTAssertEqualObjects([NSJSONSerialization JSONObjectWithData:patch.HTTPBody options:0 error:NULL],
+                        (@{ @"Note": [NSNull null], @"Size": @4, @"Size@odata.type": @"#Int32",
+                            @"Opened": @"2026-01-02T03:04:05Z", @"Opened@odata.type": @"#DateTimeOffset" }));
+  // Kept by the service, and read back as they were written.
+  [(ODataIncrementalStore *)client.persistentStores.firstObject discardCachedRowsForObjectIDs:nil];
+  [context refreshObject:beverages mergeChanges:NO];
+  NSDictionary *again = [beverages valueForKey:@"dynamicProperties"];
+  XCTAssertEqualObjects(again[@"Opened"], ODataDateFromString(@"2026-01-02T03:04:05Z"), @"%@", again);
+  XCTAssertNil(again[@"Note"]);
+
+  // Inserted: each one, beside the declared properties.
+  NSManagedObject *snacks = [NSEntityDescription insertNewObjectForEntityForName:@"Category" inManagedObjectContext:context];
+  [snacks setValue:@9 forKey:@"categoryID"];
+  [snacks setValue:@"Snacks" forKey:@"categoryName"];
+  [snacks setValue:@{ @"Mood": @"calm", @"Weight": [NSDecimalNumber decimalNumberWithString:@"1.25"] } forKey:@"dynamicProperties"];
+  XCTAssertTrue([context save:&error], @"%@", error);
+  NSDictionary *posted = [NSJSONSerialization JSONObjectWithData:[self lastRequest:@"POST" in:transport].HTTPBody options:0 error:NULL];
+  XCTAssertEqualObjects(posted[@"CategoryName"], @"Snacks");
+  XCTAssertEqualObjects(posted[@"Mood"], @"calm");
+  XCTAssertEqualObjects(posted[@"Weight@odata.type"], @"#Decimal");
+  XCTAssertNil(posted[@"DynamicProperties"], @"%@", posted);
+  XCTAssertEqualObjects([self get:@"Categories(9)"].json[@"Mood"], @"calm", @"the service kept them");
+}
+
+- (NSURLRequest *)lastRequest:(NSString *)method in:(OISRecordingTransport *)transport
+{
+  for (NSURLRequest *request in transport.requests.reverseObjectEnumerator) {
+    if ([request.HTTPMethod isEqualToString:method]) return request;
+  }
+  return nil;
+}
+
+// An open type's dynamic properties written: typed by their annotations,
+// null removing one, all of a write's handed to the handler at once, and
+// read back; refused where the type is not open, or its handler keeps none.
+- (void)testWritingAnOpenType
+{
+  OISOpenCategoriesHandler *handler = [[OISOpenCategoriesHandler alloc] initWithEntity:OISCatalogEntity(@"Category")];
+  [_service setHandler:handler forEntitySet:@"Categories"];
+  OISServiceResponse *r = [self send:@"PATCH" path:@"Categories(1)" headers:nil
+                                body:@{ @"Mood": @"calm", @"Opened@odata.type": @"#DateTimeOffset", @"Opened": @"2026-01-02T03:04:05Z",
+                                        @"Visits": @3, @"Note": [NSNull null], @"CategoryName": @"Drinks" }];
+  XCTAssertTrue(r.status < 300, @"%ld %@", (long)r.status, r.text);
+  XCTAssertEqualObjects(handler.writeBatches, @[ @[ @"Drinks" ] ], @"after the declared ones are set");
+  XCTAssertTrue([handler.written[@1][@"Opened"] isKindOfClass:[NSDate class]], @"typed as annotated: %@", handler.written[@1]);
+  NSDictionary *drinks = [self get:@"Categories(1)"].json;
+  XCTAssertEqualObjects(drinks[@"CategoryName"], @"Drinks");
+  XCTAssertEqualObjects(drinks[@"Mood"], @"calm");
+  XCTAssertEqualObjects(drinks[@"Opened"], @"2026-01-02T03:04:05Z");
+  XCTAssertEqualObjects(drinks[@"Opened@odata.type"], @"#DateTimeOffset");
+  XCTAssertEqualObjects(drinks[@"Visits"], @3);
+  XCTAssertNil(drinks[@"Note"], @"null removes one");
+  XCTAssertEqualObjects(drinks[@"Size"], @2, @"the rest as they were");
+
+  // Several entities in one write, one ask: a deep insert, and later.
+  handler.later = YES;
+  [handler.writeBatches removeAllObjects];
+  r = [self send:@"POST" path:@"Products" headers:nil
+            body:@{ @"ProductID": @20, @"ProductName": @"Pretzels", @"UnitPrice": @3, @"Discontinued": @NO,
+                    @"Category": @{ @"CategoryID": @7, @"CategoryName": @"Snacks", @"Mood": @"crunchy" } }];
+  XCTAssertEqual(r.status, 201, @"%@", r.text);
+  r = [self send:@"PATCH" path:@"Categories(2)" headers:nil body:@{ @"Mood": @"hot", @"Share@odata.type": @"#Decimal", @"Share": @"0.75" }];
+  XCTAssertTrue(r.status < 300, @"%ld %@", (long)r.status, r.text);
+  XCTAssertEqualObjects(handler.writeBatches, (@[ @[ @"Snacks" ], @[ @"Condiments" ] ]));
+  XCTAssertEqualObjects([self get:@"Categories(7)"].json[@"Mood"], @"crunchy");
+  XCTAssertEqualObjects(handler.written[@2][@"Share"], [NSDecimalNumber decimalNumberWithString:@"0.75"]);
+  handler.later = NO;
+
+  // PUT replaces them all.
+  r = [self send:@"PUT" path:@"Categories(2)" headers:nil body:@{ @"CategoryName": @"Condiments", @"Mood": @"mild" }];
+  XCTAssertTrue(r.status < 300, @"%ld %@", (long)r.status, r.text);
+  NSDictionary *condiments = [self get:@"Categories(2)"].json;
+  XCTAssertEqualObjects(condiments[@"Mood"], @"mild");
+  XCTAssertNil(condiments[@"Size"], @"%@", condiments);
+
+  // Not where the value is not what its annotation says, the type is not
+  // open, or the handler keeps none: and then nothing of the write is saved.
+  XCTAssertEqual(([self send:@"PATCH" path:@"Categories(1)" headers:nil body:@{ @"When@odata.type": @"#DateTimeOffset", @"When": @"soon" }].status), 400);
+  XCTAssertEqual(([self send:@"PATCH" path:@"Products(1)" headers:nil body:@{ @"Mood": @"x" }].status), 400);
+  handler.refusesWrites = YES;
+  r = [self send:@"PATCH" path:@"Categories(1)" headers:nil body:@{ @"CategoryName": @"Beverages", @"Mood": @"x" }];
+  XCTAssertEqual(r.status, 400, @"%@", r.text);
+  XCTAssertTrue([r.text rangeOfString:@"Mood"].location != NSNotFound, @"%@", r.text);
+  XCTAssertEqualObjects([self get:@"Categories(1)/CategoryName"].json[@"value"], @"Drinks", @"not saved");
 }
 
 // Nothing is written but by the application's actions.

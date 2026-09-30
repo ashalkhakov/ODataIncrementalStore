@@ -58,6 +58,7 @@
 // The query, as the panel says it now.
 - (WBQuery *)currentQuery;
 - (NSManagedObject *)selectedObject;
+- (void)inspectSelection;
 - (NSString *)itemForPath:(NSString *)path;
 - (void)show:(NSString *)text in:(NSTextView *)view;
 - (void)setQueryValue:(id)value in:(NSTableView *)table column:(NSTableColumn *)column row:(NSInteger)row;

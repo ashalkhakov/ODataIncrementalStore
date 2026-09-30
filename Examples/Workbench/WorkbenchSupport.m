@@ -44,6 +44,57 @@ BOOL WBIsKey(NSAttributeDescription *attribute)
   return [flag isEqual:@"YES"] || [flag isEqual:@YES];
 }
 
+BOOL WBIsDynamic(NSAttributeDescription *attribute)
+{
+  id flag = attribute.userInfo[ODataUserInfoDynamicProperties];
+  return [flag isEqual:@"YES"] || [flag isEqual:@YES];
+}
+
+static NSString *WBDynamicValueText(id value)
+{
+  if ([value isKindOfClass:[NSString class]]) return [NSString stringWithFormat:@"'%@'", value];
+  if ([value isKindOfClass:[@YES class]]) return [value boolValue] ? @"true" : @"false";
+  return [WBCellValue(value) description];
+}
+
+NSString *WBDynamicText(NSDictionary *values)
+{
+  NSMutableArray *parts = [NSMutableArray array];
+  for (NSString *name in [values.allKeys sortedArrayUsingSelector:@selector(compare:)]) {
+    [parts addObject:[NSString stringWithFormat:@"%@=%@", name, WBDynamicValueText(values[name])]];
+  }
+  return [parts componentsJoinedByString:@"; "];
+}
+
+NSDictionary *WBDynamicFromText(NSString *text, NSDictionary *old)
+{
+  NSMutableDictionary *values = [NSMutableDictionary dictionary];
+  NSCharacterSet *space = [NSCharacterSet whitespaceCharacterSet];
+  for (NSString *pair in [text componentsSeparatedByString:@";"]) {
+    NSRange equals = [pair rangeOfString:@"="];
+    if (equals.location == NSNotFound) continue;
+    NSString *name = [[pair substringToIndex:equals.location] stringByTrimmingCharactersInSet:space];
+    NSString *raw = [[pair substringFromIndex:NSMaxRange(equals)] stringByTrimmingCharactersInSet:space];
+    if (!name.length) continue;
+    id value = raw;
+    NSScanner *scanner = [NSScanner scannerWithString:raw];
+    double number;
+    if (old[name] && [raw isEqualToString:WBDynamicValueText(old[name])]) {
+      value = old[name];
+    } else if (raw.length >= 2 && ([raw hasPrefix:@"'"] || [raw hasPrefix:@"\""])) {
+      value = [raw substringWithRange:NSMakeRange(1, raw.length - 2)];
+    } else if ([raw isEqualToString:@"true"] || [raw isEqualToString:@"false"]) {
+      value = @([raw isEqualToString:@"true"]);
+    } else if ([scanner scanDouble:&number] && scanner.isAtEnd) {
+      value = [raw rangeOfString:@"."].location == NSNotFound ? @((long long)number) : [NSDecimalNumber decimalNumberWithString:raw];
+    } else if (WBDate(raw)) {
+      value = WBDate(raw);
+    }
+    values[name] = value;
+  }
+  return values;
+}
+
 NSDate *WBDate(NSString *text)
 {
   NSDateFormatter *formatter = [[NSDateFormatter alloc] init];
@@ -80,6 +131,7 @@ NSArray<NSString *> *WBColumnNames(NSEntityDescription *entity, BOOL builtIn)
   for (NSString *name in [entity.attributesByName.allKeys sortedArrayUsingSelector:@selector(compare:)]) {
     NSAttributeDescription *attr = entity.attributesByName[name];
     if (WBIsKey(attr)) [keys addObject:name];
+    else if (WBIsDynamic(attr)) [rest insertObject:name atIndex:0];  // before the others: they are what a model cannot say
     else if (attr.attributeType == NSTransformableAttributeType || attr.attributeType == NSBinaryDataAttributeType) [rest addObject:name];
     else if ([name isEqualToString:@"name"] || [name hasSuffix:@"Name"]) [names addObject:name];
     else if ([name hasSuffix:@"ID"] || [name hasSuffix:@"Id"]) [references addObject:name];  // most likely a foreign key
@@ -127,6 +179,15 @@ NSString *WBDescribe(NSManagedObject *object)
   NSArray *attrs = [[object.entity.attributesByName allKeys] sortedArrayUsingSelector:@selector(compare:)];
   for (NSString *name in attrs) {
     @try {
+      if (WBIsDynamic(object.entity.attributesByName[name])) {
+        // An open type's: each dynamic property on a line of its own.
+        NSDictionary *dynamic = [object valueForKey:name];
+        [text appendFormat:@"  %@ (dynamic properties)%@\n", name, dynamic.count ? @":" : @": none"];
+        for (NSString *property in [dynamic.allKeys sortedArrayUsingSelector:@selector(compare:)]) {
+          [text appendFormat:@"    %@ = %@\n", property, WBCellValue(dynamic[property])];
+        }
+        continue;
+      }
       [text appendFormat:@"  %@ = %@\n", name, WBCellValue([object valueForKey:name]) ?: @"nil"];
     } @catch (NSException *ex) {
       [text appendFormat:@"  %@ fault failed (%@)\n", name, ex.reason];

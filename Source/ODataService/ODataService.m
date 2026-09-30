@@ -306,6 +306,16 @@ static NSArray *OISFetch(NSManagedObjectContext *context, NSFetchRequest *fetchR
   return nil;
 }
 
+- (id)writeDynamicProperties:(NSArray<NSDictionary *> *)values ofObjects:(NSArray<NSManagedObject *> *)objects
+                     request:(ODataRequest *)request reply:(ODataReply *)reply
+{
+  NSMutableSet *names = [NSMutableSet set];
+  for (NSDictionary *each in values) [names addObjectsFromArray:each.allKeys];
+  [reply failWithError:ODataServiceError(400, [NSString stringWithFormat:@"%@ has no property %@", self.entity.name,
+                                                                       [[names.allObjects sortedArrayUsingSelector:@selector(compare:)] componentsJoinedByString:@", "]])];
+  return nil;
+}
+
 - (BOOL)allowsInsert
 {
   return _allowsInsert && !self.service.isReadOnly;
@@ -1731,24 +1741,6 @@ static NSUInteger OISExpandDepth(ODataQueryOptions *options)
   return attributes;
 }
 
-// A dynamic property's type, where its JSON does not tell it: nil for a
-// string, a boolean, a structure or a collection.
-static NSString *OISDynamicTypeName(id value)
-{
-  if ([value isKindOfClass:[@YES class]]) return nil;
-  if ([value isKindOfClass:[NSDecimalNumber class]]) return @"Edm.Decimal";
-  if ([value isKindOfClass:[NSNumber class]]) {
-    const char *t = [value objCType];
-    if (t && (t[0] == 'd' || t[0] == 'f')) return @"Edm.Double";
-    long long n = [value longLongValue];
-    return n >= INT32_MIN && n <= INT32_MAX ? @"Edm.Int32" : @"Edm.Int64";
-  }
-  if ([value isKindOfClass:[NSDate class]]) return @"Edm.DateTimeOffset";
-  if ([value isKindOfClass:[NSUUID class]]) return @"Edm.Guid";
-  if ([value isKindOfClass:[NSData class]]) return @"Edm.Binary";
-  return nil;
-}
-
 - (NSMutableDictionary *)JSONForObject:(NSManagedObject *)object
                                options:(ODataQueryOptions *)options
                               expected:(NSEntityDescription *)expected
@@ -1827,7 +1819,7 @@ static NSString *OISDynamicTypeName(id value)
     if (!star && ![selected containsObject:name]) continue;
     // Typed where JSON alone does not say: a date is a string, and a
     // number could be any of them.
-    NSString *type = OISDynamicTypeName(dynamic[name]);
+    NSString *type = [self.coder dynamicTypeNameOfValue:dynamic[name]];
     json[name] = [self.coder JSONForValue:dynamic[name] typeName:type];
     if (type && !none) json[[name stringByAppendingString:@"@odata.type"]] = [@"#" stringByAppendingString:[type substringFromIndex:4]];
   }

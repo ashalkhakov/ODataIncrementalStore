@@ -56,7 +56,13 @@
     return nil;
   }
   NSDecimalNumber *price = [self price:percent];
+  NSString *what = [NSString stringWithFormat:@"%@: %@ raised by %g%% to %@", [self valueForKey:@"name"], [self valueForKey:@"unitPrice"], percent, price];
   [self setValue:price forKey:@"unitPrice"];
+  // Written with the change, in the same save; nothing of it is served.
+  NSManagedObject *entry = [NSEntityDescription insertNewObjectForEntityForName:@"AuditEntry" inManagedObjectContext:self.managedObjectContext];
+  [entry setValue:[NSUUID UUID].UUIDString forKey:@"id"];
+  [entry setValue:[NSDate date] forKey:@"at"];
+  [entry setValue:what forKey:@"what"];
   return price;
 }
 
@@ -162,6 +168,8 @@ static NSRelationshipDescription *WBRelationship(NSString *name, NSString *wire,
   return relationship;
 }
 
+NSString * const WorkbenchServedConfiguration = @"Served";
+
 NSManagedObjectModel *WorkbenchBuiltInModel(NSURL *catalogURL)
 {
   NSManagedObjectModel *model = [[[NSManagedObjectModel alloc] initWithContentsOfURL:catalogURL] copy];
@@ -201,7 +209,15 @@ NSManagedObjectModel *WorkbenchBuiltInModel(NSURL *catalogURL)
   seller.inverseRelationship = sales;
   organization.properties = [organization.properties arrayByAddingObjectsFromArray:@[ superordinate, subordinates, sales ]];
   sale.properties = [sale.properties arrayByAddingObject:seller];
-  model.entities = [model.entities arrayByAddingObjectsFromArray:@[ budget, picture, organization, sale ]];
+  NSArray *served = [model.entities arrayByAddingObjectsFromArray:@[ budget, picture, organization, sale ]];
+  // The application's own bookkeeping, which the service does not serve:
+  // what its actions did. Left out of the configuration it serves.
+  NSEntityDescription *audit = WBEntity(@"AuditEntry", @"AuditEntries", nil, @[
+    WBAttribute(@"id", NSStringAttributeType, @"ID", NO, @{ @"OData.key": @"YES" }),
+    WBAttribute(@"at", NSDateAttributeType, @"At", NO, nil),
+    WBAttribute(@"what", NSStringAttributeType, @"What", NO, nil) ]);
+  model.entities = [served arrayByAddingObject:audit];
+  [model setEntities:served forConfiguration:WorkbenchServedConfiguration];
   // A deleted row's key stays in its tombstone: delta links can name it.
   for (NSEntityDescription *entity in model.entities) {
     for (NSAttributeDescription *attribute in entity.attributesByName.allValues) {
@@ -335,10 +351,13 @@ static NSDate *WBDay(NSString *day)
   [self seedCoordinator:coordinator];
   ODataService *service = [[ODataService alloc] initWithPersistentStoreCoordinator:coordinator serviceRoot:_serviceRoot];
   service.namespaceName = @"Catalog";
+  // Not AuditEntry: the model's other configuration, the application's.
+  service.configurationName = WorkbenchServedConfiguration;
   service.serviceOperations = [[WorkbenchCatalogOperations alloc] init];
   // GET <root>/$explain/<path>: the Explain button's plans.
   service.explains = YES;
   for (NSString *problem in service.operationProblems) NSLog(@"Workbench: %@", problem);
+  for (NSString *problem in service.metadataProblems) NSLog(@"Workbench: %@", problem);
   _service = service;
   return YES;
 }

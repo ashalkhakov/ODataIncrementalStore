@@ -11,6 +11,15 @@
 id WBCellValue(id value);
 // Whether an attribute is (part of) its entity's key.
 BOOL WBIsKey(NSAttributeDescription *attribute);
+// Whether it is an open type's property bag (OData.dynamicProperties).
+BOOL WBIsDynamic(NSAttributeDescription *attribute);
+// Dynamic properties as a cell shows and edits them:
+// Nickname='Rusty'; Visits=3; Since=2020-01-02 -- text quoted, numbers,
+// true and false, and dates as they are. From the text again, a value
+// written as the old one is shows keeps it (a structure, a list); a name
+// left out is removed.
+NSString *WBDynamicText(NSDictionary *values);
+NSDictionary *WBDynamicFromText(NSString *text, NSDictionary *old);
 // A day (2024-10-01) or a moment (…T09:00:00Z), in UTC; nil for neither.
 NSDate *WBDate(NSString *text);
 NSError *WBError(NSInteger code, NSString *text);

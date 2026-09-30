@@ -81,6 +81,24 @@ keys, sets and Edm types go into `userInfo`, so the model needs nothing else
 at runtime. Complex values and collections become Transformable attributes;
 spatial properties are not mapped, and `ois-model` lists them.
 
+**Open types** (`OpenType="true"`, TripPin's `Person`) get one more
+attribute, `dynamicProperties`: a Transformable `NSDictionary`, the property
+bag Core Data models keep what they do not declare in. It holds every
+member of a row that the type does not declare, typed as the row's
+annotations say (`Since@odata.type: "#DateTimeOffset"` is an `NSDate`), and
+is written back entry by entry: a changed or new one as a member of its own,
+annotated where JSON does not say its type, a removed one as `null`. Assign
+a new dictionary to change it. A key path into it is the dynamic property:
+`dynamicProperties.Nickname == 'Rusty'` is `$filter=Nickname eq 'Rusty'`, and
+a dictionary fetch can ask for one (`$select=Nickname`). An open type's
+rows are read without `$select`, which cannot name what is not declared.
+
+**A configuration of the model** is what a store holds when it is added
+with one, as with any Core Data store: its entities are checked against
+`$metadata`, and followed for changes, and the rest are not its business
+-- a service's own `configurationName`, say, leaves the application's
+bookkeeping out of the same model.
+
 **A changed service is a new model version**, as in Core Data. Run `ois-model`
 again: if the schema has changed, it adds a version to the package and makes
 it current, keeping the old ones; if not, it writes nothing. A store opened

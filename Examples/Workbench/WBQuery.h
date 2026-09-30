@@ -22,6 +22,9 @@ NS_ASSUME_NONNULL_BEGIN
 - (instancetype)initWithModel:(NSManagedObjectModel *)model builtIn:(BOOL)builtIn NS_DESIGNATED_INITIALIZER;
 @property (nonatomic, readonly) NSManagedObjectModel *model;
 @property (nonatomic, readonly) BOOL builtIn;
+// The store's configuration of the model, whose entities are queried (nil:
+// all of them).
+@property (nonatomic, copy, nullable) NSString *configurationName;
 
 @property (nonatomic, copy, nullable) NSString *entityName;
 @property (nonatomic) NSFetchRequestResultType resultType;

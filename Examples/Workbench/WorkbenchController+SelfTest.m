@@ -53,6 +53,32 @@ static void WBCheck(BOOL ok, NSString *what, NSString *detail)
   fprintf(stderr, "%s  %s%s%s\n", ok ? "PASS" : "FAIL", what.UTF8String, detail.length ? " — " : "", detail.UTF8String ?: "");
 }
 
+// TripPin's Person is an open type: dynamic properties, set in the cell,
+// saved, read back typed, and filtered by.
+- (void)checkDynamicProperties
+{
+  NSUInteger russell = [self rowWhere:@"userName" is:@"russellwhyte"];
+  [self editColumn:@"dynamicProperties" row:russell value:@"Nickname='Rusty'; Visits=3; Since=2020-01-02"];
+  [self saveChanges:nil];
+  WBCheck([self.statusField.stringValue hasPrefix:@"Saved: 0 inserted (POST), 1 updated"], @"dynamic properties: saved (PATCH)",
+          self.statusField.stringValue);
+  self.predicateView.string = @"dynamicProperties.Nickname == 'Rusty'";
+  [self predicateChanged:nil];
+  [self runFetch:nil];
+  NSString *wire = [self.wireURLField.stringValue stringByRemovingPercentEncoding];
+  NSArray *names = [self.results.rows valueForKey:@"userName"];
+  WBCheck([names isEqual:@[ @"russellwhyte" ]] && [wire rangeOfString:@"$filter=Nickname eq 'Rusty'"].location != NSNotFound,
+          @"dynamic properties: filtered by one", [NSString stringWithFormat:@"%@ %@", names, wire]);
+  if (names.count) [self.tableView selectRowIndexes:[NSIndexSet indexSetWithIndex:0] byExtendingSelection:NO];
+  [self inspectSelection];
+  NSString *shown = self.inspectorView.string;
+  WBCheck([shown rangeOfString:@"Nickname = Rusty"].location != NSNotFound && [shown rangeOfString:@"Since = 2020-01-02"].location != NSNotFound &&
+          [shown rangeOfString:@"Visits = 3"].location != NSNotFound, @"dynamic properties: in the inspector, a date as a date", shown);
+  [self shoot:@"TripPin-dynamic"];
+  self.predicateView.string = @"";
+  [self predicateChanged:nil];
+}
+
 - (void)editColumn:(NSString *)identifier row:(NSUInteger)row value:(id)value
 {
   NSUInteger column = [[self.tableView.tableColumns valueForKey:@"identifier"] indexOfObject:identifier];
@@ -580,6 +606,22 @@ static void WBCheck(BOOL ok, NSString *what, NSString *detail)
             found ? [NSString stringWithFormat:@"%@ | %@", self.statusField.stringValue, self.inspectorView.string] : @"not in the operations menu");
   }
   self.operationParametersField.stringValue = @"";
+
+  // The action kept a record of itself, in the model's other
+  // configuration: the service serves none of it, and the client's store,
+  // holding the served one, has none of it either.
+  NSManagedObjectContext *context = [[NSManagedObjectContext alloc] initWithConcurrencyType:NSPrivateQueueConcurrencyType];
+  context.persistentStoreCoordinator = self.connection.engine.service.coordinator;
+  __block NSUInteger entries = 0;
+  [context performBlockAndWait:^{
+    entries = [context countForFetchRequest:[NSFetchRequest fetchRequestWithEntityName:@"AuditEntry"] error:NULL];
+  }];
+  ODataSchema *schema = self.connection.store.schema;
+  WBCheck(entries == 1 && !schema.entitySets[@"AuditEntries"] && ![self.entityPopup itemWithTitle:@"AuditEntry"] &&
+          !self.connection.store.metadataProblems.count,
+          @"a configuration: the action's audit entry is kept, not served",
+          [NSString stringWithFormat:@"%lu entries; sets %@; %@", (unsigned long)entries,
+                                     [schema.entitySets.allKeys componentsJoinedByString:@","], self.connection.store.metadataProblems]);
 }
 
 - (void)runSelfTest
@@ -655,6 +697,8 @@ static void WBCheck(BOOL ok, NSString *what, NSString *detail)
     WBCheck([self.statusField.stringValue hasPrefix:@"Unsaved: 0 new, 1 changed"], @"an edit waits for Save", self.statusField.stringValue);
     [self saveChanges:nil];
     WBCheck([self.statusField.stringValue hasPrefix:@"Saved: 0 inserted (POST), 1 updated"], @"Save sends it (PATCH)", self.statusField.stringValue);
+    [self checkDynamicProperties];
+    [self runPreset:0];
     [self checkInsertAndDeleteWithKey:@"userName" value:@"oiswbnew" fields:@{ @"firstName": @"New", @"lastName": @"Person" }];
 
     [self fetchRemoteChanges:nil];

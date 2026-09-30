@@ -837,7 +837,15 @@ when it does. They are written with the declared properties (and named
 in `$select` as they are); where the JSON does not say a value's type --
 a date, a decimal, an integer, a double, a GUID, binary -- it is
 annotated (`Reviewed@odata.type: "#DateTimeOffset"`), as JSON Format
-requires of a dynamic property. `-predicateForDynamicProperty:operator:value:request:error:`
+requires of a dynamic property. A write gives them too: the members of a
+body the type does not declare, each decoded as its annotation says, `null`
+removing one, are handed over by `-writeDynamicProperties:ofObjects:request:reply:`
+-- every entity of the set a write inserts or updates at once, a deep
+insert's and a delta's included, after the declared properties are set
+and before the save, so what the handler changes in the request context
+is saved with them, and an error leaves nothing saved. A `PUT` replaces
+them all. The default refuses them, naming them as unknown properties.
+`-predicateForDynamicProperty:operator:value:request:error:`
 says what `$filter` means by one compared with a value -- `Priority gt 2`,
 or a path under one, `Variables/amount ge 100` -- as a predicate over
 the entity, for this request (whose caller may see some properties and

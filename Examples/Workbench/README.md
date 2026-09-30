@@ -22,10 +22,17 @@ Pick a service at the top:
   `CheaperThanPrice` on the products, `CountProductsInCategoryNamed` and
   `CountProductsSlowly` (it takes its time: try it with respond-async) on
   the service. What the store sends is answered as any `ois-serve` would
-  answer it, `$batch` included.
+  answer it, `$batch` included. The model has one entity the service does
+  not serve: `AuditEntry`, the application's own record of what
+  `RaisePriceByPercent` did, written in the same save. The service serves
+  the model's configuration `Served` (`configurationName`), which leaves
+  it out, and the client's store holds the same configuration, so neither
+  `$metadata` nor the entity menu has it.
 - **Northwind (read-only)**: Microsoft's public Northwind v4.
 - **TripPin (read/write)**: Microsoft's public TripPin, in a session of its
-  own, so writing is safe. Reset starts a new one.
+  own, so writing is safe. Reset starts a new one. Its `Person` is an open
+  type: the model built from `$metadata` gives it `dynamicProperties`, the
+  properties a person has that the type does not declare.
 - **Other URL…**: any OData v4 service root; press Connect.
 
 For a real service the model is the one its `$metadata` describes, built at
@@ -83,7 +90,11 @@ What you can do:
   (required values start empty), edit cells, Delete rows; nothing is sent
   until Save, which sends them as POST, PATCH and DELETE, and Revert drops
   them. A new object's key can be edited, for services that want the
-  client's (TripPin's people).
+  client's (TripPin's people). An open type's `dynamicProperties` cell is
+  edited as `Nickname='Rusty'; Visits=3; Since=2020-01-02` (text quoted,
+  numbers, true and false, dates as they are; a name left out is removed),
+  the inspector lists them one to a line, and the predicate can name one:
+  `dynamicProperties.Nickname == 'Rusty'`.
 - Change a timeline: for an entity with application time, the
   operations menu has `Temporal.Update`, `Upsert` and `Delete`, whose
   parameters are one delta time slice, by attribute

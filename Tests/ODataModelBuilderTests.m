@@ -95,6 +95,54 @@
   XCTAssertEqualObjects([ODataModelBuilder versionIdentifierOfModel:model], [ODataModelBuilder versionIdentifierForSchema:_zoo]);
 }
 
+// An open type, TripPin's Person: its dynamic properties in a bag, an
+// NSDictionary, which a derived type inherits.
+- (void)testAnOpenTypeHasAPropertyBag
+{
+  NSString *xml = @"<edmx:Edmx xmlns:edmx=\"http://docs.oasis-open.org/odata/ns/edmx\" Version=\"4.0\"><edmx:DataServices>"
+                  @"<Schema xmlns=\"http://docs.oasis-open.org/odata/ns/edm\" Namespace=\"Trips\">"
+                  @"<EntityType Name=\"Person\" OpenType=\"true\"><Key><PropertyRef Name=\"UserName\"/></Key>"
+                  @"<Property Name=\"UserName\" Type=\"Edm.String\" Nullable=\"false\"/><Property Name=\"DynamicProperties\" Type=\"Edm.String\"/></EntityType>"
+                  @"<EntityType Name=\"Employee\" BaseType=\"Trips.Person\"><Property Name=\"Cost\" Type=\"Edm.Int64\"/></EntityType>"
+                  @"<EntityType Name=\"Airline\"><Key><PropertyRef Name=\"Code\"/></Key><Property Name=\"Code\" Type=\"Edm.String\" Nullable=\"false\"/></EntityType>"
+                  @"<EntityContainer Name=\"Container\"><EntitySet Name=\"People\" EntityType=\"Trips.Person\"/>"
+                  @"<EntitySet Name=\"Airlines\" EntityType=\"Trips.Airline\"/></EntityContainer></Schema></edmx:DataServices></edmx:Edmx>";
+  ODataSchema *schema = [self schemaFrom:xml];
+  ODataSchemaEntityType *personType = schema.entityTypes[@"Trips.Person"], *employeeType = schema.entityTypes[@"Trips.Employee"];
+  XCTAssertTrue(personType.isOpen);
+  XCTAssertFalse(employeeType.isOpen);
+  XCTAssertTrue([schema entityTypeIsOpen:schema.entityTypes[@"Trips.Employee"]], @"through its base");
+  NSManagedObjectModel *model = [ODataModelBuilder modelWithSchema:schema];
+  NSEntityDescription *person = model.entitiesByName[@"Person"];
+  // A declared DynamicProperties keeps its name: the bag takes another.
+  NSAttributeDescription *declared = person.attributesByName[@"dynamicProperties"];
+  XCTAssertEqual(declared.attributeType, NSStringAttributeType);
+  NSAttributeDescription *bag = person.attributesByName[@"dynamicProperties2"];
+  XCTAssertEqual(bag.attributeType, NSTransformableAttributeType);
+  XCTAssertEqualObjects(bag.attributeValueClassName, @"NSDictionary");
+  XCTAssertEqualObjects(bag.userInfo[ODataUserInfoDynamicProperties], @"YES");
+  ODataPropertyMapper *mapper = [[ODataPropertyMapper alloc] init];
+  mapper.schema = schema;
+  XCTAssertEqualObjects([mapper dynamicPropertiesAttributeOfEntity:model.entitiesByName[@"Employee"]].name, bag.name, @"inherited");
+  NSEntityDescription *employee = model.entitiesByName[@"Employee"];
+  NSUInteger bags = 0;
+  for (NSAttributeDescription *attribute in employee.attributesByName.allValues) bags += [mapper attributeHoldsDynamicProperties:attribute];
+  XCTAssertEqual(bags, 1u, @"and none of its own");
+  XCTAssertNil([mapper dynamicPropertiesAttributeOfEntity:model.entitiesByName[@"Airline"]]);
+  XCTAssertEqualObjects([mapper problemsWithModel:model], @[]);
+  XCTAssertEqualObjects([mapper propertyPathForKeyPath:@"dynamicProperties2.Nickname" entity:person], @"Nickname");
+  XCTAssertNil([mapper propertyForWireName:@"DynamicProperties2" entity:person], @"no property on the wire");
+
+  // Being open is part of the model's version, and survives a model file.
+  NSString *closed = [xml stringByReplacingOccurrencesOfString:@" OpenType=\"true\"" withString:@""];
+  XCTAssertNotEqualObjects([ODataModelBuilder versionIdentifierForSchema:schema],
+                           [ODataModelBuilder versionIdentifierForSchema:[self schemaFrom:closed]]);
+  NSString *document = [[NSString alloc] initWithData:[ODataModelBuilder modelDocumentForModel:model] encoding:NSUTF8StringEncoding];
+  XCTAssertTrue([document rangeOfString:@"<entry key=\"OData.dynamicProperties\" value=\"YES\"/>"].location != NSNotFound, @"%@", document);
+  NSManagedObjectModel *closedModel = [ODataModelBuilder modelWithSchema:[self schemaFrom:closed]];
+  XCTAssertNil([mapper dynamicPropertiesAttributeOfEntity:closedModel.entitiesByName[@"Person"]]);
+}
+
 - (void)testVersionIdentifierFollowsTheSchema
 {
   NSString *v1 = [ODataModelBuilder versionIdentifierForSchema:_zoo];

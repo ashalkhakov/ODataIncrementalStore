@@ -300,6 +300,7 @@ static NSString *OISLocalName(NSString *name)
     _entityType.baseType = attributes[@"BaseType"];
     _entityType.isAbstract = [attributes[@"Abstract"] isEqualToString:@"true"];
     _entityType.hasStream = [attributes[@"HasStream"] isEqualToString:@"true"];
+    _entityType.isOpen = [attributes[@"OpenType"] isEqualToString:@"true"];
     _key = [NSMutableArray array];
     _properties = [NSMutableDictionary dictionary];
     _navigation = [NSMutableDictionary dictionary];
@@ -704,6 +705,14 @@ NSString *ODataSchemaSpelling(NSString *name, id<NSFastEnumeration> _Nullable na
 {
   for (ODataSchemaEntityType *t = type; t; t = t.baseType ? [self entityTypeNamed:t.baseType] : nil) {
     if (t.hasStream) return YES;
+  }
+  return NO;
+}
+
+- (BOOL)entityTypeIsOpen:(ODataSchemaEntityType *)type
+{
+  for (ODataSchemaEntityType *t = type; t; t = t.baseType ? [self entityTypeNamed:t.baseType] : nil) {
+    if (t.isOpen) return YES;
   }
   return NO;
 }

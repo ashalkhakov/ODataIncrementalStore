@@ -59,8 +59,10 @@ NS_ASSUME_NONNULL_BEGIN
 // when it could not be read.
 @property (nonatomic, readonly, nullable) ODataSchema *schema;
 // Where the model and the schema disagree, one sentence each (see
-// -[ODataPropertyMapper problemsWithModel:]). Opening fails on them only
-// with ODataIncrementalStoreRequireMatchingModelOption.
+// -[ODataPropertyMapper problemsWithModel:]): of the store's
+// configuration's entities, when it was added with one -- the service's
+// own configurationName, say, of the model it serves -- else of all.
+// Opening fails on them only with ODataIncrementalStoreRequireMatchingModelOption.
 @property (nonatomic, readonly) NSArray<NSString *> *metadataProblems;
 
 // Every row a fetch or a relationship read brings back is kept, and serves
@@ -88,7 +90,8 @@ NS_ASSUME_NONNULL_BEGIN
 
 // What changed at the service since the store last looked (Part 1 section
 // 11.3, delta), for the entities in ODataIncrementalStoreTrackedEntitiesOption,
-// or every entity with an entity set of its own. The first call reads each
+// or every entity with an entity set of its own (of the store's
+// configuration, when it was added with one). The first call reads each
 // set and starts tracking it: it reports no changes. Later calls follow
 // the delta link the service gave, and where it gave none, read the set
 // again and compare. The rows the store keeps are brought up to date, so

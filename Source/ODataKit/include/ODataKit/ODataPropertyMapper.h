@@ -38,6 +38,17 @@ FOUNDATION_EXPORT NSString * const ODataUserInfoAnnotations;
 FOUNDATION_EXPORT NSString * const ODataUserInfoUnit;
 FOUNDATION_EXPORT NSString * const ODataUserInfoISOCurrency;
 FOUNDATION_EXPORT NSString * const ODataUserInfoScale;
+// An open type's dynamic properties (JSON Format section 4.6.3), which the
+// model does not declare: OData.dynamicProperties YES on a Transformable
+// attribute (an NSDictionary) marks it as the property bag that holds them,
+// by name, each value as ODataValueCoder's -dynamicPropertiesInJSON:...
+// reads it. It is no property on the wire: its entries are, each by its
+// own name, read from what the entity's JSON has that nothing declares,
+// written back as members of their own (a removed one as null), and a key
+// path into it (dynamicProperties.Nickname) is the property's name
+// (Nickname). Assign a new dictionary to change it: Core Data does not see
+// a dictionary change in place.
+FOUNDATION_EXPORT NSString * const ODataUserInfoDynamicProperties;
 // Application time (the Temporal vocabulary), userInfo on an entity whose
 // rows are time slices, each valid for a period (Temporal.TimelineVisible):
 // OData.periodStart and OData.periodEnd name its Date attributes, the
@@ -70,6 +81,10 @@ FOUNDATION_EXPORT NSString * const ODataUserInfoClosedClosedPeriods;
 // Whether the relationship leads to an entity that is served.
 - (BOOL)servesRelationship:(NSRelationshipDescription *)relationship;
 - (NSString *)wireName:(NSString *)coreDataName;
+// The property bag of an open type's entity (OData.dynamicProperties), its
+// own or inherited; nil for none.
+- (nullable NSAttributeDescription *)dynamicPropertiesAttributeOfEntity:(NSEntityDescription *)entity;
+- (BOOL)attributeHoldsDynamicProperties:(nullable NSAttributeDescription *)attribute;
 // A Core Data key path as an OData property path: each step by its wire
 // name, through relationships, joined with '/' (Part 2 section 5.1.1.15).
 // A key path that goes on past an attribute holding a complex value
@@ -149,6 +164,11 @@ FOUNDATION_EXPORT NSString * const ODataUserInfoClosedClosedPeriods;
 // relationship with no property, a type that cannot hold the other, a key
 // that differs. Empty without a schema.
 - (NSArray<NSString *> *)problemsWithModel:(NSManagedObjectModel *)model;
+// The same, of a configuration's entities only (nil: all of them), and of
+// their relationships within it: a store that holds one configuration
+// answers for its entities, the rest being another store's, or the
+// application's own.
+- (NSArray<NSString *> *)problemsWithModel:(NSManagedObjectModel *)model configuration:(nullable NSString *)configuration;
 @end
 
 NS_ASSUME_NONNULL_END
