@@ -1093,6 +1093,7 @@ static BOOL OISNestsPerParent(ODataQueryOptions *options)
     NSMutableArray *relationships = [NSMutableArray array];
     if (item.isStar) {
       for (NSRelationshipDescription *relationship in object.entity.relationshipsByName.allValues) {
+        if (![self.mapper servesProperty:relationship]) continue;
         if ([self.service handlerForEntity:relationship.destinationEntity]) [relationships addObject:relationship];
       }
     } else {
@@ -1339,6 +1340,7 @@ static BOOL OISNestsPerParent(ODataQueryOptions *options)
     NSMutableArray *destinations = [NSMutableArray array];
     if (nest.item.isStar) {
       for (NSRelationshipDescription *relationship in nest.entity.relationshipsByName.allValues) {
+        if (![self.mapper servesProperty:relationship]) continue;
         if ([self.service handlerForEntity:relationship.destinationEntity]) [destinations addObject:relationship.destinationEntity];
       }
     } else {

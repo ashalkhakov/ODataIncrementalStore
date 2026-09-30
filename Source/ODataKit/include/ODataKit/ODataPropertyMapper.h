@@ -49,6 +49,12 @@ FOUNDATION_EXPORT NSString * const ODataUserInfoScale;
 // (Nickname). Assign a new dictionary to change it: Core Data does not see
 // a dictionary change in place.
 FOUNDATION_EXPORT NSString * const ODataUserInfoDynamicProperties;
+// OData.served NO on an attribute or a relationship leaves it out of what
+// a service serves: it is no property of its entity type, in $metadata or
+// a payload, and naming it -- in a path, a query option or a body -- is an
+// error as for any unknown name. What an application keeps for itself
+// beside what it serves. A key cannot be left out.
+FOUNDATION_EXPORT NSString * const ODataUserInfoServed;
 // Application time (the Temporal vocabulary), userInfo on an entity whose
 // rows are time slices, each valid for a period (Temporal.TimelineVisible):
 // OData.periodStart and OData.periodEnd name its Date attributes, the
@@ -80,6 +86,9 @@ FOUNDATION_EXPORT NSString * const ODataUserInfoClosedClosedPeriods;
 @property (nonatomic, copy, nullable) NSSet<NSString *> *servedEntityNames;
 // Whether the relationship leads to an entity that is served.
 - (BOOL)servesRelationship:(NSRelationshipDescription *)relationship;
+// Whether the property is served: not OData.served NO, and a relationship
+// to an entity that is served.
+- (BOOL)servesProperty:(NSPropertyDescription *)property;
 - (NSString *)wireName:(NSString *)coreDataName;
 // The property bag of an open type's entity (OData.dynamicProperties), its
 // own or inherited; nil for none.

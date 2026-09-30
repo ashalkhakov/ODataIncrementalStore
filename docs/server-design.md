@@ -817,6 +817,15 @@ go together. A configuration that lists a sub-entity without its root
 (not served), or a root without all its sub-entities (served whole), or
 that the model has not (nothing served), is in `metadataProblems`.
 
+Nor all of an entity. A configuration picks entities, not properties, so
+an attribute or relationship whose userInfo says `OData.served` `NO` is
+left out of its entity type: not in `$metadata` or a payload, not
+searched, and an unknown name wherever a request names it. A `PUT`
+replaces what is served and leaves it as it is. An application keeps
+there what is its own -- a lock's revision, a tree the served rows hang
+in -- beside what its clients see. A key cannot be left out; one marked
+so is among `metadataProblems`.
+
 Nor need it write to it. A `readOnly` service answers every insert,
 update and delete, `$ref` and batched ones included, with `405`, whatever
 its handlers allow, and `$metadata` says so on every set. Its actions

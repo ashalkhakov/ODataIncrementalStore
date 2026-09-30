@@ -121,6 +121,7 @@ static BOOL OISYes(id value)
 - (NSString *)typeNameForAttribute:(NSAttributeDescription *)attribute
 {
   if (attribute.isTransient) return nil;
+  if (![self.mapper servesProperty:attribute]) return nil;
   if ([self isPartOfStream:attribute]) return nil;
   if ([self isStreamAttribute:attribute]) return @"Edm.Stream";
   NSString *declared = attribute.userInfo[ODataUserInfoType];
@@ -178,7 +179,7 @@ static BOOL OISYes(id value)
   NSDictionary *inherited = entity.superentity.propertiesByName ?: @{};
   NSMutableArray *declared = [NSMutableArray array];
   for (NSPropertyDescription *property in entity.properties) {
-    if (!inherited[property.name]) [declared addObject:property];
+    if (!inherited[property.name] && [self.mapper servesProperty:property]) [declared addObject:property];
   }
   return declared;
 }
@@ -464,6 +465,9 @@ static void OISAddChildren(NSXMLElement *parent, NSArray<NSXMLElement *> *childr
   if (key.count) {
     NSXMLElement *keyElement = OISElement(@"Key", nil);
     for (NSAttributeDescription *attr in key) {
+      if (![self.mapper servesProperty:attr]) {
+        [_problems addObject:[NSString stringWithFormat:@"%@.%@ is the key, which OData.served cannot leave out", entity.name, attr.name]];
+      }
       [keyElement addChild:OISElement(@"PropertyRef", @[ @"Name", [self.mapper propertyForAttribute:attr] ])];
     }
     [type addChild:keyElement];

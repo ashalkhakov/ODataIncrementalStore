@@ -4339,6 +4339,81 @@ static NSString *OISHTTPDate(NSDate *date)
   _service.configurationName = configuration;
 }
 
+// A product's quantity per unit and its suppliers are the application's
+// own (OData.served NO): the service has no such properties.
+- (void)testPropertiesThatAreNotServed
+{
+  NSManagedObjectModel *model = [OISCatalogModel() conformsToProtocol:@protocol(NSCopying)]
+      ? [OISCatalogModel() copy]
+      : [[NSManagedObjectModel alloc] initWithContentsOfURL:OISCatalogModelURL()];
+  NSEntityDescription *product = model.entitiesByName[@"Product"];
+  for (NSString *name in @[ @"quantityPerUnit", @"suppliers" ]) {
+    NSPropertyDescription *property = product.propertiesByName[name];
+    NSMutableDictionary *userInfo = [property.userInfo mutableCopy] ?: [NSMutableDictionary dictionary];
+    userInfo[ODataUserInfoServed] = @"NO";
+    property.userInfo = userInfo;
+  }
+  [self serveModel:model];
+  NSManagedObjectContext *context = [[NSManagedObjectContext alloc] initWithConcurrencyType:NSPrivateQueueConcurrencyType];
+  context.persistentStoreCoordinator = _coordinator;
+  NSString *(^quantity)(void) = ^NSString *{
+    __block NSString *value = nil;
+    [context performBlockAndWait:^{
+      NSFetchRequest *fetch = [NSFetchRequest fetchRequestWithEntityName:@"Product"];
+      fetch.predicate = [NSPredicate predicateWithFormat:@"id == 1"];
+      value = [[[context executeFetchRequest:fetch error:NULL] firstObject] valueForKey:@"quantityPerUnit"];
+    }];
+    return value;
+  };
+  [context performBlockAndWait:^{
+    NSFetchRequest *fetch = [NSFetchRequest fetchRequestWithEntityName:@"Product"];
+    fetch.predicate = [NSPredicate predicateWithFormat:@"id == 1"];
+    [[[context executeFetchRequest:fetch error:NULL] firstObject] setValue:@"10 boxes" forKey:@"quantityPerUnit"];
+    [context save:NULL];
+  }];
+
+  NSString *metadata = [self get:@"$metadata"].text;
+  XCTAssertFalse([metadata containsString:@"QuantityPerUnit"], @"%@", metadata);
+  XCTAssertFalse([metadata containsString:@"Name=\"Suppliers\" Type=\"Collection(Default.Supplier)\""], @"%@", metadata);
+  XCTAssertTrue([metadata containsString:@"Name=\"Products\" Type=\"Collection(Default.Product)\""], @"the other way still is");
+  XCTAssertEqualObjects(_service.metadataProblems, @[]);
+
+  NSDictionary *chai = [self get:@"Products(1)?$expand=*"].json;
+  XCTAssertEqualObjects(chai[@"ProductName"], @"Chai");
+  XCTAssertNil(chai[@"QuantityPerUnit"]);
+  XCTAssertNil(chai[@"Suppliers"]);
+  XCTAssertNotNil(chai[@"Category"]);
+  for (NSString *path in @[ @"Products?$filter=QuantityPerUnit eq '10 boxes'", @"Products?$select=QuantityPerUnit",
+                            @"Products?$orderby=QuantityPerUnit", @"Products?$expand=Suppliers",
+                            @"Products(1)/QuantityPerUnit" ]) {
+    XCTAssertTrue([self get:path].status == 400 || [self get:path].status == 404, @"%@: %ld", path, (long)[self get:path].status);
+  }
+  XCTAssertEqualObjects([self get:@"Products?$search=boxes"].json[@"value"], @[], @"not searched");
+  XCTAssertEqual(([self send:@"PATCH" path:@"Products(1)" headers:nil body:@{ @"QuantityPerUnit": @"none" }].status), 400);
+  XCTAssertEqual(([self send:@"POST" path:@"Products" headers:nil
+                        body:@{ @"ProductID": @9, @"ProductName": @"Tea", @"QuantityPerUnit": @"1" }].status), 400);
+  // A PUT replaces what is served, not what is not.
+  OISServiceResponse *put = [self send:@"PUT" path:@"Products(1)" headers:nil
+                                  body:@{ @"ProductID": @1, @"ProductName": @"Chai tea" }];
+  XCTAssertTrue(put.status == 204 || put.status == 200, @"%@", put.text);
+  XCTAssertEqualObjects([self get:@"Products(1)/ProductName"].json[@"value"], @"Chai tea");
+  XCTAssertEqualObjects(quantity(), @"10 boxes");
+
+  // The key cannot be left out.
+  NSManagedObjectModel *keyless = [OISCatalogModel() conformsToProtocol:@protocol(NSCopying)]
+      ? [OISCatalogModel() copy]
+      : [[NSManagedObjectModel alloc] initWithContentsOfURL:OISCatalogModelURL()];
+  NSEntityDescription *category = keyless.entitiesByName[@"Category"];
+  NSAttributeDescription *key = category.attributesByName[@"id"];
+  NSMutableDictionary *keyInfo = [key.userInfo mutableCopy] ?: [NSMutableDictionary dictionary];
+  keyInfo[ODataUserInfoServed] = @"NO";
+  key.userInfo = keyInfo;
+  [self serveModel:keyless];
+  [self get:@"$metadata"];
+  XCTAssertTrue([[_service.metadataProblems componentsJoinedByString:@"\n"] containsString:@"Category.id is the key"],
+                @"%@", _service.metadataProblems);
+}
+
 // Only Products and Categories: Stocks, Locations and Suppliers are not
 // there, nor is anything that leads to them.
 - (void)testOnlyAConfigurationsEntities

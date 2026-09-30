@@ -21,6 +21,7 @@ NSString * const ODataUserInfoPeriodEnd = @"OData.periodEnd";
 NSString * const ODataUserInfoObjectKey = @"OData.objectKey";
 NSString * const ODataUserInfoClosedClosedPeriods = @"OData.closedClosedPeriods";
 NSString * const ODataUserInfoDynamicProperties = @"OData.dynamicProperties";
+NSString * const ODataUserInfoServed = @"OData.served";
 
 @implementation ODataPropertyMapper
 
@@ -418,15 +419,26 @@ static NSError *OISViolation(NSManagedObject *object, NSString *key, NSString *m
   return root && [self.servedEntityNames containsObject:root.name];
 }
 
+- (BOOL)servesProperty:(NSPropertyDescription *)property
+{
+  // A model's userInfo holds strings: NO, false or 0.
+  id served = property.userInfo[ODataUserInfoServed];
+  if ([served respondsToSelector:@selector(boolValue)] && ![served boolValue]) return NO;
+  if ([property isKindOfClass:[NSRelationshipDescription class]]) {
+    return [self servesRelationship:(NSRelationshipDescription *)property];
+  }
+  return YES;
+}
+
 - (NSPropertyDescription *)propertyForWireName:(NSString *)name entity:(NSEntityDescription *)entity
 {
   for (NSPropertyDescription *property in entity.properties) {
     NSString *wire = nil;
+    if (![self servesProperty:property]) continue;
     if ([property isKindOfClass:[NSAttributeDescription class]]) {
       if ([self attributeHoldsDynamicProperties:(NSAttributeDescription *)property]) continue;
       wire = [self propertyForAttribute:(NSAttributeDescription *)property];
     } else if ([property isKindOfClass:[NSRelationshipDescription class]]) {
-      if (![self servesRelationship:(NSRelationshipDescription *)property]) continue;
       wire = [self propertyForRelationship:(NSRelationshipDescription *)property];
     }
     if ([wire isEqualToString:name]) return property;

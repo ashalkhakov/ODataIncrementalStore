@@ -873,10 +873,10 @@ static NSArray<NSString *> *OISApplyTransformations(void)
       NSManagedObject *object = e.userInfo[NSValidationObjectErrorKey];
       NSString *key = e.userInfo[NSValidationKeyErrorKey];
       NSPropertyDescription *property = key ? object.entity.propertiesByName[key] : nil;
-      if ([property isKindOfClass:[NSAttributeDescription class]]) {
+      if ([property isKindOfClass:[NSAttributeDescription class]] && [self.mapper servesProperty:property]) {
         detail[@"target"] = [self.mapper propertyForAttribute:(NSAttributeDescription *)property];
       } else if ([property isKindOfClass:[NSRelationshipDescription class]]
-                 && [self.mapper servesRelationship:(NSRelationshipDescription *)property]) {
+                 && [self.mapper servesProperty:property]) {
         detail[@"target"] = [self.mapper propertyForRelationship:(NSRelationshipDescription *)property];
       }
       [details addObject:detail];
@@ -1872,6 +1872,7 @@ static const NSInteger OISMaxLevels = 32;
   NSMutableArray<NSRelationshipDescription *> *relationships = [NSMutableArray array];
   if (item.isStar) {
     for (NSRelationshipDescription *relationship in object.entity.relationshipsByName.allValues) {
+      if (![self.mapper servesProperty:relationship]) continue;
       if ([self.service handlerForEntity:relationship.destinationEntity]) [relationships addObject:relationship];
     }
   } else {
