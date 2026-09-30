@@ -207,7 +207,7 @@ operation comes from something the language already has:
 | OData needs | Read from |
 |---|---|
 | operation and parameter names | the selector. `shareTripWithUserName:tripId:reply:` is `ShareTrip(UserName, TripId)`: the first keyword up to `With` names the operation, the rest the first parameter. Without `With`, the whole keyword names the operation and its last word the parameter: `pricierThanPrice:reply:` is `PricierThanPrice(Price)`. Named by `ODataPropertyMapper`'s rules, as properties are. |
-| parameter and return types | the extended encoding: `int32_t` is `Edm.Int32`, `int64_t` `Edm.Int64`, `double` `Edm.Double`, `BOOL` `Edm.Boolean`, `NSString *` `Edm.String`, `NSDate *` `Edm.DateTimeOffset`, `NSDecimalNumber *` `Edm.Decimal`, `NSUUID *` `Edm.Guid`, `NSData *` `Edm.Binary`, a managed object class its entity type |
+| parameter and return types | the extended encoding: `int32_t` is `Edm.Int32`, `int64_t` `Edm.Int64`, `double` `Edm.Double`, `BOOL` `Edm.Boolean`, `NSString *` `Edm.String`, `NSDate *` `Edm.DateTimeOffset`, `NSDecimalNumber *` `Edm.Decimal`, `NSUUID *` `Edm.Guid`, `NSData *` `Edm.Binary`, `NSDictionary *` `Edm.Untyped`, a managed object class its entity type |
 | function or action | the protocol it inherits from: `<ODataFunctions>` or `<ODataActions>` |
 | binding | an instance method of an entity's class is bound to the entity; a class method (`+`) is bound to its collection; a method of the service's `serviceOperations` object is unbound, reached through an import. Only protocols a class adopts itself count. |
 | nullability | a scalar is non-nullable; an object is nullable |
@@ -230,6 +230,16 @@ the conventions get wrong:
   return @{ @"namesInCategory:": @"ProductNames" };
 }
 ```
+
+Some values have no type of the model's: a document an application keeps
+as it is, or a set of named values of any types. An `Edm.Untyped`
+parameter or result (or `Org.OData.JSON.V1.JSON`, which `$metadata` then
+references the JSON vocabulary for) is any JSON: the method is given it
+as `NSJSONSerialization` reads it, and what it returns is written as
+`NSJSONSerialization` writes it. A dictionary is one without being
+declared; an `id` or `NSArray *` parameter is declared so, and a
+collection of them `Collection(Edm.Untyped)`. `Edm.Untyped` is CSDL
+4.01's; a 4.0 client may not know it.
 
 The keys are selectors as written, a parameter after a dot by the name
 the rules give it. A declaration the framework cannot type is listed in

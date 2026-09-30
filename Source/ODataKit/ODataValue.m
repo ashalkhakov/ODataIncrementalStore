@@ -274,6 +274,7 @@ static ODataEdmType OISEdmTypeNamed(NSString *declared)
         @"Edm.Guid": @(ODataEdmGuid),
         @"Edm.Binary": @(ODataEdmBinary),
         @"Org.OData.JSON.V1.JSON": @(ODataEdmJSON), @"JSON.JSON": @(ODataEdmJSON),
+        @"Edm.Untyped": @(ODataEdmJSON),
       };
     }
     NSNumber *type = byName[declared];

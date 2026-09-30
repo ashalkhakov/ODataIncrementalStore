@@ -623,7 +623,15 @@ static NSString * const OISEdm = @"http://docs.oasis-open.org/odata/ns/edm";
     [self writeEntity:entity into:schemas used:usedTypes];
   }
   [self writeSchemaTypes:usedTypes into:schemas];
-  for (NSXMLElement *element in self.additionalSchemaElements) [self append:[element copy] toNamespace:self.namespaceName in:schemas];
+  for (NSXMLElement *element in self.additionalSchemaElements) {
+    // An operation's JSON parameter or result references the vocabulary.
+    for (NSXMLNode *child in element.children) {
+      if (child.kind != NSXMLElementKind) continue;
+      NSString *type = [(NSXMLElement *)child attributeForName:@"Type"].stringValue;
+      if ([OISElementTypeOf(type) isEqualToString:@"Org.OData.JSON.V1.JSON"]) [self useTerm:@"Org.OData.JSON.V1.JSON"];
+    }
+    [self append:[element copy] toNamespace:self.namespaceName in:schemas];
+  }
   [self append:[self container] toNamespace:self.namespaceName in:schemas];
 
   NSXMLElement *edmx = [[NSXMLElement alloc] initWithName:@"edmx:Edmx" URI:OISEdmx];

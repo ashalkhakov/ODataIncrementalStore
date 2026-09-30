@@ -253,10 +253,12 @@
 - (NSString *)echoWithText:(NSString *)text times:(int32_t)times reply:(ODataReply *)reply;
 - (NSDecimalNumber *)sumOfPrices:(NSArray *)prices reply:(ODataReply *)reply;
 - (NSArray *)namesInCategory:(ODataReply *)reply;
+- (NSDictionary *)describeShape:(id)shape reply:(ODataReply *)reply;
 @end
 
 @protocol OISCatalogActions <ODataActions>
 - (void)failWithCode:(int32_t)code reply:(ODataReply *)reply;
+- (NSDictionary *)mergeWithBase:(NSDictionary *)base changes:(NSArray *)changes reply:(ODataReply *)reply;
 @end
 
 @interface OISCatalogOperations : NSObject <OISCatalogFunctions, OISCatalogActions>
@@ -267,7 +269,9 @@
 + (NSDictionary *)ODataOperationTypes
 {
   return @{ @"sumOfPrices:reply:.prices": @"Collection(Edm.Decimal)",
-            @"namesInCategory:": @"Collection(Edm.String)" };
+            @"namesInCategory:": @"Collection(Edm.String)",
+            @"describeShape:reply:.shape": @"Edm.Untyped",
+            @"mergeWithBase:changes:reply:.changes": @"Collection(Org.OData.JSON.V1.JSON)" };
 }
 
 + (NSDictionary *)ODataOperationNames
@@ -308,6 +312,19 @@
 - (void)failWithCode:(int32_t)code reply:(ODataReply *)reply
 {
   [reply failWithError:ODataServiceError(code, @"Failing on purpose")];
+}
+
+- (NSDictionary *)describeShape:(id)shape reply:(ODataReply *)reply
+{
+  return @{ @"class": [shape isKindOfClass:[NSDictionary class]] ? @"object" : [shape isKindOfClass:[NSArray class]] ? @"array" : @"scalar",
+            @"shape": shape ?: [NSNull null] };
+}
+
+- (NSDictionary *)mergeWithBase:(NSDictionary *)base changes:(NSArray *)changes reply:(ODataReply *)reply
+{
+  NSMutableDictionary *merged = [base mutableCopy] ?: [NSMutableDictionary dictionary];
+  for (NSDictionary *change in changes) [merged addEntriesFromDictionary:change];
+  return merged;
 }
 
 @end
@@ -1244,6 +1261,35 @@
   XCTAssertEqual(failed.status, 409);
   XCTAssertEqualObjects(failed.json[@"error"][@"message"], @"Failing on purpose");
   XCTAssertEqual(([self send:@"POST" path:@"Fail" headers:nil body:@{ @"Colour": @1 }].status), 400);
+}
+
+// Parameters and results that are any JSON: a dictionary, or what is
+// declared Edm.Untyped or Org.OData.JSON.V1.JSON.
+- (void)testUntypedOperations
+{
+  [self serveOperations];
+  OISServiceResponse *metadata = [self get:@"$metadata"];
+  ODataSchema *schema = [ODataSchema schemaWithData:metadata.data error:NULL];
+  ODataSchemaOperation *merge = schema.operations[@"Default.Merge"].firstObject;
+  XCTAssertEqualObjects([merge.callerParameters valueForKey:@"type"], (@[ @"Edm.Untyped", @"Collection(Org.OData.JSON.V1.JSON)" ]));
+  XCTAssertEqualObjects(merge.returnType, @"Edm.Untyped");
+  XCTAssertTrue([metadata.text rangeOfString:@"Namespace=\"Org.OData.JSON.V1\""].location != NSNotFound, @"referenced");
+
+  OISServiceResponse *merged = [self send:@"POST" path:@"Merge" headers:nil
+                                     body:(@{ @"Base": @{ @"a": @1, @"b": @[ @"x", [NSNull null] ] },
+                                              @"Changes": @[ @{ @"b": @{ @"deep": @YES } }, @{ @"c": @"new" } ] })];
+  XCTAssertEqual(merged.status, 200, @"%@", merged.text);
+  XCTAssertEqualObjects(merged.json[@"value"], (@{ @"a": @1, @"b": @{ @"deep": @YES }, @"c": @"new" }));
+  XCTAssertEqualObjects(merged.json[@"@odata.context"], @"http://example.test/odata/$metadata#Edm.Untyped");
+  XCTAssertEqualObjects([self send:@"POST" path:@"Merge" headers:nil body:@{}].json[@"value"], @{}, @"nothing given");
+  XCTAssertEqual(([self send:@"POST" path:@"Merge" headers:nil body:@{ @"Changes": @{ @"a": @1 } }].status), 400,
+                 @"a collection is still one");
+
+  OISServiceResponse *object = [self get:@"DescribeShape(Shape=@s)?@s={\"n\":[1,2]}"];
+  XCTAssertEqual(object.status, 200, @"%@", object.text);
+  XCTAssertEqualObjects(object.json[@"value"], (@{ @"class": @"object", @"shape": @{ @"n": @[ @1, @2 ] } }));
+  XCTAssertEqualObjects([self get:@"DescribeShape(Shape=@s)?@s=[true]"].json[@"value"][@"class"], @"array");
+  XCTAssertEqualObjects([self get:@"DescribeShape(Shape='text')"].json[@"value"][@"shape"], @"text");
 }
 
 - (void)testDeclarationsTheServiceCannotUse

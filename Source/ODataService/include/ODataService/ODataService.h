@@ -93,8 +93,11 @@ FOUNDATION_EXPORT NSString * const ODataUserInfoETag;  // @"OData.etag"
 // parameter's class: int32_t is Edm.Int32, int64_t Edm.Int64, int16_t
 // Edm.Int16, double Edm.Double, float Edm.Single, BOOL Edm.Boolean,
 // NSString Edm.String, NSDate Edm.DateTimeOffset, NSDecimalNumber
-// Edm.Decimal, NSUUID Edm.Guid, NSData Edm.Binary, a managed object class
-// its entity type. What the runtime cannot see, a collection's element type
+// Edm.Decimal, NSUUID Edm.Guid, NSData Edm.Binary, NSDictionary
+// Edm.Untyped, a managed object class its entity type. An Edm.Untyped (or
+// Org.OData.JSON.V1.JSON) value is any JSON, passed as NSJSONSerialization
+// reads it and written as it would write it; declare an id or NSArray
+// parameter so to take one. What the runtime cannot see, a collection's element type
 // or which number an NSNumber is, the class says in a class method, and it
 // can rename what the rules get wrong:
 //

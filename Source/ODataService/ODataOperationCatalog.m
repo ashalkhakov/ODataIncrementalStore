@@ -329,6 +329,11 @@ static void OISCollectProtocols(Protocol *protocol, NSMutableArray *into, NSMuta
   }
   Class cls = NSClassFromString(OISClassNameOfToken(token) ?: @"");
   if (!cls) return nil;
+  // A dictionary is a JSON object, whatever it holds.
+  if ([cls isSubclassOfClass:[NSDictionary class]]) {
+    parameter.type = @"Edm.Untyped";
+    return parameter;
+  }
   NSArray *known = @[ @[ [NSDecimalNumber class], @"Edm.Decimal" ], @[ [NSString class], @"Edm.String" ],
                       @[ [NSDate class], @"Edm.DateTimeOffset" ], @[ [NSUUID class], @"Edm.Guid" ],
                       @[ [NSData class], @"Edm.Binary" ] ];
