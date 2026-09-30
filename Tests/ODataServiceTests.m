@@ -4184,6 +4184,40 @@ static NSString *OISHTTPDate(NSDate *date)
   XCTAssertEqualObjects([self get:@"Categories(1)/Products/$count"].text, @"2", @"what it serves works as before");
 }
 
+// Nothing is written but by the application's actions.
+- (void)testAReadOnlyService
+{
+  [self serveOperations];
+  _service.readOnly = YES;
+  ODataEntitySetHandler *products = [_service handlerForEntitySet:@"Products"];
+  products.allowsUpdate = YES;
+  XCTAssertFalse(products.allowsUpdate, @"whatever the handler says");
+  ODataSchema *schema = [ODataSchema schemaWithData:[self get:@"$metadata"].data error:NULL];
+  NSDictionary *update = [schema capability:@"Capabilities.UpdateRestrictions" forEntitySet:@"Products"];
+  XCTAssertEqualObjects(update[@"Updatable"], @NO, @"%@", update);
+  XCTAssertEqualObjects([schema capability:@"Capabilities.InsertRestrictions" forEntitySet:@"Categories"][@"Insertable"], @NO);
+  XCTAssertEqualObjects([schema capability:@"Capabilities.DeleteRestrictions" forEntitySet:@"Suppliers"][@"Deletable"], @NO);
+
+  XCTAssertEqual(([self send:@"POST" path:@"Categories" headers:nil body:@{ @"CategoryID": @9, @"CategoryName": @"New" }].status), 405);
+  XCTAssertEqual(([self send:@"PATCH" path:@"Products(1)" headers:nil body:@{ @"ProductName": @"Tea" }].status), 405);
+  XCTAssertEqual([self send:@"DELETE" path:@"Products(1)" headers:nil body:nil].status, 405);
+  XCTAssertEqual(([self send:@"PUT" path:@"Products(1)/Category/$ref" headers:nil
+                        body:@{ @"@odata.id": @"http://example.test/odata/Categories(2)" }].status), 405);
+  XCTAssertEqualObjects([self get:@"Products(1)/ProductName"].json[@"value"], @"Chai");
+  OISServiceResponse *batch = [self postBatch:@[
+    @[ @{ @"method": @"PATCH", @"url": @"Products(1)", @"id": @"1", @"body": @{ @"ProductName": @"Tea" } } ],
+  ] headers:nil];
+  XCTAssertEqualObjects([[self partsOf:batch] valueForKey:@"status"], @[ @405 ], @"%@", batch.text);
+
+  // Actions run, but one that changes the request's context is refused,
+  // and its change undone.
+  XCTAssertEqual(([self send:@"POST" path:@"Fail" headers:nil body:@{ @"Code": @409 }].status), 409);
+  OISServiceResponse *raised = [self send:@"POST" path:@"Products(1)/Default.RaisePriceByPercent" headers:nil body:@{ @"Percent": @50 }];
+  XCTAssertEqual(raised.status, 500, @"%@", raised.text);
+  XCTAssertEqualObjects([self get:@"Products(1)/UnitPrice/$value"].text, @"18", @"not saved");
+  XCTAssertEqualObjects([self get:@"CountProductsCheaperThanPrice(Price=19)"].json[@"value"], @2, @"functions as before");
+}
+
 #pragma mark Limits
 
 // What one request may ask of the service, and what a failure tells.

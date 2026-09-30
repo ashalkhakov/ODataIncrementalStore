@@ -176,7 +176,8 @@ FOUNDATION_EXPORT NSString * const ODataUserInfoETag;  // @"OData.etag"
 @property (nonatomic, readonly) NSEntityDescription *entity;
 @property (nonatomic, readonly, weak, nullable) ODataService *service;
 
-// What the set allows. A method it does not is answered with 405.
+// What the set allows. A method it does not is answered with 405. A
+// read-only service's sets allow none of them, whatever they are set to.
 @property (nonatomic) BOOL allowsInsert;
 @property (nonatomic) BOOL allowsUpdate;
 @property (nonatomic) BOOL allowsDelete;
@@ -365,6 +366,12 @@ FOUNDATION_EXPORT NSString * const ODataUserInfoETag;  // @"OData.etag"
 // Entities and properties are annotated from the model (see
 // ODataMetadataWriter.h), how to sign in from the authenticator.
 @property (nonatomic, copy, nullable) NSDictionary<NSString *, id> *containerAnnotations;
+// A service that writes nothing of itself: every entity set refuses
+// insert, update and delete (405), whatever its handler allows, as
+// $metadata says; and an action's request context is not saved -- one
+// that changed it is answered with an error, and its changes undone.
+// Actions still write, through the application's own means. Default: NO.
+@property (nonatomic, getter=isReadOnly) BOOL readOnly;
 // The entities it serves, by name: each a root entity, served with its
 // sub-entities. nil, the default: every entity that has a key. One left
 // out has no entity set, type or handler, and nothing reaches it: a

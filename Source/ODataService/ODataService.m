@@ -292,6 +292,21 @@ static NSArray *OISFetch(NSManagedObjectContext *context, NSFetchRequest *fetchR
   return self;
 }
 
+- (BOOL)allowsInsert
+{
+  return _allowsInsert && !self.service.isReadOnly;
+}
+
+- (BOOL)allowsUpdate
+{
+  return _allowsUpdate && !self.service.isReadOnly;
+}
+
+- (BOOL)allowsDelete
+{
+  return _allowsDelete && !self.service.isReadOnly;
+}
+
 - (BOOL)canTrackChanges
 {
   NSPersistentStoreCoordinator *coordinator = self.service.coordinator;
@@ -4272,6 +4287,11 @@ static NSNumber *OISScalarReturnValue(NSInvocation *invocation, char type)
     return;
   }
   // An action may have changed things; a function has no business to.
+  if (operation.isAction && self.request.context.hasChanges && self.service.isReadOnly) {
+    [self.request.context rollback];
+    [self fail:500 message:[NSString stringWithFormat:@"%@ changed the context of a read-only service", operation.signature]];
+    return;
+  }
   if (operation.isAction && self.request.context.hasChanges && ![self save]) return;
   if (!operation.isAction) [self.request.context rollback];
   if (!operation.isAction && operation.returns.entity) {

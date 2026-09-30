@@ -798,6 +798,15 @@ is left out of the types that have it, and a path, `$filter`, `$orderby`
 or `$expand` that names one is an error. An application whose model also
 holds its own bookkeeping serves only what its clients are meant to see.
 
+Nor need it write to it. A `readOnly` service answers every insert,
+update and delete, `$ref` and batched ones included, with `405`, whatever
+its handlers allow, and `$metadata` says so on every set. Its actions
+still run, but it never saves their request's context: an action that
+changed it is answered with `500`, its changes undone. Such an action
+writes through the application's own means -- another context, or a
+service of the application's -- so every change the model sees is one the
+application made and checked.
+
 Requests map onto fetch requests, the reverse of `ODataQueryBuilder`:
 
 | OData | Core Data |
