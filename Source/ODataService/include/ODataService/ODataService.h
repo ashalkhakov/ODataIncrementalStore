@@ -247,8 +247,29 @@ FOUNDATION_EXPORT NSString * const ODataUserInfoETag;  // @"OData.etag"
 // declare, which -dynamicPropertiesOfObjects:request:reply: gives,
 // -writeDynamicProperties:... keeps, and -predicateForDynamicProperty:...
 // filters by. $select may name one, and
-// an entity without it leaves it out. NO by default.
+// an entity without it leaves it out. Where they are kept is the
+// handler's to say (docs/server-design.md); by default, in the entity's
+// dynamicPropertiesAttribute. NO by default, but YES for an entity that
+// has one.
 @property (nonatomic, getter=isOpenType) BOOL openType;
+// An entity that keeps its dynamic properties itself: a Transformable
+// attribute marked OData.dynamicProperties, an NSDictionary (see
+// ODataPropertyMapper.h), which the service serves as no property of its
+// own. The methods below keep them in it by default: they are read from
+// it, written into it (null removing one, a PUT replacing them all), and
+// filtered by in memory. The caveat: a Transformable is an archive, which
+// no store filters by, so a filter that names a dynamic property reads
+// every row the rest of the request allows (maxRowsInMemory at most, then
+// 400) and is evaluated here, and so are its order and paging. For a set
+// that grows, keep them in rows of their own and override these methods,
+// and storeFiltersDynamicProperties. nil for none.
+@property (nonatomic, readonly, nullable) NSAttributeDescription *dynamicPropertiesAttribute;
+// Whether -predicateForDynamicProperty:...'s predicates go into the
+// store's fetch with the rest of the filter (a subquery over rows of the
+// application's own, say); NO: the service reads the rows and filters
+// them itself. Default: YES, but NO while dynamic properties are kept in
+// dynamicPropertiesAttribute.
+@property (nonatomic) BOOL storeFiltersDynamicProperties;
 // The dynamic properties of the set's entities a response writes, read
 // at once, after its rows and their expansions (the plan's last step):
 // by object ID, each entity's by name, each a value the service writes as
@@ -275,8 +296,8 @@ FOUNDATION_EXPORT NSString * const ODataUserInfoETag;  // @"OData.etag"
 // the handler changes in the request context is saved with the rest.
 // Answer anything but nil (@YES) now, or later through the reply; an
 // error (-failWithError:) fails the write, and nothing of it is saved. The
-// default refuses them (400): an open type whose dynamic properties can
-// be written overrides it.
+// default keeps them in dynamicPropertiesAttribute; without one it
+// refuses them (400).
 - (nullable id)writeDynamicProperties:(NSArray<NSDictionary<NSString *, id> *> *)values
                             ofObjects:(NSArray<NSManagedObject *> *)objects
                               request:(ODataRequest *)request
@@ -398,8 +419,9 @@ FOUNDATION_EXPORT NSString * const ODataUserInfoETag;  // @"OData.etag"
 // More requests than this in one $batch: 400. Default: 100.
 @property (nonatomic) NSUInteger maxBatchRequests;
 // Work the store cannot do and the service does in memory ($apply's
-// grouping and the rest, $orderby by a computed value, a temporal
-// action) over more rows than this: 400, to be narrowed with $filter.
+// grouping and the rest, $orderby by a computed value, a filter on
+// dynamic properties kept in a Transformable, a temporal action) over
+// more rows than this: 400, to be narrowed with $filter.
 // Default: 10000.
 @property (nonatomic) NSUInteger maxRowsInMemory;
 // A JSON body nested deeper than this: 400. Default: 64.

@@ -69,6 +69,7 @@ types are not mapped.
 | `OData.closedClosedPeriods` | entity | `YES`: the period's end is its last day (`Edm.Date` only) |
 | `OData.unmapped` | entity | Written by `ois-model`: what could not be mapped (spatial types) |
 | `OData.dynamicProperties` | Transformable attribute | `YES`: the property bag of an open type's dynamic properties |
+| `OData.served` | attribute, relationship | `NO`: not served, nor sent by a client; the application's own |
 
 `$metadata` fills in whatever the model does not say. When both say
 something, the model's `userInfo` wins.

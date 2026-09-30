@@ -569,6 +569,12 @@ static ODataExpression *OISAlongPath(ODataExpression *from, NSString *path)
         }
       }
     }
+    if (property && ![self.mapper servesProperty:property]) {
+      if (error) *error = OISError(ODataIncrementalStoreErrorUnsupportedExpression,
+                                   [NSString stringWithFormat:@"%@.%@ is not the service's (OData.served NO): it cannot filter or sort by it (in %@)",
+                                                              current.name, part, path]);
+      return nil;
+    }
     if ([property isKindOfClass:[NSAttributeDescription class]]) {
       NSAttributeDescription *attribute = (NSAttributeDescription *)property;
       NSArray *rest = [parts subarrayWithRange:NSMakeRange(i + 1, parts.count - i - 1)];

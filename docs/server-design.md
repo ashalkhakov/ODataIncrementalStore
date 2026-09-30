@@ -817,6 +817,24 @@ go together. A configuration that lists a sub-entity without its root
 (not served), or a root without all its sub-entities (served whole), or
 that the model has not (nothing served), is in `metadataProblems`.
 
+Nor all of an entity. A configuration picks entities, not properties, so
+an attribute or relationship whose userInfo says `OData.served` `NO` is
+left out of its entity type: not in `$metadata` or a payload, not
+searched, and an unknown name wherever a request names it. A `PUT`
+replaces what is served and leaves it as it is. An application keeps
+there what is its own -- a lock's revision, a tree the served rows hang
+in -- beside what its clients see. A key cannot be left out; one marked
+so is among `metadataProblems`. Nothing else names it either: a
+relationship's `Partner`, `Core.OptimisticConcurrency` (a version
+attribute not served still makes the ETag, which the annotation then
+does not describe), `Measures.ISOCurrency`'s path; and a timeline or a
+recursive hierarchy that needs one is a problem instead. A value of one
+that fails validation is the service's fault, not the request's: `500`,
+naming nothing, the details logged. An update of only such properties
+is no change a delta link reports. Links are one thing, seen from
+either end: a relationship served whose inverse is not still changes
+both.
+
 Nor need it write to it. A `readOnly` service answers every insert,
 update and delete, `$ref` and batched ones included, with `405`, whatever
 its handlers allow, and `$metadata` says so on every set. Its actions
@@ -859,6 +877,42 @@ copied for each request (`-builderWithUserInfo:`) with the request as
 its `userInfo`. Only comparisons with a value are handed over (and
 `in`, and the property alone as a condition); sorting by a dynamic
 property, or computing with one, is refused.
+
+Where dynamic properties are kept is the handler's to say. By default,
+in the entity itself: a Transformable attribute marked
+`OData.dynamicProperties` (an `NSDictionary`, the property bag the
+client's generated models have too) makes its set an open type with no
+code at all. The bag is no property on the wire; its entries are read
+from it, written into it (a new dictionary each time, `null` removing
+one, a `PUT` replacing them all), and change the entity's ETag.
+
+**The caveat is filtering.** A Transformable is an archive, on Apple and
+FreeCoreData alike, which no store filters by, and no store keeps JSON
+it can query into. So a filter that names a dynamic property kept there
+is evaluated here: the rows the rest of the request allows are read
+(`maxRowsInMemory` at most, then `400`, to be narrowed by the rest of
+the filter), filtered, ordered and paged in
+memory, and counted there (`$count`, `/$count`). A nested `$expand`
+filter does the same per parent, and a `$apply` stops pushing filters to
+the store at the first that names one. `$explain` shows it: the filter
+is an `Apply` over the store scan rather than part of it. Fine for sets
+of a few thousand; for a set that grows, keep them elsewhere and
+override the handler's methods and `storeFiltersDynamicProperties`:
+
+- **Rows of their own**, one per property, related to the entity: a
+  name, a type, and a column for each kind of value, natively typed --
+  text, a whole number, a real number (a date as seconds), bytes -- as a
+  workflow engine keeps its variables (Camunda's `ACT_RU_VARIABLE`, or
+  UDWorkflow's `WFVariable`: `textValue`, `wholeNumber`, `realNumber`,
+  `bytesValue`). A filter is a `SUBQUERY` over them, which the store
+  runs as SQL, and an index on the name and a value column serves it.
+  A number may be in either numeric column, so a comparison asks both.
+- **Computed** from what the entity already has (the tests' `Size`, a
+  count of products), or **elsewhere** altogether, another service's:
+  the handler asks, and may answer later through the reply.
+
+Core Data's composite attributes (Apple, macOS 14) hold only members the
+model declares, so they are no place for these.
 
 Requests map onto fetch requests, the reverse of `ODataQueryBuilder`:
 

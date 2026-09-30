@@ -4339,6 +4339,231 @@ static NSString *OISHTTPDate(NSDate *date)
   _service.configurationName = configuration;
 }
 
+// A product's quantity per unit and its suppliers are the application's
+// own (OData.served NO): the service has no such properties.
+// A copy of the Catalog whose products keep these properties for
+// themselves (OData.served NO), and a revision, their ETag, likewise.
+static NSManagedObjectModel *OISCatalogKeeping(NSArray<NSString *> *names)
+{
+  NSManagedObjectModel *model = [OISCatalogModel() conformsToProtocol:@protocol(NSCopying)]
+      ? [OISCatalogModel() copy]
+      : [[NSManagedObjectModel alloc] initWithContentsOfURL:OISCatalogModelURL()];
+  NSEntityDescription *product = model.entitiesByName[@"Product"];
+  NSAttributeDescription *revision = [[NSAttributeDescription alloc] init];
+  revision.name = @"revision";
+  revision.attributeType = NSInteger64AttributeType;
+  revision.optional = YES;
+  revision.defaultValue = @0;
+  revision.userInfo = @{ ODataUserInfoETag: @"YES", ODataUserInfoServed: @"NO" };
+  product.properties = [product.properties arrayByAddingObject:revision];
+  for (NSString *name in names) {
+    NSPropertyDescription *property = product.propertiesByName[name];
+    NSMutableDictionary *userInfo = [property.userInfo mutableCopy] ?: [NSMutableDictionary dictionary];
+    userInfo[ODataUserInfoServed] = @"NO";
+    property.userInfo = userInfo;
+  }
+  return model;
+}
+
+- (void)testPropertiesThatAreNotServed
+{
+  NSManagedObjectModel *model = OISCatalogKeeping(@[ @"quantityPerUnit", @"suppliers" ]);
+  // Every product has a supplier, which no request can give it.
+  NSEntityDescription *product = model.entitiesByName[@"Product"];
+  NSRelationshipDescription *suppliers = product.relationshipsByName[@"suppliers"];
+  suppliers.minCount = 1;
+  suppliers.optional = NO;
+  [self serveModel:model];
+  NSManagedObjectContext *context = [[NSManagedObjectContext alloc] initWithConcurrencyType:NSPrivateQueueConcurrencyType];
+  context.persistentStoreCoordinator = _coordinator;
+  NSString *(^quantity)(void) = ^NSString *{
+    __block NSString *value = nil;
+    [context performBlockAndWait:^{
+      NSFetchRequest *fetch = [NSFetchRequest fetchRequestWithEntityName:@"Product"];
+      fetch.predicate = [NSPredicate predicateWithFormat:@"id == 1"];
+      value = [[[context executeFetchRequest:fetch error:NULL] firstObject] valueForKey:@"quantityPerUnit"];
+    }];
+    return value;
+  };
+  [context performBlockAndWait:^{
+    NSFetchRequest *fetch = [NSFetchRequest fetchRequestWithEntityName:@"Product"];
+    fetch.predicate = [NSPredicate predicateWithFormat:@"id == 1"];
+    [[[context executeFetchRequest:fetch error:NULL] firstObject] setValue:@"10 boxes" forKey:@"quantityPerUnit"];
+    [context save:NULL];
+  }];
+
+  NSString *metadata = [self get:@"$metadata"].text;
+  XCTAssertFalse([metadata containsString:@"QuantityPerUnit"], @"%@", metadata);
+  XCTAssertFalse([metadata containsString:@"Name=\"Suppliers\" Type=\"Collection(Default.Supplier)\""], @"%@", metadata);
+  XCTAssertTrue([metadata containsString:@"Name=\"Products\" Type=\"Collection(Default.Product)\""], @"the other way still is");
+  XCTAssertFalse([metadata containsString:@"Partner=\"Suppliers\""], @"and names no partner that is not served");
+  XCTAssertFalse([metadata containsString:@"Revision"], @"the ETag's property neither");
+  XCTAssertFalse([metadata containsString:@"OptimisticConcurrency"]);
+  XCTAssertEqualObjects(_service.metadataProblems, @[]);
+  XCTAssertEqualObjects([self get:@"Products(1)"].headers[@"ETag"], @"W/\"0\"", @"its ETag all the same");
+  // One the service keeps is not valid: its fault, and not named.
+  OISServiceResponse *made = [self send:@"POST" path:@"Products" headers:nil
+                                   body:@{ @"ProductID": @30, @"ProductName": @"Tea", @"UnitPrice": @1, @"Discontinued": @NO,
+                                           @"Category@odata.bind": @"Categories(1)" }];
+  XCTAssertEqual(made.status, 500, @"%@", made.text);
+  XCTAssertFalse([made.text.lowercaseString containsString:@"suppliers"], @"%@", made.text);
+
+  NSDictionary *chai = [self get:@"Products(1)?$expand=*"].json;
+  XCTAssertEqualObjects(chai[@"ProductName"], @"Chai");
+  XCTAssertNil(chai[@"QuantityPerUnit"]);
+  XCTAssertNil(chai[@"Suppliers"]);
+  XCTAssertNotNil(chai[@"Category"]);
+  for (NSString *path in @[ @"Products?$filter=QuantityPerUnit eq '10 boxes'", @"Products?$select=QuantityPerUnit",
+                            @"Products?$orderby=QuantityPerUnit", @"Products?$expand=Suppliers",
+                            @"Products(1)/QuantityPerUnit" ]) {
+    XCTAssertTrue([self get:path].status == 400 || [self get:path].status == 404, @"%@: %ld", path, (long)[self get:path].status);
+  }
+  XCTAssertEqualObjects([self get:@"Products?$search=boxes"].json[@"value"], @[], @"not searched");
+  XCTAssertEqual(([self send:@"PATCH" path:@"Products(1)" headers:nil body:@{ @"QuantityPerUnit": @"none" }].status), 400);
+  XCTAssertEqual(([self send:@"POST" path:@"Products" headers:nil
+                        body:@{ @"ProductID": @9, @"ProductName": @"Tea", @"QuantityPerUnit": @"1" }].status), 400);
+  // A PUT replaces what is served, not what is not.
+  OISServiceResponse *put = [self send:@"PUT" path:@"Products(1)" headers:nil
+                                  body:@{ @"ProductID": @1, @"ProductName": @"Chai tea" }];
+  XCTAssertTrue(put.status == 204 || put.status == 200, @"%@", put.text);
+  XCTAssertEqualObjects([self get:@"Products(1)/ProductName"].json[@"value"], @"Chai tea");
+  XCTAssertEqualObjects(quantity(), @"10 boxes");
+
+  // The key cannot be left out.
+  NSManagedObjectModel *keyless = [OISCatalogModel() conformsToProtocol:@protocol(NSCopying)]
+      ? [OISCatalogModel() copy]
+      : [[NSManagedObjectModel alloc] initWithContentsOfURL:OISCatalogModelURL()];
+  NSEntityDescription *category = keyless.entitiesByName[@"Category"];
+  NSAttributeDescription *key = category.attributesByName[@"id"];
+  NSMutableDictionary *keyInfo = [key.userInfo mutableCopy] ?: [NSMutableDictionary dictionary];
+  keyInfo[ODataUserInfoServed] = @"NO";
+  key.userInfo = keyInfo;
+  [self serveModel:keyless];
+  [self get:@"$metadata"];
+  XCTAssertTrue([[_service.metadataProblems componentsJoinedByString:@"\n"] containsString:@"Category.id is the key"],
+                @"%@", _service.metadataProblems);
+}
+
+// What names a property that is not served: a currency's holder, a
+// timeline's period, a recursive hierarchy's node. Each a problem.
+- (void)testWhatNamesAPropertyThatIsNotServed
+{
+  NSManagedObjectModel *model = OISCatalogKeeping(@[ @"name" ]);
+  NSEntityDescription *product = model.entitiesByName[@"Product"];
+  NSAttributeDescription *price = product.attributesByName[@"unitPrice"];
+  price.userInfo = @{ ODataUserInfoISOCurrency: @"name" };
+  product.userInfo = @{ ODataUserInfoAnnotations: @"{\"Aggregation.RecursiveHierarchy#Line\": {\"NodeProperty\": {\"$PropertyPath\": \"ProductName\"}, "
+                                                    @"\"ParentNavigationProperty\": {\"$NavigationPropertyPath\": \"Category\"}}}" };
+  [self serveModel:model];
+  NSString *metadata = [self get:@"$metadata"].text;
+  XCTAssertFalse([metadata containsString:@"ISOCurrency"], @"%@", metadata);
+  NSString *problems = [_service.metadataProblems componentsJoinedByString:@"\n"];
+  XCTAssertTrue([problems containsString:@"Product.unitPrice: its currency is in name, which is not served"], @"%@", problems);
+  XCTAssertTrue([problems containsString:@"RecursiveHierarchy#Line names ProductName, which is not served"], @"%@", problems);
+
+  NSEntityDescription *slice = [[NSEntityDescription alloc] init];
+  slice.name = @"Slice";
+  slice.managedObjectClassName = @"NSManagedObject";
+  slice.userInfo = @{ ODataUserInfoPeriodStart: @"from", ODataUserInfoPeriodEnd: @"to" };
+  NSAttributeDescription *key = OISSwatchAttribute(@"id", NSInteger32AttributeType, nil);
+  NSAttributeDescription *to = OISSwatchAttribute(@"to", NSDateAttributeType, nil);
+  to.userInfo = @{ ODataUserInfoServed: @"NO" };
+  slice.properties = @[ key, OISSwatchAttribute(@"from", NSDateAttributeType, nil), to ];
+  NSManagedObjectModel *timeline = [[NSManagedObjectModel alloc] init];
+  timeline.entities = @[ slice ];
+  _coordinator = [[NSPersistentStoreCoordinator alloc] initWithManagedObjectModel:timeline];
+  [_coordinator addPersistentStoreWithType:NSInMemoryStoreType configuration:nil URL:nil options:nil error:NULL];
+  _service = [[ODataService alloc] initWithPersistentStoreCoordinator:_coordinator serviceRoot:[NSURL URLWithString:@"http://example.test/odata/"]];
+  XCTAssertEqualObjects(_service.metadataProblems, @[ @"Slice: its timeline's to is not served, so it has no application time" ]);
+  XCTAssertFalse([[self get:@"$metadata"].text containsString:@"ApplicationTimeSupport"]);
+}
+
+// A change to what the service keeps for itself is none a delta shows.
+- (void)testChangesNotServedAreNoDelta
+{
+  [self serveTrackedCatalogWith:^(NSManagedObjectModel *model) {
+    NSEntityDescription *product = model.entitiesByName[@"Product"];
+    NSAttributeDescription *quantity = product.attributesByName[@"quantityPerUnit"];
+    quantity.userInfo = @{ ODataUserInfoServed: @"NO" };
+  }];
+  NSString *link = [self send:@"GET" path:@"Products" headers:@{ @"Prefer": @"odata.track-changes" } body:nil].json[@"@odata.deltaLink"];
+  XCTAssertNotNil(link);
+  NSManagedObjectContext *context = [self serviceContext];
+  NSFetchRequest *fetch = [NSFetchRequest fetchRequestWithEntityName:@"Product"];
+  fetch.predicate = [NSPredicate predicateWithFormat:@"id == 1"];
+  NSManagedObject *chai = [[context executeFetchRequest:fetch error:NULL] firstObject];
+  [chai setValue:@"10 boxes" forKey:@"quantityPerUnit"];
+  XCTAssertTrue([context save:NULL]);
+  OISServiceResponse *delta = [self get:[self pathOfLink:link]];
+  XCTAssertEqualObjects(delta.json[@"value"], @[], @"%@", delta.text);
+  [chai setValue:@"Chai tea" forKey:@"name"];
+  XCTAssertTrue([context save:NULL]);
+  delta = [self get:[self pathOfLink:link]];
+  XCTAssertEqualObjects([delta.json[@"value"] valueForKey:@"ProductName"], @[ @"Chai tea" ], @"%@", delta.text);
+}
+
+// The client, over the same model: what the service does not serve is
+// neither sent nor asked for, is kept in memory as saved, and cannot be
+// filtered by.
+- (void)testTheClientKeepsWhatIsNotServed
+{
+  NSManagedObjectModel *model = OISCatalogKeeping(@[ @"quantityPerUnit" ]);
+  [self serveModel:model];
+  OISRecordingTransport *transport = [[OISRecordingTransport alloc] init];
+  transport.next = _service;
+  [ODataIncrementalStore registerStore];
+  NSPersistentStoreCoordinator *client = [[NSPersistentStoreCoordinator alloc] initWithManagedObjectModel:model];
+  NSError *error = nil;
+  ODataIncrementalStore *store = (ODataIncrementalStore *)[client addPersistentStoreWithType:[ODataIncrementalStore storeType] configuration:nil
+                                                                                        URL:[NSURL URLWithString:@"http://example.test/odata/"]
+                                                                                    options:@{ ODataIncrementalStoreTransportOption: transport } error:&error];
+  XCTAssertNotNil(store, @"%@", error);
+  XCTAssertEqualObjects(store.metadataProblems, @[]);
+  NSManagedObjectContext *context = [[NSManagedObjectContext alloc] init];
+  context.persistentStoreCoordinator = client;
+  NSFetchRequest *fetch = [NSFetchRequest fetchRequestWithEntityName:@"Product"];
+  fetch.predicate = [NSPredicate predicateWithFormat:@"id == 1"];
+  NSManagedObject *chai = [[context executeFetchRequest:fetch error:&error] firstObject];
+  XCTAssertEqualObjects([chai valueForKey:@"name"], @"Chai", @"%@", error);
+  XCTAssertNil([chai valueForKey:@"quantityPerUnit"]);
+
+  // Changed alone: nothing to write. (A save may read, FreeCoreData's.)
+  NSArray *(^writes)(void) = ^NSArray *{
+    return [transport.requests filteredArrayUsingPredicate:[NSPredicate predicateWithFormat:@"HTTPMethod != 'GET'"]];
+  };
+  NSUInteger sent = writes().count;
+  [chai setValue:@"10 boxes" forKey:@"quantityPerUnit"];
+  XCTAssertTrue([context save:&error], @"%@", error);
+  XCTAssertEqual(writes().count, sent, @"%@", writes().lastObject);
+  // Changed with the rest: the rest is sent.
+  [chai setValue:@"20 boxes" forKey:@"quantityPerUnit"];
+  [chai setValue:@"Chai tea" forKey:@"name"];
+  XCTAssertTrue([context save:&error], @"%@", error);
+  NSDictionary *body = [NSJSONSerialization JSONObjectWithData:[writes().lastObject HTTPBody] options:0 error:NULL];
+  XCTAssertEqualObjects(body, @{ @"ProductName": @"Chai tea" });
+  // Kept, as saved, when the row is read again.
+  [store discardCachedRowsForObjectIDs:nil];
+  [context refreshObject:chai mergeChanges:NO];
+  XCTAssertEqualObjects([chai valueForKey:@"name"], @"Chai tea");
+  XCTAssertEqualObjects([chai valueForKey:@"quantityPerUnit"], @"20 boxes");
+  // The service has none of it to filter by.
+  NSFetchRequest *boxed = [NSFetchRequest fetchRequestWithEntityName:@"Product"];
+  boxed.predicate = [NSPredicate predicateWithFormat:@"quantityPerUnit == '20 boxes'"];
+  XCTAssertNil([context executeFetchRequest:boxed error:&error]);
+  XCTAssertTrue([error.localizedDescription containsString:@"OData.served NO"], @"%@", error);
+  // A new one: posted without it.
+  NSManagedObject *tea = [NSEntityDescription insertNewObjectForEntityForName:@"Product" inManagedObjectContext:context];
+  [tea setValue:@40 forKey:@"id"];
+  [tea setValue:@"Green tea" forKey:@"name"];
+  [tea setValue:@"1 tin" forKey:@"quantityPerUnit"];
+  XCTAssertTrue([context save:&error], @"%@", error);
+  NSURLRequest *post = nil;
+  for (NSURLRequest *request in transport.requests) if ([request.HTTPMethod isEqualToString:@"POST"]) post = request;
+  body = [NSJSONSerialization JSONObjectWithData:post.HTTPBody options:0 error:NULL];
+  XCTAssertEqualObjects(body[@"ProductName"], @"Green tea");
+  XCTAssertNil(body[@"QuantityPerUnit"], @"%@", body);
+}
+
 // Only Products and Categories: Stocks, Locations and Suppliers are not
 // there, nor is anything that leads to them.
 - (void)testOnlyAConfigurationsEntities
@@ -4693,6 +4918,128 @@ static NSString *OISHTTPDate(NSDate *date)
   XCTAssertEqual(r.status, 400, @"%@", r.text);
   XCTAssertTrue([r.text rangeOfString:@"Mood"].location != NSNotFound, @"%@", r.text);
   XCTAssertEqualObjects([self get:@"Categories(1)/CategoryName"].json[@"value"], @"Drinks", @"not saved");
+}
+
+// A copy of the Catalog whose categories keep dynamic properties in a
+// bag, extras.
+static NSManagedObjectModel *OISCatalogWithBag(void)
+{
+  NSManagedObjectModel *model = [OISCatalogModel() conformsToProtocol:@protocol(NSCopying)]
+      ? [OISCatalogModel() copy]
+      : [[NSManagedObjectModel alloc] initWithContentsOfURL:OISCatalogModelURL()];
+  NSEntityDescription *category = model.entitiesByName[@"Category"];
+  NSAttributeDescription *bag = [[NSAttributeDescription alloc] init];
+  bag.name = @"extras";
+  bag.attributeType = NSTransformableAttributeType;
+  bag.valueTransformerName = @"NSSecureUnarchiveFromData";
+  bag.attributeValueClassName = @"NSDictionary";
+  bag.optional = YES;
+  bag.userInfo = @{ ODataUserInfoDynamicProperties: @"YES" };
+  category.properties = [category.properties arrayByAddingObject:bag];
+  return model;
+}
+
+// A client that shares the model: the service's bag is its bag too.
+- (void)testAClientSharingTheBag
+{
+  NSManagedObjectModel *model = OISCatalogWithBag();
+  [self serveModel:model];
+  OISRecordingTransport *transport = [[OISRecordingTransport alloc] init];
+  transport.next = _service;
+  [ODataIncrementalStore registerStore];
+  NSPersistentStoreCoordinator *client = [[NSPersistentStoreCoordinator alloc] initWithManagedObjectModel:model];
+  NSError *error = nil;
+  ODataIncrementalStore *store = (ODataIncrementalStore *)[client addPersistentStoreWithType:[ODataIncrementalStore storeType] configuration:nil
+                                                                                        URL:[NSURL URLWithString:@"http://example.test/odata/"]
+                                                                                    options:@{ ODataIncrementalStoreTransportOption: transport } error:&error];
+  XCTAssertNotNil(store, @"%@", error);
+  XCTAssertEqualObjects(store.metadataProblems, @[]);
+  NSManagedObjectContext *context = [[NSManagedObjectContext alloc] init];
+  context.persistentStoreCoordinator = client;
+  NSFetchRequest *fetch = [NSFetchRequest fetchRequestWithEntityName:@"Category"];
+  fetch.predicate = [NSPredicate predicateWithFormat:@"id == 1"];
+  NSManagedObject *beverages = [[context executeFetchRequest:fetch error:&error] firstObject];
+  XCTAssertNotNil(beverages, @"%@", error);
+  XCTAssertEqualObjects([beverages valueForKey:@"extras"], @{}, @"none yet");
+
+  [beverages setValue:@{ @"Mood": @"calm", @"Opened": ODataDateFromString(@"2026-01-02T03:04:05Z") } forKey:@"extras"];
+  XCTAssertTrue([context save:&error], @"%@", error);
+  NSDictionary *body = [NSJSONSerialization JSONObjectWithData:transport.requests.lastObject.HTTPBody options:0 error:NULL];
+  XCTAssertEqualObjects(body, (@{ @"Mood": @"calm", @"Opened": @"2026-01-02T03:04:05Z", @"Opened@odata.type": @"#DateTimeOffset" }));
+  [store discardCachedRowsForObjectIDs:nil];
+  [context refreshObject:beverages mergeChanges:NO];
+  XCTAssertEqualObjects([beverages valueForKey:@"extras"][@"Opened"], ODataDateFromString(@"2026-01-02T03:04:05Z"), @"kept by the service");
+
+  NSFetchRequest *calm = [NSFetchRequest fetchRequestWithEntityName:@"Category"];
+  calm.predicate = [NSPredicate predicateWithFormat:@"extras.Mood == 'calm'"];
+  XCTAssertEqualObjects([[context executeFetchRequest:calm error:&error] valueForKey:@"name"], @[ @"Beverages" ], @"%@", error);
+  NSString *query = [transport.requests.lastObject.URL.query stringByRemovingPercentEncoding];
+  XCTAssertTrue([query containsString:@"$filter=Mood eq 'calm'"], @"%@", query);
+}
+
+// Dynamic properties kept by default: in the entity's bag, a
+// Transformable (OData.dynamicProperties), with no handler to write.
+// Filters on them are evaluated here, the store keeping an archive.
+- (void)testDynamicPropertiesKeptInTheModel
+{
+  for (NSString *storeType in @[ NSInMemoryStoreType, NSSQLiteStoreType ]) {
+    [self serveModel:OISCatalogWithBag() storeType:storeType];
+    _service.explains = YES;
+
+    NSString *metadata = [self get:@"$metadata"].text;
+    XCTAssertTrue([metadata containsString:@"<EntityType Name=\"Category\" OpenType=\"true\">"], @"%@: %@", storeType, metadata);
+    XCTAssertFalse([metadata containsString:@"Extras"], @"the bag is no property");
+    XCTAssertEqualObjects(_service.metadataProblems, @[]);
+    NSString *before = [self get:@"Categories(1)"].headers[@"ETag"];
+    OISServiceResponse *r = [self send:@"PATCH" path:@"Categories(1)" headers:nil
+                                  body:@{ @"Mood": @"calm", @"Opened@odata.type": @"#DateTimeOffset", @"Opened": @"2026-01-02T03:04:05Z",
+                                          @"Weight@odata.type": @"#Decimal", @"Weight": @"1.5", @"Visits": @3 }];
+    XCTAssertTrue(r.status < 300, @"%@: %ld %@", storeType, (long)r.status, r.text);
+    XCTAssertNotEqualObjects([self get:@"Categories(1)"].headers[@"ETag"], before, @"a change of them is a change of the entity");
+    XCTAssertTrue(([self send:@"PATCH" path:@"Categories(2)" headers:nil body:@{ @"Mood": @"hot", @"Visits": @5 }].status < 300));
+
+    // Kept in the store, typed.
+    NSManagedObjectContext *context = [[NSManagedObjectContext alloc] init];
+    context.persistentStoreCoordinator = _coordinator;
+    NSFetchRequest *fetch = [NSFetchRequest fetchRequestWithEntityName:@"Category"];
+    fetch.predicate = [NSPredicate predicateWithFormat:@"id == 1"];
+    NSDictionary *kept = [[[context executeFetchRequest:fetch error:NULL] firstObject] valueForKey:@"extras"];
+    XCTAssertTrue([kept[@"Opened"] isKindOfClass:[NSDate class]], @"%@: %@", storeType, kept);
+    XCTAssertEqualObjects(kept[@"Weight"], [NSDecimalNumber decimalNumberWithString:@"1.5"]);
+    NSDictionary *beverages = [self get:@"Categories(1)"].json;
+    XCTAssertEqualObjects(beverages[@"Mood"], @"calm");
+    XCTAssertEqualObjects(beverages[@"Opened"], @"2026-01-02T03:04:05Z");
+    XCTAssertEqualObjects(beverages[@"Opened@odata.type"], @"#DateTimeOffset");
+    XCTAssertNil(beverages[@"Extras"]);
+
+    // Filtered by, here: every row read, then filtered, ordered and paged.
+    NSArray *(^names)(NSString *) = ^NSArray *(NSString *path) {
+      OISServiceResponse *answer = [self get:path];
+      XCTAssertEqual(answer.status, 200, @"%@ %@: %@", storeType, path, answer.text);
+      return [answer.json[@"value"] valueForKey:@"CategoryName"];
+    };
+    XCTAssertEqualObjects(names(@"Categories?$filter=Mood eq 'calm'"), @[ @"Beverages" ]);
+    XCTAssertEqualObjects(names(@"Categories?$filter=Visits gt 2 and CategoryName ne 'Seafood'&$orderby=CategoryName desc"),
+                          (@[ @"Condiments", @"Beverages" ]));
+    XCTAssertEqualObjects(names(@"Categories?$filter=Mood ne null&$orderby=CategoryName&$top=1"), @[ @"Beverages" ]);
+    XCTAssertEqualObjects([self get:@"Categories?$filter=Visits ge 3&$count=true&$top=1"].json[@"@odata.count"], @2);
+    XCTAssertEqualObjects([self get:@"Categories/$count?$filter=Mood eq 'hot'"].text, @"1");
+    XCTAssertEqualObjects(names(@"Categories?$apply=filter(Mood eq 'hot')"), @[ @"Condiments" ]);
+    NSArray *expanded = [[self get:@"Products?$filter=ProductID eq 1&$expand=Category($filter=Mood eq 'calm')"].json[@"value"] valueForKeyPath:@"Category.CategoryName"];
+    XCTAssertEqualObjects(expanded, @[ @"Beverages" ]);
+    NSString *plan = [self get:@"$explain/Categories?$filter=Mood eq 'calm' and CategoryName ne 'Seafood'"].json[@"physical"];
+    NSRange here = [plan rangeOfString:@"filter(Mood eq 'calm')"], store = [plan rangeOfString:@"CategoryName ne 'Seafood'"];
+    XCTAssertTrue(here.location != NSNotFound && store.location != NSNotFound && store.location > here.location,
+                  @"the dynamic part here, over the store's scan with the rest: %@", plan);
+
+    // null removes one; a PUT replaces them all.
+    XCTAssertTrue(([self send:@"PATCH" path:@"Categories(2)" headers:nil body:@{ @"Mood": [NSNull null] }].status < 300));
+    NSDictionary *condiments = [self get:@"Categories(2)"].json;
+    XCTAssertNil(condiments[@"Mood"]);
+    XCTAssertEqualObjects(condiments[@"Visits"], @5);
+    XCTAssertTrue(([self send:@"PUT" path:@"Categories(1)" headers:nil body:@{ @"CategoryName": @"Beverages" }].status < 300));
+    XCTAssertNil([self get:@"Categories(1)"].json[@"Mood"], @"%@", storeType);
+  }
 }
 
 // Nothing is written but by the application's actions.
@@ -5373,8 +5720,14 @@ static NSDate *OISDay(NSString *day)
 // key kept in a deletion's tombstone: its sets' changes can be followed.
 - (void)serveTrackedCatalog
 {
+  [self serveTrackedCatalogWith:nil];
+}
+
+- (void)serveTrackedCatalogWith:(void (^)(NSManagedObjectModel *model))change
+{
   // A copy: the one loaded may already be in use, and so immutable.
   NSManagedObjectModel *model = [OISCatalogModel() copy];
+  if (change) change(model);
   for (NSEntityDescription *entity in model.entities) {
     for (NSAttributeDescription *attribute in entity.attributesByName.allValues) attribute.preservesValueInHistoryOnDeletion = YES;
   }

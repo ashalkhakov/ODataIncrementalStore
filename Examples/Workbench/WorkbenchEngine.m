@@ -209,7 +209,30 @@ NSManagedObjectModel *WorkbenchBuiltInModel(NSURL *catalogURL)
   seller.inverseRelationship = sales;
   organization.properties = [organization.properties arrayByAddingObjectsFromArray:@[ superordinate, subordinates, sales ]];
   sale.properties = [sale.properties arrayByAddingObject:seller];
-  NSArray *served = [model.entities arrayByAddingObjectsFromArray:@[ budget, picture, organization, sale ]];
+  // Equipment at the locations: each kind has properties of its own (a
+  // forklift's load capacity, a freezer's temperature, a scale's
+  // calibration), which the model does not declare. An open type, its
+  // dynamic properties kept in a bag, a Transformable the service keeps
+  // them in by default: filtered by, it is filtered here, not in SQLite.
+  NSAttributeDescription *bag = [[NSAttributeDescription alloc] init];
+  bag.name = @"dynamicProperties";
+  bag.attributeType = NSTransformableAttributeType;
+  bag.valueTransformerName = @"NSSecureUnarchiveFromData";
+  bag.attributeValueClassName = @"NSDictionary";
+  bag.optional = YES;
+  bag.userInfo = @{ @"OData.dynamicProperties": @"YES" };
+  NSEntityDescription *equipment = WBEntity(@"EquipmentUnit", @"EquipmentUnits", nil, @[
+    WBAttribute(@"id", NSInteger32AttributeType, @"UnitID", NO, @{ @"OData.key": @"YES" }),
+    WBAttribute(@"name", NSStringAttributeType, @"Name", NO, nil),
+    WBAttribute(@"kind", NSStringAttributeType, @"Kind", NO, nil), bag ]);
+  NSEntityDescription *location = model.entitiesByName[@"Location"];
+  NSRelationshipDescription *site = WBRelationship(@"location", @"Location", location, NO);
+  NSRelationshipDescription *units = WBRelationship(@"equipment", @"Equipment", equipment, YES);
+  site.inverseRelationship = units;
+  units.inverseRelationship = site;
+  equipment.properties = [equipment.properties arrayByAddingObject:site];
+  location.properties = [location.properties arrayByAddingObject:units];
+  NSArray *served = [model.entities arrayByAddingObjectsFromArray:@[ budget, picture, organization, sale, equipment ]];
   // The application's own bookkeeping, which the service does not serve:
   // what its actions did. Left out of the configuration it serves.
   NSEntityDescription *audit = WBEntity(@"AuditEntry", @"AuditEntries", nil, @[
@@ -437,6 +460,20 @@ static NSManagedObject *WBInsert(NSManagedObjectContext *context, NSString *enti
       if (row[2] != [NSNull null]) [budget setValue:WBDay(row[2]) forKey:@"to"];
     }
     WBInsert(context, @"Picture", @{ @"id": @1, @"name": @"Swatch", @"content": WBPicturePNG(), @"contentType": @"image/png" });
+    // Equipment, each kind with dynamic properties of its own:
+    // [id, name, kind, location, dynamic properties].
+    NSDecimalNumber *(^decimal)(NSString *) = ^NSDecimalNumber *(NSString *text) { return [NSDecimalNumber decimalNumberWithString:text]; };
+    NSArray *unitRows = @[
+      @[ @1, @"Forklift FL-1", @"Forklift", @1, @{ @"LoadCapacityKg": @2500, @"MastHeightM": decimal(@"4.5"), @"LastService": WBDay(@"2025-11-03") } ],
+      @[ @2, @"Forklift FL-2", @"Forklift", @2, @{ @"LoadCapacityKg": @1800, @"MastHeightM": decimal(@"3.3"), @"LastService": WBDay(@"2026-02-14") } ],
+      @[ @3, @"Freezer CF-1", @"Freezer", @3, @{ @"MinTemperatureC": @-25, @"Refrigerant": @"R-452A", @"AutoDefrost": @YES,
+                                                  @"Alarm": @{ @"High": @-18, @"Low": @-30 } } ],
+      @[ @4, @"Scale SC-1", @"Scale", @2, @{ @"MaxWeightKg": @300, @"Calibrated": WBDay(@"2026-01-10"), @"Certificate": @"PTB-2026-0113" } ],
+    ];
+    for (NSArray *row in unitRows) {
+      WBInsert(context, @"EquipmentUnit", @{ @"id": row[0], @"name": row[1], @"kind": row[2], @"location": locations[row[3]],
+                                             @"dynamicProperties": row[4] });
+    }
     // The sales organizations, each under its superordinate, and their sales.
     NSMutableDictionary *organizations = [NSMutableDictionary dictionary];
     NSArray *organizationRows = @[ @[ @"Sales", @"Corporate Sales", @"" ], @[ @"US", @"US", @"Sales" ], @[ @"US West", @"US West", @"US" ],

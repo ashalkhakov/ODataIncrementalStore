@@ -106,6 +106,7 @@ typedef NS_ENUM(NSInteger, OISWriteMode) {
   NSLock *_lock;
   ODataHistoryLog *_history;        // with NSPersistentHistoryTrackingKey
   NSMutableDictionary *_tracking;   // entity name -> OISTracking, for -fetchRemoteChanges:
+  NSMutableDictionary *_kept;       // object ID -> property name -> what the service does not serve (OData.served NO), as saved
 }
 
 + (NSString *)storeType
@@ -270,8 +271,16 @@ typedef NS_ENUM(NSInteger, OISWriteMode) {
     // A save may move members from one collection to another.
     [_lock lock];
     [_members removeAllObjects];
+    NSDictionary *kept = [[NSDictionary alloc] initWithDictionary:_kept ?: @{} copyItems:YES];
     [_lock unlock];
-    return [self executeSave:(NSSaveChangesRequest *)request error:error];
+    [self keepWhatIsNotServedOf:(NSSaveChangesRequest *)request];
+    id saved = [self executeSave:(NSSaveChangesRequest *)request error:error];
+    if (!saved) {
+      [_lock lock];
+      _kept = [kept mutableCopy];
+      [_lock unlock];
+    }
+    return saved;
   }
   if (request.requestType == NSBatchUpdateRequestType && [request isKindOfClass:[NSBatchUpdateRequest class]]) {
     return [self executeBatchUpdate:(NSBatchUpdateRequest *)request context:context error:error];
@@ -314,12 +323,68 @@ typedef NS_ENUM(NSInteger, OISWriteMode) {
   return [self cacheNodeForObjectID:objectID entity:objectID.entity payload:json error:error];
 }
 
+// What a save gives properties the service does not serve (OData.served
+// NO): kept here, as saved, for as long as the store is open -- an
+// attribute's value, a relationship's object IDs.
+- (void)keepWhatIsNotServedOf:(NSSaveChangesRequest *)save
+{
+  NSMutableSet *changed = [NSMutableSet setWithSet:save.insertedObjects ?: [NSSet set]];
+  [changed unionSet:save.updatedObjects ?: [NSSet set]];
+  for (NSManagedObject *object in changed) {
+    for (NSPropertyDescription *property in object.entity.properties) {
+      if (property.isTransient || [_mapper servesProperty:property]) continue;
+      id value = [object valueForKey:property.name];
+      if ([property isKindOfClass:[NSRelationshipDescription class]]) {
+        value = [(NSRelationshipDescription *)property isToMany] ? [[value allObjects] valueForKey:@"objectID"] : [value objectID];
+      }
+      [_lock lock];
+      if (!_kept) _kept = [NSMutableDictionary dictionary];
+      if (!_kept[object.objectID]) _kept[object.objectID] = [NSMutableDictionary dictionary];
+      _kept[object.objectID][property.name] = value ?: [NSNull null];
+      [_lock unlock];
+    }
+    [self keepInCachedNodeOf:object.objectID];
+  }
+  for (NSManagedObject *object in save.deletedObjects) {
+    [_lock lock];
+    [_kept removeObjectForKey:object.objectID];
+    [_lock unlock];
+  }
+}
+
+// The row kept for an object, with what it keeps of its own: a save that
+// changes only that sends nothing, and the row would say otherwise.
+- (void)keepInCachedNodeOf:(NSManagedObjectID *)objectID
+{
+  [_lock lock];
+  NSIncrementalStoreNode *node = _nodeCache[objectID];
+  NSDictionary *kept = [_kept[objectID] copy];
+  [_lock unlock];
+  if (!node || !kept.count) return;
+  NSMutableDictionary *values = [NSMutableDictionary dictionary];
+  for (NSPropertyDescription *property in objectID.entity.properties) {
+    if ([property isKindOfClass:[NSRelationshipDescription class]] && [(NSRelationshipDescription *)property isToMany]) continue;
+    id value = kept[property.name] ?: [node valueForPropertyDescription:property];
+    if (!value || (value == [NSNull null] && [property isKindOfClass:[NSAttributeDescription class]])) continue;
+    values[property.name] = value;
+  }
+  [node updateWithValues:values version:node.version];
+}
+
 - (id)newValueForRelationship:(NSRelationshipDescription *)relationship
               forObjectWithID:(NSManagedObjectID *)objectID
                   withContext:(NSManagedObjectContext *)context
                         error:(NSError **)error
 {
   (void)context;
+  if (![_mapper servesProperty:relationship]) {
+    // Not the service's: what was saved here, if anything.
+    [_lock lock];
+    id kept = _kept[objectID][relationship.name];
+    [_lock unlock];
+    if (relationship.isToMany) return [kept isKindOfClass:[NSArray class]] ? [kept mutableCopy] : [NSMutableArray array];
+    return kept ?: [NSNull null];
+  }
   ODataResourceIdentifier *identifier = [self identifierFromObjectID:objectID error:error];
   if (!identifier) return nil;
   NSURL *url = [_builder URLForIdentifier:identifier relationship:relationship error:error];
@@ -2012,9 +2077,11 @@ static BOOL OISSameRow(NSDictionary *a, NSDictionary *b)
 // - to-many with no inverse: always.
 - (BOOL)writesRelationship:(NSRelationshipDescription *)rel
 {
+  if (![_mapper servesProperty:rel]) return NO;
   if (!rel.isToMany) return YES;
   NSRelationshipDescription *inverse = rel.inverseRelationship;
-  if (!inverse) return YES;
+  // An inverse the service does not serve cannot write the link: this does.
+  if (!inverse || ![_mapper servesProperty:inverse]) return YES;
   if (!inverse.isToMany) return NO;
   NSComparisonResult order = [rel.entity.name compare:inverse.entity.name];
   if (order == NSOrderedSame) order = [rel.name compare:inverse.name];
@@ -2103,6 +2170,7 @@ static NSDictionary *OISDynamicChanges(id old, id now)
     for (NSAttributeDescription *attr in [_mapper keyAttributesForEntity:entity]) [keyNames addObject:attr.name];
     for (NSAttributeDescription *attr in entity.attributesByName.allValues) {
       NSString *name = attr.name;
+      if (attr.isTransient || ![_mapper servesProperty:attr]) continue;  // not the service's
       id value = [object primitiveValueForKey:name];
       if ([keyNames containsObject:name]) {
         // A key goes in a POST only when the client chose it; the service
@@ -2410,6 +2478,15 @@ static NSDictionary *OISDynamicChanges(id old, id now)
       }
       [_lock unlock];
     }
+  }
+  // What the service does not serve: as it was saved here, else nothing.
+  [_lock lock];
+  NSDictionary *kept = [_kept[objectID] copy];
+  [_lock unlock];
+  for (NSString *name in kept) {
+    NSPropertyDescription *property = entity.propertiesByName[name];
+    if ([property isKindOfClass:[NSRelationshipDescription class]] && [(NSRelationshipDescription *)property isToMany]) continue;
+    if (kept[name] != [NSNull null] || [property isKindOfClass:[NSRelationshipDescription class]]) values[name] = kept[name];
   }
   [self rememberETag:payload[@"@odata.etag"] forObjectID:objectID];
   [self rememberStreamsIn:payload objectID:objectID];
@@ -2774,6 +2851,7 @@ static NSDictionary *OISDynamicChanges(id old, id now)
   [_versions removeObjectForKey:objectID];
   [_deferred removeObjectForKey:objectID];
   [_editLinks removeObjectForKey:objectID];
+  [_kept removeObjectForKey:objectID];
   [_lock unlock];
 }
 

@@ -173,6 +173,7 @@ static NSArray<ODataSelectItem *> *OISSelectItems(NSArray<NSString *> *paths)
   for (NSAttributeDescription *attribute in entity.attributesByName.allValues) {
     if (attribute.isTransient) continue;
     if ([self.mapper attributeHoldsDynamicProperties:attribute]) return NO;
+    if (![self.mapper servesProperty:attribute]) continue;
     if (cast && entity.superentity.attributesByName[attribute.name]) continue;  // the base type's, selected already
     NSString *wire = [self.mapper propertyForAttribute:attribute];
     if (![self.mapper.schema property:wire ofEntityType:type]) continue;
@@ -400,6 +401,12 @@ static ODataSearchExpression *OISAllOf(NSArray<ODataSearchExpression *> *searche
                        ? [(NSExpressionDescription *)prop expression].keyPath : nil;
       if ([prop isKindOfClass:[NSAttributeDescription class]]) path = [prop name];
       NSString *first = [path componentsSeparatedByString:@"."].firstObject;
+      NSPropertyDescription *named = first ? entity.propertiesByName[first] : nil;
+      if (named && ![self.mapper servesProperty:named]) {
+        if (error) *error = OISError(ODataIncrementalStoreErrorUnsupportedRequest,
+                                     [NSString stringWithFormat:@"%@.%@ is not the service's (OData.served NO): no dictionary result has it", entity.name, first]);
+        return nil;
+      }
       if (first && [self.mapper attributeHoldsDynamicProperties:entity.attributesByName[first]]) {
         // One dynamic property, by its name.
         if ([path isEqualToString:first]) all = YES;
@@ -644,6 +651,7 @@ static NSString *OISGroupedLiteral(id value)
   for (NSString *path in paths) {
     NSArray *parts = [path componentsSeparatedByString:@"."];
     NSRelationshipDescription *rel = entity.relationshipsByName[parts.firstObject];
+    if (rel && ![self.mapper servesProperty:rel]) continue;  // kept by the store, not read
     NSString *wire = rel ? [self.mapper propertyForRelationship:rel] : [self.mapper wireName:parts.firstObject];
     if (![self expands:wire entity:entity]) continue;
     if (!children[wire]) {

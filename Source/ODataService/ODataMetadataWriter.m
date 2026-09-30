@@ -121,6 +121,8 @@ static BOOL OISYes(id value)
 - (NSString *)typeNameForAttribute:(NSAttributeDescription *)attribute
 {
   if (attribute.isTransient) return nil;
+  if (![self.mapper servesProperty:attribute]) return nil;
+  if ([self.mapper attributeHoldsDynamicProperties:attribute]) return nil;  // its entries are properties, it is none
   if ([self isPartOfStream:attribute]) return nil;
   if ([self isStreamAttribute:attribute]) return @"Edm.Stream";
   NSString *declared = attribute.userInfo[ODataUserInfoType];
@@ -178,7 +180,7 @@ static BOOL OISYes(id value)
   NSDictionary *inherited = entity.superentity.propertiesByName ?: @{};
   NSMutableArray *declared = [NSMutableArray array];
   for (NSPropertyDescription *property in entity.properties) {
-    if (!inherited[property.name]) [declared addObject:property];
+    if (!inherited[property.name] && [self.mapper servesProperty:property]) [declared addObject:property];
   }
   return declared;
 }
@@ -411,7 +413,11 @@ static void OISAddChildren(NSXMLElement *parent, NSArray<NSXMLElement *> *childr
   id currency = attribute.userInfo[ODataUserInfoISOCurrency];
   if ([currency isKindOfClass:[NSString class]]) {
     NSAttributeDescription *holder = attribute.entity.attributesByName[currency];
-    annotations[@"Org.OData.Measures.V1.ISOCurrency"] = holder ? @{ @"$Path": [self.mapper propertyForAttribute:holder] } : currency;
+    if (holder && ![self.mapper servesProperty:holder]) {
+      [_problems addObject:[NSString stringWithFormat:@"%@.%@: its currency is in %@, which is not served", attribute.entity.name, attribute.name, holder.name]];
+    } else {
+      annotations[@"Org.OData.Measures.V1.ISOCurrency"] = holder ? @{ @"$Path": [self.mapper propertyForAttribute:holder] } : currency;
+    }
   }
   return annotations;
 }
@@ -464,6 +470,9 @@ static void OISAddChildren(NSXMLElement *parent, NSArray<NSXMLElement *> *childr
   if (key.count) {
     NSXMLElement *keyElement = OISElement(@"Key", nil);
     for (NSAttributeDescription *attr in key) {
+      if (![self.mapper servesProperty:attr]) {
+        [_problems addObject:[NSString stringWithFormat:@"%@.%@ is the key, which OData.served cannot leave out", entity.name, attr.name]];
+      }
       [keyElement addChild:OISElement(@"PropertyRef", @[ @"Name", [self.mapper propertyForAttribute:attr] ])];
     }
     [type addChild:keyElement];
@@ -473,7 +482,7 @@ static void OISAddChildren(NSXMLElement *parent, NSArray<NSXMLElement *> *childr
       NSAttributeDescription *attr = (NSAttributeDescription *)property;
       NSString *edm = [self typeNameForAttribute:attr];
       if (!edm) {
-        if (!attr.isTransient && ![self isPartOfStream:attr]) {
+        if (!attr.isTransient && ![self isPartOfStream:attr] && ![self.mapper attributeHoldsDynamicProperties:attr]) {
           [_problems addObject:[NSString stringWithFormat:@"%@.%@ has no Edm type: give it an OData.type", entity.name, attr.name]];
         }
         continue;
@@ -501,7 +510,7 @@ static void OISAddChildren(NSXMLElement *parent, NSArray<NSXMLElement *> *childr
       NSString *navigationType = rel.isToMany ? [NSString stringWithFormat:@"Collection(%@)", targetType] : targetType;
       NSXMLElement *navigation = OISElement(@"NavigationProperty", @[ @"Name", [self.mapper propertyForRelationship:rel], @"Type", navigationType ]);
       if (!rel.isToMany && !rel.isOptional) [navigation addAttribute:[NSXMLNode attributeWithName:@"Nullable" stringValue:@"false"]];
-      if (rel.inverseRelationship) {
+      if (rel.inverseRelationship && [self.mapper servesProperty:rel.inverseRelationship]) {
         [navigation addAttribute:[NSXMLNode attributeWithName:@"Partner" stringValue:[self.mapper propertyForRelationship:rel.inverseRelationship]]];
       }
       OISAddChildren(navigation, [self annotations:[self annotationsOfRelationship:rel]]);
@@ -589,7 +598,8 @@ static void OISAddChildren(NSXMLElement *parent, NSArray<NSXMLElement *> *childr
       if (record.count) annotations[[NSString stringWithFormat:@"Org.OData.Capabilities.V1.%@Restrictions", restriction]] = record;
     }
     NSAttributeDescription *concurrency = self.concurrencyAttributes[entity.name];
-    if (concurrency) {
+    // One not served still makes the ETag; the annotation names none.
+    if (concurrency && [self.mapper servesProperty:concurrency]) {
       annotations[@"Org.OData.Core.V1.OptimisticConcurrency"] = @[ @{ @"$PropertyPath": [self.mapper propertyForAttribute:concurrency] } ];
     }
     [annotations addEntriesFromDictionary:self.entitySetAnnotations[setName] ?: @{}];

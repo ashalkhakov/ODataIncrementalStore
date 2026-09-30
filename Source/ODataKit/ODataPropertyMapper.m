@@ -21,6 +21,7 @@ NSString * const ODataUserInfoPeriodEnd = @"OData.periodEnd";
 NSString * const ODataUserInfoObjectKey = @"OData.objectKey";
 NSString * const ODataUserInfoClosedClosedPeriods = @"OData.closedClosedPeriods";
 NSString * const ODataUserInfoDynamicProperties = @"OData.dynamicProperties";
+NSString * const ODataUserInfoServed = @"OData.served";
 
 @implementation ODataPropertyMapper
 
@@ -418,15 +419,26 @@ static NSError *OISViolation(NSManagedObject *object, NSString *key, NSString *m
   return root && [self.servedEntityNames containsObject:root.name];
 }
 
+- (BOOL)servesProperty:(NSPropertyDescription *)property
+{
+  // A model's userInfo holds strings: NO, false or 0.
+  id served = property.userInfo[ODataUserInfoServed];
+  if ([served respondsToSelector:@selector(boolValue)] && ![served boolValue]) return NO;
+  if ([property isKindOfClass:[NSRelationshipDescription class]]) {
+    return [self servesRelationship:(NSRelationshipDescription *)property];
+  }
+  return YES;
+}
+
 - (NSPropertyDescription *)propertyForWireName:(NSString *)name entity:(NSEntityDescription *)entity
 {
   for (NSPropertyDescription *property in entity.properties) {
     NSString *wire = nil;
+    if (![self servesProperty:property]) continue;
     if ([property isKindOfClass:[NSAttributeDescription class]]) {
       if ([self attributeHoldsDynamicProperties:(NSAttributeDescription *)property]) continue;
       wire = [self propertyForAttribute:(NSAttributeDescription *)property];
     } else if ([property isKindOfClass:[NSRelationshipDescription class]]) {
-      if (![self servesRelationship:(NSRelationshipDescription *)property]) continue;
       wire = [self propertyForRelationship:(NSRelationshipDescription *)property];
     }
     if ([wire isEqualToString:name]) return property;
@@ -623,7 +635,7 @@ static NSString *OISJoinedSorted(NSSet *names)
     NSEntityDescription *parent = entity.superentity;
     for (NSString *name in [entity.attributesByName.allKeys sortedArrayUsingSelector:@selector(compare:)]) {
       NSAttributeDescription *attr = entity.attributesByName[name];
-      if (attr.isTransient || parent.attributesByName[name]) continue;
+      if (attr.isTransient || parent.attributesByName[name] || ![self servesProperty:attr]) continue;
       if ([self attributeHoldsDynamicProperties:attr]) {
         if (![self.schema entityTypeIsOpen:type]) {
           [problems addObject:[NSString stringWithFormat:@"%@.%@: dynamic properties, but %@ is not an open type", entity.name, name, type.qualifiedName]];
@@ -651,7 +663,7 @@ static NSString *OISJoinedSorted(NSSet *names)
 
     for (NSString *name in [entity.relationshipsByName.allKeys sortedArrayUsingSelector:@selector(compare:)]) {
       NSRelationshipDescription *rel = entity.relationshipsByName[name];
-      if (parent.relationshipsByName[name]) continue;
+      if (parent.relationshipsByName[name] || ![self servesProperty:rel]) continue;
       // One out of the configuration leads to what the service does not serve.
       if (configuration && ![checked containsObject:rel.destinationEntity]) continue;
       NSString *wire = [self propertyForRelationship:rel];

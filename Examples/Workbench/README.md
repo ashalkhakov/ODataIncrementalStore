@@ -13,7 +13,12 @@ Pick a service at the top:
   suppliers, stock at locations), seeded with a few of Northwind's rows,
   and what the Catalog does not show (`WorkbenchBuiltInModel`): products
   with a version (ETags, so conflicts), budgets over time (application
-  time), pictures (a media entity), and the Data Aggregation spec's sales
+  time), pictures (a media entity), equipment at the locations (an open
+  type: a forklift's load capacity, a freezer's temperature, a scale's
+  calibration, each kind's own dynamic properties, which the service
+  keeps in a Transformable bag; a filter on one is evaluated by the
+  service over what the store reads with the rest, as Explain shows), and
+  the Data Aggregation spec's sales
   organizations, a recursive hierarchy (`SalesOrgHierarchy`), with their
   sales. Its store is SQLite with
   persistent history, in a temporary file, so its sets have delta links.

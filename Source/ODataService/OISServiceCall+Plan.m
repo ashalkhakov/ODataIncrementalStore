@@ -25,7 +25,71 @@ static NSManagedObject *OISObjectOfRow(id row)
   return [row isKindOfClass:[NSManagedObject class]] ? row : nil;
 }
 
+// Whether an expression names, from $it, a property the entity does not
+// declare (nor $compute): an open type's dynamic property. Not inside a
+// lambda, whose names are its variable's.
+static BOOL OISNamesUndeclared(ODataExpression *e, NSEntityDescription *entity, ODataPropertyMapper *mapper, NSDictionary *computed)
+{
+  if (!e) return NO;
+  switch (e.kind) {
+    case ODataExpressionMember:
+      if (e.operand) return OISNamesUndeclared(e.operand, entity, mapper, computed);
+      return !computed[e.name] && ![mapper propertyForWireName:e.name entity:entity];
+    case ODataExpressionUnary:
+    case ODataExpressionCast:
+    case ODataExpressionCount:
+    case ODataExpressionLambda:
+      return OISNamesUndeclared(e.operand, entity, mapper, computed);
+    case ODataExpressionBinary:
+      return OISNamesUndeclared(e.left, entity, mapper, computed) || OISNamesUndeclared(e.right, entity, mapper, computed);
+    case ODataExpressionCall:
+    case ODataExpressionList:
+      for (ODataExpression *argument in e.arguments) if (OISNamesUndeclared(argument, entity, mapper, computed)) return YES;
+      for (ODataExpression *argument in e.namedArguments.allValues) if (OISNamesUndeclared(argument, entity, mapper, computed)) return YES;
+      return NO;
+    default:
+      return NO;
+  }
+}
+
+// A filter's parts, where it is a conjunction: each may go its own way.
+static void OISAddConjuncts(ODataExpression *e, NSMutableArray *into)
+{
+  if (e.kind == ODataExpressionBinary && [e.name isEqualToString:@"and"]) {
+    OISAddConjuncts(e.left, into);
+    OISAddConjuncts(e.right, into);
+  } else if (e) {
+    [into addObject:e];
+  }
+}
+
 @implementation OISServiceCall (Plan)
+
+// Filters split: what the store evaluates, and what is evaluated here
+// (conjuncts naming dynamic properties it cannot filter by). NO when all
+// go to the store.
+- (BOOL)splitFilters:(NSArray<ODataExpression *> *)filters entity:(NSEntityDescription *)entity computed:(NSDictionary *)computed
+               store:(NSMutableArray *)store here:(NSMutableArray *)here
+{
+  for (ODataExpression *filter in filters) {
+    NSMutableArray *parts = [NSMutableArray array];
+    OISAddConjuncts(filter, parts);
+    for (ODataExpression *part in parts) {
+      [[self filterIsForMemory:part entity:entity computed:computed] ? here : store addObject:part];
+    }
+  }
+  return here.count > 0;
+}
+
+// Whether a filter is evaluated here rather than by the store: it names a
+// dynamic property the store cannot filter by (kept in a Transformable,
+// see -[ODataEntitySetHandler storeFiltersDynamicProperties]).
+- (BOOL)filterIsForMemory:(ODataExpression *)filter entity:(NSEntityDescription *)entity computed:(NSDictionary *)computed
+{
+  ODataEntitySetHandler *handler = [self.service handlerForEntity:entity];
+  if (!filter || !handler.isOpenType || handler.storeFiltersDynamicProperties) return NO;
+  return OISNamesUndeclared(filter, entity, self.mapper, computed ?: @{});
+}
 
 #pragma mark - Planning
 
@@ -205,6 +269,10 @@ static void OISAddFilters(NSArray<ODataApplyTransformation *> *transformations, 
   scan.time = options.temporalText.count ? options : nil;
   scan.computed = [self computedNamesOf:options];
   scan.keyOrder = YES;
+  // A filter the store cannot evaluate: the rows the rest allows, filtered here.
+  NSMutableArray *storeFilters = [NSMutableArray array], *hereFilters = [NSMutableArray array];
+  BOOL memory = [self splitFilters:filters entity:self.entity computed:scan.computed store:storeFilters here:hereFilters];
+  if (memory) scan.filters = storeFilters;
   NSMutableArray *prefetch = [NSMutableArray array];
   for (ODataExpandItem *item in options.expand) {
     if (item.path.count != 1) continue;
@@ -292,16 +360,28 @@ static void OISAddFilters(NSArray<ODataApplyTransformation *> *transformations, 
   if (limit == 0) fetchLimit = 1;
 
   OISPlanNode *root = scan;
-  if (!here) {
+  OISPlanNode *filtered = scan;
+  if (!here && !memory) {
     scan.order = options.orderBy;
     scan.skip = offset ? @(offset) : nil;
     scan.top = fetchLimit ? @(fetchLimit) : nil;
     scan.pageSize = limit == NSUIntegerMax ? 0 : limit;
   } else {
-    // Every row, sorted and paged here: a store sorts by key paths only.
+    // Every row, filtered, sorted and paged here: a store sorts by key
+    // paths only, and filters by what it keeps.
     scan.limit = self.service.maxRowsInMemory;
-    OISPlanNode *sort = [OISPlanNode operator:OISPlanApply input:scan];
-    sort.transformation = [ODataApplyTransformation orderByItems:options.orderBy];
+    if (memory) {
+      for (ODataExpression *filter in hereFilters) {
+        OISPlanNode *select = [OISPlanNode operator:OISPlanApply input:filtered];
+        select.transformation = [ODataApplyTransformation filterWithExpression:filter];
+        filtered = select;
+      }
+    }
+    OISPlanNode *sort = filtered;
+    if (options.orderBy.count) {
+      sort = [OISPlanNode operator:OISPlanApply input:filtered];
+      sort.transformation = [ODataApplyTransformation orderByItems:options.orderBy];
+    }
     OISPlanNode *paged = [OISPlanNode operator:OISPlanLimit input:sort];
     paged.skip = offset ? @(offset) : nil;
     paged.top = fetchLimit ? @(fetchLimit) : nil;
@@ -309,7 +389,9 @@ static void OISAddFilters(NSArray<ODataApplyTransformation *> *transformations, 
     root = paged;
   }
   plan.root = root;
-  if (options.includeCount.boolValue) {
+  if (options.includeCount.boolValue && memory) {
+    plan.count = [OISPlanNode operator:OISPlanCount input:filtered];
+  } else if (options.includeCount.boolValue) {
     OISPlanNode *count = [OISPlanNode operator:OISPlanStoreCount input:nil];
     count.entity = self.entity;
     count.fixed = fixed;
@@ -354,7 +436,8 @@ static void OISAddFilters(NSArray<ODataApplyTransformation *> *transformations, 
   NSUInteger first = 0;
   NSMutableArray *filters = [NSMutableArray array];
   for (; first < options.apply.count && ((ODataApplyTransformation *)options.apply[first]).kind == ODataApplyFilter
-         && ![((ODataApplyTransformation *)options.apply[first]).filter aggregatesOfThese].count; first++) {
+         && ![((ODataApplyTransformation *)options.apply[first]).filter aggregatesOfThese].count
+         && ![self filterIsForMemory:((ODataApplyTransformation *)options.apply[first]).filter entity:self.entity computed:nil]; first++) {
     [filters addObject:((ODataApplyTransformation *)options.apply[first]).filter];
   }
   scan.filters = filters;
@@ -504,6 +587,27 @@ static NSSet<NSString *> *OISJoinAliases(ODataQueryOptions *options)
   count.time = options.temporalText.count ? options : nil;
   count.computed = [self computedNamesOf:options];
   plan.count = count;
+  NSMutableArray *storeFilters = [NSMutableArray array], *hereFilters = [NSMutableArray array];
+  if ([self splitFilters:filters entity:self.entity computed:count.computed store:storeFilters here:hereFilters]) {
+    // A filter the store cannot evaluate: the rows the rest allows,
+    // filtered and counted here.
+    OISPlanNode *scan = [OISPlanNode operator:OISPlanStoreScan input:nil];
+    scan.entity = self.entity;
+    scan.fixed = fixed;
+    scan.fixedSummary = summary;
+    scan.filters = storeFilters;
+    scan.search = count.search;
+    scan.time = count.time;
+    scan.computed = count.computed;
+    scan.limit = self.service.maxRowsInMemory;
+    OISPlanNode *node = scan;
+    for (ODataExpression *filter in hereFilters) {
+      OISPlanNode *select = [OISPlanNode operator:OISPlanApply input:node];
+      select.transformation = [ODataApplyTransformation filterWithExpression:filter];
+      node = select;
+    }
+    plan.count = [OISPlanNode operator:OISPlanCount input:node];
+  }
   plan.root = [OISPlanNode operator:OISPlanObjects input:nil];
   plan.root.objects = @[];
   return plan;
@@ -1093,6 +1197,7 @@ static BOOL OISNestsPerParent(ODataQueryOptions *options)
     NSMutableArray *relationships = [NSMutableArray array];
     if (item.isStar) {
       for (NSRelationshipDescription *relationship in object.entity.relationshipsByName.allValues) {
+        if (![self.mapper servesProperty:relationship]) continue;
         if ([self.service handlerForEntity:relationship.destinationEntity]) [relationships addObject:relationship];
       }
     } else {
@@ -1128,7 +1233,7 @@ static BOOL OISNestsPerParent(ODataQueryOptions *options)
     NSEntityDescription *destination = relationship.destinationEntity;
     ODataEntitySetHandler *handler = [self.service handlerForEntity:destination];
     NSPredicate *visible = [handler predicateForVisibleObjectsInRequest:self.request];
-    BOOL perParent = OISNestsPerParent(options);
+    BOOL perParent = OISNestsPerParent(options) || [self filterIsForMemory:options.filter entity:destination computed:[self computedNamesOf:options]];
     NSString *key = [NSString stringWithFormat:@"%p/%@/%ld", (void *)nest, relationship.name, (long)depth];
 
     // What the store does: visibility, and unless each parent needs its
@@ -1339,6 +1444,7 @@ static BOOL OISNestsPerParent(ODataQueryOptions *options)
     NSMutableArray *destinations = [NSMutableArray array];
     if (nest.item.isStar) {
       for (NSRelationshipDescription *relationship in nest.entity.relationshipsByName.allValues) {
+        if (![self.mapper servesProperty:relationship]) continue;
         if ([self.service handlerForEntity:relationship.destinationEntity]) [destinations addObject:relationship.destinationEntity];
       }
     } else {

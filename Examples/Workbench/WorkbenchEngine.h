@@ -19,7 +19,8 @@ NS_ASSUME_NONNULL_BEGIN
 // what it does not show. Products have a version (ETags, and so
 // conflicts); Budgets have application time (a category's budget over
 // time: $at, $from and $to, Temporal.Update and the rest); Pictures are
-// media entities (Download, Upload). Keys are kept in a deletion's
+// media entities (Download, Upload); EquipmentUnits are an open type,
+// each kind with dynamic properties of its own. Keys are kept in a deletion's
 // tombstone, so its sets' changes can be followed by delta links.
 FOUNDATION_EXPORT NSManagedObjectModel * _Nullable WorkbenchBuiltInModel(NSURL *catalogURL);
 // The configuration of it the built-in service serves (and the client's
