@@ -292,6 +292,19 @@ static NSArray *OISFetch(NSManagedObjectContext *context, NSFetchRequest *fetchR
   return self;
 }
 
+- (NSDictionary<NSString *, id> *)dynamicPropertiesOfObject:(NSManagedObject *)object request:(ODataRequest *)request
+{
+  return nil;
+}
+
+- (NSPredicate *)predicateForDynamicProperty:(NSArray<NSString *> *)path
+                                    operator:(NSPredicateOperatorType)type
+                                       value:(id)value
+                                       error:(NSError **)error
+{
+  return nil;
+}
+
 - (BOOL)allowsInsert
 {
   return _allowsInsert && !self.service.isReadOnly;
@@ -1729,6 +1742,7 @@ static NSUInteger OISExpandDepth(ODataQueryOptions *options)
   }
 
   NSArray<NSAttributeDescription *> *attributes = [self servedAttributesOf:object.entity];
+  ODataEntitySetHandler *handler = [self.service handlerForEntity:object.entity];
   BOOL star = !options.select.count;
   NSMutableSet *selected = [NSMutableSet set];
   for (ODataSelectItem *item in options.select) {
@@ -1756,6 +1770,10 @@ static NSUInteger OISExpandDepth(ODataQueryOptions *options)
       continue;
     }
     NSPropertyDescription *property = [self.mapper propertyForWireName:item.path[0] entity:object.entity];
+    if (!property && handler.isOpenType) {
+      [selected addObject:item.path[0]];  // a dynamic property's
+      continue;
+    }
     if (!property && ![self.mapper propertyForWireName:item.path[0] entity:expected ?: object.entity]) {
       if (error) *error = ODataServiceError(400, [NSString stringWithFormat:@"%@ has no property %@", object.entity.name, item.path[0]]);
       return nil;
@@ -1772,6 +1790,12 @@ static NSUInteger OISExpandDepth(ODataQueryOptions *options)
       continue;
     }
     json[[self.mapper propertyForAttribute:attribute]] = [self.coder JSONForCoreDataValue:[object valueForKey:attribute.name] attribute:attribute];
+  }
+  NSDictionary *dynamic = handler.isOpenType ? [handler dynamicPropertiesOfObject:object request:self.request] : nil;
+  for (NSString *name in dynamic) {
+    if ([name hasPrefix:@"@"] || [self.mapper propertyForWireName:name entity:object.entity]) continue;
+    if (!star && ![selected containsObject:name]) continue;
+    json[name] = [self.coder JSONForValue:dynamic[name] typeName:nil];
   }
   // $compute's values: of the request, or of the expansion.
   for (ODataComputeItem *item in options.compute) {
@@ -4597,6 +4621,13 @@ static NSNumber *OISScalarReturnValue(NSInvocation *invocation, char type)
     self.predicates.entitiesByTypeName = types;
     // What each set's handler, as it is now, lets $filter and $orderby use.
     __weak ODataService *weakService = self;
+    // Dynamic properties, of an open type's entities.
+    self.predicates.dynamicProperty = ^NSPredicate *(NSEntityDescription *entity, NSArray<NSString *> *path,
+                                                     NSPredicateOperatorType type, id value, NSError **error) {
+      ODataEntitySetHandler *handler = [weakService handlerForEntity:entity];
+      if (!handler.isOpenType) return nil;
+      return [handler predicateForDynamicProperty:path operator:type value:value error:error];
+    };
     self.predicates.restrictedProperties = ^NSSet *(NSEntityDescription *entity, BOOL sorting) {
       ODataService *service = weakService;
       ODataEntitySetHandler *handler = [service handlerForEntity:entity];
@@ -4760,12 +4791,17 @@ static NSNumber *OISScalarReturnValue(NSInvocation *invocation, char type)
     NSMutableDictionary *restrictions = [NSMutableDictionary dictionary];
     NSMutableDictionary *setAnnotations = [NSMutableDictionary dictionary];
     NSMutableString *signature = [NSMutableString stringWithString:version];
+    NSMutableSet *open = [NSMutableSet set];
     for (NSString *set in [self.handlers.allKeys sortedArrayUsingSelector:@selector(compare:)]) {
       ODataEntitySetHandler *handler = self.handlers[set];
       NSMutableSet *refused = [NSMutableSet set];
       if (!handler.allowsInsert) [refused addObject:@"Insert"];
       if (!handler.allowsUpdate) [refused addObject:@"Update"];
       if (!handler.allowsDelete) [refused addObject:@"Delete"];
+      if (handler.isOpenType) {
+        [open addObject:OISRootEntity(handler.entity).name];
+        [signature appendFormat:@";%@ open", set];
+      }
       if (refused.count) {
         restrictions[set] = refused;
         [signature appendFormat:@";%@:%@", set, [[refused.allObjects sortedArrayUsingSelector:@selector(compare:)] componentsJoinedByString:@","]];
@@ -4835,6 +4871,7 @@ static NSNumber *OISScalarReturnValue(NSInvocation *invocation, char type)
     if (!xml) {
       self.writer.containerAnnotations = container;
       self.writer.restrictions = restrictions;
+      self.writer.openEntityNames = open;
       self.writer.entitySetAnnotations = setAnnotations;
       xml = [self.writer XMLStringForVersion:version];
       self.metadataByVersion[signature] = xml;

@@ -817,6 +817,22 @@ writes through the application's own means -- another context, or a
 service of the application's -- so every change the model sees is one the
 application made and checked.
 
+Nor need everything it serves be in the model. A handler whose `openType`
+is set serves an open type (`OpenType` in `$metadata`), whose entities
+may have dynamic properties: `-dynamicPropertiesOfObject:request:` gives
+an entity's, written with its declared ones (and named in `$select` as
+they are), and `-predicateForDynamicProperty:operator:value:error:` says
+what `$filter` means by one compared with a value -- `Priority gt 2`, or
+a path under one, `Variables/amount ge 100` -- as a predicate over the
+entity. The predicate is evaluated where the rest of the filter is, by
+the store or in memory, so it is built from what the entity reaches: a
+subquery over rows of the application's own is how values kept apart
+from the entity, a workflow's variables, answer a filter. `ODataKit`'s
+`ODataPredicateBuilder` asks its `dynamicProperty` block for these; the
+service's asks the handler. Only comparisons with a value are handed
+over (and `in`, and the property alone as a condition); sorting by a
+dynamic property, or computing with one, is refused.
+
 Requests map onto fetch requests, the reverse of `ODataQueryBuilder`:
 
 | OData | Core Data |

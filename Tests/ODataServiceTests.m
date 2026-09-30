@@ -578,6 +578,54 @@
 }
 @end
 
+// Categories as an open type: Prices, each product's price by name (as a
+// process's variables would be, rows of their own), and Size, how many
+// products there are.
+@interface OISOpenCategoriesHandler : ODataEntitySetHandler
+@end
+
+@implementation OISOpenCategoriesHandler
+- (instancetype)initWithEntity:(NSEntityDescription *)entity
+{
+  if ((self = [super initWithEntity:entity])) self.openType = YES;
+  return self;
+}
+- (NSDictionary *)dynamicPropertiesOfObject:(NSManagedObject *)object request:(ODataRequest *)request
+{
+  NSMutableDictionary *prices = [NSMutableDictionary dictionary];
+  for (NSManagedObject *product in [object valueForKey:@"products"]) prices[[product valueForKey:@"name"]] = [product valueForKey:@"unitPrice"];
+  return @{ @"Prices": prices, @"Size": @([[object valueForKey:@"products"] count]), @"CategoryName": @"not this" };
+}
+- (NSPredicate *)predicateForDynamicProperty:(NSArray<NSString *> *)path
+                                    operator:(NSPredicateOperatorType)type
+                                       value:(id)value
+                                       error:(NSError **)error
+{
+  if (path.count == 1 && [path[0] isEqualToString:@"Size"]) {
+    return [NSComparisonPredicate predicateWithLeftExpression:[NSExpression expressionForKeyPath:@"products.@count"]
+                                              rightExpression:[NSExpression expressionForConstantValue:value]
+                                                     modifier:NSDirectPredicateModifier type:type options:0];
+  }
+  if (path.count == 2 && [path[0] isEqualToString:@"Prices"]) {
+    NSPredicate *named = [NSComparisonPredicate predicateWithLeftExpression:[NSExpression expressionWithFormat:@"$p.name"]
+                                                            rightExpression:[NSExpression expressionForConstantValue:path[1]]
+                                                                   modifier:NSDirectPredicateModifier type:NSEqualToPredicateOperatorType options:0];
+    NSPredicate *priced = [NSComparisonPredicate predicateWithLeftExpression:[NSExpression expressionWithFormat:@"$p.unitPrice"]
+                                                             rightExpression:[NSExpression expressionForConstantValue:value]
+                                                                    modifier:NSDirectPredicateModifier type:type options:0];
+    NSExpression *matching = [NSExpression expressionForSubquery:[NSExpression expressionForKeyPath:@"products"] usingIteratorVariable:@"p"
+                                                       predicate:[NSCompoundPredicate andPredicateWithSubpredicates:@[ named, priced ]]];
+    return [NSComparisonPredicate predicateWithLeftExpression:[NSExpression expressionForFunction:@"count:" arguments:@[ matching ]]
+                                              rightExpression:[NSExpression expressionForConstantValue:@0]
+                                                     modifier:NSDirectPredicateModifier type:NSGreaterThanPredicateOperatorType options:0];
+  }
+  if ([path[0] isEqualToString:@"Secret"]) {
+    if (error) *error = ODataServiceError(403, @"Secret is not filtered by");
+  }
+  return nil;
+}
+@end
+
 @interface OISFailingStoreHandler : ODataEntitySetHandler
 @end
 
@@ -4228,6 +4276,51 @@ static NSString *OISHTTPDate(NSDate *date)
   XCTAssertEqual(([self send:@"PATCH" path:@"Products(1)" headers:nil
                         body:@{ @"Suppliers@odata.bind": @[ @"Suppliers(2)" ] }].status), 400);
   XCTAssertEqualObjects([self get:@"Categories(1)/Products/$count"].text, @"2", @"what it serves works as before");
+}
+
+// Properties the model does not have: an open type's, which its handler
+// gives and filters by.
+- (void)testAnOpenType
+{
+  [_service setHandler:[[OISOpenCategoriesHandler alloc] initWithEntity:OISCatalogEntity(@"Category")] forEntitySet:@"Categories"];
+  NSString *metadata = [self get:@"$metadata"].text;
+  XCTAssertTrue([metadata rangeOfString:@"<EntityType Name=\"Category\" OpenType=\"true\">"].location != NSNotFound, @"%@", metadata);
+  XCTAssertTrue([metadata rangeOfString:@"<EntityType Name=\"Product\">"].location != NSNotFound);
+
+  NSDictionary *beverages = [self get:@"Categories(1)"].json;
+  XCTAssertEqualObjects(beverages[@"Prices"], (@{ @"Chai": @18, @"Chang": @19 }));
+  XCTAssertEqualObjects(beverages[@"Size"], @2);
+  XCTAssertEqualObjects(beverages[@"CategoryName"], @"Beverages", @"a declared property is the model's");
+  NSDictionary *selected = [self get:@"Categories(1)?$select=CategoryName,Size,Colour"].json;
+  XCTAssertEqual([selected.allKeys filteredArrayUsingPredicate:[NSPredicate predicateWithFormat:@"NOT SELF BEGINSWITH '@'"]].count, 2u,
+                 @"%@", selected);
+  XCTAssertEqualObjects(selected[@"Size"], @2);
+
+  NSArray *(^names)(NSString *) = ^NSArray *(NSString *filter) {
+    OISServiceResponse *r = [self get:[@"Categories?$orderby=CategoryName&$filter=" stringByAppendingString:filter]];
+    XCTAssertEqual(r.status, 200, @"%@: %@", filter, r.text);
+    return [r.json[@"value"] valueForKey:@"CategoryName"];
+  };
+  XCTAssertEqualObjects(names(@"Prices/Chai eq 18"), @[ @"Beverages" ]);
+  XCTAssertEqualObjects(names(@"Prices/Chai gt 18"), @[]);
+  XCTAssertEqualObjects(names(@"Size ge 3"), @[ @"Condiments" ]);
+  XCTAssertEqualObjects(names(@"3 le Size"), @[ @"Condiments" ], @"the property on either side");
+  XCTAssertEqualObjects(names(@"Size in (2,5)"), @[ @"Beverages" ]);
+  XCTAssertEqualObjects(names(@"Prices/Chai lt 18 or Prices/Chang eq 19"), (@[ @"Beverages" ]));
+  XCTAssertEqualObjects(names(@"not (Size eq 2) and startswith(CategoryName,'C')"), @[ @"Condiments" ]);
+
+  XCTAssertEqual([self get:@"Categories?$filter=Secret eq 1"].status, 403, @"refused by the handler");
+  XCTAssertEqual([self get:@"Categories?$filter=Colour eq 1"].status, 400, @"none such");
+  XCTAssertEqual([self get:@"Categories?$filter=Size eq CategoryName"].status, 501);
+  XCTAssertEqual([self get:@"Categories?$filter=Size add 1 gt 2"].status, 400);
+  XCTAssertEqual([self get:@"Categories?$orderby=Size"].status, 400);
+  XCTAssertEqual([self get:@"Products?$filter=Size eq 1"].status, 400, @"Products is not open");
+
+  // What the store evaluates, the SQLite store's too.
+  [self serveModel:OISCatalogModel() storeType:NSSQLiteStoreType];
+  [_service setHandler:[[OISOpenCategoriesHandler alloc] initWithEntity:OISCatalogEntity(@"Category")] forEntitySet:@"Categories"];
+  XCTAssertEqualObjects(names(@"Prices/Chai eq 18"), @[ @"Beverages" ]);
+  XCTAssertEqualObjects(names(@"Size ge 3 or Prices/Chang gt 20"), @[ @"Condiments" ]);
 }
 
 // Nothing is written but by the application's actions.

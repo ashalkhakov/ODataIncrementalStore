@@ -53,6 +53,9 @@ FOUNDATION_EXPORT NSString * const ODataUserInfoContentType;  // @"OData.content
 // sub-entities. nil, the default: every entity that has a key. A
 // relationship to an entity it leaves out is left out with it.
 @property (nonatomic, copy, nullable) NSSet<NSString *> *entityNames;
+// The root entities, by name, whose types are open (OpenType): they, and
+// the types derived from them, may have dynamic properties.
+@property (nonatomic, copy, nullable) NSSet<NSString *> *openEntityNames;
 // The attribute each entity's ETag is made of, when it has one
 // (Core.OptimisticConcurrency). Set by the service.
 @property (nonatomic, copy, nullable) NSDictionary<NSString *, NSAttributeDescription *> *concurrencyAttributes;

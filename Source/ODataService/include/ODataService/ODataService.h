@@ -241,6 +241,34 @@ FOUNDATION_EXPORT NSString * const ODataUserInfoETag;  // @"OData.etag"
 // reads the set again. The default: the persistent history since it.
 - (nullable ODataChanges *)changesSince:(NSString *)token request:(ODataRequest *)request reply:(ODataReply *)reply;
 
+// Whether the set's entity type is open (OpenType in $metadata): its
+// entities may have dynamic properties, properties the model does not
+// declare, which -dynamicPropertiesOfObject:request: gives and
+// -predicateForDynamicProperty:... filters by. $select may name one, and
+// an entity without it leaves it out. NO by default.
+@property (nonatomic, getter=isOpenType) BOOL openType;
+// An entity's dynamic properties, by name, each a value the service writes
+// as it would an attribute's of its class (a dictionary or an array as
+// JSON). The names of its declared properties are ignored. Called for an
+// open type only, inside the request context's -performBlockAndWait:. The
+// default: none.
+- (nullable NSDictionary<NSString *, id> *)dynamicPropertiesOfObject:(NSManagedObject *)object request:(ODataRequest *)request;
+// $filter's comparison of a dynamic property with a value, as a predicate
+// over the set's entity: Priority gt 2, or Variables/amount ge 100 (a path,
+// the property's name first). The operator reads with the property on the
+// left; eq, ne, gt, ge, lt and le are asked for, in as each value's eq, and
+// the property alone as a condition its eq true. The value is the
+// literal's: a number, string, boolean, NSDate ..., nil for null. The
+// predicate is evaluated by the store, or in memory, so it may not fetch;
+// a subquery over rows the entity reaches is how rows kept elsewhere
+// answer. nil, with an error (ODataServiceError), refuses it; nil without
+// one says there is no such property (400). Asked of an open type only;
+// the default: nil.
+- (nullable NSPredicate *)predicateForDynamicProperty:(NSArray<NSString *> *)path
+                                             operator:(NSPredicateOperatorType)type
+                                                value:(nullable id)value
+                                                error:(NSError **)error;
+
 // The rows the caller may see at all, however they are reached: fetched,
 // by key, through navigation or $expand. nil: every row.
 - (nullable NSPredicate *)predicateForVisibleObjectsInRequest:(ODataRequest *)request;

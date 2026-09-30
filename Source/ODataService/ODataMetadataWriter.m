@@ -452,6 +452,9 @@ static void OISAddChildren(NSXMLElement *parent, NSArray<NSXMLElement *> *childr
   NSXMLElement *type = OISElement(@"EntityType", @[ @"Name", OISSimpleNameOf(qualified) ]);
   if (entity.superentity) [type addAttribute:[NSXMLNode attributeWithName:@"BaseType" stringValue:[self typeNameForEntity:entity.superentity]]];
   if (entity.isAbstract) [type addAttribute:[NSXMLNode attributeWithName:@"Abstract" stringValue:@"true"]];
+  if ([self.openEntityNames containsObject:[self rootOf:entity].name]) {
+    [type addAttribute:[NSXMLNode attributeWithName:@"OpenType" stringValue:@"true"]];
+  }
   if ([self mediaAttributeOfEntity:entity] && (!entity.superentity || ![self mediaAttributeOfEntity:entity.superentity])) {
     [type addAttribute:[NSXMLNode attributeWithName:@"HasStream" stringValue:@"true"]];
   }
