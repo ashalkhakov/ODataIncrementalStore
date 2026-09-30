@@ -96,8 +96,9 @@ FOUNDATION_EXPORT NSString * const ODataUserInfoETag;  // @"OData.etag"
 // Edm.Decimal, NSUUID Edm.Guid, NSData Edm.Binary, NSDictionary
 // Edm.Untyped, a managed object class its entity type. An Edm.Untyped (or
 // Org.OData.JSON.V1.JSON) value is any JSON, passed as NSJSONSerialization
-// reads it and written as it would write it; declare an id or NSArray
-// parameter so to take one. What the runtime cannot see, a collection's element type
+// reads it and written as it would write it (4.0's $metadata says
+// Org.OData.JSON.V1.JSON for Edm.Untyped, which is CSDL 4.01's); declare
+// an id or NSArray parameter so to take one. What the runtime cannot see, a collection's element type
 // or which number an NSNumber is, the class says in a class method, and it
 // can rename what the rules get wrong:
 //
@@ -243,16 +244,25 @@ FOUNDATION_EXPORT NSString * const ODataUserInfoETag;  // @"OData.etag"
 
 // Whether the set's entity type is open (OpenType in $metadata): its
 // entities may have dynamic properties, properties the model does not
-// declare, which -dynamicPropertiesOfObject:request: gives and
+// declare, which -dynamicPropertiesOfObjects:request:reply: gives and
 // -predicateForDynamicProperty:... filters by. $select may name one, and
 // an entity without it leaves it out. NO by default.
 @property (nonatomic, getter=isOpenType) BOOL openType;
-// An entity's dynamic properties, by name, each a value the service writes
-// as it would an attribute's of its class (a dictionary or an array as
-// JSON). The names of its declared properties are ignored. Called for an
-// open type only, inside the request context's -performBlockAndWait:. The
+// The dynamic properties of the set's entities a response writes, read
+// at once, after its rows and their expansions (the plan's last step):
+// by object ID, each entity's by name, each a value the service writes as
+// it would an attribute's of its class (a dictionary or an array as JSON;
+// a date, a decimal, a UUID or data annotated with its type). An entity
+// with none may be left out; the names of its declared properties are
+// ignored. Asked once a response for an open type only, inside the
+// request context's -performBlockAndWait:, with the objects in the order
+// they are written. The answer now, or nil and later through the reply
+// (-[ODataReply returned:], or -failWithError: to fail the request). The
 // default: none.
-- (nullable NSDictionary<NSString *, id> *)dynamicPropertiesOfObject:(NSManagedObject *)object request:(ODataRequest *)request;
+- (nullable NSDictionary<NSManagedObjectID *, NSDictionary<NSString *, id> *> *)
+    dynamicPropertiesOfObjects:(NSArray<NSManagedObject *> *)objects
+                       request:(ODataRequest *)request
+                         reply:(ODataReply *)reply;
 // $filter's comparison of a dynamic property with a value, as a predicate
 // over the set's entity: Priority gt 2, or Variables/amount ge 100 (a path,
 // the property's name first). The operator reads with the property on the
@@ -262,11 +272,12 @@ FOUNDATION_EXPORT NSString * const ODataUserInfoETag;  // @"OData.etag"
 // predicate is evaluated by the store, or in memory, so it may not fetch;
 // a subquery over rows the entity reaches is how rows kept elsewhere
 // answer. nil, with an error (ODataServiceError), refuses it; nil without
-// one says there is no such property (400). Asked of an open type only;
-// the default: nil.
+// one says there is no such property (400). Asked of an open type only,
+// in the request's filter; the default: nil.
 - (nullable NSPredicate *)predicateForDynamicProperty:(NSArray<NSString *> *)path
                                              operator:(NSPredicateOperatorType)type
                                                 value:(nullable id)value
+                                              request:(ODataRequest *)request
                                                 error:(NSError **)error;
 
 // The rows the caller may see at all, however they are reached: fetched,
@@ -399,17 +410,20 @@ FOUNDATION_EXPORT NSString * const ODataUserInfoETag;  // @"OData.etag"
 @property (nonatomic, copy, nullable) NSDictionary<NSString *, id> *containerAnnotations;
 // A service that writes nothing of itself: every entity set refuses
 // insert, update and delete (405), whatever its handler allows, as
-// $metadata says; and an action's request context is not saved -- one
-// that changed it is answered with an error, and its changes undone.
-// Actions still write, through the application's own means. Default: NO.
+// $metadata says. Actions still write: what one changes in the request
+// context it is handed is saved, as in any service. Default: NO.
 @property (nonatomic, getter=isReadOnly) BOOL readOnly;
-// The entities it serves, by name: each a root entity, served with its
-// sub-entities. nil, the default: every entity that has a key. One left
-// out has no entity set, type or handler, and nothing reaches it: a
-// relationship to it is left out of the types that have it, and naming it
-// in a path, $filter, $orderby, $expand or $select is an error. Set it
-// before the first request.
-@property (nonatomic, copy, nullable) NSSet<NSString *> *exposedEntities;
+// The model's configuration whose entities it serves: each root entity
+// the configuration lists, with its sub-entities, which the configuration
+// lists too. nil, the default: every entity that has a key. One not served
+// has no entity set, type or handler, and nothing reaches it: a
+// relationship to it is no property of the types that have it (see
+// ODataPropertyMapper's servedEntityNames), so naming it anywhere -- a
+// path, a query option, a body -- is an error as for any unknown name.
+// A configuration that lists a sub-entity without its root, or a root
+// without all its sub-entities, or that the model has not, is among
+// metadataProblems. Set it before the first request.
+@property (nonatomic, copy, nullable) NSString *configurationName;
 // The object whose methods are the service's unbound operations; see
 // ODataFunctions. Set it before the first request.
 @property (nonatomic, strong, nullable) id serviceOperations;

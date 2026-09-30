@@ -395,6 +395,14 @@ static NSError *OISViolation(NSManagedObject *object, NSString *key, NSString *m
   return [self schemaName:[self wireName:relationship.name] inEntity:relationship.entity navigation:YES];
 }
 
+- (BOOL)servesRelationship:(NSRelationshipDescription *)relationship
+{
+  if (!self.servedEntityNames) return YES;
+  NSEntityDescription *root = relationship.destinationEntity;
+  while (root.superentity) root = root.superentity;
+  return root && [self.servedEntityNames containsObject:root.name];
+}
+
 - (NSPropertyDescription *)propertyForWireName:(NSString *)name entity:(NSEntityDescription *)entity
 {
   for (NSPropertyDescription *property in entity.properties) {
@@ -402,6 +410,7 @@ static NSError *OISViolation(NSManagedObject *object, NSString *key, NSString *m
     if ([property isKindOfClass:[NSAttributeDescription class]]) {
       wire = [self propertyForAttribute:(NSAttributeDescription *)property];
     } else if ([property isKindOfClass:[NSRelationshipDescription class]]) {
+      if (![self servesRelationship:(NSRelationshipDescription *)property]) continue;
       wire = [self propertyForRelationship:(NSRelationshipDescription *)property];
     }
     if ([wire isEqualToString:name]) return property;

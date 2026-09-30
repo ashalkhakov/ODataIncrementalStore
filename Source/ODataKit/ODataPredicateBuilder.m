@@ -163,6 +163,7 @@ static NSPredicate *OISCompare(NSExpression *left, NSPredicateOperatorType type,
 @property (nonatomic, copy) NSDictionary<NSString *, NSEntityDescription *> *entitiesByTypeName;
 @property (nonatomic, copy) NSSet * (^restrictedProperties)(NSEntityDescription *entity, BOOL sorting);
 @property (nonatomic, copy) ODataDynamicPropertyPredicate dynamicProperty;
+@property (nonatomic, strong, nullable) id userInfo;
 @property (nonatomic) BOOL sorting;
 // $compute's names, and how deep one stands for another.
 @property (nonatomic, copy) NSDictionary<NSString *, ODataExpression *> *computed;
@@ -930,7 +931,7 @@ static NSString *OISConstantString(OISTerm *t)
   id value = [self valueOfLiteral:literal attribute:nil ok:&ok];
   if (!ok) return nil;
   NSError *error = nil;
-  NSPredicate *p = self.dynamicProperty(self.root, path, type, value, &error);
+  NSPredicate *p = self.dynamicProperty(self.root, path, type, value, self.userInfo, &error);
   if (p) return p;
   if (error) {
     if (!self.error) self.error = error;
@@ -1675,6 +1676,16 @@ static const NSUInteger OISMaxDateRanges = 200;
   return self;
 }
 
+- (instancetype)builderWithUserInfo:(id)userInfo
+{
+  ODataPredicateBuilder *builder = [[[self class] alloc] initWithMapper:self.mapper];
+  builder.entitiesByTypeName = self.entitiesByTypeName;
+  builder.restrictedProperties = self.restrictedProperties;
+  builder.dynamicProperty = self.dynamicProperty;
+  builder->_userInfo = userInfo;
+  return builder;
+}
+
 - (OISPredicateBuild *)buildForEntity:(NSEntityDescription *)entity aliases:(NSDictionary *)aliases
 {
   OISPredicateBuild *build = [[OISPredicateBuild alloc] init];
@@ -1685,6 +1696,7 @@ static const NSUInteger OISMaxDateRanges = 200;
   build.entitiesByTypeName = self.entitiesByTypeName ?: @{};
   build.restrictedProperties = self.restrictedProperties;
   build.dynamicProperty = self.dynamicProperty;
+  build.userInfo = self.userInfo;
   return build;
 }
 

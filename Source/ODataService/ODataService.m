@@ -292,14 +292,15 @@ static NSArray *OISFetch(NSManagedObjectContext *context, NSFetchRequest *fetchR
   return self;
 }
 
-- (NSDictionary<NSString *, id> *)dynamicPropertiesOfObject:(NSManagedObject *)object request:(ODataRequest *)request
+- (NSDictionary *)dynamicPropertiesOfObjects:(NSArray<NSManagedObject *> *)objects request:(ODataRequest *)request reply:(ODataReply *)reply
 {
-  return nil;
+  return @{};
 }
 
 - (NSPredicate *)predicateForDynamicProperty:(NSArray<NSString *> *)path
                                     operator:(NSPredicateOperatorType)type
                                        value:(id)value
+                                     request:(ODataRequest *)request
                                        error:(NSError **)error
 {
   return nil;
@@ -772,6 +773,12 @@ static NSArray<NSString *> *OISApplyTransformations(void)
   return self.service.mapper;
 }
 
+// The service's builder, with this request for its blocks.
+- (ODataPredicateBuilder *)predicates
+{
+  return [self.service.predicates builderWithUserInfo:self.request];
+}
+
 - (ODataReply *)replyWithAction:(SEL)action
 {
   ODataReply *reply = [[ODataReply alloc] initWithTarget:self action:action context:self.request.context];
@@ -858,7 +865,8 @@ static NSArray<NSString *> *OISApplyTransformations(void)
       NSPropertyDescription *property = key ? object.entity.propertiesByName[key] : nil;
       if ([property isKindOfClass:[NSAttributeDescription class]]) {
         detail[@"target"] = [self.mapper propertyForAttribute:(NSAttributeDescription *)property];
-      } else if ([property isKindOfClass:[NSRelationshipDescription class]]) {
+      } else if ([property isKindOfClass:[NSRelationshipDescription class]]
+                 && [self.mapper servesRelationship:(NSRelationshipDescription *)property]) {
         detail[@"target"] = [self.mapper propertyForRelationship:(NSRelationshipDescription *)property];
       }
       [details addObject:detail];
@@ -1723,6 +1731,24 @@ static NSUInteger OISExpandDepth(ODataQueryOptions *options)
   return attributes;
 }
 
+// A dynamic property's type, where its JSON does not tell it: nil for a
+// string, a boolean, a structure or a collection.
+static NSString *OISDynamicTypeName(id value)
+{
+  if ([value isKindOfClass:[@YES class]]) return nil;
+  if ([value isKindOfClass:[NSDecimalNumber class]]) return @"Edm.Decimal";
+  if ([value isKindOfClass:[NSNumber class]]) {
+    const char *t = [value objCType];
+    if (t && (t[0] == 'd' || t[0] == 'f')) return @"Edm.Double";
+    long long n = [value longLongValue];
+    return n >= INT32_MIN && n <= INT32_MAX ? @"Edm.Int32" : @"Edm.Int64";
+  }
+  if ([value isKindOfClass:[NSDate class]]) return @"Edm.DateTimeOffset";
+  if ([value isKindOfClass:[NSUUID class]]) return @"Edm.Guid";
+  if ([value isKindOfClass:[NSData class]]) return @"Edm.Binary";
+  return nil;
+}
+
 - (NSMutableDictionary *)JSONForObject:(NSManagedObject *)object
                                options:(ODataQueryOptions *)options
                               expected:(NSEntityDescription *)expected
@@ -1761,6 +1787,10 @@ static NSUInteger OISExpandDepth(ODataQueryOptions *options)
       if ([object.entity isKindOfEntity:derived]) [selected addObject:property.name];
       continue;
     }
+    if (item.path.count != 1 && ![self.mapper propertyForWireName:item.path[0] entity:object.entity]) {
+      if (error) *error = ODataServiceError(400, [NSString stringWithFormat:@"%@ has no property %@", object.entity.name, item.path[0]]);
+      return nil;
+    }
     if (item.path.count != 1) {
       if (error) *error = ODataServiceError(501, [NSString stringWithFormat:@"$select=%@ is not supported", [item.path componentsJoinedByString:@"/"]]);
       return nil;
@@ -1791,11 +1821,15 @@ static NSUInteger OISExpandDepth(ODataQueryOptions *options)
     }
     json[[self.mapper propertyForAttribute:attribute]] = [self.coder JSONForCoreDataValue:[object valueForKey:attribute.name] attribute:attribute];
   }
-  NSDictionary *dynamic = handler.isOpenType ? [handler dynamicPropertiesOfObject:object request:self.request] : nil;
-  for (NSString *name in dynamic) {
+  NSDictionary *dynamic = handler.isOpenType ? self.planDynamic[object.objectID] : nil;
+  for (NSString *name in ([dynamic isKindOfClass:[NSDictionary class]] ? dynamic : nil)) {
     if ([name hasPrefix:@"@"] || [self.mapper propertyForWireName:name entity:object.entity]) continue;
     if (!star && ![selected containsObject:name]) continue;
-    json[name] = [self.coder JSONForValue:dynamic[name] typeName:nil];
+    // Typed where JSON alone does not say: a date is a string, and a
+    // number could be any of them.
+    NSString *type = OISDynamicTypeName(dynamic[name]);
+    json[name] = [self.coder JSONForValue:dynamic[name] typeName:type];
+    if (type && !none) json[[name stringByAppendingString:@"@odata.type"]] = [@"#" stringByAppendingString:[type substringFromIndex:4]];
   }
   // $compute's values: of the request, or of the expansion.
   for (ODataComputeItem *item in options.compute) {
@@ -1976,7 +2010,7 @@ static const NSInteger OISMaxLevels = 32;
 {
   NSMutableArray *parts = [NSMutableArray array];
   if (withFilter && self.request.options.filter) {
-    NSPredicate *filter = [self.service.predicates predicateForExpression:[self resolved:self.request.options.filter options:self.request.options]
+    NSPredicate *filter = [self.predicates predicateForExpression:[self resolved:self.request.options.filter options:self.request.options]
                                                                    entity:self.entity
                                                                   aliases:self.request.options.aliases
                                                                  computed:[self computedNamesOf:self.request.options]
@@ -1987,7 +2021,7 @@ static const NSInteger OISMaxLevels = 32;
   }
   if (withFilter && [self applyIsFiltersOnly]) {
     for (ODataApplyTransformation *t in self.request.options.apply) {
-      NSPredicate *filter = [self.service.predicates predicateForExpression:[self hierarchical:t.filter] entity:self.entity
+      NSPredicate *filter = [self.predicates predicateForExpression:[self hierarchical:t.filter] entity:self.entity
                                                                    aliases:self.request.options.aliases
                                                                   computed:[self computedNamesOf:self.request.options]
                                                                    spans:self.planSpans error:error];
@@ -2195,7 +2229,7 @@ static NSExpressionDescription *OISAggregateDescription(NSString *name, NSString
   NSMutableDictionary *aggregateAttributes = [NSMutableDictionary dictionary];
   for (NSArray *path in t.groupPaths) {
     NSPropertyDescription *property = nil;
-    NSString *keyPath = [self.service.predicates keyPathForPath:path entity:self.entity property:&property error:NULL];
+    NSString *keyPath = [self.predicates keyPathForPath:path entity:self.entity property:&property error:NULL];
     NSAttributeType type = [property isKindOfClass:[NSAttributeDescription class]] ? ((NSAttributeDescription *)property).attributeType : NSUndefinedAttributeType;
     if (!keyPath || type == NSUndefinedAttributeType || type == NSTransformableAttributeType || type == NSBinaryDataAttributeType) return nil;
     [keyPaths addObject:keyPath];
@@ -2214,7 +2248,7 @@ static NSExpressionDescription *OISAggregateDescription(NSString *name, NSString
       continue;
     }
     NSPropertyDescription *property = nil;
-    NSString *keyPath = [self.service.predicates keyPathForPath:aggregate.path entity:self.entity property:&property error:NULL];
+    NSString *keyPath = [self.predicates keyPathForPath:aggregate.path entity:self.entity property:&property error:NULL];
     if (!keyPath || ![property isKindOfClass:[NSAttributeDescription class]]) return nil;
     NSAttributeDescription *attribute = (NSAttributeDescription *)property;
     NSString *method = aggregate.method;
@@ -2272,7 +2306,7 @@ static BOOL OISIsComputed(NSDictionary *computed, NSString *name)
   id joined = path.count ? computed[path[0]] : nil;
   if (![joined isKindOfClass:[NSEntityDescription class]]) {
     return through ? [self keyPathThroughCollections:path property:property error:error]
-                   : [self.service.predicates keyPathForPath:path entity:self.entity property:property error:error];
+                   : [self.predicates keyPathForPath:path entity:self.entity property:property error:error];
   }
   NSMutableArray *keys = [NSMutableArray arrayWithObject:path[0]];
   NSEntityDescription *current = joined;
@@ -2381,7 +2415,7 @@ static BOOL OISPathListed(NSArray<NSString *> *path, id listed)
     if (aggregate.expression) {
       // An expression with a method: its value with each object, under a
       // name of its own, aggregated as a path is.
-      NSExpression *value = [self.service.predicates valueExpressionForExpression:aggregate.expression entity:self.entity
+      NSExpression *value = [self.predicates valueExpressionForExpression:aggregate.expression entity:self.entity
                                                                           aliases:self.request.options.aliases computed:computed error:error];
       if (!value) return nil;
       NSString *hidden = [@"__ois_aggregate_" stringByAppendingString:aggregate.alias];
@@ -3096,7 +3130,7 @@ void OISAddExpressionsOfOptions(ODataQueryOptions *options, NSMutableArray *into
   NSString *parentPath = [parent isKindOfClass:[NSDictionary class]] ? (parent[@"$NavigationPropertyPath"] ?: parent[@"$PropertyPath"]) : parent;
   NSPropertyDescription *nodeProperty = nil;
   NSString *nodeKeyPath = [nodePath isKindOfClass:[NSString class]]
-      ? [self.service.predicates keyPathForPath:[nodePath componentsSeparatedByString:@"/"] entity:entity property:&nodeProperty error:NULL] : nil;
+      ? [self.predicates keyPathForPath:[nodePath componentsSeparatedByString:@"/"] entity:entity property:&nodeProperty error:NULL] : nil;
   NSRelationshipDescription *relationship = [parentPath isKindOfClass:[NSString class]]
       ? (NSRelationshipDescription *)[self.mapper propertyForWireName:parentPath entity:entity] : nil;
   if (!nodeKeyPath || ![nodeProperty isKindOfClass:[NSAttributeDescription class]] || ![relationship isKindOfClass:[NSRelationshipDescription class]]
@@ -3200,7 +3234,7 @@ static id OISSparseAtPath(NSArray<NSString *> *path, NSArray<NSNumber *> *collec
     if (t.orderBy.count) {
       NSError *error = nil;
       BOOL inMemory = NO;
-      descriptors = [self.service.predicates sortDescriptorsForOrderBy:t.orderBy entity:hierarchy.entity computed:nil inMemory:&inMemory error:&error];
+      descriptors = [self.predicates sortDescriptorsForOrderBy:t.orderBy entity:hierarchy.entity computed:nil inMemory:&inMemory error:&error];
       if (!descriptors) {
         [self respondError:error];
         return NO;
@@ -3306,7 +3340,7 @@ static id OISSparseAtPath(NSArray<NSString *> *path, NSArray<NSNumber *> *collec
         ODataExpression *condition = [self expression:[self hierarchical:t.filter] over:rows shape:shape computed:computed];
         if (!condition) return NO;
         NSPredicate *filter = shape ? [ODataAggregation predicateForExpression:condition error:&error]
-                                    : [self.service.predicates predicateForExpression:condition entity:self.entity aliases:options.aliases
+                                    : [self.predicates predicateForExpression:condition entity:self.entity aliases:options.aliases
                                                                              computed:computed spans:self.planSpans error:&error];
         if (!filter) {
           [self respondError:error.code == ODataIncrementalStoreErrorUnsupportedExpression ? ODataServiceError(501, error.localizedDescription) : error];
@@ -3350,7 +3384,7 @@ static id OISSparseAtPath(NSArray<NSString *> *path, NSArray<NSNumber *> *collec
         } else {
           NSMutableArray *expressions = [NSMutableArray array];
           for (NSUInteger i = 0; i < t.compute.count; i++) {
-            NSExpression *expression = [self.service.predicates valueExpressionForExpression:itemExpressions[i] entity:self.entity
+            NSExpression *expression = [self.predicates valueExpressionForExpression:itemExpressions[i] entity:self.entity
                                                                                      aliases:options.aliases computed:computed error:&error];
             if (!expression) {
               [self respondError:error];
@@ -3389,7 +3423,7 @@ static id OISSparseAtPath(NSArray<NSString *> *path, NSArray<NSNumber *> *collec
           [items addObject:[ODataOrderItem itemWithExpression:e descending:item.descending]];
         }
         NSArray *descriptors = shape ? [self descriptorsForGroupedOrder:items]
-                                     : [self.service.predicates sortDescriptorsForOrderBy:items entity:self.entity computed:computed
+                                     : [self.predicates sortDescriptorsForOrderBy:items entity:self.entity computed:computed
                                                                                  inMemory:&(BOOL){ NO } error:&error];
         if (!descriptors) {
           if (error) [self respondError:error];
@@ -3422,7 +3456,7 @@ static id OISSparseAtPath(NSArray<NSString *> *path, NSArray<NSNumber *> *collec
           if ([t.method hasSuffix:@"count"]) number = floor(number);
         }
         NSExpression *expression = shape ? nil
-            : [self.service.predicates valueExpressionForExpression:of entity:self.entity aliases:options.aliases computed:computed error:&error];
+            : [self.predicates valueExpressionForExpression:of entity:self.entity aliases:options.aliases computed:computed error:&error];
         if (!shape && !expression) {
           [self respondError:error];
           return NO;
@@ -3709,7 +3743,7 @@ static id OISSparseAtPath(NSArray<NSString *> *path, NSArray<NSNumber *> *collec
                       : [timeline filterFrom:q[@"$from"] to:q[@"$to"] ?: q[@"$toInclusive"] inclusive:!to];
   ODataExpression *expression = [ODataExpression expressionWithString:text error:error];
   if (!expression) return nil;
-  return [self.service.predicates predicateForExpression:expression entity:entity aliases:nil computed:nil
+  return [self.predicates predicateForExpression:expression entity:entity aliases:nil computed:nil
                                                  spans:self.planSpans error:error];
 }
 
@@ -3758,7 +3792,7 @@ static id OISSparseAtPath(NSArray<NSString *> *path, NSArray<NSNumber *> *collec
   NSString *key = [NSString stringWithFormat:@"%p/%@/%@", options, object.entity.name, item.alias];
   NSExpression *expression = self.computedExpressions[key];
   if (!expression) {
-    expression = [self.service.predicates valueExpressionForExpression:[self resolved:item.expression options:options] entity:object.entity
+    expression = [self.predicates valueExpressionForExpression:[self resolved:item.expression options:options] entity:object.entity
                                                                aliases:self.request.options.aliases computed:[self computedNamesOf:options] error:error];
     if (!expression) return nil;
     self.computedExpressions[key] = expression;
@@ -4311,11 +4345,6 @@ static NSNumber *OISScalarReturnValue(NSInvocation *invocation, char type)
     return;
   }
   // An action may have changed things; a function has no business to.
-  if (operation.isAction && self.request.context.hasChanges && self.service.isReadOnly) {
-    [self.request.context rollback];
-    [self fail:500 message:[NSString stringWithFormat:@"%@ changed the context of a read-only service", operation.signature]];
-    return;
-  }
   if (operation.isAction && self.request.context.hasChanges && ![self save]) return;
   if (!operation.isAction) [self.request.context rollback];
   if (!operation.isAction && operation.returns.entity) {
@@ -4595,7 +4624,10 @@ static NSNumber *OISScalarReturnValue(NSInvocation *invocation, char type)
   @synchronized (self) {
     if (self.prepared) return;
     ODataMetadataWriter *writer = [[ODataMetadataWriter alloc] initWithModel:self.model mapper:self.mapper];
-    writer.entityNames = self.exposedEntities;
+    NSMutableArray *problems = [NSMutableArray array];
+    writer.entityNames = [self servedEntityNamesWithProblems:problems];
+    self.configurationProblems = problems;
+    self.mapper.servedEntityNames = writer.entityNames;
     writer.namespaceName = self.namespaceName;
     writer.containerName = self.containerName;
     NSMutableDictionary *concurrency = [NSMutableDictionary dictionary];
@@ -4622,22 +4654,20 @@ static NSNumber *OISScalarReturnValue(NSInvocation *invocation, char type)
     // What each set's handler, as it is now, lets $filter and $orderby use.
     __weak ODataService *weakService = self;
     // Dynamic properties, of an open type's entities.
+    // The request is the builder's userInfo: each call's builder is its own
+    // (-[OISServiceCall predicates]).
     self.predicates.dynamicProperty = ^NSPredicate *(NSEntityDescription *entity, NSArray<NSString *> *path,
-                                                     NSPredicateOperatorType type, id value, NSError **error) {
+                                                     NSPredicateOperatorType type, id value, id request, NSError **error) {
       ODataEntitySetHandler *handler = [weakService handlerForEntity:entity];
-      if (!handler.isOpenType) return nil;
-      return [handler predicateForDynamicProperty:path operator:type value:value error:error];
+      if (!handler.isOpenType || ![request isKindOfClass:[ODataRequest class]]) return nil;
+      return [handler predicateForDynamicProperty:path operator:type value:value request:request error:error];
     };
     self.predicates.restrictedProperties = ^NSSet *(NSEntityDescription *entity, BOOL sorting) {
       ODataService *service = weakService;
       ODataEntitySetHandler *handler = [service handlerForEntity:entity];
       NSSet *wire = sorting ? handler.nonSortableProperties : handler.nonFilterableProperties;
+      if (!wire.count) return nil;
       NSMutableSet *names = [NSMutableSet set];
-      // What leads to an entity it does not serve.
-      for (NSRelationshipDescription *relationship in entity.relationshipsByName.allValues) {
-        if (![service handlerForEntity:relationship.destinationEntity]) [names addObject:relationship.name];
-      }
-      if (!wire.count) return names.count ? names : nil;
       for (NSPropertyDescription *property in entity.properties) {
         NSString *name = [property isKindOfClass:[NSAttributeDescription class]]
             ? [service.mapper propertyForAttribute:(NSAttributeDescription *)property]
@@ -4889,7 +4919,41 @@ static NSNumber *OISScalarReturnValue(NSInvocation *invocation, char type)
 - (NSArray *)metadataProblems
 {
   [self prepare];
-  return self.writer.problems;
+  return [self.configurationProblems arrayByAddingObjectsFromArray:self.writer.problems ?: @[]];
+}
+
+// The roots configurationName lists, each served with its sub-entities;
+// nil when there is no configuration. What does not hold is a problem.
+- (NSSet *)servedEntityNamesWithProblems:(NSMutableArray *)problems
+{
+  NSString *name = self.configurationName;
+  if (!name) return nil;
+  NSArray *listed = [self.model entitiesForConfiguration:name];
+  if (![self.model.configurations containsObject:name] && !listed.count) {
+    [problems addObject:[NSString stringWithFormat:@"The model has no configuration %@: no entity is served", name]];
+    return [NSSet set];
+  }
+  NSMutableSet *names = [NSMutableSet set];
+  NSMutableSet *listedNames = [NSMutableSet set];
+  for (NSEntityDescription *entity in listed) [listedNames addObject:entity.name];
+  for (NSEntityDescription *entity in listed) {
+    NSEntityDescription *root = entity;
+    while (root.superentity) root = root.superentity;
+    if (root == entity) {
+      [names addObject:entity.name];
+    } else if (![listedNames containsObject:root.name]) {
+      [problems addObject:[NSString stringWithFormat:@"Configuration %@ lists %@ without its root entity %@: it is not served", name, entity.name, root.name]];
+    }
+  }
+  // A root is served whole: a sub-entity left out is served all the same.
+  for (NSEntityDescription *entity in self.model.entities) {
+    NSEntityDescription *root = entity.superentity;
+    while (root.superentity) root = root.superentity;
+    if (root && [names containsObject:root.name] && ![listedNames containsObject:entity.name]) {
+      [problems addObject:[NSString stringWithFormat:@"Configuration %@ lists %@ without its sub-entity %@: it is served all the same", name, root.name, entity.name]];
+    }
+  }
+  return names;
 }
 
 - (void)startExchange:(ODataExchange *)exchange

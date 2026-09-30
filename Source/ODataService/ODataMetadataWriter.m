@@ -626,14 +626,22 @@ static NSString * const OISEdm = @"http://docs.oasis-open.org/odata/ns/edm";
     [self writeEntity:entity into:schemas used:usedTypes];
   }
   [self writeSchemaTypes:usedTypes into:schemas];
-  for (NSXMLElement *element in self.additionalSchemaElements) {
+  // Edm.Untyped is CSDL 4.01's: 4.0 has JSON's vocabulary say "any JSON".
+  BOOL untyped = ![version isEqualToString:@"4.0"];
+  for (NSXMLElement *original in self.additionalSchemaElements) {
+    NSXMLElement *element = [original copy];
     // An operation's JSON parameter or result references the vocabulary.
     for (NSXMLNode *child in element.children) {
       if (child.kind != NSXMLElementKind) continue;
-      NSString *type = [(NSXMLElement *)child attributeForName:@"Type"].stringValue;
+      NSXMLNode *attribute = [(NSXMLElement *)child attributeForName:@"Type"];
+      NSString *type = attribute.stringValue;
+      if (!untyped && [OISElementTypeOf(type) isEqualToString:@"Edm.Untyped"]) {
+        type = [type isEqualToString:@"Edm.Untyped"] ? @"Org.OData.JSON.V1.JSON" : @"Collection(Org.OData.JSON.V1.JSON)";
+        attribute.stringValue = type;
+      }
       if ([OISElementTypeOf(type) isEqualToString:@"Org.OData.JSON.V1.JSON"]) [self useTerm:@"Org.OData.JSON.V1.JSON"];
     }
-    [self append:[element copy] toNamespace:self.namespaceName in:schemas];
+    [self append:element toNamespace:self.namespaceName in:schemas];
   }
   [self append:[self container] toNamespace:self.namespaceName in:schemas];
 

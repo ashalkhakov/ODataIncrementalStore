@@ -239,7 +239,8 @@ as `NSJSONSerialization` reads it, and what it returns is written as
 `NSJSONSerialization` writes it. A dictionary is one without being
 declared; an `id` or `NSArray *` parameter is declared so, and a
 collection of them `Collection(Edm.Untyped)`. `Edm.Untyped` is CSDL
-4.01's; a 4.0 client may not know it.
+4.01's: the `$metadata` a 4.0 client is sent says
+`Org.OData.JSON.V1.JSON` in its place.
 
 The keys are selectors as written, a parameter after a dot by the name
 the rules give it. A declaration the framework cannot type is listed in
@@ -801,37 +802,55 @@ The server uses the same annotations the client reads, and the same
 
 `$metadata` (CSDL XML) is generated from the model, not written by hand.
 
-A service need not serve all of a model. `exposedEntities` names the
-entities it does serve (each a root entity, with its sub-entities); the
-rest have no entity set, type or handler, a relationship to one of them
-is left out of the types that have it, and a path, `$filter`, `$orderby`
-or `$expand` that names one is an error. An application whose model also
-holds its own bookkeeping serves only what its clients are meant to see.
+A service need not serve all of a model. `configurationName` names one
+of the model's configurations, and the service serves the root entities
+it lists, each with its sub-entities (nil: every entity with a key). The
+rest have no entity set, type or handler. A relationship to one of them
+is no property of the types that have it: the mapper
+(`ODataPropertyMapper`'s `servedEntityNames`) does not find it by its
+name, so a path, a query option (`$filter`, `$orderby`, `$expand`,
+`$select`, `$compute`, `$apply`) or a body that names it is refused as
+naming nothing, and no answer tells it is there. An application whose
+model also holds its own bookkeeping serves only what its clients are
+meant to see, and says so where Core Data already says which entities
+go together. A configuration that lists a sub-entity without its root
+(not served), or a root without all its sub-entities (served whole), or
+that the model has not (nothing served), is in `metadataProblems`.
 
 Nor need it write to it. A `readOnly` service answers every insert,
 update and delete, `$ref` and batched ones included, with `405`, whatever
 its handlers allow, and `$metadata` says so on every set. Its actions
-still run, but it never saves their request's context: an action that
-changed it is answered with `500`, its changes undone. Such an action
-writes through the application's own means -- another context, or a
-service of the application's -- so every change the model sees is one the
-application made and checked.
+still run, and what one changes in the request's context is saved as in
+any service: an action is the application's own code, so every change
+the model sees is one the application made and checked.
 
 Nor need everything it serves be in the model. A handler whose `openType`
 is set serves an open type (`OpenType` in `$metadata`), whose entities
-may have dynamic properties: `-dynamicPropertiesOfObject:request:` gives
-an entity's, written with its declared ones (and named in `$select` as
-they are), and `-predicateForDynamicProperty:operator:value:error:` says
-what `$filter` means by one compared with a value -- `Priority gt 2`, or
-a path under one, `Variables/amount ge 100` -- as a predicate over the
-entity. The predicate is evaluated where the rest of the filter is, by
-the store or in memory, so it is built from what the entity reaches: a
-subquery over rows of the application's own is how values kept apart
-from the entity, a workflow's variables, answer a filter. `ODataKit`'s
-`ODataPredicateBuilder` asks its `dynamicProperty` block for these; the
-service's asks the handler. Only comparisons with a value are handed
-over (and `in`, and the property alone as a condition); sorting by a
-dynamic property, or computing with one, is refused.
+may have dynamic properties. `-dynamicPropertiesOfObjects:request:reply:`
+gives them, for all the set's entities a response writes at once: it is
+the read plan's last step (`Dynamic properties (Categories)` in
+`$explain`), after the rows and their expansions, so the objects are the
+rows' and the expanded members' alike, and one query of the
+application's answers for the page. Like the plan's other asks it may
+answer later, through the reply; the plan goes on from what it knows
+when it does. They are written with the declared properties (and named
+in `$select` as they are); where the JSON does not say a value's type --
+a date, a decimal, an integer, a double, a GUID, binary -- it is
+annotated (`Reviewed@odata.type: "#DateTimeOffset"`), as JSON Format
+requires of a dynamic property. `-predicateForDynamicProperty:operator:value:request:error:`
+says what `$filter` means by one compared with a value -- `Priority gt 2`,
+or a path under one, `Variables/amount ge 100` -- as a predicate over
+the entity, for this request (whose caller may see some properties and
+not others). The predicate is evaluated where the rest of the filter
+is, by the store or in memory, so it is built from what the entity
+reaches: a subquery over rows of the application's own is how values
+kept apart from the entity, a workflow's variables, answer a filter.
+`ODataKit`'s `ODataPredicateBuilder` asks its `dynamicProperty` block for
+these, handing it the builder's `userInfo`; the service's builder is
+copied for each request (`-builderWithUserInfo:`) with the request as
+its `userInfo`. Only comparisons with a value are handed over (and
+`in`, and the property alone as a condition); sorting by a dynamic
+property, or computing with one, is refused.
 
 Requests map onto fetch requests, the reverse of `ODataQueryBuilder`:
 

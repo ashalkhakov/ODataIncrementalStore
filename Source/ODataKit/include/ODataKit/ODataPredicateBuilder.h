@@ -30,10 +30,10 @@ NS_ASSUME_NONNULL_BEGIN
 // on the left, and the value (a number, string, boolean, NSDate, ...; nil
 // for null). The predicate over the entity it stands for; nil with an
 // error to refuse the comparison, nil without one for a property that is
-// not there (400).
+// not there (400). userInfo is the builder's (a service's: the request).
 typedef NSPredicate * _Nullable (^ODataDynamicPropertyPredicate)(NSEntityDescription *entity, NSArray<NSString *> *path,
                                                                  NSPredicateOperatorType type, id _Nullable value,
-                                                                 NSError **error);
+                                                                 id _Nullable userInfo, NSError **error);
 
 @interface ODataPredicateBuilder : NSObject
 
@@ -53,6 +53,12 @@ typedef NSPredicate * _Nullable (^ODataDynamicPropertyPredicate)(NSEntityDescrip
 // in is a 400, as an unknown name's. nil, the default: every such name is
 // unknown.
 @property (nonatomic, copy, nullable) ODataDynamicPropertyPredicate dynamicProperty;
+// What the blocks are handed: whatever one use of the builder is for (a
+// service's, the request it answers). nil, the default.
+@property (nonatomic, strong, nullable, readonly) id userInfo;
+// A builder like this one, the same in all but its userInfo: cheap, for
+// the length of one request.
+- (instancetype)builderWithUserInfo:(nullable id)userInfo;
 
 // A boolean expression over the entity's properties: eq ne gt ge lt le in,
 // and or not, add sub mul div (and mod, on Apple), contains startswith
