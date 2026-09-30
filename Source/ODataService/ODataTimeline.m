@@ -116,12 +116,14 @@ static BOOL OISBefore(NSDate *a, NSDate *b)
   NSAttributeDescription *start = root.attributesByName[userInfo[ODataUserInfoPeriodStart]];
   NSAttributeDescription *end = root.attributesByName[userInfo[ODataUserInfoPeriodEnd]];
   if (start.attributeType != NSDateAttributeType || end.attributeType != NSDateAttributeType) return nil;
+  // A period the service does not serve is no timeline a client can see.
+  if (![mapper servesProperty:start] || ![mapper servesProperty:end]) return nil;
   NSMutableArray *objectKey = [NSMutableArray array];
   for (NSString *name in [userInfo[ODataUserInfoObjectKey] componentsSeparatedByString:@","]) {
     NSString *trimmed = [name stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceCharacterSet]];
     if (!trimmed.length) continue;
     NSAttributeDescription *attribute = root.attributesByName[trimmed];
-    if (!attribute) return nil;
+    if (!attribute || ![mapper servesProperty:attribute]) return nil;
     [objectKey addObject:attribute];
   }
   OISTimeline *timeline = [[self alloc] init];

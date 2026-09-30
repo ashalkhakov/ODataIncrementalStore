@@ -824,7 +824,16 @@ searched, and an unknown name wherever a request names it. A `PUT`
 replaces what is served and leaves it as it is. An application keeps
 there what is its own -- a lock's revision, a tree the served rows hang
 in -- beside what its clients see. A key cannot be left out; one marked
-so is among `metadataProblems`.
+so is among `metadataProblems`. Nothing else names it either: a
+relationship's `Partner`, `Core.OptimisticConcurrency` (a version
+attribute not served still makes the ETag, which the annotation then
+does not describe), `Measures.ISOCurrency`'s path; and a timeline or a
+recursive hierarchy that needs one is a problem instead. A value of one
+that fails validation is the service's fault, not the request's: `500`,
+naming nothing, the details logged. An update of only such properties
+is no change a delta link reports. Links are one thing, seen from
+either end: a relationship served whose inverse is not still changes
+both.
 
 Nor need it write to it. A `readOnly` service answers every insert,
 update and delete, `$ref` and batched ones included, with `405`, whatever

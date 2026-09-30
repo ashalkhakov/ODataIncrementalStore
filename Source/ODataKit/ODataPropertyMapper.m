@@ -635,7 +635,7 @@ static NSString *OISJoinedSorted(NSSet *names)
     NSEntityDescription *parent = entity.superentity;
     for (NSString *name in [entity.attributesByName.allKeys sortedArrayUsingSelector:@selector(compare:)]) {
       NSAttributeDescription *attr = entity.attributesByName[name];
-      if (attr.isTransient || parent.attributesByName[name]) continue;
+      if (attr.isTransient || parent.attributesByName[name] || ![self servesProperty:attr]) continue;
       if ([self attributeHoldsDynamicProperties:attr]) {
         if (![self.schema entityTypeIsOpen:type]) {
           [problems addObject:[NSString stringWithFormat:@"%@.%@: dynamic properties, but %@ is not an open type", entity.name, name, type.qualifiedName]];
@@ -663,7 +663,7 @@ static NSString *OISJoinedSorted(NSSet *names)
 
     for (NSString *name in [entity.relationshipsByName.allKeys sortedArrayUsingSelector:@selector(compare:)]) {
       NSRelationshipDescription *rel = entity.relationshipsByName[name];
-      if (parent.relationshipsByName[name]) continue;
+      if (parent.relationshipsByName[name] || ![self servesProperty:rel]) continue;
       // One out of the configuration leads to what the service does not serve.
       if (configuration && ![checked containsObject:rel.destinationEntity]) continue;
       NSString *wire = [self propertyForRelationship:rel];

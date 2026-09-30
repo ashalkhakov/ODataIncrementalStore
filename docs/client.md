@@ -93,6 +93,16 @@ a new dictionary to change it. A key path into it is the dynamic property:
 a dictionary fetch can ask for one (`$select=Nickname`). An open type's
 rows are read without `$select`, which cannot name what is not declared.
 
+**Properties the service does not serve** (`OData.served` `NO`, when the
+client shares the service's model) are not on the wire: the store leaves
+them out of what it sends and asks for, refuses a predicate, sort or
+dictionary result that names one (the service could not answer it), and
+keeps what a save gives them in memory, for as long as it is open, as
+the service keeps them for itself. A save that changes only them sends
+nothing. A link one of them names is written through its served inverse,
+where there is one. What must outlive the store belongs in a local store
+of its own: a configuration of the model beside the OData one.
+
 **A configuration of the model** is what a store holds when it is added
 with one, as with any Core Data store: its entities are checked against
 `$metadata`, and followed for changes, and the rest are not its business

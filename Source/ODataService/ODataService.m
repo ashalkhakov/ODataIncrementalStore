@@ -386,9 +386,14 @@ static NSArray *OISFetch(NSManagedObjectContext *context, NSFetchRequest *fetchR
           [born addObject:oid];
           [changed addObject:oid];
           break;
-        case NSPersistentHistoryChangeTypeUpdate:
-          [changed addObject:oid];
+        case NSPersistentHistoryChangeTypeUpdate: {
+          // An update of what the service keeps for itself changes nothing
+          // a client sees.
+          BOOL seen = !change.updatedProperties.count;
+          for (NSPropertyDescription *property in change.updatedProperties) seen = seen || [self.service.mapper servesProperty:property];
+          if (seen) [changed addObject:oid];
           break;
+        }
         case NSPersistentHistoryChangeTypeDelete:
           [changed removeObject:oid];
           if ([born containsObject:oid]) {
@@ -866,13 +871,21 @@ static NSArray<NSString *> *OISApplyTransformations(void)
   } else if ([error.domain isEqualToString:NSCocoaErrorDomain] && error.code >= NSValidationErrorMinimum && error.code <= NSValidationErrorMaximum) {
     status = 400;
     NSArray *each = error.code == NSValidationMultipleErrorsError ? error.userInfo[NSDetailedErrorsKey] : @[ error ];
+    BOOL own = NO;
     for (NSError *e in each) {
-      NSMutableDictionary *detail = [NSMutableDictionary dictionary];
-      detail[@"code"] = [NSString stringWithFormat:@"%ld", (long)e.code];
-      detail[@"message"] = e.localizedDescription ?: @"Validation failed";
       NSManagedObject *object = e.userInfo[NSValidationObjectErrorKey];
       NSString *key = e.userInfo[NSValidationKeyErrorKey];
       NSPropertyDescription *property = key ? object.entity.propertiesByName[key] : nil;
+      // One the service keeps for itself: no request can put it right, and
+      // Core Data's words name it.
+      if (property && ![self.mapper servesProperty:property]) {
+        NSLog(@"ODataService: %@ %@: %@ is not valid: %@", self.request.method, self.exchange.request.URL, key, e.localizedDescription);
+        own = YES;
+        continue;
+      }
+      NSMutableDictionary *detail = [NSMutableDictionary dictionary];
+      detail[@"code"] = [NSString stringWithFormat:@"%ld", (long)e.code];
+      detail[@"message"] = e.localizedDescription ?: @"Validation failed";
       if ([property isKindOfClass:[NSAttributeDescription class]] && [self.mapper servesProperty:property]) {
         detail[@"target"] = [self.mapper propertyForAttribute:(NSAttributeDescription *)property];
       } else if ([property isKindOfClass:[NSRelationshipDescription class]]
@@ -881,7 +894,13 @@ static NSArray<NSString *> *OISApplyTransformations(void)
       }
       [details addObject:detail];
     }
-    if (details.count == 1) target = details[0][@"target"];
+    if (own) {
+      status = 500;
+      error = ODataServiceError(500, @"The service could not complete the entity: a value it keeps for itself is not valid");
+      [details removeAllObjects];
+    } else if (details.count == 1) {
+      target = details[0][@"target"];
+    }
   } else if ([error.domain isEqualToString:NSCocoaErrorDomain] && (error.code == 133020 || error.code == 133021)) {
     status = 409;  // NSManagedObjectMergeError, NSManagedObjectConstraintMergeError
   } else if (!error) {
@@ -4685,7 +4704,43 @@ static NSNumber *OISScalarReturnValue(NSInvocation *invocation, char type)
     for (NSString *set in self.handlers.allKeys) {
       if (![served containsObject:set]) [self.handlers removeObjectForKey:set];
     }
+    [self addServingProblemsOf:writer.entities to:problems];
+    self.configurationProblems = problems;
     self.prepared = YES;
+  }
+}
+
+// What names a property the service does not serve (OData.served NO): a
+// timeline's period or object key, a recursive hierarchy's node or parent.
+- (void)addServingProblemsOf:(NSArray<NSEntityDescription *> *)entities to:(NSMutableArray *)problems
+{
+  for (NSEntityDescription *entity in entities) {
+    if (entity.superentity) continue;
+    NSDictionary *info = entity.userInfo;
+    NSMutableArray *timeline = [NSMutableArray array];
+    for (NSString *key in @[ ODataUserInfoPeriodStart, ODataUserInfoPeriodEnd ]) if ([info[key] isKindOfClass:[NSString class]]) [timeline addObject:info[key]];
+    if ([info[ODataUserInfoObjectKey] isKindOfClass:[NSString class]]) [timeline addObjectsFromArray:[info[ODataUserInfoObjectKey] componentsSeparatedByString:@","]];
+    for (NSString *name in timeline) {
+      NSString *trimmed = [name stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceCharacterSet]];
+      NSAttributeDescription *attribute = entity.attributesByName[trimmed];
+      if (attribute && ![self.mapper servesProperty:attribute]) {
+        [problems addObject:[NSString stringWithFormat:@"%@: its timeline's %@ is not served, so it has no application time", entity.name, trimmed]];
+      }
+    }
+    NSDictionary *annotations = [self.mapper annotationsOfProperty:nil entity:entity];
+    for (NSString *term in [annotations.allKeys sortedArrayUsingSelector:@selector(compare:)]) {
+      if (![term hasPrefix:@"Org.OData.Aggregation.V1.RecursiveHierarchy"]) continue;
+      NSDictionary *record = annotations[term];
+      if (![record isKindOfClass:[NSDictionary class]]) continue;
+      for (NSString *member in @[ @"NodeProperty", @"ParentNavigationProperty" ]) {
+        id value = record[member];
+        NSString *path = [value isKindOfClass:[NSDictionary class]] ? (value[@"$PropertyPath"] ?: value[@"$NavigationPropertyPath"]) : value;
+        NSString *first = [path isKindOfClass:[NSString class]] ? [path componentsSeparatedByString:@"/"].firstObject : nil;
+        if (first && ![self.mapper propertyForWireName:first entity:entity]) {
+          [problems addObject:[NSString stringWithFormat:@"%@: %@ names %@, which is not served", entity.name, term, first]];
+        }
+      }
+    }
   }
 }
 
