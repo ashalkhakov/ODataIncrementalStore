@@ -1,12 +1,55 @@
 // Copyright (C) 2026 OIS contributors
 // SPDX-License-Identifier: LGPL-2.1-or-later
 
-#import "ODataServerMessage.h"
-#import "ODataError.h"
-#import "ODataAuthentication.h"
+#import "HSMessage.h"
+#import "HSRouter.h"
+#import "HSAuthentication.h"
+
+NSErrorDomain const HSErrorDomain = @"org.gnu.ois.HTTPServerKit";
+NSString * const HSErrorTypeKey = @"HSErrorType";
+NSString * const HSErrorScopesKey = @"HSErrorScopes";
+
+NSError *HSError(NSInteger status, NSString *message)
+{
+  return [NSError errorWithDomain:HSErrorDomain code:status
+                         userInfo:@{ NSLocalizedDescriptionKey: message ?: [NSHTTPURLResponse localizedStringForStatusCode:status] }];
+}
+
+static NSMutableSet<NSString *> *HSStatusDomains(void)
+{
+  static NSMutableSet *domains;
+  static dispatch_once_t once;
+  dispatch_once(&once, ^{
+    domains = [NSMutableSet set];
+  });
+  return domains;
+}
+
+void HSRegisterStatusErrorDomain(NSErrorDomain domain)
+{
+  @synchronized (HSStatusDomains()) {
+    [HSStatusDomains() addObject:domain];
+  }
+}
+
+// RFC 9110's reason phrases, for a problem's title.
+static NSString *HSReasonPhrase(NSInteger status)
+{
+  static NSDictionary *phrases;
+  static dispatch_once_t once;
+  dispatch_once(&once, ^{
+    phrases = @{ @400: @"Bad Request", @401: @"Unauthorized", @403: @"Forbidden", @404: @"Not Found", @405: @"Method Not Allowed",
+                 @406: @"Not Acceptable", @408: @"Request Timeout", @409: @"Conflict", @410: @"Gone", @411: @"Length Required",
+                 @412: @"Precondition Failed", @413: @"Content Too Large", @414: @"URI Too Long", @415: @"Unsupported Media Type",
+                 @422: @"Unprocessable Content", @428: @"Precondition Required", @429: @"Too Many Requests",
+                 @500: @"Internal Server Error", @501: @"Not Implemented", @502: @"Bad Gateway", @503: @"Service Unavailable",
+                 @504: @"Gateway Timeout" };
+  });
+  return phrases[@(status)] ?: (status >= 500 ? @"Server Error" : @"Client Error");
+}
 
 // The value of a header by any case of its name.
-static NSString *OISHeaderIn(NSDictionary<NSString *, NSString *> *headers, NSString *name)
+static NSString *HSHeaderIn(NSDictionary<NSString *, NSString *> *headers, NSString *name)
 {
   NSString *exact = headers[name];
   if (exact) return exact;
@@ -16,7 +59,7 @@ static NSString *OISHeaderIn(NSDictionary<NSString *, NSString *> *headers, NSSt
   return nil;
 }
 
-@implementation ODataServerRequest {
+@implementation HSRequest {
   NSData *_body;
   id _owner;
 }
@@ -53,7 +96,7 @@ static NSString *OISHeaderIn(NSDictionary<NSString *, NSString *> *headers, NSSt
 
 - (NSString *)valueForHeader:(NSString *)name
 {
-  return OISHeaderIn(self.headers, name);
+  return HSHeaderIn(self.headers, name);
 }
 
 // A file's, mapped rather than read, once.
@@ -90,12 +133,12 @@ static NSString *OISHeaderIn(NSDictionary<NSString *, NSString *> *headers, NSSt
 
 - (NSString *)description
 {
-  return [NSString stringWithFormat:@"<ODataServerRequest %@ %@>", self.method, self.target];
+  return [NSString stringWithFormat:@"<HSRequest %@ %@>", self.method, self.target];
 }
 
 @end
 
-@implementation ODataServerResponse {
+@implementation HSResponse {
   NSMutableDictionary<NSString *, NSString *> *_headers;
 }
 
@@ -110,14 +153,14 @@ static NSString *OISHeaderIn(NSDictionary<NSString *, NSString *> *headers, NSSt
 
 + (instancetype)responseWithStatus:(NSInteger)status
 {
-  ODataServerResponse *response = [[self alloc] init];
+  HSResponse *response = [[self alloc] init];
   response.status = status;
   return response;
 }
 
 + (instancetype)responseWithStatus:(NSInteger)status body:(NSData *)body contentType:(NSString *)contentType
 {
-  ODataServerResponse *response = [self responseWithStatus:status];
+  HSResponse *response = [self responseWithStatus:status];
   response.body = body;
   if (contentType && body) [response setValue:contentType forHeader:@"Content-Type"];
   return response;
@@ -136,15 +179,15 @@ static NSString *OISHeaderIn(NSDictionary<NSString *, NSString *> *headers, NSSt
 
 + (instancetype)responseWithFile:(NSURL *)file contentType:(NSString *)contentType status:(NSInteger)status
 {
-  ODataServerResponse *response = [self responseWithStatus:status];
+  HSResponse *response = [self responseWithStatus:status];
   response.bodyFileURL = file;
   [response setValue:contentType ?: @"application/octet-stream" forHeader:@"Content-Type"];
   return response;
 }
 
-+ (instancetype)responseWithStream:(id<ODataServerResponseStream>)stream contentType:(NSString *)contentType status:(NSInteger)status
++ (instancetype)responseWithStream:(id<HSResponseStream>)stream contentType:(NSString *)contentType status:(NSInteger)status
 {
-  ODataServerResponse *response = [self responseWithStatus:status];
+  HSResponse *response = [self responseWithStatus:status];
   response.bodyStream = stream;
   [response setValue:contentType ?: @"application/octet-stream" forHeader:@"Content-Type"];
   return response;
@@ -152,33 +195,60 @@ static NSString *OISHeaderIn(NSDictionary<NSString *, NSString *> *headers, NSSt
 
 + (instancetype)responseWithError:(NSError *)error
 {
-  NSInteger status = 500;
-  NSString *message = @"The server could not answer the request";
-  if ([error.domain isEqualToString:ODataServiceErrorDomain] && error.code >= 400 && error.code < 600) {
-    status = error.code;
-    message = error.localizedDescription ?: message;
+  return [self responseWithError:error request:nil];
+}
+
++ (instancetype)responseWithError:(NSError *)error request:(HSRequest *)request
+{
+  HSRoute *route = request.route;
+  id<HSErrorFormatting> formatter = route.errorFormatter;
+  if (formatter) {
+    HSResponse *formatted = [formatter responseForError:error request:request];
+    if (formatted) return formatted;
+  }
+  NSInteger status = [self statusOfError:error];
+  NSString *detail = @"The server could not answer the request";
+  if (status != 500 || [error.domain isEqualToString:HSErrorDomain]) {
+    detail = error.localizedDescription ?: detail;
   } else if (error) {
     // Its own words may say more of the server than a client should know.
-    NSLog(@"ODataServer: %@", error);
+    NSLog(@"HTTPServerKit: %@", error);
   }
-  NSMutableDictionary *body = [NSMutableDictionary dictionaryWithObjectsAndKeys:
-                               error.userInfo[ODataErrorCodeKey] ?: [NSString stringWithFormat:@"%ld", (long)status], @"code",
-                               message, @"message", nil];
-  if (error.userInfo[ODataErrorTargetKey]) body[@"target"] = error.userInfo[ODataErrorTargetKey];
-  ODataServerResponse *response = [self responseWithJSON:@{ @"error": body } status:status];
-  // The scopes it needs, as the challenge names them (RFC 6750 section 3).
-  NSArray *scopes = [error.userInfo[ODataErrorScopesKey] isKindOfClass:[NSArray class]] ? error.userInfo[ODataErrorScopesKey] : nil;
-  NSString *scope = [[scopes componentsJoinedByString:@" "] stringByReplacingOccurrencesOfString:@"\"" withString:@""];
-  if (status == 401) {
-    [response setValue:scope.length ? [NSString stringWithFormat:@"Bearer scope=\"%@\"", scope] : @"Bearer" forHeader:@"WWW-Authenticate"];
-  } else if (status == 403 && scope.length) {
-    NSCharacterSet *unsafe = [NSCharacterSet characterSetWithCharactersInString:@"\"\\"];
-    NSString *description = [[message componentsSeparatedByCharactersInSet:unsafe] componentsJoinedByString:@"'"];
-    [response setValue:[NSString stringWithFormat:@"Bearer realm=\"odata\", error=\"insufficient_scope\", error_description=\"%@\", scope=\"%@\"",
-                                                  description, scope]
-             forHeader:@"WWW-Authenticate"];
-  }
+  NSMutableDictionary *problem = [NSMutableDictionary dictionary];
+  problem[@"type"] = [error.userInfo[HSErrorTypeKey] isKindOfClass:[NSString class]] ? error.userInfo[HSErrorTypeKey] : @"about:blank";
+  problem[@"title"] = HSReasonPhrase(status);
+  problem[@"status"] = @(status);
+  problem[@"detail"] = detail;
+  NSData *body = [NSJSONSerialization dataWithJSONObject:problem options:0 error:NULL];
+  HSResponse *response = [self responseWithStatus:status body:body contentType:@"application/problem+json"];
+  NSString *challenge = [self challengeForError:error];
+  if (challenge) [response setValue:challenge forHeader:@"WWW-Authenticate"];
   return response;
+}
+
++ (NSInteger)statusOfError:(NSError *)error
+{
+  if (!error) return 500;
+  BOOL statusDomain = [error.domain isEqualToString:HSErrorDomain];
+  @synchronized (HSStatusDomains()) {
+    statusDomain = statusDomain || [HSStatusDomains() containsObject:error.domain];
+  }
+  return statusDomain && error.code >= 400 && error.code < 600 ? error.code : 500;
+}
+
++ (NSString *)challengeForError:(NSError *)error
+{
+  NSInteger status = [self statusOfError:error];
+  NSArray *scopes = [error.userInfo[HSErrorScopesKey] isKindOfClass:[NSArray class]] ? error.userInfo[HSErrorScopesKey] : nil;
+  NSString *scope = [[scopes componentsJoinedByString:@" "] stringByReplacingOccurrencesOfString:@"\"" withString:@""];
+  if (status == 401) return scope.length ? [NSString stringWithFormat:@"Bearer scope=\"%@\"", scope] : @"Bearer";
+  if (status == 403 && scope.length) {
+    NSCharacterSet *unsafe = [NSCharacterSet characterSetWithCharactersInString:@"\"\\"];
+    NSString *description = [[error.localizedDescription ?: @"" componentsSeparatedByCharactersInSet:unsafe] componentsJoinedByString:@"'"];
+    return [NSString stringWithFormat:@"Bearer realm=\"api\", error=\"insufficient_scope\", error_description=\"%@\", scope=\"%@\"",
+                                      description, scope];
+  }
+  return nil;
 }
 
 - (NSDictionary *)headers
@@ -191,7 +261,7 @@ static NSString *OISHeaderIn(NSDictionary<NSString *, NSString *> *headers, NSSt
 - (NSString *)valueForHeader:(NSString *)name
 {
   @synchronized (self) {
-    return OISHeaderIn(_headers, name);
+    return HSHeaderIn(_headers, name);
   }
 }
 
@@ -207,19 +277,19 @@ static NSString *OISHeaderIn(NSDictionary<NSString *, NSString *> *headers, NSSt
 
 - (NSString *)description
 {
-  return [NSString stringWithFormat:@"<ODataServerResponse %ld, %lu bytes>", (long)self.status, (unsigned long)self.body.length];
+  return [NSString stringWithFormat:@"<HSResponse %ld, %lu bytes>", (long)self.status, (unsigned long)self.body.length];
 }
 
 @end
 
-@interface ODataServerReply ()
+@interface HSReply ()
 @property (nonatomic, strong, nullable) id target;
 @property (nonatomic) SEL action;
 @property (nonatomic, readwrite) BOOL finished;
-@property (nonatomic, readwrite, strong, nullable) ODataServerResponse *response;
+@property (nonatomic, readwrite, strong, nullable) HSResponse *response;
 @end
 
-@implementation ODataServerReply
+@implementation HSReply
 
 - (instancetype)initWithTarget:(id)target action:(SEL)action
 {
@@ -230,13 +300,13 @@ static NSString *OISHeaderIn(NSDictionary<NSString *, NSString *> *headers, NSSt
   return self;
 }
 
-- (void)finishWithResponse:(ODataServerResponse *)response
+- (void)finishWithResponse:(HSResponse *)response
 {
   id target;
   @synchronized (self) {
     if (self.finished) return;
     self.finished = YES;
-    self.response = response ?: [ODataServerResponse responseWithStatus:500];
+    self.response = response ?: [HSResponse responseWithStatus:500];
     target = self.target;
     self.target = nil;
   }
@@ -247,7 +317,7 @@ static NSString *OISHeaderIn(NSDictionary<NSString *, NSString *> *headers, NSSt
 
 - (void)failWithError:(NSError *)error
 {
-  [self finishWithResponse:[ODataServerResponse responseWithError:error]];
+  [self finishWithResponse:[HSResponse responseWithError:error request:self.request]];
 }
 
 @end

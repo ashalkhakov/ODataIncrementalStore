@@ -1,98 +1,20 @@
 // Copyright (C) 2026 OIS contributors
 // SPDX-License-Identifier: LGPL-2.1-or-later
 
-#import "ODataServerHandlers.h"
-#import "ODataService.h"
-#import "ODataAuthentication.h"
-#import "ODataError.h"
-#import "ODataServerRouter.h"
-#import "ODataServerObservability.h"
+#import "HSStages.h"
+#import "HSAuthentication.h"
+#import "HSRouter.h"
+#import "HSObservability.h"
 #include <zlib.h>
 #include <time.h>
 #include <sys/time.h>
 
-NSString * const ODataServerRequestIDKey = @"OData.requestID";
-static NSString * const OISStartKey = @"OData.started";
-
-#pragma mark - A mounted service
-
-@implementation ODataServiceHandler
-
-- (instancetype)initWithService:(ODataService *)service
-{
-  self = [super init];
-  if (!self) return nil;
-  _service = service;
-  return self;
-}
-
-// What a request under the service root asks, by a name of few values: the
-// entity set (or operation import) it names first, $metadata, $batch...;
-// the service document; or (other), so a client cannot make up new ones.
-- (NSString *)operationOf:(ODataServerRequest *)request
-{
-  NSString *root = self.service.serviceRoot.path.length ? self.service.serviceRoot.path : @"/";
-  NSString *path = request.path;
-  NSString *rest = [path hasPrefix:root] ? [path substringFromIndex:root.length] : @"";
-  if ([rest hasPrefix:@"/"]) rest = [rest substringFromIndex:1];
-  NSString *first = [rest componentsSeparatedByString:@"/"].firstObject ?: @"";
-  NSRange parenthesis = [first rangeOfString:@"("];
-  if (parenthesis.location != NSNotFound) first = [first substringToIndex:parenthesis.location];
-  if (!first.length) return @"(service document)";
-  if ([first hasPrefix:@"$"] && first.length < 20) return first;
-  return [self.service.entitySets containsObject:first] ? first : @"(other)";
-}
-
-- (void)handleRequest:(ODataServerRequest *)request reply:(ODataServerReply *)reply
-{
-  request.operation = [self operationOf:request];
-  NSMutableURLRequest *urlRequest = [[request URLRequestOnOrigin:self.service.serviceRoot] mutableCopy];
-  // Who asked, for the service's handlers and logs: the request id, and the
-  // trace context this server's span carries on.
-  NSString *requestID = request.userInfo[ODataServerRequestIDKey];
-  if (requestID) [urlRequest setValue:requestID forHTTPHeaderField:@"X-Request-ID"];
-  NSString *traceparent = request.userInfo[ODataServerTraceparentKey];
-  if (traceparent) [urlRequest setValue:traceparent forHTTPHeaderField:@"traceparent"];
-  ODataExchange *exchange = [[ODataExchange alloc] initWithRequest:urlRequest target:self action:@selector(exchangeDidFinish:)];
-  exchange.context = reply;
-  if (request.authenticated) {
-    [self.service startExchange:exchange principal:request.principal];
-  } else {
-    [self.service startExchange:exchange];
-  }
-}
-
-- (void)exchangeDidFinish:(ODataExchange *)exchange
-{
-  ODataServerReply *reply = exchange.context;
-  NSHTTPURLResponse *http = [exchange.URLResponse isKindOfClass:[NSHTTPURLResponse class]] ? (NSHTTPURLResponse *)exchange.URLResponse : nil;
-  if (!http) {
-    [reply failWithError:exchange.error ?: ODataServiceError(500, @"The service gave no answer")];
-    return;
-  }
-  ODataServerResponse *response = [ODataServerResponse responseWithStatus:http.statusCode];
-  response.body = exchange.data.length ? exchange.data : nil;
-  NSDictionary *headers = http.allHeaderFields;
-  for (NSString *name in headers) {
-    if ([name caseInsensitiveCompare:@"Content-Length"] == NSOrderedSame) continue;
-    [response setValue:headers[name] forHeader:name];
-  }
-  if (http.statusCode >= 500) {
-    NSLog(@"ODataServer: %@ %@ answered %ld", exchange.request.HTTPMethod, exchange.request.URL, (long)http.statusCode);
-  }
-  [reply finishWithResponse:response];
-}
-
-- (NSString *)description
-{
-  return [NSString stringWithFormat:@"<ODataServiceHandler %@>", self.service.serviceRoot.absoluteString];
-}
-
-@end
+NSString * const HSRequestIDKey = @"HS.requestID";
+static NSString * const HSStartKey = @"HS.started";
 
 #pragma mark - Health
 
-@implementation ODataHealthHandler
+@implementation HSHealthHandler
 
 - (NSDictionary *)status
 {
@@ -104,16 +26,16 @@ static NSString * const OISStartKey = @"OData.started";
   return 200;
 }
 
-- (void)handleRequest:(ODataServerRequest *)request reply:(ODataServerReply *)reply
+- (void)handleRequest:(HSRequest *)request reply:(HSReply *)reply
 {
-  ODataServerResponse *response = [ODataServerResponse responseWithJSON:[self status] status:[self statusCode]];
+  HSResponse *response = [HSResponse responseWithJSON:[self status] status:[self statusCode]];
   [response setValue:@"no-store" forHeader:@"Cache-Control"];
   [reply finishWithResponse:response];
 }
 
 - (NSString *)description
 {
-  return @"<ODataHealthHandler>";
+  return @"<HSHealthHandler>";
 }
 
 @end
@@ -121,19 +43,25 @@ static NSString * const OISStartKey = @"OData.started";
 #pragma mark - Authentication
 
 // One request's question to the authenticator, and where it goes next.
-@interface OISAuthenticationStep : NSObject
-@property (nonatomic, strong) ODataServerRequest *request;
-@property (nonatomic, strong) ODataServerReply *reply;
-@property (nonatomic, strong) id<ODataServerHandler> next;
+@interface HSAuthenticationStep : NSObject
+@property (nonatomic, strong) id<HSAuthenticator> authenticator;
+@property (nonatomic, strong) HSRequest *request;
+@property (nonatomic, strong) HSReply *reply;
+@property (nonatomic, strong) id<HSHandler> next;
 @end
 
-@implementation OISAuthenticationStep
+@implementation HSAuthenticationStep
 
-- (void)didAuthenticate:(ODataAuthentication *)answer
+- (void)didAuthenticate:(HSAuthenticationReply *)answer
 {
   if (answer.error) {
-    ODataServerResponse *response = [ODataServerResponse responseWithError:answer.error];
-    if (answer.challenge) [response setValue:answer.challenge forHeader:@"WWW-Authenticate"];
+    HSResponse *response = [HSResponse responseWithError:answer.error request:self.request];
+    // A 401's challenge is the authenticator's: it knows why it refused.
+    if ([HSResponse statusOfError:answer.error] == 401) {
+      NSString *challenge = [self.authenticator respondsToSelector:@selector(challengeForRequest:)]
+          ? [self.authenticator challengeForRequest:self.request] : nil;
+      [response setValue:challenge.length ? challenge : @"Bearer" forHeader:@"WWW-Authenticate"];
+    }
     [self.reply finishWithResponse:response];
     return;
   }
@@ -144,9 +72,9 @@ static NSString * const OISStartKey = @"OData.started";
 
 @end
 
-@implementation ODataAuthenticationStage
+@implementation HSAuthenticationStage
 
-- (instancetype)initWithAuthenticator:(id<ODataAuthenticator>)authenticator
+- (instancetype)initWithAuthenticator:(id<HSAuthenticator>)authenticator
 {
   self = [super init];
   if (!self) return nil;
@@ -156,26 +84,28 @@ static NSString * const OISStartKey = @"OData.started";
 }
 
 // It waits for the authenticator, so it owns its step.
-- (void)handleRequest:(ODataServerRequest *)request reply:(ODataServerReply *)reply next:(id<ODataServerHandler>)next
+- (void)handleRequest:(HSRequest *)request reply:(HSReply *)reply next:(id<HSHandler>)next
 {
-  OISAuthenticationStep *step = [[OISAuthenticationStep alloc] init];
+  HSAuthenticationStep *step = [[HSAuthenticationStep alloc] init];
+  step.authenticator = self.authenticator;
   step.request = request;
   step.reply = reply;
   step.next = next;
-  [ODataAuthentication authenticateURLRequest:[request URLRequestOnOrigin:nil] with:self.authenticator
-                                      timeout:self.timeout target:step action:@selector(didAuthenticate:)];
+  HSAuthenticationReply *answer = [[HSAuthenticationReply alloc] initWithTarget:step action:@selector(didAuthenticate:)];
+  answer.timeout = self.timeout;
+  [self.authenticator authenticateRequest:request reply:answer];
 }
 
 - (NSString *)description
 {
-  return [NSString stringWithFormat:@"<ODataAuthenticationStage %@>", NSStringFromClass([(NSObject *)self.authenticator class])];
+  return [NSString stringWithFormat:@"<HSAuthenticationStage %@>", NSStringFromClass([(NSObject *)self.authenticator class])];
 }
 
 @end
 
 #pragma mark - Request ids
 
-@implementation ODataRequestIDStage
+@implementation HSRequestIDStage
 
 - (instancetype)init
 {
@@ -186,7 +116,7 @@ static NSString * const OISStartKey = @"OData.started";
 }
 
 // One a log line can carry as it is: short, and nothing but visible ASCII.
-static BOOL OISUsableID(NSString *given)
+static BOOL HSUsableID(NSString *given)
 {
   if (!given.length || given.length > 128) return NO;
   for (NSUInteger i = 0; i < given.length; i++) {
@@ -196,28 +126,28 @@ static BOOL OISUsableID(NSString *given)
   return YES;
 }
 
-- (BOOL)shouldPassRequest:(ODataServerRequest *)request reply:(ODataServerReply *)reply
+- (BOOL)shouldPassRequest:(HSRequest *)request reply:(HSReply *)reply
 {
   NSString *given = [request valueForHeader:self.headerName];
-  request.userInfo[ODataServerRequestIDKey] = OISUsableID(given) ? given : [NSUUID UUID].UUIDString.lowercaseString;
+  request.userInfo[HSRequestIDKey] = HSUsableID(given) ? given : [NSUUID UUID].UUIDString.lowercaseString;
   return YES;
 }
 
-- (void)request:(ODataServerRequest *)request willSendResponse:(ODataServerResponse *)response
+- (void)request:(HSRequest *)request willSendResponse:(HSResponse *)response
 {
-  [response setValue:request.userInfo[ODataServerRequestIDKey] forHeader:self.headerName];
+  [response setValue:request.userInfo[HSRequestIDKey] forHeader:self.headerName];
 }
 
 - (NSString *)description
 {
-  return [NSString stringWithFormat:@"<ODataRequestIDStage %@>", self.headerName];
+  return [NSString stringWithFormat:@"<HSRequestIDStage %@>", self.headerName];
 }
 
 @end
 
 #pragma mark - CORS
 
-@implementation ODataCORSStage
+@implementation HSCORSStage
 
 - (instancetype)initWithAllowedOrigins:(NSArray<NSString *> *)origins
 {
@@ -243,7 +173,7 @@ static BOOL OISUsableID(NSString *given)
 
 // Who the response is for: the origin itself, unless any may read it and
 // no credentials go with it.
-- (void)allowOrigin:(NSString *)origin onResponse:(ODataServerResponse *)response
+- (void)allowOrigin:(NSString *)origin onResponse:(HSResponse *)response
 {
   BOOL any = [self.allowedOrigins containsObject:@"*"] && !self.allowsCredentials;
   [response setValue:any ? @"*" : origin forHeader:@"Access-Control-Allow-Origin"];
@@ -254,16 +184,16 @@ static BOOL OISUsableID(NSString *given)
   if (self.allowsCredentials) [response setValue:@"true" forHeader:@"Access-Control-Allow-Credentials"];
 }
 
-- (BOOL)shouldPassRequest:(ODataServerRequest *)request reply:(ODataServerReply *)reply
+- (BOOL)shouldPassRequest:(HSRequest *)request reply:(HSReply *)reply
 {
   NSString *origin = [request valueForHeader:@"Origin"];
   NSString *asked = [request valueForHeader:@"Access-Control-Request-Method"];
   if (!origin || ![request.method isEqualToString:@"OPTIONS"] || !asked) return YES;
   if (![self allowsOrigin:origin] || ![self.allowedMethods containsObject:asked.uppercaseString]) {
-    [reply failWithError:ODataServiceError(403, [NSString stringWithFormat:@"%@ may not %@ here", origin, asked])];
+    [reply failWithError:HSError(403, [NSString stringWithFormat:@"%@ may not %@ here", origin, asked])];
     return NO;
   }
-  ODataServerResponse *response = [ODataServerResponse responseWithStatus:204];
+  HSResponse *response = [HSResponse responseWithStatus:204];
   [self allowOrigin:origin onResponse:response];
   [response setValue:[self.allowedMethods componentsJoinedByString:@", "] forHeader:@"Access-Control-Allow-Methods"];
   // The headers it asks for, those it may.
@@ -280,7 +210,7 @@ static BOOL OISUsableID(NSString *given)
   return NO;
 }
 
-- (void)request:(ODataServerRequest *)request willSendResponse:(ODataServerResponse *)response
+- (void)request:(HSRequest *)request willSendResponse:(HSResponse *)response
 {
   NSString *origin = [request valueForHeader:@"Origin"];
   if (!origin || ![self allowsOrigin:origin] || [response valueForHeader:@"Access-Control-Allow-Origin"]) return;
@@ -290,14 +220,14 @@ static BOOL OISUsableID(NSString *given)
 
 - (NSString *)description
 {
-  return [NSString stringWithFormat:@"<ODataCORSStage %@>", [self.allowedOrigins componentsJoinedByString:@" "]];
+  return [NSString stringWithFormat:@"<HSCORSStage %@>", [self.allowedOrigins componentsJoinedByString:@" "]];
 }
 
 @end
 
 #pragma mark - Compression
 
-@implementation ODataCompressionStage
+@implementation HSCompressionStage
 
 - (instancetype)init
 {
@@ -309,7 +239,7 @@ static BOOL OISUsableID(NSString *given)
 }
 
 // Whether the client takes gzip: named (or *) in Accept-Encoding without q=0.
-static BOOL OISTakesGzip(NSString *accepted)
+static BOOL HSTakesGzip(NSString *accepted)
 {
   for (NSString *item in [accepted ?: @"" componentsSeparatedByString:@","]) {
     NSArray *parts = [item componentsSeparatedByString:@";"];
@@ -335,7 +265,7 @@ static BOOL OISTakesGzip(NSString *accepted)
   return NO;
 }
 
-static NSData *OISGzip(NSData *data)
+static NSData *HSGzip(NSData *data)
 {
   z_stream stream;
   memset(&stream, 0, sizeof(stream));
@@ -351,7 +281,7 @@ static NSData *OISGzip(NSData *data)
   return status == Z_STREAM_END ? compressed : nil;
 }
 
-- (void)request:(ODataServerRequest *)request willSendResponse:(ODataServerResponse *)response
+- (void)request:(HSRequest *)request willSendResponse:(HSResponse *)response
 {
   NSData *body = response.body;
   if (body.length < self.minimumSize || response.status == 204 || response.status == 304) return;
@@ -361,8 +291,8 @@ static NSData *OISGzip(NSData *data)
   if (![vary.lowercaseString containsString:@"accept-encoding"]) {
     [response setValue:vary.length ? [vary stringByAppendingString:@", Accept-Encoding"] : @"Accept-Encoding" forHeader:@"Vary"];
   }
-  if (!OISTakesGzip([request valueForHeader:@"Accept-Encoding"])) return;
-  NSData *compressed = OISGzip(body);
+  if (!HSTakesGzip([request valueForHeader:@"Accept-Encoding"])) return;
+  NSData *compressed = HSGzip(body);
   if (!compressed || compressed.length >= body.length) return;
   response.body = compressed;
   [response setValue:@"gzip" forHeader:@"Content-Encoding"];
@@ -373,7 +303,7 @@ static NSData *OISGzip(NSData *data)
 
 - (NSString *)description
 {
-  return [NSString stringWithFormat:@"<ODataCompressionStage from %lu bytes>", (unsigned long)self.minimumSize];
+  return [NSString stringWithFormat:@"<HSCompressionStage from %lu bytes>", (unsigned long)self.minimumSize];
 }
 
 @end
@@ -381,7 +311,7 @@ static NSData *OISGzip(NSData *data)
 #pragma mark - Access log
 
 // Now, as RFC 3339 in UTC with milliseconds.
-static NSString *OISTimestamp(void)
+static NSString *HSTimestamp(void)
 {
   struct timeval now;
   gettimeofday(&now, NULL);
@@ -392,7 +322,7 @@ static NSString *OISTimestamp(void)
   return [NSString stringWithFormat:@"%s.%03dZ", text, (int)(now.tv_usec / 1000)];
 }
 
-@implementation ODataAccessLogStage
+@implementation HSAccessLogStage
 
 - (instancetype)init
 {
@@ -402,20 +332,20 @@ static NSString *OISTimestamp(void)
   return self;
 }
 
-- (BOOL)shouldPassRequest:(ODataServerRequest *)request reply:(ODataServerReply *)reply
+- (BOOL)shouldPassRequest:(HSRequest *)request reply:(HSReply *)reply
 {
-  request.userInfo[OISStartKey] = [NSDate date];
+  request.userInfo[HSStartKey] = [NSDate date];
   return YES;
 }
 
-- (void)request:(ODataServerRequest *)request willSendResponse:(ODataServerResponse *)response
+- (void)request:(HSRequest *)request willSendResponse:(HSResponse *)response
 {
-  NSDate *started = request.userInfo[OISStartKey];
+  NSDate *started = request.userInfo[HSStartKey];
   double milliseconds = started ? -[started timeIntervalSinceNow] * 1000.0 : 0;
   NSString *who = request.principal.subject ?: @"-";
-  if (self.format == ODataAccessLogJSON) {
+  if (self.format == HSAccessLogJSON) {
     NSMutableDictionary *entry = [NSMutableDictionary dictionary];
-    entry[@"time"] = OISTimestamp();
+    entry[@"time"] = HSTimestamp();
     entry[@"level"] = response.status >= 500 || milliseconds > self.slowRequestThreshold * 1000 ? @"warn" : @"info";
     entry[@"remote"] = request.remoteAddress ?: [NSNull null];
     entry[@"principal"] = request.principal.subject ?: [NSNull null];
@@ -425,20 +355,23 @@ static NSString *OISTimestamp(void)
     entry[@"operation"] = request.operation ?: [NSNull null];
     entry[@"status"] = @(response.status);
     entry[@"bytes"] = response.bodyFileURL || response.bodyStream ? [NSNull null] : @(response.body.length);
-    // A decimal, so it is written as 0.7, not as the double nearest it.
-    entry[@"duration_ms"] = [NSDecimalNumber decimalNumberWithString:[NSString stringWithFormat:@"%.1f", milliseconds]];
-    entry[@"request_id"] = request.userInfo[ODataServerRequestIDKey] ?: [NSNull null];
-    entry[@"trace_id"] = request.userInfo[ODataServerTraceIDKey] ?: [NSNull null];
+    entry[@"request_id"] = request.userInfo[HSRequestIDKey] ?: [NSNull null];
+    entry[@"trace_id"] = request.userInfo[HSTraceIDKey] ?: [NSNull null];
     entry[@"user_agent"] = [request valueForHeader:@"User-Agent"] ?: [NSNull null];
     NSData *json = [NSJSONSerialization dataWithJSONObject:entry options:0 error:NULL];
-    [self writeLine:[[NSString alloc] initWithData:json encoding:NSUTF8StringEncoding]];
+    NSString *line = [[NSString alloc] initWithData:json encoding:NSUTF8StringEncoding];
+    // The duration as text, so it is written as 0.7, not as the double
+    // nearest it (which gnustep-base writes even for an NSDecimalNumber).
+    line = [line stringByReplacingCharactersInRange:NSMakeRange(line.length - 1, 1)
+                                         withString:[NSString stringWithFormat:@",\"duration_ms\":%.1f}", milliseconds]];
+    [self writeLine:line];
     return;
   }
   // A file's or a stream's size is not known here.
   NSString *size = response.bodyFileURL || response.bodyStream ? @"-" : [NSString stringWithFormat:@"%lu", (unsigned long)response.body.length];
   NSString *line = [NSString stringWithFormat:@"%@ %@ \"%@ %@\" %ld %@ %.1fms %@", request.remoteAddress ?: @"-", who, request.method,
                                               request.target, (long)response.status, size, milliseconds,
-                                              request.userInfo[ODataServerRequestIDKey] ?: @"-"];
+                                              request.userInfo[HSRequestIDKey] ?: @"-"];
   [self writeLine:line];
 }
 

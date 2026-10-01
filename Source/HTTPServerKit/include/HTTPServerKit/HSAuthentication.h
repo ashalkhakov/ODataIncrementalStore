@@ -1,41 +1,44 @@
-// ODataIncrementalStore — who is asking a service.
+// HSAuthentication — who is asking a server.
 // Copyright (C) 2026 OIS contributors
 // SPDX-License-Identifier: LGPL-2.1-or-later
 //
-// A service signs no one in: it is a relying party. An identity provider
+// A server signs no one in: it is a relying party. An identity provider
 // (OIDC, with passwords, passkeys or FIDO2 keys as it likes) signs the user
-// in, and something the service trusts tells it who that is. Its
-// authenticator hears it for each request, and the request carries the
-// principal it found to every handler and operation (request.principal),
-// so -predicateForVisibleObjectsInRequest: can scope rows to the caller.
+// in, and something the server trusts tells it who that is. Its
+// authenticator hears it for each request (HSAuthenticationStage, once for
+// every route), and the request carries the principal it found to every
+// handler (request.principal): a route can require one, or OAuth scopes,
+// and an API's handlers scope what they answer by it.
 //
-// ODataTrustedHeaderAuthenticator takes the caller from headers that a
+// HSTrustedHeaderAuthenticator takes the caller from headers that a
 // reverse proxy sets once it has checked them with the provider
 // (oauth2-proxy, Authelia, Caddy's forward_auth, nginx's auth_request).
 // Anyone who can reach the service can send those headers too, so it is
-// for a service that only the proxy can reach (ODataHTTPServer listens on
+// for a server that only the proxy can reach (HSServer listens on
 // loopback by default), and the proxy has to replace the headers, never
 // pass on a client's; a secret header the proxy adds makes sure of the
 // first.
 //
 // Without such a proxy, a client sends the access token the provider gave
-// it (Authorization: Bearer ...), and the service checks it: by its
-// signature, with the provider's published keys (ODataJWTAuthenticator,
+// it (Authorization: Bearer ...), and the server checks it: by its
+// signature, with the provider's published keys (HSJWTAuthenticator,
 // for a token that is a JWT), or by asking the provider
-// (ODataTokenIntrospectionAuthenticator, for any token). Anything else is
-// an ODataAuthenticator of the application's own.
+// (HSTokenIntrospectionAuthenticator, for any token). Anything else is
+// an HSAuthenticator of the application's own.
 //
-// A $batch is authenticated once, as a whole: its requests are the batch's
-// principal's, whatever headers they carry inside it.
+// An API that batches requests (OData's $batch) authenticates the batch
+// once, as a whole: its requests are the batch's principal's, whatever
+// headers they carry inside it.
 
 #pragma once
-#import "ODataService.h"
+#import <Foundation/Foundation.h>
+#import "HSMessage.h"
 
 NS_ASSUME_NONNULL_BEGIN
 
 // Who a request is from: the provider's subject (OIDC's sub, a user name),
 // and what else is known of them.
-@interface ODataPrincipal : NSObject
+@interface HSPrincipal : NSObject
 - (instancetype)initWithSubject:(NSString *)subject claims:(nullable NSDictionary<NSString *, id> *)claims NS_DESIGNATED_INITIALIZER;
 - (instancetype)init NS_UNAVAILABLE;
 @property (nonatomic, readonly, copy) NSString *subject;
@@ -47,42 +50,67 @@ NS_ASSUME_NONNULL_BEGIN
 @property (nonatomic, readonly, copy) NSSet<NSString *> *scopes;
 @end
 
-@protocol ODataAuthenticator <NSObject>
-// Who sent the request. Finish the reply with an ODataPrincipal, or with
-// nil when it names no one (answered 401, unless the service allows
-// anonymous requests); fail it with an ODataServiceError to refuse it (401,
-// or 403). It may defer and answer later, as a handler does, within the
-// service's replyTimeout.
-- (void)authenticateRequest:(ODataRequest *)request reply:(ODataReply *)reply;
+// An authenticator's answer about one request: who sent it, or why they
+// are refused. Answered once, now or later, from any thread; whoever asks
+// is sent the action with it then.
+@interface HSAuthenticationReply : NSObject
+- (instancetype)initWithTarget:(id)target action:(SEL)action NS_DESIGNATED_INITIALIZER;
+- (instancetype)init NS_UNAVAILABLE;
+// nil: the request names no one (whether that is let in is the caller's to
+// say: a route's, an API's).
+- (void)finishWithPrincipal:(nullable HSPrincipal *)principal;
+// A refusal: an HSError, 401 or 403.
+- (void)failWithError:(NSError *)error;
+@property (nonatomic, readonly, getter=isFinished) BOOL finished;
+@property (nonatomic, readonly, strong, nullable) HSPrincipal *principal;
+@property (nonatomic, readonly, strong, nullable) NSError *error;
+// How long the asker waits: then it is failed with 504. 0, the default:
+// as long as it takes.
+@property (nonatomic) NSTimeInterval timeout;
+// The asker's, to find its way back with.
+@property (nonatomic, strong, nullable) id context;
+@end
+
+@protocol HSAuthenticator <NSObject>
+// Who sent the request: finish the reply with an HSPrincipal, or with nil
+// when it names no one; fail it with an HSError to refuse it (401, or 403
+// with HSErrorScopesKey for scopes it lacks). Now, or later.
+- (void)authenticateRequest:(HSRequest *)request reply:(HSAuthenticationReply *)reply;
 @optional
-// The WWW-Authenticate header of a 401. Default: Bearer.
-- (NSString *)challengeForRequest:(ODataRequest *)request;
-// How a client signs in, for $metadata: an Authorization vocabulary record
-// as JSON CSDL has it ({"@type": "Org.OData.Authorization.V1.OpenIDConnect",
-// "Name": ..., "IssuerUrl": ...}), written into Authorizations, and with
-// requiredScopes (when the authenticator has them) into SecuritySchemes.
+// The WWW-Authenticate header of a 401, for the request it refused.
+// Default: Bearer.
+- (NSString *)challengeForRequest:(HSRequest *)request;
+// How a client signs in, for an API's description of itself: a record as
+// OData's Authorization vocabulary has it ({"@type":
+// "Org.OData.Authorization.V1.OpenIDConnect", "Name": ..., "IssuerUrl":
+// ...}), which an OpenAPI security scheme can be made from too.
 - (nullable NSDictionary<NSString *, id> *)authorizationDescription;
 @end
 
-// An authenticator asked about a request no service is answering (yet), for
-// a host that asks once for all its routes (ODataServer's authentication
-// stage), and what it answered: who is asking, or why they are refused.
-// The target is sent the action, with this, once, on any thread: now, or
-// when a deferred authenticator answers (within timeout; 0: no limit).
-@interface ODataAuthentication : NSObject
-+ (void)authenticateURLRequest:(NSURLRequest *)request with:(id<ODataAuthenticator>)authenticator
-                       timeout:(NSTimeInterval)timeout target:(id)target action:(SEL)action;
+// HTTP an authenticator asks of someone else: an identity provider's keys,
+// a token's introspection. A fetch is started, and finished by the fetcher
+// with what came (or the error), which sends its target the action, on any
+// thread. Tests hand an authenticator a fetcher of their own.
+@interface HSFetch : NSObject
+- (instancetype)initWithRequest:(NSURLRequest *)request target:(id)target action:(SEL)action NS_DESIGNATED_INITIALIZER;
 - (instancetype)init NS_UNAVAILABLE;
-@property (nonatomic, readonly) NSURLRequest *URLRequest;
-// nil: no one (whether that is let in is the host's to say).
-@property (nonatomic, readonly, strong, nullable) ODataPrincipal *principal;
-// A refusal (ODataServiceError, 401 or 403), and for a 401 the
-// WWW-Authenticate challenge the authenticator gives with it.
-@property (nonatomic, readonly, strong, nullable) NSError *error;
-@property (nonatomic, readonly, copy, nullable) NSString *challenge;
+@property (nonatomic, readonly) NSURLRequest *request;
+@property (nonatomic, strong, nullable) NSURLResponse *response;
+@property (nonatomic, copy, nullable) NSData *data;
+@property (nonatomic, strong, nullable) NSError *error;
+@property (nonatomic, strong, nullable) id context;
+- (void)finish;
 @end
 
-@interface ODataTrustedHeaderAuthenticator : NSObject <ODataAuthenticator>
+@protocol HSFetching <NSObject>
+- (void)startFetch:(HSFetch *)fetch;
+@end
+
+// NSURLSession where Foundation has it; on a gnustep-base without it,
+// NSURLConnection on a thread of its own.
+FOUNDATION_EXPORT id<HSFetching> HSDefaultFetcher(void);
+
+@interface HSTrustedHeaderAuthenticator : NSObject <HSAuthenticator>
 // The caller's subject from this header (X-Forwarded-User, Remote-User).
 - (instancetype)initWithSubjectHeader:(NSString *)header NS_DESIGNATED_INITIALIZER;
 // X-Forwarded-User, as oauth2-proxy sends it.
@@ -118,7 +146,7 @@ NS_ASSUME_NONNULL_BEGIN
 // issuer), and fetched again after keySetLifetime, or when a token names a
 // key they lack (a rotation), at most once a keySetRefetchInterval.
 // Requests wait for a fetch (503 if it fails).
-@interface ODataJWTAuthenticator : NSObject <ODataAuthenticator>
+@interface HSJWTAuthenticator : NSObject <HSAuthenticator>
 // issuer: exactly as the tokens' iss has it. audience: this service's
 // name at the provider; nil takes any audience, which only suits a
 // provider that issues tokens for nothing else.
@@ -142,8 +170,8 @@ NS_ASSUME_NONNULL_BEGIN
 // tokens with made-up key IDs cannot make the service fetch all the time.
 // Default: 60 seconds.
 @property (nonatomic) NSTimeInterval keySetRefetchInterval;
-// How it fetches. Default: ODataDefaultTransport().
-@property (nonatomic, strong) id<ODataTransport> transport;
+// How it fetches. Default: HSDefaultFetcher().
+@property (nonatomic, strong) id<HSFetching> fetcher;
 @end
 
 // Any access token, opaque or not, checked by asking the provider (RFC
@@ -155,7 +183,7 @@ NS_ASSUME_NONNULL_BEGIN
 // username), with every member of the answer as its claims; iss, aud and
 // scopes are checked as for a JWT when set. An endpoint that does not
 // answer is a 503.
-@interface ODataTokenIntrospectionAuthenticator : NSObject <ODataAuthenticator>
+@interface HSTokenIntrospectionAuthenticator : NSObject <HSAuthenticator>
 - (instancetype)initWithEndpoint:(NSURL *)endpoint clientID:(NSString *)clientID clientSecret:(NSString *)clientSecret NS_DESIGNATED_INITIALIZER;
 - (instancetype)init NS_UNAVAILABLE;
 @property (nonatomic, readonly, copy) NSURL *endpoint;
@@ -164,7 +192,7 @@ NS_ASSUME_NONNULL_BEGIN
 @property (nonatomic, copy, nullable) NSSet<NSString *> *requiredScopes;
 // Default: 60 seconds. 0: every request asks.
 @property (nonatomic) NSTimeInterval cacheLifetime;
-@property (nonatomic, strong) id<ODataTransport> transport;
+@property (nonatomic, strong) id<HSFetching> fetcher;
 @end
 
 NS_ASSUME_NONNULL_END

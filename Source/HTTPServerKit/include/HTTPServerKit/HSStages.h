@@ -1,30 +1,18 @@
-// ODataServerHandlers — the handlers and stages ODataServer comes with.
+// HSStages — the handlers and stages HTTPServerKit comes with.
 // Copyright (C) 2026 OIS contributors
 // SPDX-License-Identifier: LGPL-2.1-or-later
 
 #pragma once
 #import <Foundation/Foundation.h>
-#import "ODataServerPipeline.h"
+#import "HSPipeline.h"
 
-@class ODataService;
-@protocol ODataAuthenticator;
+@protocol HSAuthenticator;
 
 NS_ASSUME_NONNULL_BEGIN
 
-// An ODataService, mounted: each request becomes an ODataExchange on the
-// service's public URL (its serviceRoot's scheme, host and port, then the
-// request target as it came), with who is asking when the authentication
-// stage found out, so the service does not ask again. Mount it at the
-// service root's path: /odata/*.
-@interface ODataServiceHandler : NSObject <ODataServerHandler>
-- (instancetype)initWithService:(ODataService *)service NS_DESIGNATED_INITIALIZER;
-- (instancetype)init NS_UNAVAILABLE;
-@property (nonatomic, readonly) ODataService *service;
-@end
-
 // Whether the server is up, for a load balancer or an orchestrator: 200
 // with -status as JSON. Subclass to say more (or 503, from -statusCode).
-@interface ODataHealthHandler : NSObject <ODataServerHandler>
+@interface HSHealthHandler : NSObject <HSHandler>
 - (NSDictionary *)status;   // default: {"status": "ok"}
 - (NSInteger)statusCode;    // default: 200
 @end
@@ -33,19 +21,19 @@ NS_ASSUME_NONNULL_BEGIN
 // request's principal (nil for no one: whether that is let in is each
 // route's to say, and a mounted service's). A refusal (a token that is not
 // valid) is answered here, with the authenticator's challenge.
-@interface ODataAuthenticationStage : ODataServerStage
-- (instancetype)initWithAuthenticator:(id<ODataAuthenticator>)authenticator NS_DESIGNATED_INITIALIZER;
+@interface HSAuthenticationStage : HSStage
+- (instancetype)initWithAuthenticator:(id<HSAuthenticator>)authenticator NS_DESIGNATED_INITIALIZER;
 - (instancetype)init NS_UNAVAILABLE;
-@property (nonatomic, readonly, strong) id<ODataAuthenticator> authenticator;
+@property (nonatomic, readonly, strong) id<HSAuthenticator> authenticator;
 // How long a deferred authenticator may take: then 504. Default: 60 s.
 @property (nonatomic) NSTimeInterval timeout;
 @end
 
 // The request's id: the client's (or the proxy's) X-Request-ID when it
-// sends a usable one, else a new one; in userInfo[ODataServerRequestIDKey],
+// sends a usable one, else a new one; in userInfo[HSRequestIDKey],
 // and sent back in the response's header.
-FOUNDATION_EXPORT NSString * const ODataServerRequestIDKey;
-@interface ODataRequestIDStage : ODataServerStage
+FOUNDATION_EXPORT NSString * const HSRequestIDKey;
+@interface HSRequestIDStage : HSStage
 @property (nonatomic, copy) NSString *headerName;  // default: X-Request-ID
 @end
 
@@ -55,7 +43,7 @@ FOUNDATION_EXPORT NSString * const ODataServerRequestIDKey;
 // any other response to an allowed origin carries the headers that let the
 // browser hand it over. A request without Origin passes untouched; one from
 // an origin not allowed passes without them (its preflight is 403).
-@interface ODataCORSStage : ODataServerStage
+@interface HSCORSStage : HSStage
 // Origins as browsers send them (https://app.example.com); "*" for any.
 - (instancetype)initWithAllowedOrigins:(NSArray<NSString *> *)origins NS_DESIGNATED_INITIALIZER;
 - (instancetype)init NS_UNAVAILABLE;
@@ -82,7 +70,7 @@ FOUNDATION_EXPORT NSString * const ODataServerRequestIDKey;
 // least minimumSize bytes, of a type that compresses (JSON, XML, text), not
 // already encoded, and only when it comes out smaller. A streamed or file
 // body is left as it is.
-@interface ODataCompressionStage : ODataServerStage
+@interface HSCompressionStage : HSStage
 @property (nonatomic) NSUInteger minimumSize;  // default: 1024
 // Content types (before any ;parameters) that compress: exact, or ending in
 // "/" for a whole family. Default: application/json, application/xml,
@@ -99,9 +87,9 @@ FOUNDATION_EXPORT NSString * const ODataServerRequestIDKey;
 // time, level (warn for a 5xx, or slower than slowRequestThreshold),
 // remote, principal, method, target, route, operation, status, bytes,
 // duration_ms, request_id, trace_id, user_agent.
-typedef NS_ENUM(NSInteger, ODataAccessLogFormat) { ODataAccessLogText, ODataAccessLogJSON };
-@interface ODataAccessLogStage : ODataServerStage
-@property (nonatomic) ODataAccessLogFormat format;
+typedef NS_ENUM(NSInteger, HSAccessLogFormat) { HSAccessLogText, HSAccessLogJSON };
+@interface HSAccessLogStage : HSStage
+@property (nonatomic) HSAccessLogFormat format;
 // Seconds; a slower request is logged at warn. Default: 1.
 @property (nonatomic) NSTimeInterval slowRequestThreshold;
 - (void)writeLine:(NSString *)line;

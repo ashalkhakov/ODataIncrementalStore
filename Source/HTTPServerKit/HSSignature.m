@@ -1,7 +1,7 @@
 // Copyright (C) 2026 OIS contributors
 // SPDX-License-Identifier: LGPL-2.1-or-later
 
-#import "OISSignature.h"
+#import "HSSignature.h"
 
 #if defined(__APPLE__)
 #import <Security/Security.h>
@@ -12,12 +12,12 @@
 #include <gnutls/crypto.h>
 #endif
 
-NSSet<NSString *> *OISSignatureAlgorithms(void)
+NSSet<NSString *> *HSSignatureAlgorithms(void)
 {
   return [NSSet setWithObjects:@"RS256", @"RS384", @"RS512", @"PS256", @"PS384", @"PS512", @"ES256", @"ES384", @"ES512", nil];
 }
 
-NSData *OISBase64URLDecode(NSString *text)
+NSData *HSBase64URLDecode(NSString *text)
 {
   NSCharacterSet *alphabet = [NSCharacterSet characterSetWithCharactersInString:
                               @"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_"];
@@ -29,13 +29,13 @@ NSData *OISBase64URLDecode(NSString *text)
 }
 
 // A JWK member's bytes: an unsigned big-endian number, or a coordinate.
-static NSData *OISMember(NSDictionary *jwk, NSString *name)
+static NSData *HSMember(NSDictionary *jwk, NSString *name)
 {
   id value = jwk[name];
-  return [value isKindOfClass:[NSString class]] ? OISBase64URLDecode(value) : nil;
+  return [value isKindOfClass:[NSString class]] ? HSBase64URLDecode(value) : nil;
 }
 
-static NSData *OISWithoutLeadingZeros(NSData *number)
+static NSData *HSWithoutLeadingZeros(NSData *number)
 {
   const unsigned char *bytes = number.bytes;
   NSUInteger skip = 0;
@@ -43,9 +43,9 @@ static NSData *OISWithoutLeadingZeros(NSData *number)
   return [number subdataWithRange:NSMakeRange(skip, number.length - skip)];
 }
 
-static NSUInteger OISBits(NSData *number)
+static NSUInteger HSBits(NSData *number)
 {
-  NSData *n = OISWithoutLeadingZeros(number);
+  NSData *n = HSWithoutLeadingZeros(number);
   if (!n.length) return 0;
   unsigned char top = ((const unsigned char *)n.bytes)[0];
   NSUInteger bits = (n.length - 1) * 8;
@@ -61,11 +61,11 @@ typedef struct {
   int hash;            // 256, 384, 512
   const char *curve;   // ES only
   NSUInteger size;     // an ES coordinate's bytes
-} OISAlgorithm;
+} HSAlgorithm;
 
-static BOOL OISAlgorithmNamed(NSString *alg, OISAlgorithm *out)
+static BOOL HSAlgorithmNamed(NSString *alg, HSAlgorithm *out)
 {
-  if (![OISSignatureAlgorithms() containsObject:alg]) return NO;
+  if (![HSSignatureAlgorithms() containsObject:alg]) return NO;
   NSString *family = [alg substringToIndex:2];
   int hash = [[alg substringFromIndex:2] intValue];
   out->family = [family isEqualToString:@"RS"] ? "RS" : [family isEqualToString:@"PS"] ? "PS" : "ES";
@@ -77,7 +77,7 @@ static BOOL OISAlgorithmNamed(NSString *alg, OISAlgorithm *out)
 
 #if defined(__APPLE__)
 
-static NSData *OISDERLength(NSUInteger length)
+static NSData *HSDERLength(NSUInteger length)
 {
   if (length < 0x80) return [NSData dataWithBytes:(unsigned char[]){ (unsigned char)length } length:1];
   unsigned char bytes[5];
@@ -88,19 +88,19 @@ static NSData *OISDERLength(NSUInteger length)
   return [NSData dataWithBytes:bytes length:count + 1];
 }
 
-static NSData *OISDERInteger(NSData *number)
+static NSData *HSDERInteger(NSData *number)
 {
   NSMutableData *value = [NSMutableData data];
-  NSData *n = OISWithoutLeadingZeros(number);
+  NSData *n = HSWithoutLeadingZeros(number);
   if (n.length && (((const unsigned char *)n.bytes)[0] & 0x80)) [value appendBytes:"\0" length:1];
   [value appendData:n];
   NSMutableData *der = [NSMutableData dataWithBytes:"\x02" length:1];
-  [der appendData:OISDERLength(value.length)];
+  [der appendData:HSDERLength(value.length)];
   [der appendData:value];
   return der;
 }
 
-static SecKeyRef OISCreateKey(NSData *data, CFStringRef type, NSString **reason)
+static SecKeyRef HSCreateKey(NSData *data, CFStringRef type, NSString **reason)
 {
   CFErrorRef error = NULL;
   NSDictionary *attributes = @{ (__bridge id)kSecAttrKeyType: (__bridge id)type,
@@ -113,34 +113,34 @@ static SecKeyRef OISCreateKey(NSData *data, CFStringRef type, NSString **reason)
   return key;
 }
 
-static BOOL OISVerify(OISAlgorithm a, NSDictionary *jwk, NSData *input, NSData *signature, NSString **reason)
+static BOOL HSVerify(HSAlgorithm a, NSDictionary *jwk, NSData *input, NSData *signature, NSString **reason)
 {
   SecKeyRef key = NULL;
   SecKeyAlgorithm algorithm;
   if (a.family[0] == 'E') {
     NSMutableData *point = [NSMutableData dataWithBytes:"\x04" length:1];
-    [point appendData:OISMember(jwk, @"x")];
-    [point appendData:OISMember(jwk, @"y")];
-    key = OISCreateKey(point, kSecAttrKeyTypeECSECPrimeRandom, reason);
+    [point appendData:HSMember(jwk, @"x")];
+    [point appendData:HSMember(jwk, @"y")];
+    key = HSCreateKey(point, kSecAttrKeyTypeECSECPrimeRandom, reason);
     algorithm = a.hash == 256 ? kSecKeyAlgorithmECDSASignatureMessageX962SHA256
               : a.hash == 384 ? kSecKeyAlgorithmECDSASignatureMessageX962SHA384
                               : kSecKeyAlgorithmECDSASignatureMessageX962SHA512;
     // JWS has r || s; X9.62 is SEQUENCE { r, s } (RFC 4754's raw form
     // needs macOS 14).
-    NSMutableData *body = [NSMutableData dataWithData:OISDERInteger([signature subdataWithRange:NSMakeRange(0, a.size)])];
-    [body appendData:OISDERInteger([signature subdataWithRange:NSMakeRange(a.size, a.size)])];
+    NSMutableData *body = [NSMutableData dataWithData:HSDERInteger([signature subdataWithRange:NSMakeRange(0, a.size)])];
+    [body appendData:HSDERInteger([signature subdataWithRange:NSMakeRange(a.size, a.size)])];
     NSMutableData *der = [NSMutableData dataWithBytes:"\x30" length:1];
-    [der appendData:OISDERLength(body.length)];
+    [der appendData:HSDERLength(body.length)];
     [der appendData:body];
     signature = der;
   } else {
     // PKCS #1 RSAPublicKey: SEQUENCE { modulus, publicExponent }.
-    NSMutableData *body = [NSMutableData dataWithData:OISDERInteger(OISMember(jwk, @"n"))];
-    [body appendData:OISDERInteger(OISMember(jwk, @"e"))];
+    NSMutableData *body = [NSMutableData dataWithData:HSDERInteger(HSMember(jwk, @"n"))];
+    [body appendData:HSDERInteger(HSMember(jwk, @"e"))];
     NSMutableData *der = [NSMutableData dataWithBytes:"\x30" length:1];
-    [der appendData:OISDERLength(body.length)];
+    [der appendData:HSDERLength(body.length)];
     [der appendData:body];
-    key = OISCreateKey(der, kSecAttrKeyTypeRSA, reason);
+    key = HSCreateKey(der, kSecAttrKeyTypeRSA, reason);
     if (a.family[0] == 'R') {
       algorithm = a.hash == 256 ? kSecKeyAlgorithmRSASignatureMessagePKCS1v15SHA256
                 : a.hash == 384 ? kSecKeyAlgorithmRSASignatureMessagePKCS1v15SHA384
@@ -160,7 +160,7 @@ static BOOL OISVerify(OISAlgorithm a, NSDictionary *jwk, NSData *input, NSData *
   return ok;
 }
 
-NSData *OISSHA256(NSData *data)
+NSData *HSSHA256(NSData *data)
 {
   unsigned char digest[CC_SHA256_DIGEST_LENGTH];
   CC_SHA256(data.bytes, (CC_LONG)data.length, digest);
@@ -169,12 +169,12 @@ NSData *OISSHA256(NSData *data)
 
 #else
 
-static gnutls_datum_t OISDatum(NSData *data)
+static gnutls_datum_t HSDatum(NSData *data)
 {
   return (gnutls_datum_t){ (unsigned char *)data.bytes, (unsigned int)data.length };
 }
 
-static BOOL OISVerify(OISAlgorithm a, NSDictionary *jwk, NSData *input, NSData *signature, NSString **reason)
+static BOOL HSVerify(HSAlgorithm a, NSDictionary *jwk, NSData *input, NSData *signature, NSString **reason)
 {
   gnutls_pubkey_t key;
   if (gnutls_pubkey_init(&key) < 0) {
@@ -187,22 +187,22 @@ static BOOL OISVerify(OISAlgorithm a, NSDictionary *jwk, NSData *input, NSData *
   gnutls_datum_t der = { NULL, 0 };
   if (a.family[0] == 'E') {
     gnutls_ecc_curve_t curve = a.hash == 256 ? GNUTLS_ECC_CURVE_SECP256R1 : a.hash == 384 ? GNUTLS_ECC_CURVE_SECP384R1 : GNUTLS_ECC_CURVE_SECP521R1;
-    NSData *x = OISMember(jwk, @"x"), *y = OISMember(jwk, @"y");
-    gnutls_datum_t xd = OISDatum(x), yd = OISDatum(y);
+    NSData *x = HSMember(jwk, @"x"), *y = HSMember(jwk, @"y");
+    gnutls_datum_t xd = HSDatum(x), yd = HSDatum(y);
     loaded = gnutls_pubkey_import_ecc_raw(key, curve, &xd, &yd);
     algorithm = a.hash == 256 ? GNUTLS_SIGN_ECDSA_SHA256 : a.hash == 384 ? GNUTLS_SIGN_ECDSA_SHA384 : GNUTLS_SIGN_ECDSA_SHA512;
     // JWS has r || s; GnuTLS takes the DER of X9.62.
     NSData *r = [signature subdataWithRange:NSMakeRange(0, a.size)];
     NSData *s = [signature subdataWithRange:NSMakeRange(a.size, a.size)];
-    gnutls_datum_t rd = OISDatum(r), sd = OISDatum(s);
+    gnutls_datum_t rd = HSDatum(r), sd = HSDatum(s);
     if (loaded >= 0 && gnutls_encode_rs_value(&der, &rd, &sd) >= 0) {
       checked = [NSData dataWithBytes:der.data length:der.size];
     } else {
       loaded = -1;
     }
   } else {
-    NSData *n = OISMember(jwk, @"n"), *e = OISMember(jwk, @"e");
-    gnutls_datum_t nd = OISDatum(n), ed = OISDatum(e);
+    NSData *n = HSMember(jwk, @"n"), *e = HSMember(jwk, @"e");
+    gnutls_datum_t nd = HSDatum(n), ed = HSDatum(e);
     loaded = gnutls_pubkey_import_rsa_raw(key, &nd, &ed);
     if (a.family[0] == 'R') {
       algorithm = a.hash == 256 ? GNUTLS_SIGN_RSA_SHA256 : a.hash == 384 ? GNUTLS_SIGN_RSA_SHA384 : GNUTLS_SIGN_RSA_SHA512;
@@ -216,14 +216,14 @@ static BOOL OISVerify(OISAlgorithm a, NSDictionary *jwk, NSData *input, NSData *
     if (reason) *reason = @"the key does not load";
     return NO;
   }
-  gnutls_datum_t data = OISDatum(input), sig = OISDatum(checked);
+  gnutls_datum_t data = HSDatum(input), sig = HSDatum(checked);
   int verified = gnutls_pubkey_verify_data2(key, algorithm, 0, &data, &sig);
   gnutls_pubkey_deinit(key);
   if (verified < 0 && reason) *reason = @"the signature does not verify";
   return verified >= 0;
 }
 
-NSData *OISSHA256(NSData *data)
+NSData *HSSHA256(NSData *data)
 {
   unsigned char digest[32];
   gnutls_hash_fast(GNUTLS_DIG_SHA256, data.bytes, data.length, digest);
@@ -232,10 +232,10 @@ NSData *OISSHA256(NSData *data)
 
 #endif
 
-BOOL OISVerifyJWS(NSString *alg, NSDictionary *jwk, NSData *input, NSData *signature, NSString **reason)
+BOOL HSVerifyJWS(NSString *alg, NSDictionary *jwk, NSData *input, NSData *signature, NSString **reason)
 {
-  OISAlgorithm a;
-  if (!OISAlgorithmNamed(alg, &a)) {
+  HSAlgorithm a;
+  if (!HSAlgorithmNamed(alg, &a)) {
     if (reason) *reason = [NSString stringWithFormat:@"%@ is not an algorithm this service takes", alg];
     return NO;
   }
@@ -254,7 +254,7 @@ BOOL OISVerifyJWS(NSString *alg, NSDictionary *jwk, NSData *input, NSData *signa
     return NO;
   }
   if (a.family[0] == 'E') {
-    NSData *x = OISMember(jwk, @"x"), *y = OISMember(jwk, @"y");
+    NSData *x = HSMember(jwk, @"x"), *y = HSMember(jwk, @"y");
     if (![jwk[@"kty"] isEqual:@"EC"] || ![jwk[@"crv"] isEqual:@(a.curve)] || x.length != a.size || y.length != a.size) {
       if (reason) *reason = [NSString stringWithFormat:@"%@ takes an EC key on %s", alg, a.curve];
       return NO;
@@ -264,15 +264,15 @@ BOOL OISVerifyJWS(NSString *alg, NSDictionary *jwk, NSData *input, NSData *signa
       return NO;
     }
   } else {
-    NSData *n = OISMember(jwk, @"n"), *e = OISMember(jwk, @"e");
+    NSData *n = HSMember(jwk, @"n"), *e = HSMember(jwk, @"e");
     if (![jwk[@"kty"] isEqual:@"RSA"] || !n.length || !e.length) {
       if (reason) *reason = [NSString stringWithFormat:@"%@ takes an RSA key", alg];
       return NO;
     }
-    if (OISBits(n) < 2048) {
-      if (reason) *reason = [NSString stringWithFormat:@"the key has %lu bits, fewer than 2048", (unsigned long)OISBits(n)];
+    if (HSBits(n) < 2048) {
+      if (reason) *reason = [NSString stringWithFormat:@"the key has %lu bits, fewer than 2048", (unsigned long)HSBits(n)];
       return NO;
     }
   }
-  return OISVerify(a, jwk, input, signature, reason);
+  return HSVerify(a, jwk, input, signature, reason);
 }

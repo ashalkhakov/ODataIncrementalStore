@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: LGPL-2.1-or-later
 
 #import "ODataService.h"
-#import "ODataAuthentication.h"
+#import <HTTPServerKit/HSAuthentication.h>
 #import "ODataError.h"
 #import "ODataValue.h"
 #import "ODataSchema.h"
@@ -26,6 +26,18 @@ static NSString *OISRequestIDNote(NSURLRequest *request)
 {
   NSString *requestID = [request valueForHTTPHeaderField:@"X-Request-ID"];
   return requestID.length ? [NSString stringWithFormat:@" (request %@)", requestID] : @"";
+}
+
+// A request as the host sees it, for an authenticator.
+static HSRequest *OISHostRequest(NSURLRequest *request)
+{
+  NSString *path = request.URL.path.length ? request.URL.path : @"/";
+  NSURLComponents *components = [NSURLComponents componentsWithURL:request.URL resolvingAgainstBaseURL:YES];
+  NSString *target = components.percentEncodedPath.length ? components.percentEncodedPath : path;
+  if (components.percentEncodedQuery) target = [NSString stringWithFormat:@"%@?%@", target, components.percentEncodedQuery];
+  NSURL *url = [NSURL URLWithString:target relativeToURL:request.URL] ?: request.URL;
+  return [[HSRequest alloc] initWithMethod:request.HTTPMethod ?: @"GET" URL:url.absoluteURL
+                                   headers:request.allHTTPHeaderFields ?: @{} body:request.HTTPBody];
 }
 
 #pragma mark - Replies
@@ -149,7 +161,7 @@ static NSString *OISRequestIDNote(NSURLRequest *request)
 @property (nonatomic, readwrite, copy) NSDictionary *preferences;
 @property (nonatomic, readwrite, strong) NSMutableDictionary *userInfo;
 @property (nonatomic, readwrite, strong, nullable) NSFetchRequest *collectionFetchRequest;
-@property (nonatomic, readwrite, strong, nullable) ODataPrincipal *principal;
+@property (nonatomic, readwrite, strong, nullable) HSPrincipal *principal;
 @property (nonatomic, strong) NSMutableArray<ODataMessage *> *pendingMessages;
 @end
 
@@ -219,66 +231,6 @@ static NSString *OISRequestIDNote(NSURLRequest *request)
     if ([key caseInsensitiveCompare:name] == NSOrderedSame) return headers[key];
   }
   return nil;
-}
-
-@end
-
-#pragma mark - Authentication for a host
-
-@interface ODataAuthentication ()
-@property (nonatomic, readwrite) NSURLRequest *URLRequest;
-@property (nonatomic, readwrite, strong, nullable) ODataPrincipal *principal;
-@property (nonatomic, readwrite, strong, nullable) NSError *error;
-@property (nonatomic, readwrite, copy, nullable) NSString *challenge;
-@property (nonatomic, strong) id<ODataAuthenticator> authenticator;
-@property (nonatomic, strong) ODataRequest *request;
-@property (nonatomic, strong, nullable) id target;
-@property (nonatomic) SEL action;
-@end
-
-@implementation ODataAuthentication
-
-+ (void)authenticateURLRequest:(NSURLRequest *)request with:(id<ODataAuthenticator>)authenticator
-                       timeout:(NSTimeInterval)timeout target:(id)target action:(SEL)action
-{
-  ODataAuthentication *asked = [[self alloc] initWithURLRequest:request authenticator:authenticator target:target action:action];
-  // The authenticator sees a request as the service would show it: its
-  // headers, its URL; it has no context, no path read yet.
-  ODataReply *reply = [[ODataReply alloc] initWithTarget:asked action:@selector(didAnswer:) context:nil];
-  reply.timeout = timeout;
-  reply.request = asked.request;
-  [authenticator authenticateRequest:asked.request reply:reply];
-  [reply returned:nil];
-}
-
-- (instancetype)initWithURLRequest:(NSURLRequest *)request authenticator:(id<ODataAuthenticator>)authenticator
-                            target:(id)target action:(SEL)action
-{
-  self = [super init];
-  if (!self) return nil;
-  _URLRequest = request;
-  _authenticator = authenticator;
-  _request = [[ODataRequest alloc] initWithURLRequest:request];
-  _target = target;
-  _action = action;
-  return self;
-}
-
-- (void)didAnswer:(ODataReply *)reply
-{
-  if (reply.error) {
-    self.error = reply.error;
-    if (reply.error.code == 401) {
-      NSString *challenge = [self.authenticator respondsToSelector:@selector(challengeForRequest:)] ? [self.authenticator challengeForRequest:self.request] : nil;
-      self.challenge = challenge.length ? challenge : @"Bearer";
-    }
-  } else {
-    self.principal = [reply.result isKindOfClass:[ODataPrincipal class]] ? reply.result : nil;
-  }
-  id target = self.target;
-  self.target = nil;
-  void (*send)(id, SEL, id) = (void (*)(id, SEL, id))[target methodForSelector:self.action];
-  send(target, self.action, self);
 }
 
 @end
@@ -1002,7 +954,8 @@ static NSArray<NSString *> *OISApplyTransformations(void)
   NSInteger status = 500;
   NSMutableArray *details = [NSMutableArray array];
   NSString *target = error.userInfo[ODataErrorTargetKey];
-  if ([error.domain isEqualToString:ODataServiceErrorDomain]) {
+  // The service's own errors, and the host's (an authenticator's refusal).
+  if ([error.domain isEqualToString:ODataServiceErrorDomain] || [error.domain isEqualToString:HSErrorDomain]) {
     status = error.code >= 400 && error.code < 600 ? error.code : 500;
     for (NSDictionary *detail in error.userInfo[ODataErrorDetailsKey] ?: @[]) [details addObject:detail];
   } else if ([error.domain isEqualToString:NSCocoaErrorDomain] && error.code >= NSValidationErrorMinimum && error.code <= NSValidationErrorMaximum) {
@@ -1056,18 +1009,20 @@ static NSArray<NSString *> *OISApplyTransformations(void)
   NSMutableDictionary *headers = [NSMutableDictionary dictionary];
   if (status == 405 && error.userInfo[@"Allow"]) headers[@"Allow"] = error.userInfo[@"Allow"];
   // The scopes it needs, as the challenge names them (RFC 6750 section 3).
-  NSArray *scopes = [error.userInfo[ODataErrorScopesKey] isKindOfClass:[NSArray class]] ? error.userInfo[ODataErrorScopesKey] : nil;
+  id named = error.userInfo[ODataErrorScopesKey] ?: error.userInfo[HSErrorScopesKey];
+  NSArray *scopes = [named isKindOfClass:[NSArray class]] ? named : nil;
   NSString *scope = [[scopes componentsJoinedByString:@" "] stringByReplacingOccurrencesOfString:@"\"" withString:@""];
   if (status == 401) {
-    id<ODataAuthenticator> authenticator = self.service.authenticator;
-    NSString *challenge = [authenticator respondsToSelector:@selector(challengeForRequest:)] ? [authenticator challengeForRequest:self.request] : nil;
+    id<HSAuthenticator> authenticator = self.service.authenticator;
+    NSString *challenge = [authenticator respondsToSelector:@selector(challengeForRequest:)]
+        ? [authenticator challengeForRequest:self.authenticationRequest ?: OISHostRequest(self.request.URLRequest)] : nil;
     challenge = challenge.length ? challenge : @"Bearer";
     if (scope.length) challenge = [challenge stringByAppendingFormat:@"%@scope=\"%@\"", [challenge rangeOfString:@" "].location == NSNotFound ? @" " : @", ", scope];
     headers[@"WWW-Authenticate"] = challenge;
   } else if (status == 403 && scope.length) {
     NSCharacterSet *unsafe = [NSCharacterSet characterSetWithCharactersInString:@"\"\\"];
     NSString *description = [[body[@"message"] componentsSeparatedByCharactersInSet:unsafe] componentsJoinedByString:@"'"];
-    headers[@"WWW-Authenticate"] = [NSString stringWithFormat:@"Bearer realm=\"odata\", error=\"insufficient_scope\", "
+    headers[@"WWW-Authenticate"] = [NSString stringWithFormat:@"Bearer realm=\"api\", error=\"insufficient_scope\", "
                                                               @"error_description=\"%@\", scope=\"%@\"", description, scope];
   }
   [self respondJSON:@{ @"error": body } status:status headers:headers];
@@ -1353,25 +1308,42 @@ static NSUInteger OISExpandDepth(ODataQueryOptions *options)
     [self answer];
     return;
   }
-  // Who is asking, first: an authenticator may take its time.
-  ODataReply *reply = [self replyWithAction:@selector(didAuthenticate:)];
-  [self.service.authenticator authenticateRequest:self.request reply:reply];
-  [reply returned:nil];
+  // Who is asking, first: the authenticator sees the request as the host
+  // does, and may take its time.
+  self.authenticationRequest = OISHostRequest(self.request.URLRequest);
+  HSAuthenticationReply *reply = [[HSAuthenticationReply alloc] initWithTarget:self action:@selector(didAuthenticate:)];
+  reply.timeout = self.service.replyTimeout;
+  self.authenticating = YES;
+  [self.service.authenticator authenticateRequest:self.authenticationRequest reply:reply];
+  self.authenticating = NO;
 }
 
-- (void)didAuthenticate:(ODataReply *)reply
+// An answer at once goes on here; a later one, in the request's context.
+- (void)didAuthenticate:(HSAuthenticationReply *)reply
 {
+  if (!self.authenticating) {
+    [self.request.context performBlock:^{
+      [self admitAnswer:reply];
+    }];
+    return;
+  }
+  [self admitAnswer:reply];
+}
+
+- (void)admitAnswer:(HSAuthenticationReply *)reply
+{
+  if (self.done) return;
   self.authenticated = YES;
   if (reply.error) {
     [self respondError:reply.error];
     return;
   }
-  [self admit:[reply.result isKindOfClass:[ODataPrincipal class]] ? reply.result : nil];
+  [self admit:reply.principal];
 }
 
 // Who the authenticator found, or the host did: no one is answered 401,
 // unless the service lets anyone in (or anyone read $metadata).
-- (void)admit:(ODataPrincipal *)principal
+- (void)admit:(HSPrincipal *)principal
 {
   if (!self.service.authenticator) {
     self.request.principal = principal;
@@ -5097,12 +5069,12 @@ static NSNumber *OISScalarReturnValue(NSInvocation *invocation, char type)
   // ApplySupportedDefaults on the container, ApplySupported on each set).
   annotations[@"Org.OData.Aggregation.V1.ApplySupportedDefaults"] = @{ @"Transformations": OISApplyTransformations() };
   for (NSString *term in self.containerAnnotations) annotations[[ODataMetadataWriter fullTerm:term]] = self.containerAnnotations[term];
-  id<ODataAuthenticator> authenticator = self.authenticator;
+  id<HSAuthenticator> authenticator = self.authenticator;
   NSDictionary *authorization = [authenticator respondsToSelector:@selector(authorizationDescription)] ? [authenticator authorizationDescription] : nil;
   if (authorization && !annotations[@"Org.OData.Authorization.V1.Authorizations"]) {
     annotations[@"Org.OData.Authorization.V1.Authorizations"] = @[ authorization ];
     NSMutableDictionary *scheme = [NSMutableDictionary dictionaryWithObject:authorization[@"Name"] ?: @"" forKey:@"Authorization"];
-    NSSet *scopes = [(id)authenticator respondsToSelector:@selector(requiredScopes)] ? [(id)authenticator requiredScopes] : nil;
+    NSSet *scopes = [authenticator respondsToSelector:@selector(requiredScopes)] ? [(NSObject *)authenticator valueForKey:@"requiredScopes"] : nil;
     scheme[@"RequiredScopes"] = [scopes.allObjects sortedArrayUsingSelector:@selector(compare:)] ?: @[];
     annotations[@"Org.OData.Authorization.V1.SecuritySchemes"] = @[ scheme ];
   }
@@ -5230,7 +5202,7 @@ static NSNumber *OISScalarReturnValue(NSInvocation *invocation, char type)
     for (NSString *overload in [operationPermissions.allKeys sortedArrayUsingSelector:@selector(compare:)]) {
       [signature appendFormat:@";%@:%@", overload, [[operationPermissions[overload] allObjects] sortedArrayUsingSelector:@selector(compare:)]];
     }
-    id<ODataAuthenticator> authenticator = self.authenticator;
+    id<HSAuthenticator> authenticator = self.authenticator;
     NSDictionary *authorization = [authenticator respondsToSelector:@selector(authorizationDescription)]
         ? [authenticator authorizationDescription] : nil;
     NSString *schemeName = [authorization[@"Name"] isKindOfClass:[NSString class]] ? authorization[@"Name"] : nil;
@@ -5303,12 +5275,12 @@ static NSNumber *OISScalarReturnValue(NSInvocation *invocation, char type)
   [self startExchange:exchange principal:nil given:NO];
 }
 
-- (void)startExchange:(ODataExchange *)exchange principal:(ODataPrincipal *)principal
+- (void)startExchange:(ODataExchange *)exchange principal:(HSPrincipal *)principal
 {
   [self startExchange:exchange principal:principal given:YES];
 }
 
-- (void)startExchange:(ODataExchange *)exchange principal:(ODataPrincipal *)principal given:(BOOL)given
+- (void)startExchange:(ODataExchange *)exchange principal:(HSPrincipal *)principal given:(BOOL)given
 {
   if (self.maxURLLength && exchange.request.URL.absoluteString.length > self.maxURLLength) {
     NSDictionary *error = @{ @"error": @{ @"code": @"414", @"message": [NSString stringWithFormat:@"The URL is longer than the service takes (%lu characters)",
@@ -5342,7 +5314,7 @@ static BOOL OISPrefersRespondAsync(NSURLRequest *request, NSTimeInterval *wait)
 
 // Answered as any request is; one still under way when that returns, or
 // after wait, is accepted.
-- (void)startAsynchronously:(ODataExchange *)exchange wait:(NSTimeInterval)wait principal:(ODataPrincipal *)principal given:(BOOL)given
+- (void)startAsynchronously:(ODataExchange *)exchange wait:(NSTimeInterval)wait principal:(HSPrincipal *)principal given:(BOOL)given
 {
   OISAsyncJob *job = [[OISAsyncJob alloc] init];
   // A letter first: the monitor's id is a path segment, read as a name.
@@ -5517,7 +5489,7 @@ static NSDateFormatter *OISHTTPDateFormatter(void)
 }
 
 - (ODataRequest *)startExchange:(ODataExchange *)exchange inContext:(NSManagedObjectContext *)shared saves:(BOOL)saves
-                  authenticated:(BOOL)authenticated principal:(ODataPrincipal *)principal given:(BOOL)given
+                  authenticated:(BOOL)authenticated principal:(HSPrincipal *)principal given:(BOOL)given
 {
   [self prepare];
   NSString *repeatabilityKey = nil, *repeatabilitySignature = nil;

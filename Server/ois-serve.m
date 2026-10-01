@@ -27,7 +27,7 @@
 //                 it has signed them in with the identity provider
 //                 (X-Forwarded-User from oauth2-proxy, Remote-User from
 //                 Authelia); a request without it is answered 401. Unset
-//                 (the default): no one is asked. See ODataAuthentication.h
+//                 (the default): no one is asked. See HSAuthentication.h
 //   TrustedClaimHeaders   a dictionary, claim name to header (default:
 //                 email, preferred_username, groups from X-Forwarded-*)
 //   ProxySecretHeader, ProxySecretEnvironment   a header the proxy adds,
@@ -54,7 +54,7 @@
 //                 conforms to ODataServiceConfiguring is sent
 //                 +configureService: before the first request, to register
 //                 handlers and set serviceOperations; one that is an
-//                 ODataServerApplication subclass is the application, and
+//                 HSApplication subclass is the application, and
 //                 can add routes and pipeline stages too; an operation the
 //                 service cannot declare stops it from starting
 //   PrintMetadata YES: write $metadata to standard output and exit
@@ -62,13 +62,14 @@
 // It serves until SIGINT or SIGTERM, logs to standard error, and exits 0
 // on a clean stop, 1 on a configuration it cannot use.
 //
-// All of it is ODataServerMain (ODataServerApplication.h): an application
+// All of it is HSMain (HTTPServerKit's HSApplication.h) with
+// ODataServerApplication (ODataService's ODataServer.h): an application
 // with routes and stages of its own calls that from its own main, with its
 // ODataServerApplication subclass.
 
-#import "ODataServerApplication.h"
+#import <ODataService/ODataServer.h>
 
 int main(int argc, const char *argv[])
 {
-  return ODataServerMain(argc, argv, [ODataServerApplication class]);
+  return HSMain(argc, argv, [ODataServerApplication class]);
 }

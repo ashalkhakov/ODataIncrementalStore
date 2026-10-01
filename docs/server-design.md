@@ -3,7 +3,8 @@
 **Status: milestones 1 to 7 are implemented** (see Milestones): the core
 (`ODataService`, `ODataEntitySetHandler`, `ODataReply`), `$metadata` from
 the model (`ODataMetadataWriter`), `$filter` to `NSPredicate`
-(`ODataPredicateBuilder`), the HTTP adapter with `ois-serve` (`Server/`),
+(`ODataPredicateBuilder`), the HTTP server (`HTTPServerKit`) with
+`ois-serve` (`Server/`),
 operations declared in protocols (`ODataOperationCatalog`), and `$batch`
 (`ODataServiceBatch`); and the Workbench's built-in service is this server
 (milestone 7). Where the code went differently from the plan, the sections
@@ -369,48 +370,68 @@ an application of its own.
 
 ### An application of its own
 
-`ois-serve` is one call, `ODataServerMain(argc, argv, [ODataServerApplication
-class])` (`Server/ODataServerApplication.h`). An application with routes or
-stages of its own subclasses `ODataServerApplication`, overrides what it
-needs, and makes the same call with its class:
+The server is two layers. `HTTPServerKit` is an HTTP server for any API:
+the listener, the pipeline and router, sign-in, observability, and the
+application that makes them from its settings (`HSApplication`), with no
+OData in it; an API is a module (`HSModule`) that adds its routes, stages
+and checks to the application. `ODataService` is one such API, OData the
+first of them (OpenAPI is to come): `<ODataService/ODataServer.h>` has the
+service mounted (`ODataServiceHandler`), as a module
+(`ODataServiceModule`), and the application `ois-serve` is
+(`ODataServerApplication`, which makes the service from the settings).
+
+`ois-serve` is one call, `HSMain(argc, argv, [ODataServerApplication
+class])`. An application with routes or stages of its own subclasses
+`ODataServerApplication` (or `HSApplication`, with no OData service, or
+with modules of its own), overrides what it needs, and makes the same call
+with its class:
 
 ```objc
 @implementation CatalogServer
 - (void)configureService:(ODataService *)service { ... handlers ... }
-- (void)configureRouter:(ODataServerRouter *)router
+- (void)configureRouter:(HSRouter *)router
 {
-  [router insertRoute:[ODataServerRoute routeWithMethod:@"POST" path:@"/webhooks/billing"
+  [router insertRoute:[HSRoute routeWithMethod:@"POST" path:@"/webhooks/billing"
                                                 handler:[[BillingWebhook alloc] init]] atIndex:0];
 }
-- (void)configurePipeline:(ODataServerPipeline *)pipeline
+- (void)configurePipeline:(HSPipeline *)pipeline
 {
-  [pipeline insertStage:[[TenantStage alloc] init] afterStageOfClass:[ODataAuthenticationStage class]];
+  [pipeline insertStage:[[TenantStage alloc] init] afterStageOfClass:[HSAuthenticationStage class]];
 }
 @end
 
-int main(int argc, const char *argv[]) { return ODataServerMain(argc, argv, [CatalogServer class]); }
+int main(int argc, const char *argv[]) { return HSMain(argc, argv, [CatalogServer class]); }
 ```
 
-The settings are `ois-serve`'s, read by `ODataServerConfiguration`, and a
-bundle whose principal class is such a subclass is the application too,
-for `ois-serve -Bundles` without a `main` of one's own.
+The settings are `ois-serve`'s, read by `ODataServerConfiguration` (the
+service's on top of `HSConfiguration`'s), and a bundle whose principal
+class is such a subclass is the application too, for `ois-serve -Bundles`
+without a `main` of one's own.
+
+Errors are answered in the format of the route that took the request: a
+handler that conforms to `HSErrorFormatting` formats its route's (the
+mounted service answers OData's `{"error": {...}}`), and every other route,
+or a request no route took, is answered `application/problem+json` (RFC
+9457: `type`, `title`, `status`, `detail`). The routing stage runs first,
+so a refusal by any stage after it (sign-in, CORS, limits) is already in
+its route's format.
 
 Everything is an object, and the pipeline is built from objects, not
 blocks or conventions:
 
-- An `ODataServerHandler` answers a request: an application's endpoint, the
+- An `HSHandler` answers a request: an application's endpoint, the
   service mounted (`ODataServiceHandler`), the router, a pipeline. Any of
   them can stand where another does; a route's handler can be a pipeline of
   its own.
-- An `ODataServerStage` is a step every request through a pipeline takes:
+- An `HSStage` is a step every request through a pipeline takes:
   `-shouldPassRequest:reply:` on the way in (answer and return `NO` to stop
   the request there), `-request:willSendResponse:` on the way back, or
   `-handleRequest:reply:next:` for a stage that has to wait (the
   authentication stage) or wrap what follows.
-- An `ODataServerPipeline` is an array of stages, to read, reorder or
+- An `HSPipeline` is an array of stages, to read, reorder or
   replace (`insertStage:beforeStageOfClass:`, `replaceStageOfClass:withStage:`),
   then a handler. Its `-description` lists them.
-- An `ODataServerRouter` is an ordered array of `ODataServerRoute`s
+- An `HSRouter` is an ordered array of `HSRoute`s
   (`/orders/:id`, `/odata/*`), the first that matches answering: 405 with
   `Allow` for a path no route takes this method on, 404 for none. A route
   can require someone signed in (`requiresPrincipal`) or one of some OAuth
@@ -418,10 +439,12 @@ blocks or conventions:
   challenge naming them).
 
 What `-prepare:` makes, each handed to its `-configure` method before the
-next: the authenticator and the service; the router (`/health`, then the
-service at its root's path); the pipeline (`ODataRequestIDStage`,
-`ODataAccessLogStage`, `ODataAuthenticationStage` when there is an
-authenticator, then the router); the listener.
+next: the authenticator (and, for `ODataServerApplication`, the service);
+the router (`/health`, `/ready`, `/metrics`, then each module's routes:
+the service at its root's path); the pipeline (`HSRoutingStage`,
+`HSRequestIDStage`, the trace context, metrics, `HSAccessLogStage`, CORS,
+compression, `HSAuthenticationStage` when there is an authenticator, then
+the router); the listener.
 
 A request's life through the pipeline: each stage's way in, in order; the
 handler finishes the reply, now or later, on whatever thread its work
@@ -433,12 +456,12 @@ early sees its own answer; stages after it never ran.
 
 The stages the settings add, besides request ids and the access log:
 
-- `ODataCORSStage` (`CORSOrigins`, `CORSCredentials`): browsers on other
+- `HSCORSStage` (`CORSOrigins`, `CORSCredentials`): browsers on other
   origins. A preflight is answered before authentication (403 for an
   origin not allowed); other responses to an allowed origin carry
   `Access-Control-Allow-Origin` (the origin itself, with `Vary: Origin`,
   unless any may read it without credentials) and expose OData's headers.
-- `ODataCompressionStage` (`Compression`, on by default): gzip for a client
+- `HSCompressionStage` (`Compression`, on by default): gzip for a client
   that takes it, of a JSON, XML or text body of at least 1 KiB, only when
   it comes out smaller, with `Vary: Accept-Encoding` either way and a
   strong ETag made weak. After-hooks run last first, so the access log
@@ -446,9 +469,9 @@ The stages the settings add, besides request ids and the access log:
 
 Bodies need not be in memory. A request body over `MaxBodyInMemory`
 (default 1 MiB), or a chunked one, is written to a temporary file as it
-arrives: `ODataServerRequest`'s `bodyFileURL`, which `body` maps when asked
+arrives: `HSRequest`'s `bodyFileURL`, which `body` maps when asked
 (the service reads it so). A response can be a file (`bodyFileURL`, sent
-from disk) or an `ODataServerResponseStream`, asked for its next piece as
+from disk) or an `HSResponseStream`, asked for its next piece as
 it is sent, chunked.
 
 Settings come from a property list (`-Config`, or `OIS_CONFIG`), then the
@@ -456,7 +479,9 @@ environment (`OIS_PORT`, `OIS_MAX_PAGE_SIZE`, `OIS_JWT_ISSUER`: each
 setting's name in capitals, words apart; JSON for a dictionary or list),
 then the command line, a later one winning, as a container is configured.
 An application's own settings come the same way (`OIS_REPORT_TITLE` is
-`ReportTitle`). A store backend is a library that registers its store type
+`ReportTitle`). `OIS_` is `ODataServerConfiguration`'s prefix; an
+`HSApplication` with no OData service reads `HS_` unless its configuration
+class says otherwise (`+environmentPrefix`). A store backend is a library that registers its store type
 when loaded: `Libraries` loads any before the store is opened, and a
 `StoreType` nothing has registered is looked for as `lib<StoreType>`, so
 `-StoreType CDPostgreSQLStore` is all FreeCoreData's PostgreSQL store needs
@@ -465,7 +490,7 @@ where it is installed.
 ### Observability
 
 What operators expect of a server today, as stages and handlers like the
-rest (`Server/ODataServerObservability.h`):
+rest (`<HTTPServerKit/HSObservability.h>`):
 
 - **Logs.** The access log writes a line per request, as text or, with
   `AccessLog json`, as a JSON object a log collector reads as it is: time,
@@ -473,7 +498,7 @@ rest (`Server/ODataServerObservability.h`):
   remote, principal, method, target, route pattern, operation, status,
   bytes, duration, request id and trace id. The service's own errors are
   logged with the request id the mount hands it.
-- **Metrics,** in Prometheus's text format (`ODataMetrics`, which an
+- **Metrics,** in Prometheus's text format (`HSMetrics`, which an
   application adds its own to): `http_requests_total`,
   `http_request_duration_seconds` and `http_response_size_bytes` by method
   and route pattern, `http_requests_in_flight`, `http_operations_total` by
@@ -489,7 +514,7 @@ rest (`Server/ODataServerObservability.h`):
 - **Liveness and readiness.** `/health` says the process runs; `/ready`
   says whether to send it requests: 503 while it drains, or when one of its
   checks fails or does not answer within five seconds
-  (`ODataServerReadinessCheck`; a mounted service's store is one).
+  (`HSReadinessCheck`; a mounted service's store is one).
 - **Draining.** `SIGTERM` (or `SIGINT`) makes the server not ready, waits
   `DrainDelay` for a load balancer to notice, stops accepting, and gives
   the requests under way `ShutdownTimeout` to finish; a second signal exits
@@ -501,9 +526,11 @@ rest (`Server/ODataServerObservability.h`):
 Exporting spans (OpenTelemetry, OTLP) is not done yet: the trace context
 is in place for it.
 
-One sign-in serves every route: the authentication stage asks the
-authenticator once (`ODataAuthentication`, which asks it about a request
-no service is answering), and the mounted service is handed who it found
+One sign-in serves every route: sign-in is the host's
+(`<HTTPServerKit/HSAuthentication.h>`: trusted proxy headers, JWTs,
+token introspection, or an `HSAuthenticator` of one's own), the
+authentication stage asks the authenticator once, and the mounted service
+is handed who it found
 (`-startExchange:principal:`), applying `allowsAnonymousRequests` and
 `allowsAnonymousMetadata` as it would to its own authenticator's answer.
 Whether no one is let in is each route's to say.
@@ -541,7 +568,7 @@ Data's to-many relationships here are not ordered.
 
 This is the only part that touches sockets, and it should stay small
 enough to replace. Its whole job is to turn bytes into an
-`ODataServerRequest`, hand it to its handler (the pipeline), and write the
+`HSRequest`, hand it to its handler (the pipeline), and write the
 response back; the stages, routes and handlers never see the listener's
 own types.
 
@@ -590,9 +617,9 @@ possible:
 
 It lives in `ThirdParty/GCDWebServer/` with its license; `PORTING.md`
 there lists every change, and `upstream.diff` reapplies them to the
-pristine release. It is built into `libODataHTTPServer` (`Server/`) only,
-with `ODataHTTPServer`, which turns each request into an
-`ODataServerRequest` for its handler and the finished reply back into a
+pristine release. It is built into `libHTTPServerKit` (`Source/HTTPServerKit/`) only,
+with `HSServer`, which turns each request into an
+`HSRequest` for its handler and the finished reply back into a
 response. The
 listener's own smoke test and `Server/Tests/ois-serve-check.m` run in CI on
 both platforms.
@@ -1483,23 +1510,26 @@ gnustep-patches stack.
 
 ## Layout
 
-The repository is ODataKit, and it builds three libraries, one directory
+The repository is ODataKit, and it builds four libraries, one directory
 each under `Source/`, public headers in `include/<Library>/`:
 
 | Library | Holds | Links |
 |---|---|---|
 | `ODataKit` | Schema, values, property mapping, the `$filter` lexer and parser, `$batch`, errors, the transport protocol and HTTP transports | Core Data |
 | `ODataIncrementalStore` | The client: the store, configuration, query building and predicate translation, the model builder and class writer, history, operation calls | `ODataKit` |
-| `ODataService` | The core of the server: `ODataService`, `$batch`, the predicate builder, the metadata writer, operations, authentication and JWT signatures | `ODataKit` |
+| `HTTPServerKit` | An HTTP server for any API: the listener (GCDWebServer), the pipeline, router and stages, sign-in and JWT signatures, observability, the application | Foundation |
+| `ODataService` | The core of the server: `ODataService`, `$batch`, the predicate builder, the metadata writer, operations; and the service as an `HTTPServerKit` module (`ODataServer.h`) | `ODataKit`, `HTTPServerKit` |
 
 The client and the server share only `ODataKit`, so an app that consumes a
 service does not carry the server and one that serves does not carry the
 store. Class names keep their `OData` prefix; only the headers moved, so
 an import is `<ODataKit/ODataSchema.h>`, `<ODataIncrementalStore/…>` or
-`<ODataService/…>`.
+`<ODataService/…>`. `HTTPServerKit`'s classes are `HS`-prefixed.
 
-The HTTP adapter is a library of its own in `Server/`, with `ois-serve` and
-the loopback check, so neither the client nor the core links the listener.
+The HTTP server is a library of its own, `HTTPServerKit` (with the vendored
+GCDWebServer, and sign-in), which knows nothing of OData; `ODataService`
+links it for `ODataServer.h`, and the client links neither. `Server/` has
+`ois-serve`, an example application and the loopback check.
 
 ## Milestones
 
@@ -1543,7 +1573,7 @@ the loopback check, so neither the client nor the core links the listener.
      nothing; with `return=representation`, the rows as they are now, or
      a delta payload of the changes.
 4. ~~**HTTP adapter.**~~ Done: GCDWebServer vendored and ported,
-   `ODataHTTPServer`, `ois-serve`, the loopback check in CI on both
+   `HSServer`, `ois-serve`, the loopback check in CI on both
    platforms, example units and proxy configurations.
 5. ~~**Operations**~~, declared in protocols, as above. Done: functions and
    actions bound to entities and collections, and unbound ones through
@@ -1572,7 +1602,7 @@ the loopback check, so neither the client nor the core links the listener.
      change it had not seen. It now takes an ETag only with the row
      (`testReferencesDoNotRefreshTheClientsETag`). And with port 0,
      GCDWebServer can pick a port that is free for IPv4 and taken for
-     IPv6; `ODataHTTPServer` tries another.
+     IPv6; `HSServer` tries another.
 7. ~~**Workbench on the server.**~~ Done: `WorkbenchEngine` is an
    `ODataService` over an in-memory store with operations of its own, and
    the Workbench's self-test (59 checks, 4 of them the built-in
@@ -1614,21 +1644,21 @@ use. `Core.Messages` a handler adds go into the response's JSON body.
 - ~~Authentication~~: the service is a relying party, and signs no one
   in. An identity provider (OIDC; passwords, passkeys or FIDO2 keys are
   its business) signs the user in, and the service's `authenticator`
-  (`ODataAuthentication.h`) says who each request is from, as an
-  `ODataPrincipal` on the request, which handlers see (a
+  (`HSAuthentication.h`) says who each request is from, as an
+  `HSPrincipal` on the request, which handlers see (a
   `-predicateForVisibleObjectsInRequest:` that scopes rows to the caller)
-  and operations too. `ODataTrustedHeaderAuthenticator` takes it from the
+  and operations too. `HSTrustedHeaderAuthenticator` takes it from the
   headers a reverse proxy sets once it has checked the user
   (oauth2-proxy, Authelia, Caddy's `forward_auth`, nginx's
   `auth_request`; `ois-serve -TrustedUserHeader`), with a secret header
   the proxy adds so that a request that did not come through it is
   refused. Without such a proxy, the client sends its access token
-  (`Authorization: Bearer`), and `ODataJWTAuthenticator` checks a JWT by
+  (`Authorization: Bearer`), and `HSJWTAuthenticator` checks a JWT by
   its signature, as RFC 8725 has it (the algorithm from an allow-list,
   never `none` or HMAC; the key from the issuer's JWK Set, found through
   its discovery document and fetched again when it rotates, never from
   the token; `iss`, `aud`, `exp`, `nbf`, `sub`, scopes), or
-  `ODataTokenIntrospectionAuthenticator` asks the provider about any
+  `HSTokenIntrospectionAuthenticator` asks the provider about any
   token (RFC 7662), keeping the answer a minute. The signatures are the
   platform's to check: Security.framework on Apple, GnuTLS (which
   gnustep-base links already) elsewhere; JOSE libraries would bring more

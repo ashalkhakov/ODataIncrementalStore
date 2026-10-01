@@ -5,7 +5,7 @@
 
 #pragma once
 #import "ODataService.h"
-#import "ODataAuthentication.h"
+#import <HTTPServerKit/HSAuthentication.h>
 #import "ODataError.h"
 #import "ODataValue.h"
 #import "ODataSchema.h"
@@ -225,6 +225,10 @@ typedef NS_ENUM(NSInteger, OISTargetKind) {
 // Who is asking was found by the host (-startExchange:principal:): the
 // request's principal, admitted as the authenticator's answer would be.
 @property (nonatomic) BOOL principalGiven;
+// The request as its authenticator was asked about it (its challenge is for
+// that one), and whether it is being asked now.
+@property (nonatomic, strong, nullable) HSRequest *authenticationRequest;
+@property (nonatomic) BOOL authenticating;
 @end
 
 @interface OISComputedRow : NSObject

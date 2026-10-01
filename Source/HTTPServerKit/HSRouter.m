@@ -1,11 +1,10 @@
 // Copyright (C) 2026 OIS contributors
 // SPDX-License-Identifier: LGPL-2.1-or-later
 
-#import "ODataServerRouter.h"
-#import "ODataError.h"
-#import "ODataAuthentication.h"
+#import "HSRouter.h"
+#import "HSAuthentication.h"
 
-static NSArray<NSString *> *OISSegments(NSString *path)
+static NSArray<NSString *> *HSSegments(NSString *path)
 {
   NSMutableArray *segments = [NSMutableArray array];
   for (NSString *part in [path componentsSeparatedByString:@"/"]) {
@@ -14,29 +13,30 @@ static NSArray<NSString *> *OISSegments(NSString *path)
   return segments;
 }
 
-@implementation ODataServerRoute {
+@implementation HSRoute {
   NSArray<NSString *> *_segments;
 }
 
-+ (instancetype)routeWithMethod:(NSString *)method path:(NSString *)pattern handler:(id<ODataServerHandler>)handler
++ (instancetype)routeWithMethod:(NSString *)method path:(NSString *)pattern handler:(id<HSHandler>)handler
 {
   return [[self alloc] initWithMethod:method path:pattern handler:handler];
 }
 
-- (instancetype)initWithMethod:(NSString *)method path:(NSString *)pattern handler:(id<ODataServerHandler>)handler
+- (instancetype)initWithMethod:(NSString *)method path:(NSString *)pattern handler:(id<HSHandler>)handler
 {
   self = [super init];
   if (!self) return nil;
   _method = [method.uppercaseString copy];
   _pattern = [pattern copy];
   _handler = handler;
-  _segments = OISSegments(pattern);
+  _segments = HSSegments(pattern);
+  if ([(NSObject *)handler conformsToProtocol:@protocol(HSErrorFormatting)]) _errorFormatter = (id<HSErrorFormatting>)handler;
   return self;
 }
 
 - (NSDictionary *)parametersOfPath:(NSString *)path
 {
-  NSArray<NSString *> *parts = OISSegments(path);
+  NSArray<NSString *> *parts = HSSegments(path);
   NSMutableDictionary *parameters = [NSMutableDictionary dictionary];
   NSUInteger count = _segments.count;
   BOOL rest = count && [_segments.lastObject isEqualToString:@"*"];
@@ -74,7 +74,7 @@ static NSArray<NSString *> *OISSegments(NSString *path)
 
 @end
 
-@implementation ODataServerRouter
+@implementation HSRouter
 
 - (instancetype)init
 {
@@ -84,14 +84,14 @@ static NSArray<NSString *> *OISSegments(NSString *path)
   return self;
 }
 
-- (void)addRoute:(ODataServerRoute *)route
+- (void)addRoute:(HSRoute *)route
 {
   @synchronized (self) {
     self.routes = [self.routes arrayByAddingObject:route];
   }
 }
 
-- (void)insertRoute:(ODataServerRoute *)route atIndex:(NSUInteger)index
+- (void)insertRoute:(HSRoute *)route atIndex:(NSUInteger)index
 {
   @synchronized (self) {
     NSMutableArray *routes = [self.routes mutableCopy];
@@ -100,7 +100,7 @@ static NSArray<NSString *> *OISSegments(NSString *path)
   }
 }
 
-- (void)removeRoute:(ODataServerRoute *)route
+- (void)removeRoute:(HSRoute *)route
 {
   @synchronized (self) {
     NSMutableArray *routes = [self.routes mutableCopy];
@@ -109,22 +109,53 @@ static NSArray<NSString *> *OISSegments(NSString *path)
   }
 }
 
-- (ODataServerRoute *)routeWithPath:(NSString *)pattern method:(NSString *)method
+- (HSRoute *)routeWithPath:(NSString *)pattern method:(NSString *)method
 {
-  for (ODataServerRoute *route in self.routes) {
+  for (HSRoute *route in self.routes) {
     if ([route.pattern isEqualToString:pattern] && (!method || [route.method isEqualToString:method.uppercaseString])) return route;
   }
   return nil;
 }
 
-- (void)handleRequest:(ODataServerRequest *)request reply:(ODataServerReply *)reply
+- (HSRoute *)routeForRequest:(HSRequest *)request parameters:(NSDictionary<NSString *, NSString *> **)parametersp
 {
-  NSArray<ODataServerRoute *> *routes;
+  NSArray<HSRoute *> *routes;
   @synchronized (self) {
     routes = self.routes;
   }
+  // One that takes the method first; else the first whose path matches.
+  HSRoute *pathOnly = nil;
+  NSDictionary *pathOnlyParameters = nil;
+  for (HSRoute *route in routes) {
+    NSDictionary *parameters = [route parametersOfPath:request.path];
+    if (!parameters) continue;
+    if ([route takesMethod:request.method]) {
+      if (parametersp) *parametersp = parameters;
+      return route;
+    }
+    if (!pathOnly) {
+      pathOnly = route;
+      pathOnlyParameters = parameters;
+    }
+  }
+  if (parametersp) *parametersp = pathOnlyParameters;
+  return pathOnly;
+}
+
+- (void)handleRequest:(HSRequest *)request reply:(HSReply *)reply
+{
+  NSArray<HSRoute *> *routes;
+  @synchronized (self) {
+    routes = self.routes;
+  }
+  // Found already by the routing stage, for this router: taken as found.
+  if (request.route && [routes indexOfObjectIdenticalTo:request.route] != NSNotFound && [request.route takesMethod:request.method]) {
+    if (![self request:request mayCall:request.route reply:reply]) return;
+    [request.route.handler handleRequest:request reply:reply];
+    return;
+  }
   NSMutableOrderedSet *allowed = [NSMutableOrderedSet orderedSet];
-  for (ODataServerRoute *route in routes) {
+  for (HSRoute *route in routes) {
     NSDictionary *parameters = [route parametersOfPath:request.path];
     if (!parameters) continue;
     if (![route takesMethod:request.method]) {
@@ -139,37 +170,66 @@ static NSArray<NSString *> *OISSegments(NSString *path)
     return;
   }
   if (allowed.count) {
-    ODataServerResponse *response = [ODataServerResponse responseWithError:ODataServiceError(405, [NSString stringWithFormat:@"%@ is not taken here", request.method])];
+    HSResponse *response = [HSResponse responseWithError:HSError(405, [NSString stringWithFormat:@"%@ is not taken here", request.method])
+                                                 request:request];
     [response setValue:[allowed.array componentsJoinedByString:@", "] forHeader:@"Allow"];
     [reply finishWithResponse:response];
     return;
   }
-  [reply failWithError:ODataServiceError(404, [NSString stringWithFormat:@"Nothing answers %@", request.path])];
+  [reply failWithError:HSError(404, [NSString stringWithFormat:@"Nothing answers %@", request.path])];
 }
 
 // Who may call a route: refused (answered) when the caller is not.
-- (BOOL)request:(ODataServerRequest *)request mayCall:(ODataServerRoute *)route reply:(ODataServerReply *)reply
+- (BOOL)request:(HSRequest *)request mayCall:(HSRoute *)route reply:(HSReply *)reply
 {
   NSSet<NSString *> *scopes = route.scopes;
   if (!scopes.count && !route.requiresPrincipal) return YES;
-  ODataPrincipal *principal = request.principal;
+  HSPrincipal *principal = request.principal;
   NSArray *named = [scopes.allObjects sortedArrayUsingSelector:@selector(compare:)];
   if (principal && (!scopes.count || [scopes intersectsSet:principal.scopes])) return YES;
   NSString *what = [NSString stringWithFormat:@"%@ %@", request.method, request.path];
   NSString *message = !principal ? [NSString stringWithFormat:@"%@ names no one: sign in", what]
                                  : [NSString stringWithFormat:@"To call %@ needs one of the scopes %@", what, [named componentsJoinedByString:@" "]];
-  NSMutableDictionary *info = [ODataServiceError(principal ? 403 : 401, message).userInfo mutableCopy];
-  if (named.count) info[ODataErrorScopesKey] = named;
-  [reply failWithError:[NSError errorWithDomain:ODataServiceErrorDomain code:principal ? 403 : 401 userInfo:info]];
+  NSMutableDictionary *info = [HSError(principal ? 403 : 401, message).userInfo mutableCopy];
+  if (named.count) info[HSErrorScopesKey] = named;
+  [reply failWithError:[NSError errorWithDomain:HSErrorDomain code:principal ? 403 : 401 userInfo:info]];
   return NO;
 }
 
 - (NSString *)description
 {
-  NSMutableString *text = [NSMutableString stringWithString:@"<ODataServerRouter"];
-  for (ODataServerRoute *route in self.routes) [text appendFormat:@"\n  %@", route];
+  NSMutableString *text = [NSMutableString stringWithString:@"<HSRouter"];
+  for (HSRoute *route in self.routes) [text appendFormat:@"\n  %@", route];
   [text appendString:@">"];
   return text;
+}
+
+@end
+
+@implementation HSRoutingStage
+
+- (instancetype)initWithRouter:(HSRouter *)router
+{
+  self = [super init];
+  if (!self) return nil;
+  _router = router;
+  return self;
+}
+
+- (BOOL)shouldPassRequest:(HSRequest *)request reply:(HSReply *)reply
+{
+  NSDictionary *parameters = nil;
+  HSRoute *route = [self.router routeForRequest:request parameters:&parameters];
+  if (route) {
+    request.route = route;
+    request.pathParameters = parameters ?: @{};
+  }
+  return YES;
+}
+
+- (NSString *)description
+{
+  return @"<HSRoutingStage>";
 }
 
 @end

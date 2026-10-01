@@ -1,48 +1,30 @@
-// ODataHTTPServer — a handler on the network.
+// HSServer — a handler on the network.
 // Copyright (C) 2026 OIS contributors
 // SPDX-License-Identifier: LGPL-2.1-or-later
 //
-// The one part of ODataServer that touches sockets. It listens with the
+// The one part of HTTPServerKit that touches sockets. It listens with the
 // vendored GCDWebServer (ThirdParty/GCDWebServer), turns each request into
-// an ODataServerRequest for its handler -- a pipeline, a router, a mounted
-// service -- and writes the response back. HTTP/1.1, with persistent
+// an HSRequest for its handler -- a pipeline, a router, an API's own
+// handler -- and writes the response back. HTTP/1.1, with persistent
 // connections (keepAliveTimeout), no TLS: it is meant to sit behind a
 // reverse proxy (nginx, Caddy), which passes the request path on unchanged.
 //
-// Most applications do not make one themselves: ODataServerApplication
-// does, with a pipeline and router around their service.
-//
-// A separate library from ODataService, so that neither the client
-// nor the service's core links the listener.
+// Most applications do not make one themselves: HSApplication does, with
+// a pipeline and router around their APIs.
 
 #pragma once
 #import <Foundation/Foundation.h>
-#import "ODataServerPipeline.h"
+#import "HSPipeline.h"
 
-@class ODataService;
 
 NS_ASSUME_NONNULL_BEGIN
 
-// What a bundle's principal class implements for ois-serve to hand it the
-// service before the first request: register entity set handlers, set
-// paging, and so on. (A bundle whose principal class is an
-// ODataServerApplication subclass can add routes and stages too.)
-@protocol ODataServiceConfiguring <NSObject>
-+ (void)configureService:(ODataService *)service;
-@end
+@interface HSServer : NSObject
 
-@interface ODataHTTPServer : NSObject
-
-- (instancetype)initWithHandler:(id<ODataServerHandler>)handler NS_DESIGNATED_INITIALIZER;
-// A service alone, at its service root's path: a router with that one
-// route, and nothing in front of it (the service asks its authenticator
-// itself).
-- (instancetype)initWithService:(ODataService *)service;
+- (instancetype)initWithHandler:(id<HSHandler>)handler NS_DESIGNATED_INITIALIZER;
 - (instancetype)init NS_UNAVAILABLE;
 
-@property (nonatomic, readonly, strong) id<ODataServerHandler> handler;
-// The service it was made with, if it was.
-@property (nonatomic, readonly, strong, nullable) ODataService *service;
+@property (nonatomic, readonly, strong) id<HSHandler> handler;
 // Listen on 127.0.0.1 and ::1 only (the default: the proxy is on the same
 // machine), or on every address.
 @property (nonatomic) BOOL bindToLocalhost;
@@ -51,7 +33,7 @@ NS_ASSUME_NONNULL_BEGIN
 @property (nonatomic) NSUInteger maxBodySize;
 // A larger request body, or a chunked one (whose size is not said), is
 // written to a temporary file as it comes, not kept in memory
-// (ODataServerRequest's bodyFileURL). Default: 1 MiB.
+// (HSRequest's bodyFileURL). Default: 1 MiB.
 @property (nonatomic) NSUInteger maxBodyInMemory;
 // How long a connection is kept open for the next request after a
 // response (HTTP/1.1 persistent connections; a proxy's upstream keepalive),

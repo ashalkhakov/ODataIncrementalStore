@@ -1,22 +1,21 @@
 // Copyright (C) 2026 OIS contributors
 // SPDX-License-Identifier: LGPL-2.1-or-later
 
-#import "ODataServerPipeline.h"
-#import "ODataError.h"
+#import "HSPipeline.h"
 
 // The rest of a pipeline from one stage on: what that stage's next is.
-@interface OISPipelineRest : NSObject <ODataServerHandler>
-@property (nonatomic, copy) NSArray<ODataServerStage *> *stages;
+@interface HSPipelineRest : NSObject <HSHandler>
+@property (nonatomic, copy) NSArray<HSStage *> *stages;
 @property (nonatomic) NSUInteger index;
-@property (nonatomic, strong, nullable) id<ODataServerHandler> handler;
+@property (nonatomic, strong, nullable) id<HSHandler> handler;
 @end
 
-@implementation OISPipelineRest
+@implementation HSPipelineRest
 
-- (void)handleRequest:(ODataServerRequest *)request reply:(ODataServerReply *)reply
+- (void)handleRequest:(HSRequest *)request reply:(HSReply *)reply
 {
   if (self.index < self.stages.count) {
-    OISPipelineRest *rest = [[OISPipelineRest alloc] init];
+    HSPipelineRest *rest = [[HSPipelineRest alloc] init];
     rest.stages = self.stages;
     rest.index = self.index + 1;
     rest.handler = self.handler;
@@ -24,7 +23,7 @@
   } else if (self.handler) {
     [self.handler handleRequest:request reply:reply];
   } else {
-    [reply failWithError:ODataServiceError(404, @"Nothing answers here")];
+    [reply failWithError:HSError(404, @"Nothing answers here")];
   }
 }
 
@@ -32,54 +31,55 @@
 
 // A stage's way back: the reply it hands on is finished, so it sees the
 // response, then the reply it was handed is.
-@interface OISStageReturn : NSObject
-@property (nonatomic, strong) ODataServerStage *stage;
-@property (nonatomic, strong) ODataServerRequest *request;
-@property (nonatomic, strong) ODataServerReply *reply;
+@interface HSStageReturn : NSObject
+@property (nonatomic, strong) HSStage *stage;
+@property (nonatomic, strong) HSRequest *request;
+@property (nonatomic, strong) HSReply *reply;
 @end
 
-@implementation OISStageReturn
+@implementation HSStageReturn
 
-- (void)didFinish:(ODataServerReply *)inner
+- (void)didFinish:(HSReply *)inner
 {
-  ODataServerResponse *response = inner.response;
+  HSResponse *response = inner.response;
   [self.stage request:self.request willSendResponse:response];
   [self.reply finishWithResponse:response];
 }
 
 @end
 
-@implementation ODataServerStage
+@implementation HSStage
 
-- (BOOL)shouldPassRequest:(ODataServerRequest *)request reply:(ODataServerReply *)reply
+- (BOOL)shouldPassRequest:(HSRequest *)request reply:(HSReply *)reply
 {
   return YES;
 }
 
-- (void)request:(ODataServerRequest *)request willSendResponse:(ODataServerResponse *)response
+- (void)request:(HSRequest *)request willSendResponse:(HSResponse *)response
 {
 }
 
-- (void)handleRequest:(ODataServerRequest *)request reply:(ODataServerReply *)reply next:(id<ODataServerHandler>)next
+- (void)handleRequest:(HSRequest *)request reply:(HSReply *)reply next:(id<HSHandler>)next
 {
-  OISStageReturn *back = [[OISStageReturn alloc] init];
+  HSStageReturn *back = [[HSStageReturn alloc] init];
   back.stage = self;
   back.request = request;
   back.reply = reply;
-  ODataServerReply *inner = [[ODataServerReply alloc] initWithTarget:back action:@selector(didFinish:)];
+  HSReply *inner = [[HSReply alloc] initWithTarget:back action:@selector(didFinish:)];
+  inner.request = request;
   if ([self shouldPassRequest:request reply:inner]) {
     if (!inner.finished) [next handleRequest:request reply:inner];
   } else if (!inner.finished) {
-    [inner failWithError:ODataServiceError(500, [NSString stringWithFormat:@"%@ stopped the request without answering it",
+    [inner failWithError:HSError(500, [NSString stringWithFormat:@"%@ stopped the request without answering it",
                                                                            NSStringFromClass([self class])])];
   }
 }
 
 @end
 
-@implementation ODataServerPipeline
+@implementation HSPipeline
 
-- (instancetype)initWithStages:(NSArray<ODataServerStage *> *)stages handler:(id<ODataServerHandler>)handler
+- (instancetype)initWithStages:(NSArray<HSStage *> *)stages handler:(id<HSHandler>)handler
 {
   self = [super init];
   if (!self) return nil;
@@ -93,9 +93,9 @@
   return [self initWithStages:@[] handler:nil];
 }
 
-- (void)handleRequest:(ODataServerRequest *)request reply:(ODataServerReply *)reply
+- (void)handleRequest:(HSRequest *)request reply:(HSReply *)reply
 {
-  OISPipelineRest *rest = [[OISPipelineRest alloc] init];
+  HSPipelineRest *rest = [[HSPipelineRest alloc] init];
   @synchronized (self) {
     rest.stages = self.stages;
     rest.handler = self.handler;
@@ -103,12 +103,12 @@
   @try {
     [rest handleRequest:request reply:reply];
   } @catch (NSException *exception) {
-    NSLog(@"ODataServer: %@ %@ raised %@: %@", request.method, request.target, exception.name, exception.reason);
-    [reply failWithError:ODataServiceError(500, @"The server could not answer the request")];
+    NSLog(@"HTTPServerKit: %@ %@ raised %@: %@", request.method, request.target, exception.name, exception.reason);
+    [reply failWithError:HSError(500, @"The server could not answer the request")];
   }
 }
 
-- (void)addStage:(ODataServerStage *)stage
+- (void)addStage:(HSStage *)stage
 {
   @synchronized (self) {
     self.stages = [self.stages arrayByAddingObject:stage];
@@ -118,14 +118,14 @@
 - (NSUInteger)indexOfStageOfClass:(Class)cls
 {
   NSUInteger i = 0;
-  for (ODataServerStage *stage in self.stages) {
+  for (HSStage *stage in self.stages) {
     if ([stage isKindOfClass:cls]) return i;
     i++;
   }
   return NSNotFound;
 }
 
-- (void)insertStage:(ODataServerStage *)stage beforeStageOfClass:(Class)cls
+- (void)insertStage:(HSStage *)stage beforeStageOfClass:(Class)cls
 {
   @synchronized (self) {
     NSMutableArray *stages = [self.stages mutableCopy];
@@ -135,7 +135,7 @@
   }
 }
 
-- (void)insertStage:(ODataServerStage *)stage afterStageOfClass:(Class)cls
+- (void)insertStage:(HSStage *)stage afterStageOfClass:(Class)cls
 {
   @synchronized (self) {
     NSMutableArray *stages = [self.stages mutableCopy];
@@ -149,14 +149,14 @@
 {
   @synchronized (self) {
     NSMutableArray *kept = [NSMutableArray array];
-    for (ODataServerStage *stage in self.stages) {
+    for (HSStage *stage in self.stages) {
       if (![stage isKindOfClass:cls]) [kept addObject:stage];
     }
     self.stages = kept;
   }
 }
 
-- (void)replaceStageOfClass:(Class)cls withStage:(ODataServerStage *)stage
+- (void)replaceStageOfClass:(Class)cls withStage:(HSStage *)stage
 {
   @synchronized (self) {
     NSMutableArray *stages = [self.stages mutableCopy];
@@ -170,7 +170,7 @@
   }
 }
 
-- (ODataServerStage *)stageOfClass:(Class)cls
+- (HSStage *)stageOfClass:(Class)cls
 {
   NSUInteger i = [self indexOfStageOfClass:cls];
   return i == NSNotFound ? nil : self.stages[i];
@@ -178,8 +178,8 @@
 
 - (NSString *)description
 {
-  NSMutableString *text = [NSMutableString stringWithString:@"<ODataServerPipeline"];
-  for (ODataServerStage *stage in self.stages) [text appendFormat:@"\n  %@", stage];
+  NSMutableString *text = [NSMutableString stringWithString:@"<HSPipeline"];
+  for (HSStage *stage in self.stages) [text appendFormat:@"\n  %@", stage];
   [text appendFormat:@"\n  -> %@>", self.handler ? (id)self.handler : @"(nothing)"];
   return text;
 }

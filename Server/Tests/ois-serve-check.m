@@ -4,14 +4,13 @@
 //
 //   ois-serve-check <Catalog.momd or .xcdatamodeld>
 //
-// Starts an ODataHTTPServer on 127.0.0.1 over the Catalog model in memory
+// Starts an HSServer on 127.0.0.1 over the Catalog model in memory
 // and talks to it with plain sockets, not the URL loading system, so that
 // what is tested is the listener and the service, as a proxy would reach
 // them. One line per check; exits 0 only if all pass. The protocol itself
 // is tested without sockets, in Tests/ODataServiceTests.m.
 
-#import "ODataService.h"
-#import "ODataServer.h"
+#import <ODataService/ODataServer.h>
 #import <ODataKit/ODataBatch.h>
 #import <ODataKit/ODataError.h>
 #include <arpa/inet.h>
@@ -242,55 +241,55 @@ static OISReply *OISSend(NSString *method, NSString *target, NSDictionary *heade
 #pragma mark An application of its own
 
 // GET /hello/:name: who it greets, and who asked.
-@interface OISHelloHandler : NSObject <ODataServerHandler>
+@interface OISHelloHandler : NSObject <HSHandler>
 @end
 
 @implementation OISHelloHandler
-- (void)handleRequest:(ODataServerRequest *)request reply:(ODataServerReply *)reply
+- (void)handleRequest:(HSRequest *)request reply:(HSReply *)reply
 {
   NSMutableString *order = request.userInfo[@"order"];
   [order appendString:@"handler"];
-  [reply finishWithResponse:[ODataServerResponse responseWithJSON:@{ @"hello": request.pathParameters[@"name"] ?: @"",
+  [reply finishWithResponse:[HSResponse responseWithJSON:@{ @"hello": request.pathParameters[@"name"] ?: @"",
                                                                       @"asker": request.principal.subject ?: [NSNull null] }
                                                             status:200]];
 }
 @end
 
 // Answers later, from another queue, as a handler that asks a database does.
-@interface OISLaterHandler : NSObject <ODataServerHandler>
+@interface OISLaterHandler : NSObject <HSHandler>
 @end
 
 @implementation OISLaterHandler
-- (void)handleRequest:(ODataServerRequest *)request reply:(ODataServerReply *)reply
+- (void)handleRequest:(HSRequest *)request reply:(HSReply *)reply
 {
   double delay = request.userInfo[@"delay"] ? [request.userInfo[@"delay"] doubleValue] : 0.03;
   dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(delay * NSEC_PER_SEC)), dispatch_get_global_queue(0, 0), ^{
-    [reply finishWithResponse:[ODataServerResponse responseWithText:@"later" status:202]];
+    [reply finishWithResponse:[HSResponse responseWithText:@"later" status:202]];
   });
 }
 @end
 
 // A file, a stream, a JSON body worth compressing, and what came.
-@interface OISBodiesHandler : NSObject <ODataServerHandler, ODataServerResponseStream>
+@interface OISBodiesHandler : NSObject <HSHandler, HSResponseStream>
 @property (nonatomic, copy) NSString *kind;
 @property (nonatomic, strong) NSURL *file;
 @property (nonatomic) NSInteger chunk;
 @end
 
 @implementation OISBodiesHandler
-- (void)handleRequest:(ODataServerRequest *)request reply:(ODataServerReply *)reply
+- (void)handleRequest:(HSRequest *)request reply:(HSReply *)reply
 {
   if ([self.kind isEqualToString:@"file"]) {
-    [reply finishWithResponse:[ODataServerResponse responseWithFile:self.file contentType:@"application/octet-stream" status:200]];
+    [reply finishWithResponse:[HSResponse responseWithFile:self.file contentType:@"application/octet-stream" status:200]];
   } else if ([self.kind isEqualToString:@"stream"]) {
     OISBodiesHandler *stream = [[OISBodiesHandler alloc] init];
-    [reply finishWithResponse:[ODataServerResponse responseWithStream:stream contentType:@"text/plain" status:200]];
+    [reply finishWithResponse:[HSResponse responseWithStream:stream contentType:@"text/plain" status:200]];
   } else if ([self.kind isEqualToString:@"json"]) {
     NSMutableArray *rows = [NSMutableArray array];
     for (int i = 0; i < 200; i++) [rows addObject:@{ @"id": @(i), @"name": [NSString stringWithFormat:@"row %d of many", i] }];
-    [reply finishWithResponse:[ODataServerResponse responseWithJSON:@{ @"value": rows } status:200]];
+    [reply finishWithResponse:[HSResponse responseWithJSON:@{ @"value": rows } status:200]];
   } else {
-    [reply finishWithResponse:[ODataServerResponse responseWithJSON:@{ @"size": @(request.body.length), @"inFile": @(request.bodyFileURL != nil) }
+    [reply finishWithResponse:[HSResponse responseWithJSON:@{ @"size": @(request.body.length), @"inFile": @(request.bodyFileURL != nil) }
                                                              status:200]];
   }
 }
@@ -301,30 +300,30 @@ static OISReply *OISSend(NSString *method, NSString *target, NSDictionary *heade
 }
 @end
 
-@interface OISBoomHandler : NSObject <ODataServerHandler>
+@interface OISBoomHandler : NSObject <HSHandler>
 @end
 
 @implementation OISBoomHandler
-- (void)handleRequest:(ODataServerRequest *)request reply:(ODataServerReply *)reply
+- (void)handleRequest:(HSRequest *)request reply:(HSReply *)reply
 {
   [NSException raise:NSInternalInconsistencyException format:@"on purpose"];
 }
 @end
 
 // Notes the way in and the way out: X-Order shows the order stages ran.
-@interface OISOrderStage : ODataServerStage
+@interface OISOrderStage : HSStage
 @property (nonatomic, copy) NSString *name;
 @end
 
 @implementation OISOrderStage
-- (BOOL)shouldPassRequest:(ODataServerRequest *)request reply:(ODataServerReply *)reply
+- (BOOL)shouldPassRequest:(HSRequest *)request reply:(HSReply *)reply
 {
   NSMutableString *order = request.userInfo[@"order"];
   if (!order) request.userInfo[@"order"] = order = [NSMutableString string];
   [order appendFormat:@"%@>", self.name];
   return YES;
 }
-- (void)request:(ODataServerRequest *)request willSendResponse:(ODataServerResponse *)response
+- (void)request:(HSRequest *)request willSendResponse:(HSResponse *)response
 {
   NSMutableString *order = request.userInfo[@"order"];
   [order appendFormat:@"<%@", self.name];
@@ -333,24 +332,24 @@ static OISReply *OISSend(NSString *method, NSString *target, NSDictionary *heade
 @end
 
 // Answers /blocked itself, and sees its own answer on the way back.
-@interface OISBlockingStage : ODataServerStage
+@interface OISBlockingStage : HSStage
 @end
 
 @implementation OISBlockingStage
-- (BOOL)shouldPassRequest:(ODataServerRequest *)request reply:(ODataServerReply *)reply
+- (BOOL)shouldPassRequest:(HSRequest *)request reply:(HSReply *)reply
 {
   if (![request.path isEqualToString:@"/blocked"]) return YES;
-  [reply finishWithResponse:[ODataServerResponse responseWithText:@"no" status:418]];
+  [reply finishWithResponse:[HSResponse responseWithText:@"no" status:418]];
   return NO;
 }
-- (void)request:(ODataServerRequest *)request willSendResponse:(ODataServerResponse *)response
+- (void)request:(HSRequest *)request willSendResponse:(HSResponse *)response
 {
   if (response.status == 418) [response setValue:@"418" forHeader:@"X-Blocked-Saw"];
 }
 @end
 
 // The access log, kept rather than written.
-@interface OISKeptLog : ODataAccessLogStage
+@interface OISKeptLog : HSAccessLogStage
 @property (nonatomic, strong) NSMutableArray<NSString *> *lines;
 @end
 
@@ -365,23 +364,22 @@ static OISReply *OISSend(NSString *method, NSString *target, NSDictionary *heade
 
 // Asks elsewhere and answers later, from another queue: Token <name> is
 // <name>; Token banned is refused.
-@interface OISLaterAuthenticator : NSObject <ODataAuthenticator>
+@interface OISLaterAuthenticator : NSObject <HSAuthenticator>
 @end
 
 @implementation OISLaterAuthenticator
-- (void)authenticateRequest:(ODataRequest *)request reply:(ODataReply *)reply
+- (void)authenticateRequest:(HSRequest *)request reply:(HSAuthenticationReply *)reply
 {
-  [reply defer];
   NSString *given = [[request valueForHeader:@"Authorization"] stringByReplacingOccurrencesOfString:@"Token " withString:@""];
   dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(20 * NSEC_PER_MSEC)), dispatch_get_global_queue(0, 0), ^{
     if ([given isEqualToString:@"banned"]) {
-      [reply failWithError:ODataServiceError(401, @"That token is not taken here")];
+      [reply failWithError:HSError(401, @"That token is not taken here")];
     } else {
-      [reply finishWithResult:given.length ? [[ODataPrincipal alloc] initWithSubject:given claims:@{}] : nil];
+      [reply finishWithPrincipal:given.length ? [[HSPrincipal alloc] initWithSubject:given claims:@{}] : nil];
     }
   });
 }
-- (NSString *)challengeForRequest:(ODataRequest *)request
+- (NSString *)challengeForRequest:(HSRequest *)request
 {
   return @"Token realm=\"check\"";
 }
@@ -392,11 +390,11 @@ static OISReply *OISSend(NSString *method, NSString *target, NSDictionary *heade
 // Objective-C object a property can keep.)
 @interface OISAnswers : NSObject
 @property (nonatomic, strong) NSConditionLock *done;
-@property (nonatomic, strong) ODataAuthentication *answer;
+@property (nonatomic, strong) HSAuthenticationReply *answer;
 @end
 
 @implementation OISAnswers
-- (void)didAuthenticate:(ODataAuthentication *)answer
+- (void)didAuthenticate:(HSAuthenticationReply *)answer
 {
   [self.done lock];
   self.answer = answer;
@@ -404,41 +402,42 @@ static OISReply *OISSend(NSString *method, NSString *target, NSDictionary *heade
 }
 @end
 
-static ODataAuthentication *OISAskLater(NSString *authorization)
+static HSAuthenticationReply *OISAskLater(NSString *authorization)
 {
-  NSMutableURLRequest *request = [NSMutableURLRequest requestWithURL:[NSURL URLWithString:@"http://example.test/anything"]];
-  if (authorization) [request setValue:authorization forHTTPHeaderField:@"Authorization"];
+  HSRequest *request = [[HSRequest alloc] initWithMethod:@"GET" URL:[NSURL URLWithString:@"http://example.test/anything"]
+                                                 headers:authorization ? @{ @"Authorization": authorization } : @{} body:nil];
   OISAnswers *answers = [[OISAnswers alloc] init];
   answers.done = [[NSConditionLock alloc] initWithCondition:0];
-  [ODataAuthentication authenticateURLRequest:request with:[[OISLaterAuthenticator alloc] init] timeout:5
-                                       target:answers action:@selector(didAuthenticate:)];
+  HSAuthenticationReply *reply = [[HSAuthenticationReply alloc] initWithTarget:answers action:@selector(didAuthenticate:)];
+  reply.timeout = 5;
+  [[[OISLaterAuthenticator alloc] init] authenticateRequest:request reply:reply];
   if (![answers.done lockWhenCondition:1 beforeDate:[NSDate dateWithTimeIntervalSinceNow:5]]) return nil;
-  ODataAuthentication *answer = answers.answer;
+  HSAuthenticationReply *answer = answers.answer;
   [answers.done unlock];
   return answer;
 }
 
 // What the trace context stage left for handlers, as the response.
-@interface OISTraceHandler : NSObject <ODataServerHandler>
+@interface OISTraceHandler : NSObject <HSHandler>
 @end
 
 @implementation OISTraceHandler
-- (void)handleRequest:(ODataServerRequest *)request reply:(ODataServerReply *)reply
+- (void)handleRequest:(HSRequest *)request reply:(HSReply *)reply
 {
   request.operation = @"echoTrace";
-  [reply finishWithResponse:[ODataServerResponse responseWithJSON:@{ @"trace": request.userInfo[ODataServerTraceIDKey] ?: [NSNull null],
-                                                                      @"span": request.userInfo[ODataServerSpanIDKey] ?: [NSNull null],
-                                                                      @"traceparent": request.userInfo[ODataServerTraceparentKey] ?: [NSNull null] }
+  [reply finishWithResponse:[HSResponse responseWithJSON:@{ @"trace": request.userInfo[HSTraceIDKey] ?: [NSNull null],
+                                                                      @"span": request.userInfo[HSSpanIDKey] ?: [NSNull null],
+                                                                      @"traceparent": request.userInfo[HSTraceparentKey] ?: [NSNull null] }
                                                             status:200]];
 }
 @end
 
 // Makes the slow route slow.
-@interface OISSlowStage : ODataServerStage
+@interface OISSlowStage : HSStage
 @end
 
 @implementation OISSlowStage
-- (BOOL)shouldPassRequest:(ODataServerRequest *)request reply:(ODataServerReply *)reply
+- (BOOL)shouldPassRequest:(HSRequest *)request reply:(HSReply *)reply
 {
   if ([request.path isEqualToString:@"/slow"]) request.userInfo[@"delay"] = @0.5;
   return YES;
@@ -446,7 +445,7 @@ static ODataAuthentication *OISAskLater(NSString *authorization)
 @end
 
 // A readiness check the test turns on and off.
-@interface OISSwitchCheck : NSObject <ODataServerReadinessCheck>
+@interface OISSwitchCheck : NSObject <HSReadinessCheck>
 @property (atomic) BOOL failing;
 @end
 
@@ -455,7 +454,7 @@ static ODataAuthentication *OISAskLater(NSString *authorization)
 {
   return @"switch";
 }
-- (void)checkReadiness:(ODataServerCheck *)check
+- (void)checkReadiness:(HSCheck *)check
 {
   if (self.failing) {
     [check failWithReason:@"switched off"];
@@ -472,20 +471,20 @@ static ODataAuthentication *OISAskLater(NSString *authorization)
 @end
 
 @implementation OISObservedApplication
-- (void)configureRouter:(ODataServerRouter *)router
+- (void)configureRouter:(HSRouter *)router
 {
-  [router insertRoute:[ODataServerRoute routeWithMethod:@"GET" path:@"/trace" handler:[[OISTraceHandler alloc] init]] atIndex:0];
-  [router insertRoute:[ODataServerRoute routeWithMethod:@"GET" path:@"/slow" handler:[[OISLaterHandler alloc] init]] atIndex:0];
+  [router insertRoute:[HSRoute routeWithMethod:@"GET" path:@"/trace" handler:[[OISTraceHandler alloc] init]] atIndex:0];
+  [router insertRoute:[HSRoute routeWithMethod:@"GET" path:@"/slow" handler:[[OISLaterHandler alloc] init]] atIndex:0];
   self.check = [[OISSwitchCheck alloc] init];
   [self.readiness addCheck:self.check];
 }
-- (void)configurePipeline:(ODataServerPipeline *)pipeline
+- (void)configurePipeline:(HSPipeline *)pipeline
 {
-  ODataAccessLogStage *configured = [pipeline stageOfClass:[ODataAccessLogStage class]];
+  HSAccessLogStage *configured = [pipeline stageOfClass:[HSAccessLogStage class]];
   self.log = [[OISKeptLog alloc] init];
   self.log.lines = [NSMutableArray array];
   self.log.format = configured.format;
-  [pipeline replaceStageOfClass:[ODataAccessLogStage class] withStage:self.log];
+  [pipeline replaceStageOfClass:[HSAccessLogStage class] withStage:self.log];
   [pipeline addStage:[[OISSlowStage alloc] init]];
 }
 @end
@@ -496,30 +495,30 @@ static ODataAuthentication *OISAskLater(NSString *authorization)
 @end
 
 @implementation OISCheckApplication
-- (void)configureRouter:(ODataServerRouter *)router
+- (void)configureRouter:(HSRouter *)router
 {
-  [router insertRoute:[ODataServerRoute routeWithMethod:@"GET" path:@"/hello/:name" handler:[[OISHelloHandler alloc] init]] atIndex:0];
-  ODataServerRoute *billing = [ODataServerRoute routeWithMethod:@"POST" path:@"/webhooks/billing" handler:[[OISLaterHandler alloc] init]];
+  [router insertRoute:[HSRoute routeWithMethod:@"GET" path:@"/hello/:name" handler:[[OISHelloHandler alloc] init]] atIndex:0];
+  HSRoute *billing = [HSRoute routeWithMethod:@"POST" path:@"/webhooks/billing" handler:[[OISLaterHandler alloc] init]];
   billing.scopes = [NSSet setWithObject:@"Billing.Notify"];
   [router addRoute:billing];
-  ODataServerRoute *members = [ODataServerRoute routeWithMethod:@"GET" path:@"/members" handler:[[OISHelloHandler alloc] init]];
+  HSRoute *members = [HSRoute routeWithMethod:@"GET" path:@"/members" handler:[[OISHelloHandler alloc] init]];
   members.requiresPrincipal = YES;
   [router addRoute:members];
-  [router addRoute:[ODataServerRoute routeWithMethod:@"GET" path:@"/later" handler:[[OISLaterHandler alloc] init]]];
-  [router addRoute:[ODataServerRoute routeWithMethod:@"GET" path:@"/boom" handler:[[OISBoomHandler alloc] init]]];
+  [router addRoute:[HSRoute routeWithMethod:@"GET" path:@"/later" handler:[[OISLaterHandler alloc] init]]];
+  [router addRoute:[HSRoute routeWithMethod:@"GET" path:@"/boom" handler:[[OISBoomHandler alloc] init]]];
   for (NSString *kind in @[ @"file", @"stream", @"json", @"echo" ]) {
     OISBodiesHandler *bodies = [[OISBodiesHandler alloc] init];
     bodies.kind = kind;
     bodies.file = self.file;
-    [router addRoute:[ODataServerRoute routeWithMethod:nil path:[@"/bodies/" stringByAppendingString:kind] handler:bodies]];
+    [router addRoute:[HSRoute routeWithMethod:nil path:[@"/bodies/" stringByAppendingString:kind] handler:bodies]];
   }
 }
-- (void)configurePipeline:(ODataServerPipeline *)pipeline
+- (void)configurePipeline:(HSPipeline *)pipeline
 {
   // Its own log in place of the standard one, where it was.
   self.log = [[OISKeptLog alloc] init];
   self.log.lines = [NSMutableArray array];
-  [pipeline replaceStageOfClass:[ODataAccessLogStage class] withStage:self.log];
+  [pipeline replaceStageOfClass:[HSAccessLogStage class] withStage:self.log];
   OISOrderStage *a = [[OISOrderStage alloc] init], *b = [[OISOrderStage alloc] init];
   a.name = @"a";
   b.name = @"b";
@@ -571,7 +570,7 @@ int main(int argc, const char *argv[])
     // its path and writes links with it.
     ODataService *service = [[ODataService alloc] initWithPersistentStoreCoordinator:coordinator
                                                                          serviceRoot:[NSURL URLWithString:@"https://api.example.test/odata/"]];
-    ODataHTTPServer *server = [[ODataHTTPServer alloc] initWithService:service];
+    HSServer *server = [[HSServer alloc] initWithService:service];
     BOOL started = [server startOnPort:0 error:&error];
     port = server.port;
     check(started && port > 0, @"start", [NSString stringWithFormat:@"listening on 127.0.0.1:%lu %@", (unsigned long)port, error ?: @""]);
@@ -658,7 +657,7 @@ int main(int argc, const char *argv[])
     check(ok == 24, @"concurrent", [NSString stringWithFormat:@"%ld of 24 answered", (long)ok]);
 
     // Behind a proxy that signs users in: who is asking, from its headers.
-    ODataTrustedHeaderAuthenticator *proxy = [[ODataTrustedHeaderAuthenticator alloc] init];
+    HSTrustedHeaderAuthenticator *proxy = [[HSTrustedHeaderAuthenticator alloc] init];
     proxy.secretHeader = @"X-OIS-Proxy-Secret";
     proxy.secret = @"s3cret";
     service.authenticator = proxy;
@@ -684,7 +683,7 @@ int main(int argc, const char *argv[])
     check(!misnamed.count, @"env-names", [misnamed componentsJoinedByString:@", "]);
     NSString *plist = [NSTemporaryDirectory() stringByAppendingPathComponent:@"ois-serve-check.plist"];
     [@{ @"Port": @7000, @"HealthPath": @"/up", @"Namespace": @"FromFile" } writeToFile:plist atomically:YES];
-    ODataServerConfiguration *fromEnvironment = [ODataServerConfiguration configurationWithArguments:@{ @"Namespace": @"FromArguments" }
+    HSConfiguration *fromEnvironment = [ODataServerConfiguration configurationWithArguments:@{ @"Namespace": @"FromArguments" }
       environment:@{ @"OIS_CONFIG": plist, @"OIS_PORT": @"7001", @"OIS_LOCALHOST": @"NO", @"OIS_NAMESPACE": @"FromEnvironment",
                      @"OIS_TRUSTED_CLAIM_HEADERS": @"{\"email\": \"X-Mail\"}", @"OIS_REPORT_TITLE": @"Daily",
                      @"OIS_BUNDLES": @"/a.bundle:/b.bundle", @"HOME": @"/root" } error:&error];
@@ -698,17 +697,17 @@ int main(int argc, const char *argv[])
 
     // An authenticator that answers later, asked for a host: no service, no
     // context, and the answer still comes.
-    ODataAuthentication *deferredAnswer = OISAskLater(@"Token ann");
+    HSAuthenticationReply *deferredAnswer = OISAskLater(@"Token ann");
     check([deferredAnswer.principal.subject isEqual:@"ann"] && !deferredAnswer.error, @"auth-deferred", deferredAnswer.principal.subject ?: @"(no answer)");
-    ODataAuthentication *nobody = OISAskLater(nil);
+    HSAuthenticationReply *nobody = OISAskLater(nil);
     check(nobody && !nobody.principal && !nobody.error, @"auth-no-one", nobody ? @"no one" : @"(no answer)");
-    ODataAuthentication *banned = OISAskLater(@"Token banned");
-    check(banned.error.code == 401 && [banned.challenge isEqual:@"Token realm=\"check\""], @"auth-refused",
-          [NSString stringWithFormat:@"%ld %@", (long)banned.error.code, banned.challenge]);
+    HSAuthenticationReply *banned = OISAskLater(@"Token banned");
+    check(banned.error.code == 401 && [banned.error.domain isEqualToString:HSErrorDomain], @"auth-refused",
+          [NSString stringWithFormat:@"%ld %@", (long)banned.error.code, banned.error.domain]);
 
     // An application of its own, made from settings as ois-serve's are:
     // routes and stages around the service, one sign-in for all of them.
-    ODataServerConfiguration *configuration = [[ODataServerConfiguration alloc] initWithSettings:@{
+    HSConfiguration *configuration = [[HSConfiguration alloc] initWithSettings:@{
       @"Model": modelPath, @"ServiceRoot": @"https://api.example.test/odata/", @"TrustedUserHeader": @"X-Forwarded-User",
       @"CORSOrigins": @"https://app.example.test", @"MaxBodyInMemory": @1000 }];
     OISCheckApplication *application = [[OISCheckApplication alloc] initWithConfiguration:configuration];
@@ -744,13 +743,15 @@ int main(int argc, const char *argv[])
     check(later.status == 202 && [later.text isEqual:@"later"] && [later.headers[@"x-order"] isEqual:@"a>b><b<a"],
           @"app-deferred", [NSString stringWithFormat:@"%ld %@ %@", (long)later.status, later.text, later.headers[@"x-order"]]);
     OISReply *boom = OISSend(@"GET", @"/boom", nil, nil);
-    check(boom.status == 500 && [boom.json[@"error"][@"message"] length], @"app-exception", [NSString stringWithFormat:@"%ld %@", (long)boom.status, boom.text]);
+    check(boom.status == 500 && [boom.json[@"detail"] length] && [boom.headers[@"content-type"] isEqual:@"application/problem+json"], @"app-exception", [NSString stringWithFormat:@"%ld %@", (long)boom.status, boom.text]);
 
     OISReply *wrongMethod = OISSend(@"DELETE", @"/hello/x", nil, nil);
     check(wrongMethod.status == 405 && [wrongMethod.headers[@"allow"] isEqual:@"GET, HEAD"], @"app-405",
           [NSString stringWithFormat:@"%ld %@", (long)wrongMethod.status, wrongMethod.headers[@"allow"]]);
     OISReply *nowhere = OISSend(@"GET", @"/nowhere", nil, nil);
-    check(nowhere.status == 404 && [nowhere.json[@"error"][@"code"] isEqual:@"404"], @"app-404", nowhere.text);
+    check(nowhere.status == 404 && [nowhere.json[@"status"] isEqual:@404] && [nowhere.json[@"title"] isEqual:@"Not Found"] &&
+          [nowhere.json[@"type"] isEqual:@"about:blank"] && [nowhere.headers[@"content-type"] isEqual:@"application/problem+json"],
+          @"app-404", nowhere.text);
     OISReply *headOnly = OISSend(@"HEAD", @"/hello/x", nil, nil);
     check(headOnly.status == 200 && headOnly.body.length == 0, @"app-head", [NSString stringWithFormat:@"%ld, %lu bytes", (long)headOnly.status, (unsigned long)headOnly.body.length]);
 
@@ -865,7 +866,7 @@ int main(int argc, const char *argv[])
     [[NSFileManager defaultManager] removeItemAtURL:application.file error:NULL];
 
     // What the server says about itself.
-    ODataServerConfiguration *observedSettings = [[ODataServerConfiguration alloc] initWithSettings:@{
+    HSConfiguration *observedSettings = [[HSConfiguration alloc] initWithSettings:@{
       @"Model": modelPath, @"ServiceRoot": @"https://api.example.test/odata/", @"AccessLog": @"json", @"AdminPort": @1 }];
     OISObservedApplication *observed = [[OISObservedApplication alloc] initWithConfiguration:observedSettings];
     BOOL observing = [observed prepare:&error] && [observed.server startOnPort:0 error:&error] && [observed.adminServer startOnPort:0 error:&error];
@@ -907,7 +908,7 @@ int main(int argc, const char *argv[])
                              @"http_request_duration_seconds_bucket{method=\"GET\",route=\"/trace\",le=\"+Inf\"} 3",
                              @"http_request_duration_seconds_count{method=\"GET\",route=\"/trace\"} 3",
                              @"# TYPE http_request_duration_seconds histogram", @"http_requests_in_flight 0",
-                             @"process_start_time_seconds ", @"odataserver_build_info{version=" ];
+                             @"process_start_time_seconds ", @"httpserverkit_build_info{version=" ];
       NSMutableArray *missing = [NSMutableArray array];
       for (NSString *line in expected) if (![exposition containsString:line]) [missing addObject:line];
       check(scraped.status == 200 && [scraped.headers[@"content-type"] hasPrefix:@"text/plain; version=0.0.4"] && !missing.count,
@@ -965,21 +966,34 @@ int main(int argc, const char *argv[])
 
     // A kept connection with nothing more to ask is closed after the timeout.
     // On every address, IPv4 and IPv6 both (Localhost NO), as in a container.
-    ODataServerConfiguration *briefly = [[ODataServerConfiguration alloc] initWithSettings:@{
-      @"Model": modelPath, @"KeepAliveTimeout": @0.5, @"AccessLog": @NO, @"Localhost": @NO }];
-    ODataServerApplication *brief = [[ODataServerApplication alloc] initWithConfiguration:briefly];
+    // Behind a proxy that sends a secret: a request without it is refused by
+    // the authentication stage, before any route, in the format of the API
+    // it was for.
+    setenv("OIS_CHECK_PROXY_SECRET", "s3cret", 1);
+    HSConfiguration *briefly = [[HSConfiguration alloc] initWithSettings:@{
+      @"Model": modelPath, @"KeepAliveTimeout": @0.5, @"AccessLog": @NO, @"Localhost": @NO,
+      @"TrustedUserHeader": @"X-Forwarded-User", @"ProxySecretHeader": @"X-Proxy-Secret", @"ProxySecretEnvironment": @"OIS_CHECK_PROXY_SECRET",
+      @"AllowAnonymous": @YES }];
+    HSApplication *brief = [[ODataServerApplication alloc] initWithConfiguration:briefly];
     if ([brief prepare:&error] && [brief.server startOnPort:0 error:&error]) {
       port = brief.server.port;
       fd = OISConnect();
       buffer = [NSMutableData data];
       OISWrite(fd, [NSString stringWithFormat:@"GET /health HTTP/1.1\r\nHost: 127.0.0.1\r\n\r\n"]);
-      OISReply *healthy = OISReadOne(fd, buffer, NO);
+      OISReply *healthy = OISReadOne(fd, buffer, NO);  // refused (no proxy secret), and kept
       NSDate *started = [NSDate date];
       BOOL closed = OISClosed(fd);
       NSTimeInterval waited = -[started timeIntervalSinceNow];
-      check(healthy.status == 200 && closed && waited > 0.3 && waited < 3, @"keep-alive-timeout",
+      check(healthy.status == 401 && closed && waited > 0.3 && waited < 3, @"keep-alive-timeout",
             [NSString stringWithFormat:@"%ld, closed %@ after %.2fs", (long)healthy.status, closed ? @"YES" : @"NO", waited]);
       close(fd);
+      NSDictionary *proxied = @{ @"X-Proxy-Secret": @"s3cret" };
+      OISReply *odataRefused = OISSend(@"GET", @"/odata/Products", nil, nil);
+      OISReply *otherRefused = OISSend(@"GET", @"/health", nil, nil);
+      check(odataRefused.status == 401 && [odataRefused.json[@"error"][@"message"] length] &&
+            [otherRefused.headers[@"content-type"] isEqual:@"application/problem+json"] && [otherRefused.json[@"status"] isEqual:@401] &&
+            OISSend(@"GET", @"/odata/Products", proxied, nil).status == 200 && OISSend(@"GET", @"/health", proxied, nil).status == 200,
+            @"error-format-by-route", [NSString stringWithFormat:@"%@ | %@", odataRefused.text, otherRefused.text]);
       [brief.server stop];
     } else {
       check(NO, @"keep-alive-timeout", error.localizedDescription ?: @"");

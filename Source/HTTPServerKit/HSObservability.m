@@ -1,10 +1,9 @@
 // Copyright (C) 2026 OIS contributors
 // SPDX-License-Identifier: LGPL-2.1-or-later
 
-#import "ODataServerObservability.h"
-#import "ODataServerRouter.h"
-#import "ODataServerHandlers.h"
-#import "ODataService.h"
+#import "HSObservability.h"
+#import "HSRouter.h"
+#import "HSStages.h"
 #include <math.h>
 #include <time.h>
 #include <unistd.h>
@@ -12,18 +11,18 @@
 #include <mach/mach.h>
 #endif
 
-#ifndef ODATASERVER_VERSION
-#define ODATASERVER_VERSION "dev"
+#ifndef HTTPSERVERKIT_VERSION
+#define HTTPSERVERKIT_VERSION "dev"
 #endif
-NSString * const ODataServerVersion = @ODATASERVER_VERSION;
+NSString * const HSVersion = @HTTPSERVERKIT_VERSION;
 
-NSString * const ODataServerTraceIDKey = @"OData.traceID";
-NSString * const ODataServerSpanIDKey = @"OData.spanID";
-NSString * const ODataServerTraceparentKey = @"OData.traceparent";
-static NSString * const OISMetricsStartKey = @"OData.metricsStarted";
+NSString * const HSTraceIDKey = @"HS.traceID";
+NSString * const HSSpanIDKey = @"HS.spanID";
+NSString * const HSTraceparentKey = @"HS.traceparent";
+static NSString * const HSMetricsStartKey = @"HS.metricsStarted";
 
 // Seconds on a clock that only goes forward, for durations.
-static double OISMonotonicSeconds(void)
+static double HSMonotonicSeconds(void)
 {
   struct timespec now;
   clock_gettime(CLOCK_MONOTONIC, &now);
@@ -32,38 +31,38 @@ static double OISMonotonicSeconds(void)
 
 #pragma mark - Metrics
 
-typedef NS_ENUM(NSInteger, OISMetricKind) { OISMetricCounter, OISMetricGauge, OISMetricHistogram };
+typedef NS_ENUM(NSInteger, HSMetricKind) { HSMetricCounter, HSMetricGauge, HSMetricHistogram };
 
-@interface OISMetricSeries : NSObject
+@interface HSMetricSeries : NSObject
 @property (nonatomic, copy) NSDictionary<NSString *, NSString *> *labels;
 @property (nonatomic) double value;                       // a counter's or gauge's; a histogram's sum
 @property (nonatomic) unsigned long long count;           // a histogram's
 @property (nonatomic, strong) NSMutableArray<NSNumber *> *bucketCounts;  // a histogram's, per bound, not cumulative
 @end
 
-@implementation OISMetricSeries
+@implementation HSMetricSeries
 @end
 
-@interface OISMetricFamily : NSObject
+@interface HSMetricFamily : NSObject
 @property (nonatomic, copy) NSString *name;
 @property (nonatomic, copy) NSString *help;
-@property (nonatomic) OISMetricKind kind;
+@property (nonatomic) HSMetricKind kind;
 @property (nonatomic, copy) NSArray<NSNumber *> *buckets;
-@property (nonatomic, strong) NSMutableDictionary<NSString *, OISMetricSeries *> *series;
+@property (nonatomic, strong) NSMutableDictionary<NSString *, HSMetricSeries *> *series;
 @end
 
-@implementation OISMetricFamily
+@implementation HSMetricFamily
 @end
 
-static double OISProcessStart;
+static double HSProcessStart;
 
-@implementation ODataMetrics {
-  NSMutableDictionary<NSString *, OISMetricFamily *> *_families;
+@implementation HSMetrics {
+  NSMutableDictionary<NSString *, HSMetricFamily *> *_families;
 }
 
 + (void)initialize
 {
-  if (self == [ODataMetrics class]) OISProcessStart = [[NSDate date] timeIntervalSince1970];
+  if (self == [HSMetrics class]) HSProcessStart = [[NSDate date] timeIntervalSince1970];
 }
 
 - (instancetype)init
@@ -74,7 +73,7 @@ static double OISProcessStart;
   return self;
 }
 
-static NSString *OISLabelKey(NSDictionary<NSString *, NSString *> *labels)
+static NSString *HSLabelKey(NSDictionary<NSString *, NSString *> *labels)
 {
   NSMutableString *key = [NSMutableString string];
   for (NSString *name in [labels.allKeys sortedArrayUsingSelector:@selector(compare:)]) [key appendFormat:@"%@=%@\x1f", name, labels[name]];
@@ -82,11 +81,11 @@ static NSString *OISLabelKey(NSDictionary<NSString *, NSString *> *labels)
 }
 
 // The series of a family, made on first use; nil when the name is another kind.
-- (OISMetricSeries *)series:(NSString *)name help:(NSString *)help kind:(OISMetricKind)kind labels:(NSDictionary *)labels buckets:(NSArray *)buckets
+- (HSMetricSeries *)series:(NSString *)name help:(NSString *)help kind:(HSMetricKind)kind labels:(NSDictionary *)labels buckets:(NSArray *)buckets
 {
-  OISMetricFamily *family = _families[name];
+  HSMetricFamily *family = _families[name];
   if (!family) {
-    family = [[OISMetricFamily alloc] init];
+    family = [[HSMetricFamily alloc] init];
     family.name = name;
     family.help = help;
     family.kind = kind;
@@ -95,12 +94,12 @@ static NSString *OISLabelKey(NSDictionary<NSString *, NSString *> *labels)
     _families[name] = family;
   }
   if (family.kind != kind) return nil;
-  NSString *key = OISLabelKey(labels ?: @{});
-  OISMetricSeries *series = family.series[key];
+  NSString *key = HSLabelKey(labels ?: @{});
+  HSMetricSeries *series = family.series[key];
   if (!series) {
-    series = [[OISMetricSeries alloc] init];
+    series = [[HSMetricSeries alloc] init];
     series.labels = labels ?: @{};
-    if (kind == OISMetricHistogram) {
+    if (kind == HSMetricHistogram) {
       series.bucketCounts = [NSMutableArray array];
       for (NSUInteger i = 0; i < family.buckets.count; i++) [series.bucketCounts addObject:@0];
     }
@@ -112,7 +111,7 @@ static NSString *OISLabelKey(NSDictionary<NSString *, NSString *> *labels)
 - (void)incrementCounter:(NSString *)name help:(NSString *)help labels:(NSDictionary *)labels by:(double)value
 {
   @synchronized (self) {
-    OISMetricSeries *series = [self series:name help:help kind:OISMetricCounter labels:labels buckets:nil];
+    HSMetricSeries *series = [self series:name help:help kind:HSMetricCounter labels:labels buckets:nil];
     series.value += value;
   }
 }
@@ -120,14 +119,14 @@ static NSString *OISLabelKey(NSDictionary<NSString *, NSString *> *labels)
 - (void)setGauge:(NSString *)name help:(NSString *)help labels:(NSDictionary *)labels value:(double)value
 {
   @synchronized (self) {
-    [self series:name help:help kind:OISMetricGauge labels:labels buckets:nil].value = value;
+    [self series:name help:help kind:HSMetricGauge labels:labels buckets:nil].value = value;
   }
 }
 
 - (void)addToGauge:(NSString *)name help:(NSString *)help labels:(NSDictionary *)labels by:(double)value
 {
   @synchronized (self) {
-    OISMetricSeries *series = [self series:name help:help kind:OISMetricGauge labels:labels buckets:nil];
+    HSMetricSeries *series = [self series:name help:help kind:HSMetricGauge labels:labels buckets:nil];
     series.value += value;
   }
 }
@@ -140,8 +139,8 @@ static NSString *OISLabelKey(NSDictionary<NSString *, NSString *> *labels)
 - (void)observeHistogram:(NSString *)name help:(NSString *)help labels:(NSDictionary *)labels value:(double)value buckets:(NSArray *)buckets
 {
   @synchronized (self) {
-    OISMetricSeries *series = [self series:name help:help kind:OISMetricHistogram labels:labels
-                                   buckets:buckets ?: [ODataMetrics defaultBuckets]];
+    HSMetricSeries *series = [self series:name help:help kind:HSMetricHistogram labels:labels
+                                   buckets:buckets ?: [HSMetrics defaultBuckets]];
     if (!series) return;
     NSArray *bounds = _families[name].buckets;
     for (NSUInteger i = 0; i < bounds.count; i++) {
@@ -158,12 +157,12 @@ static NSString *OISLabelKey(NSDictionary<NSString *, NSString *> *labels)
 - (double)valueOf:(NSString *)name labels:(NSDictionary *)labels
 {
   @synchronized (self) {
-    OISMetricSeries *series = _families[name].series[OISLabelKey(labels ?: @{})];
-    return _families[name].kind == OISMetricHistogram ? (double)series.count : series.value;
+    HSMetricSeries *series = _families[name].series[HSLabelKey(labels ?: @{})];
+    return _families[name].kind == HSMetricHistogram ? (double)series.count : series.value;
   }
 }
 
-static NSString *OISNumber(double value)
+static NSString *HSNumber(double value)
 {
   if (isinf(value)) return value > 0 ? @"+Inf" : @"-Inf";
   if (isnan(value)) return @"NaN";
@@ -171,25 +170,25 @@ static NSString *OISNumber(double value)
   return [NSString stringWithFormat:@"%.9g", value];
 }
 
-static NSString *OISEscapedLabel(NSString *value)
+static NSString *HSEscapedLabel(NSString *value)
 {
   return [[[value stringByReplacingOccurrencesOfString:@"\\" withString:@"\\\\"]
            stringByReplacingOccurrencesOfString:@"\"" withString:@"\\\""]
           stringByReplacingOccurrencesOfString:@"\n" withString:@"\\n"];
 }
 
-static NSString *OISLabels(NSDictionary<NSString *, NSString *> *labels, NSString *extraName, NSString *extraValue)
+static NSString *HSLabels(NSDictionary<NSString *, NSString *> *labels, NSString *extraName, NSString *extraValue)
 {
   NSMutableArray *parts = [NSMutableArray array];
   for (NSString *name in [labels.allKeys sortedArrayUsingSelector:@selector(compare:)]) {
-    [parts addObject:[NSString stringWithFormat:@"%@=\"%@\"", name, OISEscapedLabel(labels[name])]];
+    [parts addObject:[NSString stringWithFormat:@"%@=\"%@\"", name, HSEscapedLabel(labels[name])]];
   }
   if (extraName) [parts addObject:[NSString stringWithFormat:@"%@=\"%@\"", extraName, extraValue]];
   return parts.count ? [NSString stringWithFormat:@"{%@}", [parts componentsJoinedByString:@","]] : @"";
 }
 
 // The process's resident memory, in bytes; 0 where it cannot be told.
-static double OISResidentBytes(void)
+static double HSResidentBytes(void)
 {
 #if defined(__APPLE__)
   struct mach_task_basic_info info;
@@ -211,43 +210,43 @@ static double OISResidentBytes(void)
   NSMutableString *text = [NSMutableString string];
   @synchronized (self) {
     for (NSString *name in [_families.allKeys sortedArrayUsingSelector:@selector(compare:)]) {
-      OISMetricFamily *family = _families[name];
-      NSString *kind = family.kind == OISMetricCounter ? @"counter" : family.kind == OISMetricGauge ? @"gauge" : @"histogram";
+      HSMetricFamily *family = _families[name];
+      NSString *kind = family.kind == HSMetricCounter ? @"counter" : family.kind == HSMetricGauge ? @"gauge" : @"histogram";
       [text appendFormat:@"# HELP %@ %@\n# TYPE %@ %@\n", name, [family.help stringByReplacingOccurrencesOfString:@"\n" withString:@" "], name, kind];
       for (NSString *key in [family.series.allKeys sortedArrayUsingSelector:@selector(compare:)]) {
-        OISMetricSeries *series = family.series[key];
-        if (family.kind != OISMetricHistogram) {
-          [text appendFormat:@"%@%@ %@\n", name, OISLabels(series.labels, nil, nil), OISNumber(series.value)];
+        HSMetricSeries *series = family.series[key];
+        if (family.kind != HSMetricHistogram) {
+          [text appendFormat:@"%@%@ %@\n", name, HSLabels(series.labels, nil, nil), HSNumber(series.value)];
           continue;
         }
         unsigned long long cumulative = 0;
         for (NSUInteger i = 0; i < family.buckets.count; i++) {
           cumulative += [series.bucketCounts[i] unsignedLongLongValue];
-          [text appendFormat:@"%@_bucket%@ %llu\n", name, OISLabels(series.labels, @"le", OISNumber([family.buckets[i] doubleValue])), cumulative];
+          [text appendFormat:@"%@_bucket%@ %llu\n", name, HSLabels(series.labels, @"le", HSNumber([family.buckets[i] doubleValue])), cumulative];
         }
-        [text appendFormat:@"%@_bucket%@ %llu\n", name, OISLabels(series.labels, @"le", @"+Inf"), series.count];
-        [text appendFormat:@"%@_sum%@ %@\n", name, OISLabels(series.labels, nil, nil), OISNumber(series.value)];
-        [text appendFormat:@"%@_count%@ %llu\n", name, OISLabels(series.labels, nil, nil), series.count];
+        [text appendFormat:@"%@_bucket%@ %llu\n", name, HSLabels(series.labels, @"le", @"+Inf"), series.count];
+        [text appendFormat:@"%@_sum%@ %@\n", name, HSLabels(series.labels, nil, nil), HSNumber(series.value)];
+        [text appendFormat:@"%@_count%@ %llu\n", name, HSLabels(series.labels, nil, nil), series.count];
       }
     }
   }
   [text appendFormat:@"# HELP process_start_time_seconds When the process started, in seconds since the epoch.\n"
-                     @"# TYPE process_start_time_seconds gauge\nprocess_start_time_seconds %@\n", OISNumber(floor(OISProcessStart))];
-  double resident = OISResidentBytes();
+                     @"# TYPE process_start_time_seconds gauge\nprocess_start_time_seconds %@\n", HSNumber(floor(HSProcessStart))];
+  double resident = HSResidentBytes();
   if (resident > 0) {
     [text appendFormat:@"# HELP process_resident_memory_bytes Resident memory, in bytes.\n"
-                       @"# TYPE process_resident_memory_bytes gauge\nprocess_resident_memory_bytes %@\n", OISNumber(resident)];
+                       @"# TYPE process_resident_memory_bytes gauge\nprocess_resident_memory_bytes %@\n", HSNumber(resident)];
   }
-  [text appendFormat:@"# HELP odataserver_build_info The ODataServer this is, as a label.\n"
-                     @"# TYPE odataserver_build_info gauge\nodataserver_build_info{version=\"%@\"} 1\n", OISEscapedLabel(ODataServerVersion)];
+  [text appendFormat:@"# HELP httpserverkit_build_info The HTTPServerKit this is, as a label.\n"
+                     @"# TYPE httpserverkit_build_info gauge\nhttpserverkit_build_info{version=\"%@\"} 1\n", HSEscapedLabel(HSVersion)];
   return text;
 }
 
 @end
 
-@implementation ODataMetricsStage
+@implementation HSMetricsStage
 
-- (instancetype)initWithMetrics:(ODataMetrics *)metrics
+- (instancetype)initWithMetrics:(HSMetrics *)metrics
 {
   self = [super init];
   if (!self) return nil;
@@ -255,25 +254,25 @@ static double OISResidentBytes(void)
   return self;
 }
 
-- (BOOL)shouldPassRequest:(ODataServerRequest *)request reply:(ODataServerReply *)reply
+- (BOOL)shouldPassRequest:(HSRequest *)request reply:(HSReply *)reply
 {
-  request.userInfo[OISMetricsStartKey] = @(OISMonotonicSeconds());
+  request.userInfo[HSMetricsStartKey] = @(HSMonotonicSeconds());
   [self.metrics addToGauge:@"http_requests_in_flight" help:@"Requests being answered." labels:nil by:1];
   return YES;
 }
 
-- (void)request:(ODataServerRequest *)request willSendResponse:(ODataServerResponse *)response
+- (void)request:(HSRequest *)request willSendResponse:(HSResponse *)response
 {
-  ODataMetrics *metrics = self.metrics;
+  HSMetrics *metrics = self.metrics;
   [metrics addToGauge:@"http_requests_in_flight" help:@"Requests being answered." labels:nil by:-1];
   NSString *route = request.route.pattern ?: @"(none)";
   NSString *status = [NSString stringWithFormat:@"%ld", (long)response.status];
   [metrics incrementCounter:@"http_requests_total" help:@"Requests answered, by method, route and status."
                      labels:@{ @"method": request.method, @"route": route, @"status": status } by:1];
-  NSNumber *started = request.userInfo[OISMetricsStartKey];
+  NSNumber *started = request.userInfo[HSMetricsStartKey];
   if (started) {
     [metrics observeHistogram:@"http_request_duration_seconds" help:@"How long requests took to answer, by method and route."
-                       labels:@{ @"method": request.method, @"route": route } value:OISMonotonicSeconds() - started.doubleValue buckets:nil];
+                       labels:@{ @"method": request.method, @"route": route } value:HSMonotonicSeconds() - started.doubleValue buckets:nil];
   }
   if (response.body || !response.bodyStream) {
     double size = response.body.length;
@@ -290,16 +289,16 @@ static double OISResidentBytes(void)
 
 - (NSString *)description
 {
-  return @"<ODataMetricsStage>";
+  return @"<HSMetricsStage>";
 }
 
 @end
 
-@implementation ODataMetricsHandler {
-  ODataMetrics *_metrics;
+@implementation HSMetricsHandler {
+  HSMetrics *_metrics;
 }
 
-- (instancetype)initWithMetrics:(ODataMetrics *)metrics
+- (instancetype)initWithMetrics:(HSMetrics *)metrics
 {
   self = [super init];
   if (!self) return nil;
@@ -307,9 +306,9 @@ static double OISResidentBytes(void)
   return self;
 }
 
-- (void)handleRequest:(ODataServerRequest *)request reply:(ODataServerReply *)reply
+- (void)handleRequest:(HSRequest *)request reply:(HSReply *)reply
 {
-  ODataServerResponse *response = [ODataServerResponse responseWithStatus:200 body:[[_metrics exposition] dataUsingEncoding:NSUTF8StringEncoding]
+  HSResponse *response = [HSResponse responseWithStatus:200 body:[[_metrics exposition] dataUsingEncoding:NSUTF8StringEncoding]
                                                               contentType:@"text/plain; version=0.0.4; charset=utf-8"];
   [response setValue:@"no-store" forHeader:@"Cache-Control"];
   [reply finishWithResponse:response];
@@ -317,7 +316,7 @@ static double OISResidentBytes(void)
 
 - (NSString *)description
 {
-  return @"<ODataMetricsHandler>";
+  return @"<HSMetricsHandler>";
 }
 
 @end
@@ -325,7 +324,7 @@ static double OISResidentBytes(void)
 #pragma mark - Trace context
 
 // Lower-case hex of count random bytes, never all zero (which W3C reserves).
-static NSString *OISRandomHex(NSUInteger count)
+static NSString *HSRandomHex(NSUInteger count)
 {
   NSMutableString *hex = [NSMutableString string];
   BOOL zero = YES;
@@ -339,10 +338,10 @@ static NSString *OISRandomHex(NSUInteger count)
       [hex appendFormat:@"%02x", bytes[i]];
     }
   }
-  return zero ? OISRandomHex(count) : hex;
+  return zero ? HSRandomHex(count) : hex;
 }
 
-static BOOL OISIsHex(NSString *text, NSUInteger length)
+static BOOL HSIsHex(NSString *text, NSUInteger length)
 {
   if (text.length != length) return NO;
   BOOL zero = YES;
@@ -354,27 +353,27 @@ static BOOL OISIsHex(NSString *text, NSUInteger length)
   return !zero;
 }
 
-@implementation ODataTraceContextStage
+@implementation HSTraceContextStage
 
-- (BOOL)shouldPassRequest:(ODataServerRequest *)request reply:(ODataServerReply *)reply
+- (BOOL)shouldPassRequest:(HSRequest *)request reply:(HSReply *)reply
 {
   // version-traceid-parentid-flags; a later version may add fields after these.
   NSArray *parts = [[request valueForHeader:@"traceparent"] ?: @"" componentsSeparatedByString:@"-"];
   BOOL valid = parts.count >= 4 && [parts[0] length] == 2 && ![parts[0] isEqualToString:@"ff"] &&
-               (![parts[0] isEqualToString:@"00"] || parts.count == 4) && OISIsHex(parts[1], 32) && OISIsHex(parts[2], 16) &&
+               (![parts[0] isEqualToString:@"00"] || parts.count == 4) && HSIsHex(parts[1], 32) && HSIsHex(parts[2], 16) &&
                [parts[3] length] == 2;
-  NSString *traceID = valid ? parts[1] : OISRandomHex(16);
+  NSString *traceID = valid ? parts[1] : HSRandomHex(16);
   NSString *flags = valid ? parts[3] : @"01";
-  NSString *spanID = OISRandomHex(8);
-  request.userInfo[ODataServerTraceIDKey] = traceID;
-  request.userInfo[ODataServerSpanIDKey] = spanID;
-  request.userInfo[ODataServerTraceparentKey] = [NSString stringWithFormat:@"00-%@-%@-%@", traceID, spanID, flags];
+  NSString *spanID = HSRandomHex(8);
+  request.userInfo[HSTraceIDKey] = traceID;
+  request.userInfo[HSSpanIDKey] = spanID;
+  request.userInfo[HSTraceparentKey] = [NSString stringWithFormat:@"00-%@-%@-%@", traceID, spanID, flags];
   return YES;
 }
 
 - (NSString *)description
 {
-  return @"<ODataTraceContextStage>";
+  return @"<HSTraceContextStage>";
 }
 
 @end
@@ -383,8 +382,8 @@ static BOOL OISIsHex(NSString *text, NSUInteger length)
 
 // The answers of one readiness question, as they come; finished when all
 // are in, or when the time is up.
-@interface OISReadinessRound : NSObject
-@property (nonatomic, strong) ODataServerReply *reply;
+@interface HSReadinessRound : NSObject
+@property (nonatomic, strong) HSReply *reply;
 @property (nonatomic, strong) NSMutableDictionary<NSString *, NSString *> *answers;  // name -> ok, or why not
 @property (nonatomic) NSUInteger expected;
 @property (nonatomic) BOOL done;
@@ -392,15 +391,15 @@ static BOOL OISIsHex(NSString *text, NSUInteger length)
 - (void)finishTimedOut:(BOOL)timedOut;
 @end
 
-@interface ODataServerCheck ()
-@property (nonatomic, weak) OISReadinessRound *round;
+@interface HSCheck ()
+@property (nonatomic, weak) HSReadinessRound *round;
 @property (nonatomic, copy) NSString *name;
 @property (nonatomic) BOOL answered;
 @end
 
-@implementation ODataServerCheck
+@implementation HSCheck
 
-- (instancetype)initInRound:(OISReadinessRound *)round name:(NSString *)name
+- (instancetype)initInRound:(HSReadinessRound *)round name:(NSString *)name
 {
   self = [super init];
   if (!self) return nil;
@@ -430,7 +429,7 @@ static BOOL OISIsHex(NSString *text, NSUInteger length)
 
 @end
 
-@implementation OISReadinessRound
+@implementation HSReadinessRound
 
 - (void)answer:(NSString *)name with:(NSString *)result
 {
@@ -461,14 +460,14 @@ static BOOL OISIsHex(NSString *text, NSUInteger length)
     if (timedOut) body[@"reason"] = @"Not every check answered in time";
     body[@"checks"] = checks;
   }
-  ODataServerResponse *response = [ODataServerResponse responseWithJSON:body status:ready ? 200 : 503];
+  HSResponse *response = [HSResponse responseWithJSON:body status:ready ? 200 : 503];
   [response setValue:@"no-store" forHeader:@"Cache-Control"];
   [self.reply finishWithResponse:response];
 }
 
 @end
 
-@implementation ODataReadinessHandler
+@implementation HSReadinessHandler
 
 - (instancetype)init
 {
@@ -479,20 +478,20 @@ static BOOL OISIsHex(NSString *text, NSUInteger length)
   return self;
 }
 
-- (void)addCheck:(id<ODataServerReadinessCheck>)check
+- (void)addCheck:(id<HSReadinessCheck>)check
 {
   @synchronized (self) {
     self.checks = [self.checks arrayByAddingObject:check];
   }
 }
 
-- (void)handleRequest:(ODataServerRequest *)request reply:(ODataServerReply *)reply
+- (void)handleRequest:(HSRequest *)request reply:(HSReply *)reply
 {
-  OISReadinessRound *round = [[OISReadinessRound alloc] init];
+  HSReadinessRound *round = [[HSReadinessRound alloc] init];
   round.reply = reply;
   round.answers = [NSMutableDictionary dictionary];
   if (self.draining) {
-    ODataServerResponse *response = [ODataServerResponse responseWithJSON:@{ @"status": @"draining" } status:503];
+    HSResponse *response = [HSResponse responseWithJSON:@{ @"status": @"draining" } status:503];
     [response setValue:@"no-store" forHeader:@"Cache-Control"];
     [reply finishWithResponse:response];
     return;
@@ -509,58 +508,15 @@ static BOOL OISIsHex(NSString *text, NSUInteger length)
   dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(self.timeout * NSEC_PER_SEC)), dispatch_get_global_queue(0, 0), ^{
     [round finishTimedOut:YES];
   });
-  for (id<ODataServerReadinessCheck> check in checks) {
-    [check checkReadiness:[[ODataServerCheck alloc] initInRound:round name:check.name]];
+  for (id<HSReadinessCheck> check in checks) {
+    [check checkReadiness:[[HSCheck alloc] initInRound:round name:check.name]];
   }
 }
 
 - (NSString *)description
 {
-  return [NSString stringWithFormat:@"<ODataReadinessHandler %@%@>", [[self.checks valueForKey:@"name"] componentsJoinedByString:@" "],
+  return [NSString stringWithFormat:@"<HSReadinessHandler %@%@>", [[self.checks valueForKey:@"name"] componentsJoinedByString:@" "],
                                     self.draining ? @" draining" : @""];
-}
-
-@end
-
-@implementation ODataServiceStoreCheck {
-  ODataService *_service;
-}
-
-- (instancetype)initWithService:(ODataService *)service
-{
-  self = [super init];
-  if (!self) return nil;
-  _service = service;
-  return self;
-}
-
-- (NSString *)name
-{
-  return @"store";
-}
-
-// A store that does not answer (a database gone) is not ready: a count of
-// one entity set, in a context of its own.
-- (void)checkReadiness:(ODataServerCheck *)check
-{
-  NSString *set = _service.entitySets.firstObject;
-  NSEntityDescription *entity = set ? [_service handlerForEntitySet:set].entity : nil;
-  if (!entity) {
-    [check pass];
-    return;
-  }
-  NSManagedObjectContext *context = [[NSManagedObjectContext alloc] initWithConcurrencyType:NSPrivateQueueConcurrencyType];
-  context.persistentStoreCoordinator = _service.coordinator;
-  [context performBlock:^{
-    NSFetchRequest *fetch = [NSFetchRequest fetchRequestWithEntityName:entity.name];
-    fetch.fetchLimit = 1;
-    NSError *error = nil;
-    if ([context countForFetchRequest:fetch error:&error] == NSNotFound) {
-      [check failWithReason:error.localizedDescription ?: @"The store did not answer"];
-    } else {
-      [check pass];
-    }
-  }];
 }
 
 @end

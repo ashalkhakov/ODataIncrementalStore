@@ -1,20 +1,19 @@
-// ODataServerObservability — what a server says about itself: metrics,
+// HSObservability — what a server says about itself: metrics,
 // trace context, readiness.
 // Copyright (C) 2026 OIS contributors
 // SPDX-License-Identifier: LGPL-2.1-or-later
 //
-// Metrics in Prometheus's text format (ODataMetrics, ODataMetricsStage,
-// ODataMetricsHandler), labelled by route pattern, never by path, so that
-// their number stays bounded; W3C Trace Context (ODataTraceContextStage),
+// Metrics in Prometheus's text format (HSMetrics, HSMetricsStage,
+// HSMetricsHandler), labelled by route pattern, never by path, so that
+// their number stays bounded; W3C Trace Context (HSTraceContextStage),
 // so a request can be followed through the proxy, this server and what it
-// calls; and readiness (ODataReadinessHandler), apart from liveness
-// (ODataHealthHandler): whether to send it requests, not whether it runs.
+// calls; and readiness (HSReadinessHandler), apart from liveness
+// (HSHealthHandler): whether to send it requests, not whether it runs.
 
 #pragma once
 #import <Foundation/Foundation.h>
-#import "ODataServerPipeline.h"
+#import "HSPipeline.h"
 
-@class ODataService;
 
 NS_ASSUME_NONNULL_BEGIN
 
@@ -29,7 +28,7 @@ NS_ASSUME_NONNULL_BEGIN
 // Names and label names as Prometheus has them ([a-zA-Z_:][a-zA-Z0-9_:]*);
 // label values are escaped when written. A name is one kind, with one help
 // text: the first use says which.
-@interface ODataMetrics : NSObject
+@interface HSMetrics : NSObject
 - (void)incrementCounter:(NSString *)name help:(NSString *)help labels:(nullable NSDictionary<NSString *, NSString *> *)labels by:(double)value;
 - (void)setGauge:(NSString *)name help:(NSString *)help labels:(nullable NSDictionary<NSString *, NSString *> *)labels value:(double)value;
 - (void)addToGauge:(NSString *)name help:(NSString *)help labels:(nullable NSDictionary<NSString *, NSString *> *)labels by:(double)value;
@@ -51,51 +50,51 @@ NS_ASSUME_NONNULL_BEGIN
 // whose handler named its operation (an OpenAPI operationId, an OData
 // entity set), http_operations_total by route and operation too. A request
 // no route took is counted under route "(none)".
-@interface ODataMetricsStage : ODataServerStage
-- (instancetype)initWithMetrics:(ODataMetrics *)metrics NS_DESIGNATED_INITIALIZER;
+@interface HSMetricsStage : HSStage
+- (instancetype)initWithMetrics:(HSMetrics *)metrics NS_DESIGNATED_INITIALIZER;
 - (instancetype)init NS_UNAVAILABLE;
-@property (nonatomic, readonly) ODataMetrics *metrics;
+@property (nonatomic, readonly) HSMetrics *metrics;
 @end
 
 // GET: the metrics, as Prometheus scrapes them.
-@interface ODataMetricsHandler : NSObject <ODataServerHandler>
-- (instancetype)initWithMetrics:(ODataMetrics *)metrics NS_DESIGNATED_INITIALIZER;
+@interface HSMetricsHandler : NSObject <HSHandler>
+- (instancetype)initWithMetrics:(HSMetrics *)metrics NS_DESIGNATED_INITIALIZER;
 - (instancetype)init NS_UNAVAILABLE;
 @end
 
-// The version the build says (ODATASERVER_VERSION when compiled), for
-// odataserver_build_info and logs.
-FOUNDATION_EXPORT NSString * const ODataServerVersion;
+// The version the build says (HTTPSERVERKIT_VERSION when compiled), for
+// httpserverkit_build_info and logs.
+FOUNDATION_EXPORT NSString * const HSVersion;
 
 #pragma mark - Trace context
 
 // W3C Trace Context: a request's traceparent (00-<trace id>-<parent id>-
 // <flags>) is taken when it is well formed, and a new trace begun when it
 // is not; either way this server's part of it is a new span. In userInfo:
-// the trace id (ODataServerTraceIDKey), the span id (ODataServerSpanIDKey)
-// and the traceparent to send on to what it calls (ODataServerTraceparentKey);
+// the trace id (HSTraceIDKey), the span id (HSSpanIDKey)
+// and the traceparent to send on to what it calls (HSTraceparentKey);
 // a mounted service's handlers see it as the request's traceparent header.
 // The access log writes the trace id.
-FOUNDATION_EXPORT NSString * const ODataServerTraceIDKey;
-FOUNDATION_EXPORT NSString * const ODataServerSpanIDKey;
-FOUNDATION_EXPORT NSString * const ODataServerTraceparentKey;
-@interface ODataTraceContextStage : ODataServerStage
+FOUNDATION_EXPORT NSString * const HSTraceIDKey;
+FOUNDATION_EXPORT NSString * const HSSpanIDKey;
+FOUNDATION_EXPORT NSString * const HSTraceparentKey;
+@interface HSTraceContextStage : HSStage
 @end
 
 #pragma mark - Readiness
 
-@class ODataServerCheck;
+@class HSCheck;
 
 // One thing a server needs to answer requests: a store, a database, a
 // service it calls. Asked each time readiness is: pass or fail the check,
 // now or later, from any thread.
-@protocol ODataServerReadinessCheck <NSObject>
+@protocol HSReadinessCheck <NSObject>
 @property (nonatomic, readonly, copy) NSString *name;  // as the answer names it: store, cache
-- (void)checkReadiness:(ODataServerCheck *)check;
+- (void)checkReadiness:(HSCheck *)check;
 @end
 
 // A check under way: passed, or failed with why; the first answer counts.
-@interface ODataServerCheck : NSObject
+@interface HSCheck : NSObject
 - (instancetype)init NS_UNAVAILABLE;
 - (void)pass;
 - (void)failWithReason:(NSString *)reason;
@@ -105,18 +104,12 @@ FOUNDATION_EXPORT NSString * const ODataServerTraceparentKey;
 // draining (shutting down) or when a check fails or does not answer within
 // timeout, with each check's answer ({"status": "ready", "checks":
 // {"store": "ok"}}). A load balancer or an orchestrator asks;
-// ODataHealthHandler says only that the process runs.
-@interface ODataReadinessHandler : NSObject <ODataServerHandler>
-@property (copy) NSArray<id<ODataServerReadinessCheck>> *checks;
-- (void)addCheck:(id<ODataServerReadinessCheck>)check;
+// HSHealthHandler says only that the process runs.
+@interface HSReadinessHandler : NSObject <HSHandler>
+@property (copy) NSArray<id<HSReadinessCheck>> *checks;
+- (void)addCheck:(id<HSReadinessCheck>)check;
 @property (atomic, getter=isDraining) BOOL draining;
 @property (nonatomic) NSTimeInterval timeout;  // default: 5 seconds
-@end
-
-// An ODataService's store answers a count of one of its entity sets.
-@interface ODataServiceStoreCheck : NSObject <ODataServerReadinessCheck>
-- (instancetype)initWithService:(ODataService *)service NS_DESIGNATED_INITIALIZER;
-- (instancetype)init NS_UNAVAILABLE;
 @end
 
 NS_ASSUME_NONNULL_END

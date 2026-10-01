@@ -13,6 +13,7 @@ service's schema.
 | `ODataIncrementalStore` | The client: an `NSIncrementalStore`. Fetch requests become `$filter`, `$orderby`, `$expand` and the rest; saves become POST, PATCH, DELETE and `$batch`; ETags become merge conflicts. |
 | `ODataService` | The server: OData 4.01 (and 4.0) over any Core Data store. `ois-serve` runs it behind a reverse proxy. |
 | `ODataKit` | What both share: the model mapping, CSDL, values, the URL and `$filter` grammar, `$filter` and `$orderby` as Core Data predicates and sort descriptors, `$batch`. |
+| `HTTPServerKit` | The HTTP server the service runs in, for any API beside it: a pipeline of stages, a router, sign-in (trusted proxy, JWT, token introspection), metrics, JSON logs, trace context, readiness, draining. Errors outside OData are `application/problem+json`. |
 
 ![The Workbench](Examples/Workbench/Workbench.png)
 
@@ -106,13 +107,13 @@ subclass, with `ois-serve`'s settings and everything it does
 
 ```objc
 @implementation CatalogServer : ODataServerApplication
-- (void)configureRouter:(ODataServerRouter *)router
+- (void)configureRouter:(HSRouter *)router
 {
-  [router insertRoute:[ODataServerRoute routeWithMethod:@"GET" path:@"/stats" handler:stats] atIndex:0];
+  [router insertRoute:[HSRoute routeWithMethod:@"GET" path:@"/stats" handler:stats] atIndex:0];
 }
 @end
 
-int main(int argc, const char *argv[]) { return ODataServerMain(argc, argv, [CatalogServer class]); }
+int main(int argc, const char *argv[]) { return HSMain(argc, argv, [CatalogServer class]); }
 ```
 
 ### 3. The Workbench
@@ -185,7 +186,7 @@ block-beta
     server["ois-serve · your server"]:1
     context["Core Data context"]:1
     space
-    http["ODataHTTPServer"]:1
+    http["HSServer"]:1
     store["ODataIncrementalStore"]:1
     wire<["HTTP (or in process)"]>(x)
     service["ODataService · handlers"]:1
@@ -217,8 +218,9 @@ flowchart LR
 |---|---|
 | `Source/ODataKit/` | The shared core |
 | `Source/ODataIncrementalStore/` | The client store, its HTTP client, model builder, streams |
-| `Source/ODataService/` | The service, its handlers, `$metadata` writer, predicate builder, `$batch`, timelines |
-| `Server/` | `ODataServer.h`: the listener (vendored GCDWebServer), pipeline, router and application around a service; `ois-serve`; deployment examples |
+| `Source/HTTPServerKit/` | The HTTP server: the listener (vendored GCDWebServer), pipeline, router, sign-in, observability, the application |
+| `Source/ODataService/` | The service, its handlers, `$metadata` writer, predicate builder, `$batch`, timelines; `ODataServer.h`, the service as an HTTPServerKit module |
+| `Server/` | `ois-serve`, an example application, the loopback check, deployment examples |
 | `Examples/` | Workbench, Catalog, the quick start |
 | `Tools/` | `ois-model` (a model from `$metadata`), `ois-filter` |
 | `Tests/` | XCTest: snapshots of real services, the service over loopback; `Tests/Live/` against Northwind and TripPin |

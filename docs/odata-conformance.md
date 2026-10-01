@@ -502,8 +502,8 @@ done on both sides; the rest is ❌ unless marked otherwise.
   API key, HTTP basic or bearer, OAuth 2 flows and OpenID Connect). This
   vocabulary describes authentication; it does not perform it.
   - ✅ The server declares what its authenticator enforces:
-    `ODataJWTAuthenticator` an `OpenIDConnect` scheme with its issuer,
-    `ODataTokenIntrospectionAuthenticator` an `Http` bearer one, each with
+    `HSJWTAuthenticator` an `OpenIDConnect` scheme with its issuer,
+    `HSTokenIntrospectionAuthenticator` an `Http` bearer one, each with
     `SecuritySchemes` naming the scopes a token needs; anything else
     through the service's `containerAnnotations`.
   - ✅ The client reads it (`schema.authorizations`, in `SecuritySchemes`

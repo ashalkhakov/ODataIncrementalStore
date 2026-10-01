@@ -1,21 +1,45 @@
-// ODataServerMessage — a request, its response, and the reply that carries one
+// HSMessage — a request, its response, and the reply that carries one
 // to the other.
 // Copyright (C) 2026 OIS contributors
 // SPDX-License-Identifier: LGPL-2.1-or-later
 //
-// What every stage and handler of ODataServer works with, whatever listens
-// on the socket: the listener makes the request, the handler at the end of
-// the pipeline finishes the reply with a response, and the listener writes
-// it.
+// What every stage and handler of HTTPServerKit works with, whatever
+// listens on the socket: the listener makes the request, the handler at the
+// end of the pipeline finishes the reply with a response, and the listener
+// writes it.
 
 #pragma once
 #import <Foundation/Foundation.h>
 
-@class ODataPrincipal, ODataServerRoute;
+@class HSPrincipal, HSRoute, HSRequest, HSResponse;
 
 NS_ASSUME_NONNULL_BEGIN
 
-@interface ODataServerRequest : NSObject
+#pragma mark - Errors
+
+// An error a request is answered with: its code is the HTTP status, its
+// localizedDescription what the client is told (problem+json's detail).
+FOUNDATION_EXPORT NSErrorDomain const HSErrorDomain;
+FOUNDATION_EXPORT NSError *HSError(NSInteger status, NSString *message);
+// In an error's userInfo: the problem's type, a URI (RFC 9457; default
+// about:blank); and the OAuth scopes a 401 or 403 needs (NSArray), which
+// the challenge names (RFC 6750).
+FOUNDATION_EXPORT NSString * const HSErrorTypeKey;
+FOUNDATION_EXPORT NSString * const HSErrorScopesKey;
+// Another domain whose codes are HTTP statuses too (an API library's own:
+// OData's), answered with that status and message rather than 500.
+FOUNDATION_EXPORT void HSRegisterStatusErrorDomain(NSErrorDomain domain);
+
+// How an API answers errors, in its own format: OData's {"error": ...}, an
+// OpenAPI's problem+json with types of its own. A route's (HSRoute's
+// errorFormatter, by default its handler, when it is one) answers every
+// error of a request it takes, wherever in the pipeline it arose; without
+// one, problem+json.
+@protocol HSErrorFormatting <NSObject>
+- (HSResponse *)responseForError:(NSError *)error request:(HSRequest *)request;
+@end
+
+@interface HSRequest : NSObject
 // URL: the request target as the client sent it (path and query, still
 // escaped), on the host the listener answers.
 - (instancetype)initWithMethod:(NSString *)method URL:(NSURL *)URL
@@ -50,13 +74,13 @@ NS_ASSUME_NONNULL_BEGIN
 
 // Who is asking, once the authentication stage has asked (authenticated):
 // nil for no one.
-@property (nonatomic, strong, nullable) ODataPrincipal *principal;
+@property (nonatomic, strong, nullable) HSPrincipal *principal;
 @property (nonatomic, getter=isAuthenticated) BOOL authenticated;
 // What the route matched: /orders/:id gives id; a trailing * gives "*".
 @property (nonatomic, copy) NSDictionary<NSString *, NSString *> *pathParameters;
 // The route that matched, once the router has found it: its pattern is what
 // metrics and logs name the request by (/orders/:id, not each order's path).
-@property (nonatomic, strong, nullable) ODataServerRoute *route;
+@property (nonatomic, strong, nullable) HSRoute *route;
 // What was asked, by a name of few values, as the handler that answers
 // knows it: an OpenAPI operationId, an OData entity set ($metadata,
 // $batch). Metrics count by it, and logs say it, beside the route.
@@ -73,11 +97,11 @@ NS_ASSUME_NONNULL_BEGIN
 // A body made as it is sent: asked for its next piece, on a queue of the
 // listener's, one call at a time, until it gives an empty one (the end) or
 // nil (an error: the connection is closed, the status having been sent).
-@protocol ODataServerResponseStream <NSObject>
+@protocol HSResponseStream <NSObject>
 - (nullable NSData *)nextChunk:(NSError **)error;
 @end
 
-@interface ODataServerResponse : NSObject
+@interface HSResponse : NSObject
 + (instancetype)responseWithStatus:(NSInteger)status;
 + (instancetype)responseWithStatus:(NSInteger)status body:(nullable NSData *)body contentType:(nullable NSString *)contentType;
 + (instancetype)responseWithJSON:(id)json status:(NSInteger)status;
@@ -85,18 +109,27 @@ NS_ASSUME_NONNULL_BEGIN
 // A file, sent from disk as it is read, not loaded first.
 + (instancetype)responseWithFile:(NSURL *)file contentType:(nullable NSString *)contentType status:(NSInteger)status;
 // A stream, sent chunked as it gives its pieces.
-+ (instancetype)responseWithStream:(id<ODataServerResponseStream>)stream contentType:(nullable NSString *)contentType status:(NSInteger)status;
-// An error as OData answers one ({"error": {"code", "message"}}), its status
-// the error's code for an ODataServiceError, 500 for any other (whose own
-// message is logged, not shown). A 401 or 403 that names the scopes it
-// needs (ODataErrorScopesKey) carries the challenge saying so.
++ (instancetype)responseWithStream:(id<HSResponseStream>)stream contentType:(nullable NSString *)contentType status:(NSInteger)status;
+// An error as problem details (RFC 9457, application/problem+json): type,
+// title (the status's reason), status, detail. Its status is the error's
+// code for HSErrorDomain or a domain registered as one, 500 for any other
+// (whose own words are logged, not shown). A 401 or 403 that names the
+// scopes it needs (HSErrorScopesKey) carries the challenge saying so.
 + (instancetype)responseWithError:(NSError *)error;
+// The error as the request's route answers errors (HSErrorFormatting), or
+// as above.
++ (instancetype)responseWithError:(NSError *)error request:(nullable HSRequest *)request;
+// The status an error answers with, as above.
++ (NSInteger)statusOfError:(nullable NSError *)error;
+// The WWW-Authenticate challenge for an error's scopes (a 401, or a 403's
+// insufficient_scope), or nil.
++ (nullable NSString *)challengeForError:(NSError *)error;
 
 @property (nonatomic) NSInteger status;
 // The body: in memory, or a file, or a stream (one of the three).
 @property (nonatomic, copy, nullable) NSData *body;
 @property (nonatomic, copy, nullable) NSURL *bodyFileURL;
-@property (nonatomic, strong, nullable) id<ODataServerResponseStream> bodyStream;
+@property (nonatomic, strong, nullable) id<HSResponseStream> bodyStream;
 @property (nonatomic, readonly, copy) NSDictionary<NSString *, NSString *> *headers;
 // Header names are case-insensitive; nil removes one.
 - (nullable NSString *)valueForHeader:(NSString *)name;
@@ -107,14 +140,16 @@ NS_ASSUME_NONNULL_BEGIN
 // any thread; a second answer is ignored. Whoever starts the request (the
 // listener, a stage passing it on, a test) makes the reply, and is sent
 // the action with it once it is finished.
-@interface ODataServerReply : NSObject
+@interface HSReply : NSObject
 - (instancetype)initWithTarget:(id)target action:(SEL)action NS_DESIGNATED_INITIALIZER;
 - (instancetype)init NS_UNAVAILABLE;
-- (void)finishWithResponse:(ODataServerResponse *)response;
-// The same with +[ODataServerResponse responseWithError:].
+- (void)finishWithResponse:(HSResponse *)response;
+// The same with +[HSResponse responseWithError:request:].
 - (void)failWithError:(NSError *)error;
+// The request it answers, for the format of its errors.
+@property (nonatomic, strong, nullable) HSRequest *request;
 @property (nonatomic, readonly, getter=isFinished) BOOL finished;
-@property (nonatomic, readonly, strong, nullable) ODataServerResponse *response;
+@property (nonatomic, readonly, strong, nullable) HSResponse *response;
 // Its starter's, to find its way back with.
 @property (nonatomic, strong, nullable) id context;
 @end

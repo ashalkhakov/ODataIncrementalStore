@@ -68,8 +68,9 @@ ARG VERSION=0.0.0
 COPY . /usr/src/odatakit
 WORKDIR /usr/src/odatakit
 RUN set -e; \
-    make -j"$(nproc)" ODATAKIT_VERSION="$VERSION" && make install ODATAKIT_VERSION="$VERSION"; \
-    make -C Server -j"$(nproc)" ODATASERVER_VERSION="$VERSION" && make -C Server install ODATAKIT_VERSION="$VERSION" ODATASERVER_VERSION="$VERSION"; \
+    make -j"$(nproc)" ODATAKIT_VERSION="$VERSION" HTTPSERVERKIT_VERSION="$VERSION"; \
+    make install ODATAKIT_VERSION="$VERSION" HTTPSERVERKIT_VERSION="$VERSION"; \
+    make -C Server -j"$(nproc)" && make -C Server install; \
     mkdir -p /usr/local/share/ois-serve; \
     momc Examples/Catalog/Catalog.xcdatamodeld /usr/local/share/ois-serve/Catalog.momd
 ENV PKG_CONFIG_PATH=/opt/gnustep/Local/Library/Libraries/pkgconfig
@@ -85,7 +86,7 @@ RUN make -C Server check
 RUN set -e; \
     mkdir -p /tmp/app && cp Server/Examples/Docker/GNUmakefile Server/Examples/CatalogServer.m /tmp/app/; \
     make -C /tmp/app; \
-    clang Server/Examples/CatalogServer.m $(pkg-config --cflags --libs odataserver) -o /tmp/catalog-server-pc; \
+    clang Server/Examples/CatalogServer.m $(pkg-config --cflags --libs odataservice) -o /tmp/catalog-server-pc; \
     for app in /tmp/app/obj/catalog-server /tmp/catalog-server-pc; do \
       "$app" -Model /usr/local/share/ois-serve/Catalog.momd -PrintMetadata YES | grep -q '<EntitySet Name="Products"'; \
     done; \

@@ -360,7 +360,7 @@
 // Products for whoever asks: an admin sees them all, anyone else only
 // those still sold. It remembers who asked.
 @interface OISScopedProducts : ODataEntitySetHandler
-@property (atomic, strong) ODataPrincipal *lastPrincipal;
+@property (atomic, strong) HSPrincipal *lastPrincipal;
 @end
 
 @implementation OISScopedProducts
@@ -378,16 +378,16 @@
 
 // Everyone is someone: X-Scopes (or the bearer token itself) is what they
 // may do, as a token's scope claim has it.
-@interface OISScopeAuthenticator : NSObject <ODataAuthenticator>
+@interface OISScopeAuthenticator : NSObject <HSAuthenticator>
 @end
 
 @implementation OISScopeAuthenticator
-- (void)authenticateRequest:(ODataRequest *)request reply:(ODataReply *)reply
+- (void)authenticateRequest:(HSRequest *)request reply:(HSAuthenticationReply *)reply
 {
   NSString *bearer = [request valueForHeader:@"Authorization"];
   bearer = [bearer hasPrefix:@"Bearer "] ? [bearer substringFromIndex:7] : nil;
   NSString *scopes = [request valueForHeader:@"X-Scopes"] ?: bearer ?: @"";
-  [reply finishWithResult:[[ODataPrincipal alloc] initWithSubject:@"someone" claims:@{ @"scope": scopes }]];
+  [reply finishWithPrincipal:[[HSPrincipal alloc] initWithSubject:@"someone" claims:@{ @"scope": scopes }]];
 }
 
 - (NSDictionary *)authorizationDescription
@@ -506,26 +506,25 @@
 
 // Asks elsewhere, and answers later: Authorization: Token <name> is <name>,
 // Token banned is refused.
-@interface OISLaterAuthenticator : NSObject <ODataAuthenticator>
+@interface OISLaterAuthenticator : NSObject <HSAuthenticator>
 @end
 
 @implementation OISLaterAuthenticator
-- (void)authenticateRequest:(ODataRequest *)request reply:(ODataReply *)reply
+- (void)authenticateRequest:(HSRequest *)request reply:(HSAuthenticationReply *)reply
 {
   NSString *authorization = [request valueForHeader:@"Authorization"];
-  [reply defer];
   dispatch_after(dispatch_time(DISPATCH_TIME_NOW, 10 * NSEC_PER_MSEC), dispatch_get_global_queue(0, 0), ^{
     if (![authorization hasPrefix:@"Token "]) {
-      [reply finishWithResult:nil];
+      [reply finishWithPrincipal:nil];
     } else if ([authorization isEqualToString:@"Token banned"]) {
-      [reply failWithError:ODataServiceError(403, @"Banned")];
+      [reply failWithError:HSError(403, @"Banned")];
     } else {
-      [reply finishWithResult:[[ODataPrincipal alloc] initWithSubject:[authorization substringFromIndex:6] claims:nil]];
+      [reply finishWithPrincipal:[[HSPrincipal alloc] initWithSubject:[authorization substringFromIndex:6] claims:nil]];
     }
   });
 }
 
-- (NSString *)challengeForRequest:(ODataRequest *)request
+- (NSString *)challengeForRequest:(HSRequest *)request
 {
   return @"Token realm=\"example\"";
 }
@@ -533,7 +532,7 @@
 
 // An identity provider: JSON by URL, and introspection by token, answered
 // later on another thread, as NSURLSession does.
-@interface OISFakeIdentityProvider : NSObject <ODataTransport>
+@interface OISFakeIdentityProvider : NSObject <HSFetching>
 @property (atomic, copy) NSDictionary<NSString *, id> *documents;       // URL -> JSON
 @property (atomic, copy) NSDictionary<NSString *, id> *introspections;  // token -> JSON
 @property (atomic, copy) NSString *credentials;                         // Basic ...
@@ -541,10 +540,10 @@
 @end
 
 @implementation OISFakeIdentityProvider
-- (void)startExchange:(ODataExchange *)exchange
+- (void)startFetch:(HSFetch *)fetch
 {
   self.requests++;
-  NSURLRequest *request = exchange.request;
+  NSURLRequest *request = fetch.request;
   id json = nil;
   NSInteger status = 404;
   if ([request.HTTPMethod isEqualToString:@"POST"]) {
@@ -564,10 +563,10 @@
     if (json) status = 200;
   }
   dispatch_async(dispatch_get_global_queue(0, 0), ^{
-    exchange.URLResponse = [[NSHTTPURLResponse alloc] initWithURL:request.URL statusCode:status HTTPVersion:@"HTTP/1.1"
-                                                     headerFields:@{ @"Content-Type": @"application/json" }];
-    exchange.data = json ? [NSJSONSerialization dataWithJSONObject:json options:0 error:NULL] : [NSData data];
-    [exchange finish];
+    fetch.response = [[NSHTTPURLResponse alloc] initWithURL:request.URL statusCode:status HTTPVersion:@"HTTP/1.1"
+                                               headerFields:@{ @"Content-Type": @"application/json" }];
+    fetch.data = json ? [NSJSONSerialization dataWithJSONObject:json options:0 error:NULL] : [NSData data];
+    [fetch finish];
   });
 }
 @end
@@ -592,14 +591,14 @@
 @end
 
 // Signs in with an API key in X-API-Key, and says so in $metadata.
-@interface OISKeyAuthenticator : NSObject <ODataAuthenticator>
+@interface OISKeyAuthenticator : NSObject <HSAuthenticator>
 @end
 
 @implementation OISKeyAuthenticator
-- (void)authenticateRequest:(ODataRequest *)request reply:(ODataReply *)reply
+- (void)authenticateRequest:(HSRequest *)request reply:(HSAuthenticationReply *)reply
 {
   BOOL open = [[request valueForHeader:@"X-API-Key"] isEqualToString:@"sesame"];
-  [reply finishWithResult:open ? [[ODataPrincipal alloc] initWithSubject:@"keyholder" claims:nil] : nil];
+  [reply finishWithPrincipal:open ? [[HSPrincipal alloc] initWithSubject:@"keyholder" claims:nil] : nil];
 }
 
 - (NSDictionary *)authorizationDescription
@@ -2899,7 +2898,7 @@ static NSAttributeDescription *OISSwatchAttribute(NSString *name, NSAttributeTyp
 {
   OISScopedProducts *products = [[OISScopedProducts alloc] initWithEntity:OISCatalogEntity(@"Product")];
   [_service setHandler:products forEntitySet:@"Products"];
-  ODataTrustedHeaderAuthenticator *proxy = [[ODataTrustedHeaderAuthenticator alloc] init];
+  HSTrustedHeaderAuthenticator *proxy = [[HSTrustedHeaderAuthenticator alloc] init];
   proxy.secretHeader = @"X-OIS-Proxy-Secret";
   proxy.secret = @"s3cret";
   _service.authenticator = proxy;
@@ -2984,7 +2983,7 @@ static NSAttributeDescription *OISSwatchAttribute(NSString *name, NSAttributeTyp
   NSDictionary *tokens = fixtures[@"tokens"];
   OISScopedProducts *products = [[OISScopedProducts alloc] initWithEntity:OISCatalogEntity(@"Product")];
   [_service setHandler:products forEntitySet:@"Products"];
-  ODataJWTAuthenticator *jwt = [[ODataJWTAuthenticator alloc] initWithIssuer:fixtures[@"issuer"] audience:fixtures[@"audience"]];
+  HSJWTAuthenticator *jwt = [[HSJWTAuthenticator alloc] initWithIssuer:fixtures[@"issuer"] audience:fixtures[@"audience"]];
   jwt.keySet = fixtures[@"keys"];
   _service.authenticator = jwt;
 
@@ -3001,14 +3000,14 @@ static NSAttributeDescription *OISSwatchAttribute(NSString *name, NSAttributeTyp
                             @"critical", @"idToken", @"rotated" ]) {
     OISServiceResponse *response = [self getProductsWithToken:tokens[name]];
     XCTAssertEqual(response.status, 401, @"%@: %@", name, response.text);
-    XCTAssertTrue([[response header:@"WWW-Authenticate"] hasPrefix:@"Bearer realm=\"odata\", error=\"invalid_token\""], @"%@: %@", name,
+    XCTAssertTrue([[response header:@"WWW-Authenticate"] hasPrefix:@"Bearer realm=\"api\", error=\"invalid_token\""], @"%@: %@", name,
                   [response header:@"WWW-Authenticate"]);
   }
   XCTAssertEqual([self getProductsWithToken:@"not.a.token"].status, 401);
   XCTAssertEqual([self getProductsWithToken:@"abc"].status, 401);
   OISServiceResponse *none = [self getProductsWithToken:nil];
   XCTAssertEqual(none.status, 401);
-  XCTAssertEqualObjects([none header:@"WWW-Authenticate"], @"Bearer realm=\"odata\"", @"no token, no error");
+  XCTAssertEqualObjects([none header:@"WWW-Authenticate"], @"Bearer realm=\"api\"", @"no token, no error");
   XCTAssertEqual(([self send:@"GET" path:@"Products" headers:@{ @"Authorization": @"Basic YW5uOnB3" } body:nil].status), 401);
 
   jwt.requiredScopes = [NSSet setWithObject:@"odata.write"];
@@ -3029,8 +3028,8 @@ static NSAttributeDescription *OISSwatchAttribute(NSString *name, NSAttributeTyp
   OISFakeIdentityProvider *provider = [[OISFakeIdentityProvider alloc] init];
   provider.documents = @{ discovery: @{ @"issuer": issuer, @"jwks_uri": @"https://id.example.test/keys" },
                           @"https://id.example.test/keys": fixtures[@"keys"] };
-  ODataJWTAuthenticator *jwt = [[ODataJWTAuthenticator alloc] initWithIssuer:issuer audience:fixtures[@"audience"]];
-  jwt.transport = provider;
+  HSJWTAuthenticator *jwt = [[HSJWTAuthenticator alloc] initWithIssuer:issuer audience:fixtures[@"audience"]];
+  jwt.fetcher = provider;
   _service.authenticator = jwt;
 
   XCTAssertEqual([self getProductsWithToken:tokens[@"rs256"]].status, 200);
@@ -3047,15 +3046,15 @@ static NSAttributeDescription *OISSwatchAttribute(NSString *name, NSAttributeTyp
   XCTAssertEqual([self getProductsWithToken:tokens[@"rotated"]].status, 200, @"the issuer rotated its keys");
   XCTAssertEqual(provider.requests, 3, @"the keys again, not discovery");
 
-  ODataJWTAuthenticator *impostor = [[ODataJWTAuthenticator alloc] initWithIssuer:issuer audience:nil];
+  HSJWTAuthenticator *impostor = [[HSJWTAuthenticator alloc] initWithIssuer:issuer audience:nil];
   provider.documents = @{ discovery: @{ @"issuer": @"https://evil.example.test/", @"jwks_uri": @"https://id.example.test/keys" } };
-  impostor.transport = provider;
+  impostor.fetcher = provider;
   _service.authenticator = impostor;
   XCTAssertEqual([self getProductsWithToken:tokens[@"rs256"]].status, 503, @"a discovery document of another issuer");
 
-  ODataJWTAuthenticator *unreachable = [[ODataJWTAuthenticator alloc] initWithIssuer:issuer audience:nil];
+  HSJWTAuthenticator *unreachable = [[HSJWTAuthenticator alloc] initWithIssuer:issuer audience:nil];
   unreachable.keySetURL = [NSURL URLWithString:@"https://id.example.test/nowhere"];
-  unreachable.transport = provider;
+  unreachable.fetcher = provider;
   _service.authenticator = unreachable;
   XCTAssertEqual([self getProductsWithToken:tokens[@"rs256"]].status, 503);
 }
@@ -3074,10 +3073,10 @@ static NSAttributeDescription *OISSwatchAttribute(NSString *name, NSAttributeTyp
     @"expired": @{ @"active": @YES, @"sub": @"ann", @"exp": @1000000000 },
     @"elsewhere": @{ @"active": @YES, @"sub": @"ann", @"aud": @"another-api" },
   };
-  ODataTokenIntrospectionAuthenticator *introspection =
-    [[ODataTokenIntrospectionAuthenticator alloc] initWithEndpoint:[NSURL URLWithString:@"https://id.example.test/introspect"]
+  HSTokenIntrospectionAuthenticator *introspection =
+    [[HSTokenIntrospectionAuthenticator alloc] initWithEndpoint:[NSURL URLWithString:@"https://id.example.test/introspect"]
                                                           clientID:@"ois-api" clientSecret:@"s:cret"];
-  introspection.transport = provider;
+  introspection.fetcher = provider;
   introspection.audience = @"ois-api";
   _service.authenticator = introspection;
 
@@ -3103,10 +3102,10 @@ static NSAttributeDescription *OISSwatchAttribute(NSString *name, NSAttributeTyp
   XCTAssertEqual([self getProductsWithToken:@"opaque-ann"].status, 403);
   introspection.requiredScopes = nil;
 
-  ODataTokenIntrospectionAuthenticator *wrongSecret =
-    [[ODataTokenIntrospectionAuthenticator alloc] initWithEndpoint:[NSURL URLWithString:@"https://id.example.test/introspect"]
+  HSTokenIntrospectionAuthenticator *wrongSecret =
+    [[HSTokenIntrospectionAuthenticator alloc] initWithEndpoint:[NSURL URLWithString:@"https://id.example.test/introspect"]
                                                           clientID:@"ois-api" clientSecret:@"guess"];
-  wrongSecret.transport = provider;
+  wrongSecret.fetcher = provider;
   wrongSecret.cacheLifetime = 0;
   _service.authenticator = wrongSecret;
   XCTAssertEqual([self getProductsWithToken:@"opaque-ann"].status, 503, @"the provider would not answer");
@@ -3189,7 +3188,7 @@ static NSComparisonPredicate *OISValidation(NSString *keyPath, NSPredicateOperat
 {
   [self serveItems];
   _service.containerAnnotations = @{ @"Core.Description": @"The stock", @"Core.LongDescription#en": @"Everything in stock, by item" };
-  ODataJWTAuthenticator *jwt = [[ODataJWTAuthenticator alloc] initWithIssuer:@"https://id.example.test/realms/ois" audience:@"ois-api"];
+  HSJWTAuthenticator *jwt = [[HSJWTAuthenticator alloc] initWithIssuer:@"https://id.example.test/realms/ois" audience:@"ois-api"];
   jwt.keySet = @{ @"keys": @[] };
   jwt.requiredScopes = [NSSet setWithObjects:@"odata.read", nil];
   _service.authenticator = jwt;
@@ -3442,7 +3441,7 @@ static NSComparisonPredicate *OISValidation(NSString *keyPath, NSPredicateOperat
 - (void)testClientsSignInAsTheServiceSays
 {
   NSDictionary *fixtures = [NSJSONSerialization JSONObjectWithData:[OISJWTFixturesJSON dataUsingEncoding:NSUTF8StringEncoding] options:0 error:NULL];
-  ODataJWTAuthenticator *jwt = [[ODataJWTAuthenticator alloc] initWithIssuer:fixtures[@"issuer"] audience:fixtures[@"audience"]];
+  HSJWTAuthenticator *jwt = [[HSJWTAuthenticator alloc] initWithIssuer:fixtures[@"issuer"] audience:fixtures[@"audience"]];
   jwt.keySet = fixtures[@"keys"];
   jwt.requiredScopes = [NSSet setWithObject:@"odata.read"];
   _service.authenticator = jwt;
@@ -6935,7 +6934,7 @@ static NSExpressionDescription *OISAggregateOf(NSString *function, NSString *key
   XCTAssertTrue([challenge containsString:@"scope=\"Catalog.Admin Products.Read\""], @"%@", challenge);
 
   // No one at all: 401.
-  _service.authenticator = [[ODataTrustedHeaderAuthenticator alloc] init];
+  _service.authenticator = [[HSTrustedHeaderAuthenticator alloc] init];
   _service.allowsAnonymousRequests = YES;
   r = [self get:@"Products"];
   XCTAssertEqual(r.status, 401, @"%@", r.text);

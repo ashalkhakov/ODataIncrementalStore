@@ -43,8 +43,8 @@ xcodebuild -workspace ODataKit.xcworkspace -scheme ODataKitTests -destination 'p
 ```
 
 A client app embeds `ODataKit.framework` and `ODataIncrementalStore.framework`
-(Catalog does); one that serves as well adds `ODataService.framework`
-(Workbench does). The server tools build with plain clang, with no Xcode
+(Catalog does); one that serves as well adds `ODataService.framework` and
+`HTTPServerKit.framework`, which it links (Workbench does). The server tools build with plain clang, with no Xcode
 project: `make -C Server` writes `Server/build/ois-serve`, and
 `make -C Server check` runs it over a loopback socket.
 
@@ -63,8 +63,8 @@ install` there): the tests and example apps compile `Catalog.xcdatamodeld` to
 
 ```sh
 . /usr/share/GNUstep/Makefiles/GNUstep.sh
-make && make install                 # libODataKit, libODataIncrementalStore, libODataService
-make -C Server && make -C Server install   # libODataHTTPServer (ODataServer.h), ois-serve
+make && make install                 # libODataKit, libODataIncrementalStore, libHTTPServerKit, libODataService
+make -C Server && make -C Server install   # ois-serve
 ```
 
 ### Building against what is installed
@@ -80,22 +80,23 @@ With gnustep-make, name its variables (`Server/Examples/Docker/GNUmakefile`):
 include $(GNUSTEP_MAKEFILES)/common.make
 TOOL_NAME = myserver
 myserver_OBJC_FILES = main.m
-myserver_INCLUDE_DIRS = $(ODATASERVER_INCLUDE_DIRS)
+myserver_INCLUDE_DIRS = $(ODATASERVICE_INCLUDE_DIRS)
 myserver_OBJCFLAGS = $(ODATAKIT_OBJCFLAGS)
-myserver_TOOL_LIBS = $(ODATASERVER_LIBS)
+myserver_TOOL_LIBS = $(ODATASERVICE_LIBS)
 include $(GNUSTEP_MAKEFILES)/tool.make
 ```
 
 `ODATAKIT_*` is what a client and a service share, `ODATAINCREMENTALSTORE_*`
-the client, `ODATASERVICE_*` the service, `ODATASERVER_*` the service on the
-network with routes and stages of its own.
+the client, `ODATASERVICE_*` the service, on its own or on the network
+(`ODataServer.h`); `HTTPSERVERKIT_*` is the HTTP server alone, for an
+application with no OData in it.
 
-Without it, pkg-config (`odatakit`, `odataincrementalstore`, `odataservice`,
-`odataserver`) gives the same, GNUstep's own flags included:
+Without it, pkg-config (`odatakit`, `odataincrementalstore`, `httpserverkit`,
+`odataservice`) gives the same, GNUstep's own flags included:
 
 ```sh
 export PKG_CONFIG_PATH=$(gnustep-config --variable=GNUSTEP_LOCAL_LIBRARIES)/pkgconfig
-clang main.m $(pkg-config --cflags --libs odataserver) -o myserver
+clang main.m $(pkg-config --cflags --libs odataservice) -o myserver
 ```
 
 ### Docker
@@ -110,7 +111,7 @@ docker build -f Docker/Dockerfile --target check .
 ```
 
 - `odatakit-sdk`: clang, GNUstep, FreeCoreData (with `momc` and its
-  PostgreSQL and MySQL stores), ODataKit and ODataServer installed with the
+  PostgreSQL and MySQL stores), ODataKit and HTTPServerKit installed with the
   fragment and pkg-config files. Build an application in it.
 - `odatakit-runtime`: what such an application needs to run, and no more;
   a library it would lack fails the image's build, not a server at start.
@@ -121,7 +122,7 @@ docker build -f Docker/Dockerfile --target check .
   where they are. Under Kubernetes, point the liveness probe at `/health`,
   the readiness probe at `/ready`, and give `OIS_DRAIN_DELAY` a few seconds.
   Its settings are `ois-serve`'s, as `OIS_` variables
-  (`ODataServerApplication.h`), or a property list at `OIS_CONFIG`
+  (`HSApplication.h`), or a property list at `OIS_CONFIG`
   (`/etc/ois-serve/service.plist`: the Catalog example in SQLite):
 
   ```sh

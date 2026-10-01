@@ -13,8 +13,11 @@ ifeq ($(origin CC),default)
 CC = clang
 endif
 SRC_DIR = Source
-LIBS_ = ODataKit ODataIncrementalStore ODataService
+LIBS_ = ODataKit ODataIncrementalStore HTTPServerKit ODataService
+GCDWebServer_DIR = ThirdParty/GCDWebServer
+include $(GCDWebServer_DIR)/GCDWebServer.make
 INC = $(foreach l,$(LIBS_),-I$(SRC_DIR)/$(l)/include -I$(SRC_DIR)/$(l)/include/$(l))
+HTTPSERVERKIT_VERSION ?= $(shell git describe --tags --always 2>/dev/null || echo dev)
 
 ifeq ($(findstring gcc,$(CC)),gcc)
 $(error OIS requires clang + libobjc2. GCC's libobjc is the old fragile runtime.)
@@ -28,7 +31,7 @@ ifeq ($(strip $(GNUSTEP_FLAGS)),)
   GNUSTEP_LIBS  = -lgnustep-base -lobjc -lpthread
 endif
 
-GNUSTEP_LIBS += -lCoreData -ldispatch -lgnutls
+GNUSTEP_LIBS += -lCoreData -ldispatch
 
 OBJCFLAGS = $(GNUSTEP_FLAGS) \
 	-fobjc-runtime=gnustep-2.0 \
@@ -42,14 +45,16 @@ OBJCFLAGS = $(GNUSTEP_FLAGS) \
 
 KIT_SRCS = $(wildcard $(SRC_DIR)/ODataKit/*.m)
 CLIENT_SRCS = $(wildcard $(SRC_DIR)/ODataIncrementalStore/*.m)
+HOST_SRCS = $(wildcard $(SRC_DIR)/HTTPServerKit/*.m)
 SERVICE_SRCS = $(wildcard $(SRC_DIR)/ODataService/*.m)
-SRCS = $(KIT_SRCS) $(CLIENT_SRCS) $(SERVICE_SRCS)
+SRCS = $(KIT_SRCS) $(CLIENT_SRCS) $(HOST_SRCS) $(SERVICE_SRCS)
+GCDWebServer_OBJS = $(GCDWebServer_OBJC_FILES:.m=.o)
 
 OBJS = $(SRCS:.m=.o)
 
 .PHONY: all clean test
 
-all: libODataKit.so libODataIncrementalStore.so libODataService.so ois-filter ois-model Catalog.momd
+all: libODataKit.so libODataIncrementalStore.so libHTTPServerKit.so libODataService.so ois-filter ois-model Catalog.momd
 
 libODataKit.so: $(KIT_SRCS:.m=.o)
 	$(CC) -shared -o $@ $^ $(GNUSTEP_LIBS)
@@ -57,11 +62,20 @@ libODataKit.so: $(KIT_SRCS:.m=.o)
 libODataIncrementalStore.so: $(CLIENT_SRCS:.m=.o) libODataKit.so
 	$(CC) -shared -o $@ $(CLIENT_SRCS:.m=.o) -L. -lODataKit $(GNUSTEP_LIBS)
 
-libODataService.so: $(SERVICE_SRCS:.m=.o) libODataKit.so
-	$(CC) -shared -o $@ $(SERVICE_SRCS:.m=.o) -L. -lODataKit $(GNUSTEP_LIBS)
+libHTTPServerKit.so: $(HOST_SRCS:.m=.o) $(GCDWebServer_OBJS)
+	$(CC) -shared -o $@ $^ $(GNUSTEP_LIBS) -lgnutls $(GCDWebServer_LIBS)
+
+libODataService.so: $(SERVICE_SRCS:.m=.o) libODataKit.so libHTTPServerKit.so
+	$(CC) -shared -o $@ $(SERVICE_SRCS:.m=.o) -L. -lHTTPServerKit -lODataKit $(GNUSTEP_LIBS)
+
+$(SRC_DIR)/HTTPServerKit/%.o: $(SRC_DIR)/HTTPServerKit/%.m
+	$(CC) $(OBJCFLAGS) $(GCDWebServer_INCLUDE_DIRS) -DHTTPSERVERKIT_VERSION='"$(HTTPSERVERKIT_VERSION)"' -c $< -o $@
 
 $(SRC_DIR)/%.o: $(SRC_DIR)/%.m
 	$(CC) $(OBJCFLAGS) -c $< -o $@
+
+$(GCDWebServer_DIR)/%.o: $(GCDWebServer_DIR)/%.m
+	$(CC) $(OBJCFLAGS) $(GCDWebServer_INCLUDE_DIRS) -c $< -o $@
 
 ois-filter: Tools/ois-filter.m libODataIncrementalStore.so
 	$(CC) $(OBJCFLAGS) -o $@ Tools/ois-filter.m -L. -lODataIncrementalStore -lODataKit $(GNUSTEP_LIBS)
@@ -84,5 +98,5 @@ test:
 	$(MAKE) -C Tests run-tests
 
 clean:
-	rm -f $(OBJS) libODataKit.so libODataIncrementalStore.so libODataService.so ois-filter ois-model
+	rm -f $(OBJS) $(GCDWebServer_OBJS) libODataKit.so libODataIncrementalStore.so libHTTPServerKit.so libODataService.so ois-filter ois-model
 	rm -rf Catalog.momd

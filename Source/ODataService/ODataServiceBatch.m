@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: LGPL-2.1-or-later
 
 #import "ODataServiceBatch.h"
-#import "ODataAuthentication.h"
+#import <HTTPServerKit/HSAuthentication.h>
 #import "ODataBatch.h"
 #import "ODataError.h"
 
@@ -55,11 +55,11 @@ static void OISAppendText(NSMutableData *data, NSString *text)
   // Whether the item in flight finished while it was being started.
   BOOL _starting;
   BOOL _finishedWhileStarting;
-  ODataPrincipal *_principal;
+  HSPrincipal *_principal;
 }
 
 - (instancetype)initWithService:(ODataService *)service exchange:(ODataExchange *)exchange version:(NSString *)version
-                      principal:(ODataPrincipal *)principal
+                      principal:(HSPrincipal *)principal
 {
   self = [super init];
   if (!self) return nil;

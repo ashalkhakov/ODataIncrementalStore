@@ -1,10 +1,8 @@
 // Copyright (C) 2026 OIS contributors
 // SPDX-License-Identifier: LGPL-2.1-or-later
 
-#import "ODataHTTPServer.h"
-#import "ODataServerRouter.h"
-#import "ODataServerHandlers.h"
-#import "ODataService.h"
+#import "HSServer.h"
+#import "HSRouter.h"
 #import "GCDWebServer.h"
 #import "GCDWebServerDataRequest.h"
 #import "GCDWebServerFileRequest.h"
@@ -13,23 +11,23 @@
 #import "GCDWebServerStreamedResponse.h"
 #include <errno.h>
 
-@interface ODataHTTPServer ()
+@interface HSServer ()
 - (void)requestDidFinish;
 @end
 
 // One request's way back to the socket.
-@interface OISListenerAnswer : NSObject
+@interface HSListenerAnswer : NSObject
 @property (nonatomic, copy) GCDWebServerCompletionBlock completion;
 @property (nonatomic) BOOL headOnly;
-@property (nonatomic, weak) ODataHTTPServer *server;
+@property (nonatomic, weak) HSServer *server;
 @end
 
-@implementation OISListenerAnswer
+@implementation HSListenerAnswer
 
-- (void)replyDidFinish:(ODataServerReply *)reply
+- (void)replyDidFinish:(HSReply *)reply
 {
   [self.server requestDidFinish];
-  ODataServerResponse *answer = reply.response;
+  HSResponse *answer = reply.response;
   NSDictionary *headers = answer.headers;
   NSString *type = [answer valueForHeader:@"Content-Type"] ?: @"application/octet-stream";
   NSData *body = self.headOnly ? nil : answer.body;
@@ -37,14 +35,14 @@
   if (!self.headOnly && answer.bodyFileURL) {
     GCDWebServerFileResponse *file = [GCDWebServerFileResponse responseWithFile:answer.bodyFileURL.path];
     if (!file) {
-      NSLog(@"ODataServer: %@ cannot be read", answer.bodyFileURL.path);
+      NSLog(@"HTTPServerKit: %@ cannot be read", answer.bodyFileURL.path);
       self.completion([GCDWebServerResponse responseWithStatusCode:500]);
       return;
     }
     file.contentType = type;
     response = file;
   } else if (!self.headOnly && answer.bodyStream) {
-    id<ODataServerResponseStream> stream = answer.bodyStream;
+    id<HSResponseStream> stream = answer.bodyStream;
     response = [GCDWebServerStreamedResponse responseWithContentType:type streamBlock:^NSData *(NSError **error) {
       return [stream nextChunk:error];
     }];
@@ -67,7 +65,7 @@
 
 @end
 
-@implementation ODataHTTPServer {
+@implementation HSServer {
   GCDWebServer *_server;
   NSUInteger _inFlight;
 }
@@ -86,7 +84,7 @@
   }
 }
 
-- (instancetype)initWithHandler:(id<ODataServerHandler>)handler
+- (instancetype)initWithHandler:(id<HSHandler>)handler
 {
   self = [super init];
   if (!self) return nil;
@@ -97,7 +95,7 @@
   _keepAliveTimeout = 5;
   _maxRequestsPerConnection = 100;
   _server = [[GCDWebServer alloc] init];
-  __weak ODataHTTPServer *weakSelf = self;
+  __weak HSServer *weakSelf = self;
   [_server addHandlerWithMatchBlock:^GCDWebServerRequest *(NSString *method, NSURL *url, NSDictionary *headers, NSString *path, NSDictionary *query) {
     // A body too large for memory, or of a size not said, goes to a file.
     NSString *length = nil, *encoding = nil;
@@ -115,25 +113,13 @@
   return self;
 }
 
-- (instancetype)initWithService:(ODataService *)service
-{
-  ODataServerRouter *router = [[ODataServerRouter alloc] init];
-  NSString *root = service.serviceRoot.path.length ? service.serviceRoot.path : @"/";
-  [router addRoute:[ODataServerRoute routeWithMethod:nil path:[root stringByAppendingPathComponent:@"*"]
-                                           handler:[[ODataServiceHandler alloc] initWithService:service]]];
-  self = [self initWithHandler:router];
-  if (!self) return nil;
-  _service = service;
-  return self;
-}
-
 - (NSDictionary *)optionsForPort:(NSUInteger)port
 {
   return @{
     GCDWebServerOption_Port: @(port),
     GCDWebServerOption_BindToLocalhost: @(self.bindToLocalhost),
     GCDWebServerOption_MaxBodySize: @(self.maxBodySize),
-    GCDWebServerOption_ServerName: @"ODataServer",
+    GCDWebServerOption_ServerName: @"HTTPServerKit",
     GCDWebServerOption_AutomaticallyMapHEADToGET: @NO,
     GCDWebServerOption_KeepAliveTimeout: @(self.keepAliveTimeout),
     GCDWebServerOption_MaxRequestsPerConnection: @(self.maxRequestsPerConnection),
@@ -206,25 +192,26 @@
   }
   NSMutableDictionary *headers = [NSMutableDictionary dictionary];
   for (NSString *name in request.headers) headers[name] = request.headers[name];
-  ODataServerRequest *httpRequest;
+  HSRequest *httpRequest;
   if ([request isKindOfClass:[GCDWebServerFileRequest class]]) {
     // The file goes when the listener's request does: kept with ours.
     NSString *path = ((GCDWebServerFileRequest *)request).temporaryPath;
-    httpRequest = [[ODataServerRequest alloc] initWithMethod:request.method URL:url headers:headers
+    httpRequest = [[HSRequest alloc] initWithMethod:request.method URL:url headers:headers
                                                  bodyFileURL:request.hasBody ? [NSURL fileURLWithPath:path] : nil owner:request];
   } else {
     NSData *body = request.hasBody ? ((GCDWebServerDataRequest *)request).data : nil;
-    httpRequest = [[ODataServerRequest alloc] initWithMethod:request.method URL:url headers:headers body:body];
+    httpRequest = [[HSRequest alloc] initWithMethod:request.method URL:url headers:headers body:body];
   }
   httpRequest.remoteAddress = request.remoteAddressString;
-  OISListenerAnswer *answer = [[OISListenerAnswer alloc] init];
+  HSListenerAnswer *answer = [[HSListenerAnswer alloc] init];
   answer.completion = completion;
   answer.headOnly = [httpRequest.method isEqualToString:@"HEAD"];
   answer.server = self;
   @synchronized (self) {
     _inFlight++;
   }
-  ODataServerReply *reply = [[ODataServerReply alloc] initWithTarget:answer action:@selector(replyDidFinish:)];
+  HSReply *reply = [[HSReply alloc] initWithTarget:answer action:@selector(replyDidFinish:)];
+  reply.request = httpRequest;
   [self.handler handleRequest:httpRequest reply:reply];
 }
 

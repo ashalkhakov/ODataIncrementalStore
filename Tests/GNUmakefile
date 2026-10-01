@@ -40,10 +40,10 @@ ODataIncrementalStoreTests_OBJC_FILES = \
 	ODataPredicatePairTests.m
 
 ODataIncrementalStoreTests_RESOURCE_FILES = Snapshots
-ODataIncrementalStoreTests_INCLUDE_DIRS = -I../Source/ODataKit/include -I../Source/ODataIncrementalStore/include -I../Source/ODataService/include -I../Source/ODataKit/include/ODataKit -I../Source/ODataIncrementalStore/include/ODataIncrementalStore -I../Source/ODataService/include/ODataService -I.
+ODataIncrementalStoreTests_INCLUDE_DIRS = -I../Source/ODataKit/include -I../Source/ODataIncrementalStore/include -I../Source/ODataService/include -I../Source/ODataKit/include/ODataKit -I../Source/ODataIncrementalStore/include/ODataIncrementalStore -I../Source/ODataService/include/ODataService -I../Source/HTTPServerKit/include -I../Source/HTTPServerKit/include/HTTPServerKit -I.
 # gnustep-make builds the library into ../obj; `make -f Makefile` into ..
 ODataIncrementalStoreTests_LIB_DIRS = -L../obj -L..
-ODataIncrementalStoreTests_OBJC_LIBS += -lODataService -lODataIncrementalStore -lODataKit -lXCTest -lCoreData
+ODataIncrementalStoreTests_OBJC_LIBS += -lODataService -lHTTPServerKit -lODataIncrementalStore -lODataKit -lXCTest -lCoreData
 
 # FreeCoreData's SQL backends, for the pair tests: its Backends directory,
 # built (make -C Backends/PostgreSQL, make -C Backends/MySQL there). The
