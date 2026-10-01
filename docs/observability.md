@@ -144,8 +144,11 @@ thread of their own; a collector that is away is asked again within 10
 seconds, and a queue that fills (2048) drops spans rather than make
 requests wait. `otel_exporter_spans_total` and a warning (at most one a
 minute) say so. On `SIGTERM` the last spans are sent before the process
-exits. Only OTLP over HTTP with JSON is spoken: `OTEL_EXPORTER_OTLP_PROTOCOL`
-`grpc` or `http/protobuf` is refused at start, not ignored.
+exits. Only OTLP over HTTP with JSON is spoken: with `OTEL_EXPORTER_OTLP_PROTOCOL`
+`grpc` or `http/protobuf` (or an endpoint that is no URL) the server says
+so at start (`warning: not tracing: ...`) and runs untraced, as
+OpenTelemetry has it: telemetry never stops the program. Another tool's
+variables (a container build's, say) can be what it finds.
 
 ### Spans of one's own
 

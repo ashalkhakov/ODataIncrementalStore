@@ -1212,6 +1212,20 @@ int main(int argc, const char *argv[])
         check(NO, @"otlp-export", error.localizedDescription ?: @"");
       }
     }
+    // Another tool's OTEL_ variables (a container build's: gRPC to a
+    // socket) do not stop a server: it says so, and runs untraced.
+    {
+      NSError *failure = nil;
+      ODataServerConfiguration *foreign = (ODataServerConfiguration *)[ODataServerConfiguration
+          configurationWithArguments:@{ @"Model": modelPath }
+                         environment:@{ @"OTEL_TRACES_EXPORTER": @"otlp", @"OTEL_EXPORTER_OTLP_TRACES_PROTOCOL": @"grpc",
+                                        @"OTEL_EXPORTER_OTLP_TRACES_ENDPOINT": @"unix:///dev/otel-grpc.sock" }
+                               error:&failure];
+      ODataServerApplication *untraced = [[ODataServerApplication alloc] initWithConfiguration:foreign];
+      BOOL prepared = [untraced prepare:&failure];
+      NSString *warned = [[foreign.warnings filteredArrayUsingPredicate:[NSPredicate predicateWithFormat:@"SELF BEGINSWITH 'not tracing'"]] firstObject];
+      check(prepared && warned && !untraced.tracerProvider, @"foreign-otel-variables", warned ?: failure.localizedDescription ?: @"no warning");
+    }
     printf("%s: %d failure(s)\n", failures ? "FAILED" : "OK", failures);
   }
   return failures ? 1 : 0;

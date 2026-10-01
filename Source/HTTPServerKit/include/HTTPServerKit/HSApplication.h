@@ -188,7 +188,8 @@ NS_ASSUME_NONNULL_BEGIN
 // when they name no way.
 - (nullable id<HSAuthenticator>)authenticatorWithError:(NSError **)error;
 // Where traces go, as the settings and OTEL_ variables say; nil, without an
-// error, when nowhere.
+// error, when nowhere; nil with one for settings it cannot use (-prepare:
+// warns of those, and runs untraced).
 - (nullable OTTracerProvider *)tracerProviderWithError:(NSError **)error;
 // What is allowed but probably not meant, one sentence each, once the
 // authenticator is made (a subclass, a module adds its own).

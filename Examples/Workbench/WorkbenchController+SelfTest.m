@@ -678,10 +678,14 @@ static void WBCheck(BOOL ok, NSString *what, NSString *detail)
   OTSpan *chosen = [[self.traceWindow.spanOutline itemAtRow:self.traceWindow.spanOutline.selectedRow] valueForKey:@"span"];
   BOOL served = !builtIn || ([names containsObject:@"plan"] && [names containsObject:@"execute"] &&
                              [[names filteredArrayUsingPredicate:[NSPredicate predicateWithFormat:@"SELF BEGINSWITH 'ODataService GET'"]] count]);
-  WBCheck(trace && self.traceWindow.window.isVisible && chosen.kind == OTSpanKindClient &&
-          [chosen.context.spanID isEqualToString:WBSpanIDOfHeaders(entry.requestHeaders) ?: @""] &&
-          [self.traceWindow.detailView.string rangeOfString:@"http.response.status_code"].location != NSNotFound && served,
-          @"traces: the exchange's trace, the span that sent it chosen", [names componentsJoinedByString:@", "]);
+  BOOL shown = self.traceWindow.window.isVisible;
+  BOOL sender = chosen.kind == OTSpanKindClient && [chosen.context.spanID isEqualToString:WBSpanIDOfHeaders(entry.requestHeaders) ?: @""];
+  BOOL detailed = [self.traceWindow.detailView.string rangeOfString:@"http.response.status_code"].location != NSNotFound;
+  WBCheck(trace && shown && sender && detailed && served, @"traces: the exchange's trace, the span that sent it chosen",
+          [NSString stringWithFormat:@"%@%@%@%@%@ (%ld rows, row %ld chosen)", trace ? @"" : @"no trace; ", shown ? @"" : @"not shown; ",
+                                     sender ? @"" : @"not the sender chosen; ", detailed ? @"" : @"no detail; ",
+                                     [names componentsJoinedByString:@", "], (long)self.traceWindow.spanOutline.numberOfRows,
+                                     (long)self.traceWindow.spanOutline.selectedRow]);
   [self shoot:[NSString stringWithFormat:@"Traces %@", builtIn ? @"built-in" : entry.method] window:self.traceWindow.window];
   [self.traceWindow.window orderOut:nil];
 }

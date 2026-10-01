@@ -417,7 +417,8 @@ static NSTableColumn *WBColumn(NSString *identifier, NSString *title, CGFloat wi
   _roots = roots;
   _shownStart = trace.startTime;
   [_spanOutline reloadData];
-  [_spanOutline expandItem:nil expandChildren:YES];
+  // Each top span, and all under it (GNUstep does not take nil for all).
+  for (WBSpanNode *root in _roots) [_spanOutline expandItem:root expandChildren:YES];
   WBSpanNode *again = selectedID ? [self nodeWithSpanID:selectedID in:_roots] : nil;
   NSInteger row = again ? [_spanOutline rowForItem:again] : -1;
   if (row >= 0) {

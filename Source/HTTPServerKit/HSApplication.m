@@ -346,8 +346,12 @@ static id HSEnvironmentValue(NSString *text)
   id endpoint = [self setting:@"OTLPEndpoint"];
   if ([endpoint isKindOfClass:[NSString class]] && [endpoint length]) {
     environment[@"OTEL_EXPORTER_OTLP_ENDPOINT"] = endpoint;
-    [environment removeObjectForKey:@"OTEL_EXPORTER_OTLP_TRACES_ENDPOINT"];
-    [environment removeObjectForKey:@"OTEL_TRACES_EXPORTER"];
+    // The setting is OTLP over HTTP as JSON, whatever the environment's
+    // variables were for.
+    for (NSString *name in @[ @"OTEL_EXPORTER_OTLP_TRACES_ENDPOINT", @"OTEL_TRACES_EXPORTER", @"OTEL_EXPORTER_OTLP_PROTOCOL",
+                              @"OTEL_EXPORTER_OTLP_TRACES_PROTOCOL", @"OTEL_SDK_DISABLED" ]) {
+      [environment removeObjectForKey:name];
+    }
   }
   id ratio = [self setting:@"TraceSampleRatio"];
   if ([ratio respondsToSelector:@selector(doubleValue)]) {
@@ -523,11 +527,13 @@ static id HSEnvironmentValue(NSString *text)
 
   // Traces, when the settings or the OTEL_ variables name where to send
   // them: the process's provider from now on.
+  // Settings tracing cannot use do not stop the server (OpenTelemetry's
+  // rule: telemetry never takes the program down): it runs untraced, and
+  // says why. Another tool's OTEL_ variables (a build's, gRPC to a socket)
+  // may be what it found.
+  failure = nil;
   OTTracerProvider *provider = [configuration tracerProviderWithError:&failure];
-  if (failure) {
-    if (error) *error = failure;
-    return NO;
-  }
+  if (failure) [configuration addWarning:[@"not tracing: " stringByAppendingString:failure.localizedDescription]];
   if (provider) {
     if ([provider.processor isKindOfClass:[OTBatchSpanProcessor class]]) [(OTBatchSpanProcessor *)provider.processor setObserver:self];
     self.tracerProvider = provider;

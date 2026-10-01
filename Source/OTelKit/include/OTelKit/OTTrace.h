@@ -229,6 +229,9 @@ typedef NS_ENUM(NSInteger, OTStatusCode) {
 // OTEL_RESOURCE_ATTRIBUTES, and OTEL_BSP_* for the batch processor. nil
 // without an error when tracing is off: no endpoint, or none, or disabled.
 // defaults: resource attributes the variables do not set (service.version).
+// nil with an error for what it cannot do (a protocol other than
+// http/json, an endpoint that is no URL): a program goes on untraced, and
+// says so; it never stops for it.
 + (nullable instancetype)providerWithEnvironment:(NSDictionary<NSString *, NSString *> *)environment
                                         defaults:(nullable NSDictionary<NSString *, id> *)defaults
                                            error:(NSError **)error;
