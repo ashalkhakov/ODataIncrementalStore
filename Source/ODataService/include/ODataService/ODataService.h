@@ -109,6 +109,13 @@ FOUNDATION_EXPORT NSString * const ODataUserInfoETag;  // @"OData.etag"
 //   { return @{ @"pricierThanPrice:reply:": @"MorePricey",
 //               @"pricierThanPrice:reply:.price": @"Floor" }; }
 //
+// An operation that needs a permission says so in another class method,
+// any one of the scopes it names being enough (403 without; $metadata says
+// it as the operation's OperationRestrictions):
+//
+//   + (NSDictionary *)ODataOperationScopes
+//   { return @{ @"raisePriceByPercent:reply:": @[ @"Products.Write" ] }; }
+//
 // A declaration the service cannot type is listed in operationProblems and
 // left out; ois-serve refuses to start with any.
 @protocol ODataFunctions
@@ -185,6 +192,19 @@ FOUNDATION_EXPORT NSString * const ODataUserInfoETag;  // @"OData.etag"
 @property (nonatomic) BOOL allowsInsert;
 @property (nonatomic) BOOL allowsUpdate;
 @property (nonatomic) BOOL allowsDelete;
+// The permissions the set's methods need, as OAuth scopes the caller's
+// principal has (ODataPrincipal's scopes): any one of a set's is enough;
+// nil or empty, the default, none is needed. Read is every read that
+// reaches the set's rows -- the set, an entity, a navigation to them, an
+// $expand of them -- and the others the writes, of an entity, a $ref or in
+// a $batch. A caller without one is answered 403. $metadata says them as
+// the set's ReadRestrictions, InsertRestrictions, UpdateRestrictions and
+// DeleteRestrictions Permissions, under the authenticator's scheme
+// (Capabilities and Authorization vocabularies).
+@property (nonatomic, copy, nullable) NSSet<NSString *> *readScopes;
+@property (nonatomic, copy, nullable) NSSet<NSString *> *insertScopes;
+@property (nonatomic, copy, nullable) NSSet<NSString *> *updateScopes;
+@property (nonatomic, copy, nullable) NSSet<NSString *> *deleteScopes;
 // Properties (wire names) of the set's entities that $filter, and
 // $orderby, may not use: answered 400, and said in $metadata
 // (Capabilities.FilterRestrictions, SortRestrictions). Empty by default.

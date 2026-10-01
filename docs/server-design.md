@@ -142,6 +142,20 @@ property.
   it then answers `405`, and `$metadata` says so on the set
   (`Capabilities.InsertRestrictions` and its siblings), as the handler
   allows at the time of the request.
+- `readScopes`, `insertScopes`, `updateScopes` and `deleteScopes` are the
+  permissions a method needs, as OAuth scopes the caller's principal
+  carries (its token's `scope` or `scp`), any one of them enough: a
+  permission names what it allows, and which people hold it is the
+  identity provider's to say, so it outlasts a reorganization that roles
+  would not. A read needs the read scopes of every set it reaches -- along
+  its path, and through `$expand` -- and a write those of the set it
+  writes; an operation names its own in `+ODataOperationScopes`. A caller
+  without one is answered `403`. `$metadata` says them, as the
+  Capabilities vocabulary has it: each set's `ReadRestrictions` and its
+  siblings, and each operation's `OperationRestrictions`, carry
+  `Permissions` under the authenticator's security scheme, so a client
+  knows which scopes to ask its provider for. That decides what a caller
+  may do; which rows it sees is the next item's.
 - `-predicateForVisibleObjectsInRequest:` scopes the rows the caller may
   see however they are reached: fetched, by key, through navigation,
   through `$expand`, or named in `@odata.bind`. That is where per-caller

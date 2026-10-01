@@ -234,6 +234,9 @@ typedef NS_ENUM(NSInteger, OISTargetKind) {
 - (void)respondJSON:(id)json status:(NSInteger)status headers:(nullable NSDictionary *)headers;
 - (void)respondError:(NSError *)error;
 - (void)fail:(NSInteger)status message:(NSString *)message;
+// Whether the caller has one of the scopes (none needed: YES); answered 403
+// when it has none, for what it asked to do.
+- (BOOL)permits:(nullable NSSet<NSString *> *)scopes to:(NSString *)what;
 - (NSString *)canonicalPathOf:(NSManagedObject *)object;
 - (NSPredicate *)predicateForObjects:(NSArray<NSManagedObject *> *)objects;
 - (nullable NSPredicate *)membersOfNavigation;

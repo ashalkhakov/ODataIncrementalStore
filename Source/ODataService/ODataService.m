@@ -992,6 +992,14 @@ static NSArray<NSString *> *OISApplyTransformations(void)
   [self respondError:ODataServiceError(status, message)];
 }
 
+- (BOOL)permits:(NSSet<NSString *> *)scopes to:(NSString *)what
+{
+  if (!scopes.count || [scopes intersectsSet:self.request.principal.scopes ?: [NSSet set]]) return YES;
+  NSString *named = [[scopes.allObjects sortedArrayUsingSelector:@selector(compare:)] componentsJoinedByString:@" "];
+  [self fail:403 message:[NSString stringWithFormat:@"To %@ needs one of the scopes %@", what, named]];
+  return NO;
+}
+
 - (void)methodNotAllowed:(NSArray<NSString *> *)allowed
 {
   NSString *allow = [allowed componentsJoinedByString:@", "];
@@ -1562,6 +1570,12 @@ static NSUInteger OISExpandDepth(ODataQueryOptions *options)
 {
   NSDictionary *key = [self keyFromParts:parts entity:self.entity];
   if (!key) return;
+  // A read reads every set along its path; a write needs its own
+  // permission, not this one, to find the row it changes.
+  if ([self.request.method isEqualToString:@"GET"] &&
+      ![self permits:self.handler.readScopes to:[@"read " stringByAppendingString:[self.service entitySetForEntity:OISRootEntity(self.entity)]]]) {
+    return;
+  }
   ODataReply *reply = [self replyWithAction:@selector(didFindObject:)];
   NSManagedObject *object = [self.handler objectWithKey:key request:self.request reply:reply];
   [reply returned:object];
@@ -4269,6 +4283,7 @@ static NSNumber *OISScalarReturnValue(NSInvocation *invocation, char type)
 // (the call's plan: Lookups, then Call).
 - (void)invokeOperation
 {
+  if (![self permits:self.operation.scopes to:[NSString stringWithFormat:@"call %@", self.operation.name]]) return;
   NSArray *values = [self operationValues];
   if (!values) return;
   NSMutableArray *lookups = [NSMutableArray array];
@@ -4933,8 +4948,21 @@ static NSNumber *OISScalarReturnValue(NSInvocation *invocation, char type)
     NSMutableDictionary *setAnnotations = [NSMutableDictionary dictionary];
     NSMutableString *signature = [NSMutableString stringWithString:version];
     NSMutableSet *open = [NSMutableSet set];
+    NSMutableDictionary *permissions = [NSMutableDictionary dictionary];
     for (NSString *set in [self.handlers.allKeys sortedArrayUsingSelector:@selector(compare:)]) {
       ODataEntitySetHandler *handler = self.handlers[set];
+      NSMutableDictionary *needed = [NSMutableDictionary dictionary];
+      if (handler.readScopes.count) needed[@"Read"] = handler.readScopes;
+      if (handler.insertScopes.count) needed[@"Insert"] = handler.insertScopes;
+      if (handler.updateScopes.count) needed[@"Update"] = handler.updateScopes;
+      if (handler.deleteScopes.count) needed[@"Delete"] = handler.deleteScopes;
+      if (needed.count) {
+        permissions[set] = needed;
+        for (NSString *kind in [needed.allKeys sortedArrayUsingSelector:@selector(compare:)]) {
+          [signature appendFormat:@";%@ %@:%@", set, kind,
+                                  [[needed[kind] allObjects] sortedArrayUsingSelector:@selector(compare:)]];
+        }
+      }
       NSMutableSet *refused = [NSMutableSet set];
       if (!handler.allowsInsert) [refused addObject:@"Insert"];
       if (!handler.allowsUpdate) [refused addObject:@"Update"];
@@ -5007,11 +5035,26 @@ static NSNumber *OISScalarReturnValue(NSInvocation *invocation, char type)
     // The container's: the authenticator, or the application's, may be set
     // after the first request.
     NSDictionary *container = [self metadataContainerAnnotations];
+    // What the operations need, and the scheme every permission is under.
+    NSMutableDictionary *operationPermissions = [NSMutableDictionary dictionary];
+    for (OISServedOperation *operation in self.catalog.operations) {
+      if (!operation.scopes.count) continue;
+      NSSet *known = operationPermissions[operation.qualifiedName];
+      operationPermissions[operation.qualifiedName] = known ? [known setByAddingObjectsFromSet:operation.scopes] : operation.scopes;
+    }
+    [signature appendFormat:@";operations:%lu", (unsigned long)operationPermissions.description.hash];
+    id<ODataAuthenticator> authenticator = self.authenticator;
+    NSDictionary *authorization = [authenticator respondsToSelector:@selector(authorizationDescription)]
+        ? [authenticator authorizationDescription] : nil;
+    NSString *schemeName = [authorization[@"Name"] isKindOfClass:[NSString class]] ? authorization[@"Name"] : nil;
     [signature appendFormat:@";container:%lu", (unsigned long)container.description.hash];
     NSString *xml = self.metadataByVersion[signature];
     if (!xml) {
       self.writer.containerAnnotations = container;
       self.writer.restrictions = restrictions;
+      self.writer.permissions = permissions;
+      self.writer.operationPermissions = operationPermissions;
+      self.writer.securitySchemeName = schemeName;
       self.writer.openEntityNames = open;
       self.writer.entitySetAnnotations = setAnnotations;
       xml = [self.writer XMLStringForVersion:version];

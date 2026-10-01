@@ -36,6 +36,7 @@ NS_ASSUME_NONNULL_BEGIN
 @property (nonatomic) BOOL boundToCollection;
 @property (nonatomic, copy) NSArray<OISServedParameter *> *parameters;  // the caller's, in order
 @property (nonatomic, strong, nullable) OISServedParameter *returns;     // nil: nothing
+@property (nonatomic, copy, nullable) NSSet<NSString *> *scopes;        // any one needed; nil: none
 @property (nonatomic, readonly) NSString *signature;  // for messages: -[Product selector:]
 @end
 

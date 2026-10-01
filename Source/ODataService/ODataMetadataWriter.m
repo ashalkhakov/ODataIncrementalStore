@@ -265,6 +265,17 @@ static BOOL OISIsTrue(id value)
 }
 
 // Annotation elements: by term (Term#Qualifier), a term's own annotations
+// Capabilities.PermissionType records: one, under the security scheme,
+// any of whose scopes is enough.
+- (NSArray *)permissionsOf:(NSSet<NSString *> *)scopes
+{
+  NSMutableArray *granted = [NSMutableArray array];
+  for (NSString *scope in [scopes.allObjects sortedArrayUsingSelector:@selector(compare:)]) {
+    [granted addObject:@{ @"Scope": scope }];
+  }
+  return @[ @{ @"SchemeName": self.securitySchemeName ?: @"Default", @"Scopes": granted } ];
+}
+
 // inside it (Term@Term), as JSON CSDL keys them.
 - (NSArray<NSXMLElement *> *)annotations:(NSDictionary<NSString *, id> *)annotations
 {
@@ -583,8 +594,15 @@ static void OISAddChildren(NSXMLElement *parent, NSArray<NSXMLElement *> *childr
     }
     NSString *setName = [self.mapper entitySetForEntity:entity];
     NSMutableDictionary *annotations = [NSMutableDictionary dictionary];
+    NSDictionary *permissions = self.permissions[setName];
+    if ([permissions[@"Read"] count]) {
+      annotations[@"Org.OData.Capabilities.V1.ReadRestrictions"] = @{ @"Permissions": [self permissionsOf:permissions[@"Read"]] };
+    }
     for (NSString *restriction in @[ @"Insert", @"Update", @"Delete" ]) {
       NSMutableDictionary *record = [NSMutableDictionary dictionary];
+      if ([permissions[restriction] count] && ![self.restrictions[setName] containsObject:restriction]) {
+        record[@"Permissions"] = [self permissionsOf:permissions[restriction]];
+      }
       if ([self.restrictions[setName] containsObject:restriction]) {
         NSString *property = [@{ @"Insert": @"Insertable", @"Update": @"Updatable", @"Delete": @"Deletable" } objectForKey:restriction];
         record[property] = @NO;
@@ -640,6 +658,11 @@ static NSString * const OISEdm = @"http://docs.oasis-open.org/odata/ns/edm";
   BOOL untyped = ![version isEqualToString:@"4.0"];
   for (NSXMLElement *original in self.additionalSchemaElements) {
     NSXMLElement *element = [original copy];
+    NSString *qualified = [NSString stringWithFormat:@"%@.%@", self.namespaceName, [element attributeForName:@"Name"].stringValue];
+    if ([self.operationPermissions[qualified] count]) {
+      OISAddChildren(element, [self annotations:@{ @"Org.OData.Capabilities.V1.OperationRestrictions":
+                                                     @{ @"Permissions": [self permissionsOf:self.operationPermissions[qualified]] } }]);
+    }
     // An operation's JSON parameter or result references the vocabulary.
     for (NSXMLNode *child in element.children) {
       if (child.kind != NSXMLElementKind) continue;

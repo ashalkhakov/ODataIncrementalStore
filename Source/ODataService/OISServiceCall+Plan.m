@@ -685,8 +685,29 @@ static BOOL OISNestsPerParent(ODataQueryOptions *options)
 
 #pragma mark - Running
 
+// Every set a read reaches -- along its path, and through its expansions
+// -- lets the caller read it.
+- (BOOL)permitsReadOf:(OISPlan *)plan
+{
+  NSMutableSet *entities = [NSMutableSet set];
+  for (OISPlanNode *node = plan.root; node; node = node.input) {
+    if (node.entity) [entities addObject:node.entity];
+  }
+  [self addDestinationsOf:plan.nests into:entities depth:0];
+  NSMutableDictionary<NSString *, ODataEntitySetHandler *> *handlers = [NSMutableDictionary dictionary];
+  for (NSEntityDescription *entity in entities) {
+    ODataEntitySetHandler *handler = [self.service handlerForEntity:entity];
+    if (handler) handlers[[self.service entitySetForEntity:OISRootEntity(entity)]] = handler;
+  }
+  for (NSString *set in [handlers.allKeys sortedArrayUsingSelector:@selector(compare:)]) {
+    if (![self permits:handlers[set].readScopes to:[@"read " stringByAppendingString:set]]) return NO;
+  }
+  return YES;
+}
+
 - (void)runPlan:(OISPlan *)plan then:(SEL)after
 {
+  if (!plan.write && ![self permitsReadOf:plan]) return;
   if (!plan.write) plan.dynamicSets = [self dynamicSetsOf:plan];
   if (plan.returning) plan.returning.dynamicSets = [self dynamicSetsOf:plan.returning];
   self.plan = plan;

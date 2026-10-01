@@ -15,6 +15,7 @@ const char *_protocol_getMethodTypeEncoding(Protocol *protocol, SEL selector, BO
 @interface NSObject (OISOperationDeclarations)
 + (NSDictionary *)ODataOperationTypes;
 + (NSDictionary *)ODataOperationNames;
++ (NSDictionary *)ODataOperationScopes;
 @end
 
 // A method's types, one token each: the return type, self, _cmd, then the
@@ -164,6 +165,7 @@ static void OISCollectProtocols(Protocol *protocol, NSMutableArray *into, NSMuta
 
   NSDictionary *types = [cls respondsToSelector:@selector(ODataOperationTypes)] ? [cls ODataOperationTypes] : @{};
   NSDictionary *names = [cls respondsToSelector:@selector(ODataOperationNames)] ? [cls ODataOperationNames] : @{};
+  NSDictionary *scopes = [cls respondsToSelector:@selector(ODataOperationScopes)] ? [cls ODataOperationScopes] : @{};
 
   for (NSValue *pointer in protocols) {
     Protocol *protocol = (__bridge Protocol *)[pointer pointerValue];
@@ -183,7 +185,13 @@ static void OISCollectProtocols(Protocol *protocol, NSMutableArray *into, NSMuta
                                              action:isAction
                                           overrides:types
                                               names:names];
-        if (operation) [_operations addObject:operation];
+        if (operation) {
+          id named = scopes[NSStringFromSelector(list[i].name)];
+          if ([named isKindOfClass:[NSString class]]) named = @[ named ];
+          operation.scopes = [named isKindOfClass:[NSArray class]] || [named isKindOfClass:[NSSet class]]
+              ? [NSSet setWithArray:[named isKindOfClass:[NSSet class]] ? [named allObjects] : named] : nil;
+          [_operations addObject:operation];
+        }
       }
       free(list);
     }

@@ -1598,6 +1598,18 @@ static BOOL OISConditionAllows(NSString *condition, NSString *current)
   return YES;
 }
 
+// Whether the caller may write the entity's set as asked; answered 403 when
+// not.
+- (BOOL)permits:(NSEntityDescription *)entity insert:(BOOL)insert update:(BOOL)update delete:(BOOL)delete
+{
+  ODataEntitySetHandler *handler = [self.service handlerForEntity:entity];
+  NSString *set = [self.service entitySetForEntity:OISRootEntity(entity)] ?: entity.name;
+  if (insert) return [self permits:handler.insertScopes to:[@"insert into " stringByAppendingString:set]];
+  if (update) return [self permits:handler.updateScopes to:[@"update " stringByAppendingString:set]];
+  if (delete) return [self permits:handler.deleteScopes to:[@"delete from " stringByAppendingString:set]];
+  return YES;
+}
+
 // The writes, those a write depends on first: its rows, once written; nil
 // until the handlers have answered (or once one failed).
 - (id)writeFor:(OISPlanNode *)node
@@ -1615,6 +1627,7 @@ static BOOL OISConditionAllows(NSString *condition, NSString *current)
   }
   switch (node.op) {
     case OISPlanInsert: {
+      if (![self permits:node.entity insert:YES update:NO delete:NO]) return nil;
       NSMutableDictionary *values = [[self rowsIn:node.values object:nil] mutableCopy];
       [values addEntriesFromDictionary:self.planMemo[OISWriteKey(@"k", node)]];
       id made = [self ask:[key stringByAppendingString:@"/ask"] node:node entity:node.entity call:^id(ODataEntitySetHandler *handler, ODataReply *reply) {
@@ -1639,6 +1652,7 @@ static BOOL OISConditionAllows(NSString *condition, NSString *current)
           [rows addObject:object];  // only named, or only dynamic properties: not changed here
           continue;
         }
+        if (![self permits:object.entity insert:NO update:YES delete:NO]) return nil;
         NSString *asked = [NSString stringWithFormat:@"%@/%lu", key, (unsigned long)i];
         id changed = [self ask:asked node:node entity:object.entity call:^id(ODataEntitySetHandler *handler, ODataReply *reply) {
           return [handler updateObject:object values:values request:self.request reply:reply];
@@ -1656,6 +1670,7 @@ static BOOL OISConditionAllows(NSString *condition, NSString *current)
       NSArray *objects = self.planMemo[OISWriteKey(@"d", node)];
       for (NSUInteger i = 0; i < objects.count; i++) {
         NSManagedObject *object = objects[i];
+        if (![self permits:object.entity insert:NO update:NO delete:YES]) return nil;
         NSString *asked = [NSString stringWithFormat:@"%@/%lu", key, (unsigned long)i];
         if (![self ask:asked node:node entity:object.entity call:^id(ODataEntitySetHandler *handler, ODataReply *reply) {
               [handler deleteObject:object request:self.request reply:reply];
@@ -1670,6 +1685,7 @@ static BOOL OISConditionAllows(NSString *condition, NSString *current)
     case OISPlanLink:
     case OISPlanUnlink: {
       NSManagedObject *holder = [self resultOf:node.target];
+      if (![self permits:holder.entity insert:NO update:YES delete:NO]) return nil;
       NSRelationshipDescription *relationship = node.relationship;
       NSManagedObject *member = node.member ? [self resultOf:node.member] : nil;
       NSMutableDictionary *values = [NSMutableDictionary dictionaryWithDictionary:node.values];
@@ -1691,6 +1707,13 @@ static BOOL OISConditionAllows(NSString *condition, NSString *current)
     }
     case OISPlanTemporal: {
       OISTimelineChanges *changes = self.planMemo[OISWriteKey(@"t", node)];
+      // Each slice made, changed or closed needs its permission.
+      for (OISSliceRecord *record in changes.records) {
+        if (![self permits:record.entity ?: record.object.entity
+                    insert:record.isNew update:!record.isNew && !record.isDeleted delete:record.isDeleted]) {
+          return nil;
+        }
+      }
       for (NSUInteger i = 0; i < changes.records.count; i++) {
         OISSliceRecord *record = changes.records[i];
         NSString *asked = [NSString stringWithFormat:@"%@/%lu", key, (unsigned long)i];

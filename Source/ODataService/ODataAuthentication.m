@@ -5,6 +5,19 @@
 #import "ODataError.h"
 #import "OISSignature.h"
 
+// The scopes a token has: scope, space-separated, or scp, an array.
+static NSSet *OISScopes(NSDictionary *claims)
+{
+  id scope = claims[@"scope"];
+  if ([scope isKindOfClass:[NSString class]]) {
+    return [NSSet setWithArray:[scope componentsSeparatedByCharactersInSet:[NSCharacterSet whitespaceCharacterSet]]];
+  }
+  id scp = claims[@"scp"];
+  if ([scp isKindOfClass:[NSArray class]]) return [NSSet setWithArray:scp];
+  if ([scp isKindOfClass:[NSString class]]) return [NSSet setWithArray:[scp componentsSeparatedByString:@" "]];
+  return [NSSet set];
+}
+
 @implementation ODataPrincipal
 
 - (instancetype)initWithSubject:(NSString *)subject claims:(NSDictionary *)claims
@@ -14,6 +27,11 @@
   _subject = [subject copy];
   _claims = [claims copy] ?: @{};
   return self;
+}
+
+- (NSSet<NSString *> *)scopes
+{
+  return OISScopes(self.claims);
 }
 
 - (NSString *)description
@@ -145,18 +163,6 @@ static NSString *OISClaimsProblem(NSDictionary *claims, NSString *issuer, NSStri
   return nil;
 }
 
-// The scopes a token has: scope, space-separated, or scp, an array.
-static NSSet *OISScopes(NSDictionary *claims)
-{
-  id scope = claims[@"scope"];
-  if ([scope isKindOfClass:[NSString class]]) {
-    return [NSSet setWithArray:[scope componentsSeparatedByCharactersInSet:[NSCharacterSet whitespaceCharacterSet]]];
-  }
-  id scp = claims[@"scp"];
-  if ([scp isKindOfClass:[NSArray class]]) return [NSSet setWithArray:scp];
-  if ([scp isKindOfClass:[NSString class]]) return [NSSet setWithArray:[scp componentsSeparatedByString:@" "]];
-  return [NSSet set];
-}
 
 // The principal, when the token's claims hold: 401 or 403 otherwise.
 static ODataPrincipal *OISPrincipal(ODataRequest *request, ODataReply *reply, NSDictionary *claims, NSString *subject,
