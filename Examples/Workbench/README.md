@@ -80,6 +80,18 @@ What you can do:
   plan, the request as it reads (`docs/query-plan.md`). It is the same
   URL under `$explain/`, which the service answers with the plans instead
   of the rows, and the wire log shows it.
+- Traces (Trace > Show Traces, ⇧⌘T; or an exchange's own, ⌥⌘T, or a
+  right click in the wire log): every fetch, count and save of the store
+  is a trace, kept in memory (the last 200). The window lists them, newest
+  first; the selected one is a tree of its spans, when each began and how
+  long it took: the store's `fetch Product`, the request it sent (`GET
+  Products`), and at the built-in service its `ODataService GET Products`
+  with `plan` and `execute` and the service's own store requests under
+  them. Below, the chosen span's attributes and events: the URL, the
+  status, rows returned, the plan's tree. Open, it follows the wire log's
+  selection. With `OTEL_EXPORTER_OTLP_ENDPOINT` set (as for `ois-serve`)
+  the spans go to that collector too (Jaeger, Tempo), and against a real
+  service that exports its own, the two trees are one there.
 - Execute. Rows are real managed objects; select one to see its attributes,
   fire its faults, or its relationships. Each prefetched relationship is a
   column, showing what came with the row. Fire relationships reads every
@@ -160,6 +172,7 @@ The interface is in XIBs, File's Owner `WorkbenchController` in each:
 `WorkbenchWindow.xib` (the window, every control in it, and the main menu
 with the Store menu), `ExchangeWindow.xib` (one exchange, whole) and
 `PlanWindow.xib` (Explain's plans), the last two loaded when first shown.
+The trace window is made in code (`WBTraces.m`), the same on both.
 As Xcode saves them: fixed frames with springs and struts and no
 constraints, which `ibtool` turns into constraints and GNUstep's
 `GSXib5Loader` reads as they are (`checkResizing` in the self-test sees

@@ -662,6 +662,30 @@ static void WBCheck(BOOL ok, NSString *what, NSString *detail)
                                      [schema.entitySets.allKeys componentsJoinedByString:@","], self.connection.store.metadataProblems]);
 }
 
+// Traces: the newest exchange's, with the span that sent it chosen; at the
+// built-in service, its planning and execution under the request.
+- (void)checkTracesBuiltIn:(BOOL)builtIn
+{
+  [self.presetsPopup selectItemAtIndex:0];
+  [self applyPreset:self.presetsPopup];
+  [self runFetch:nil];
+  [[NSRunLoop currentRunLoop] runMode:NSDefaultRunLoopMode beforeDate:[NSDate dateWithTimeIntervalSinceNow:0.4]];
+  WorkbenchLogEntry *entry = self.log.firstObject;
+  [self.logTable selectRowIndexes:[NSIndexSet indexSetWithIndex:0] byExtendingSelection:NO];
+  [self showTraceOfExchange:self];
+  WBTrace *trace = [self.traceRecorder traceWithID:WBTraceIDOfHeaders(entry.requestHeaders) ?: @""];
+  NSArray *names = [trace.spans valueForKey:@"name"];
+  OTSpan *chosen = [[self.traceWindow.spanOutline itemAtRow:self.traceWindow.spanOutline.selectedRow] valueForKey:@"span"];
+  BOOL served = !builtIn || ([names containsObject:@"plan"] && [names containsObject:@"execute"] &&
+                             [[names filteredArrayUsingPredicate:[NSPredicate predicateWithFormat:@"SELF BEGINSWITH 'ODataService GET'"]] count]);
+  WBCheck(trace && self.traceWindow.window.isVisible && chosen.kind == OTSpanKindClient &&
+          [chosen.context.spanID isEqualToString:WBSpanIDOfHeaders(entry.requestHeaders) ?: @""] &&
+          [self.traceWindow.detailView.string rangeOfString:@"http.response.status_code"].location != NSNotFound && served,
+          @"traces: the exchange's trace, the span that sent it chosen", [names componentsJoinedByString:@", "]);
+  [self shoot:[NSString stringWithFormat:@"Traces %@", builtIn ? @"built-in" : entry.method] window:self.traceWindow.window];
+  [self.traceWindow.window orderOut:nil];
+}
+
 - (void)runSelfTest
 {
   NSArray *names = @[ @"Built-in", @"Northwind", @"TripPin" ];
@@ -676,6 +700,7 @@ static void WBCheck(BOOL ok, NSString *what, NSString *detail)
     WBCheck(self.connection.store.schema != nil && !self.connection.store.metadataProblems.count, @"$metadata read, and the model agrees with it",
             [self.connection.store.metadataProblems componentsJoinedByString:@"; "]);
     [self checkExchangeLog];
+    [self checkTracesBuiltIn:service == WBServiceBuiltIn];
     for (NSUInteger i = 0; i < self.presets.count; i++) {
       [self.presetsPopup selectItemAtIndex:(NSInteger)i];
       [self applyPreset:self.presetsPopup];

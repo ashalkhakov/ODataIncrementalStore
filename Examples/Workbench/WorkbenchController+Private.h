@@ -7,6 +7,7 @@
 #import "WBConnection.h"
 #import "WBQuery.h"
 #import "WBResults.h"
+#import "WBTraces.h"
 
 @interface WorkbenchController ()
 
@@ -52,6 +53,12 @@
 @property (nonatomic, strong) IBOutlet NSTextView *physicalPlanView;
 @property (nonatomic, strong) IBOutlet NSTextView *logicalPlanView;
 
+// Traces: every span the store, its requests and the built-in service
+// make, kept (the recorder), and shown (Trace > Show Traces, or an
+// exchange's own).
+@property (nonatomic, strong) WBTraceRecorder *traceRecorder;
+@property (nonatomic, strong) WBTraceWindow *traceWindow;
+
 // How many rows a screen holds, as a test says; 0: as the table's height says.
 @property (nonatomic) NSUInteger screenfulForTests;
 
@@ -75,5 +82,9 @@
 - (IBAction)explainQuery:(id)sender;
 - (IBAction)setMergePolicy:(NSMenuItem *)sender;
 - (IBAction)toggleRespondAsync:(id)sender;
+- (IBAction)showTraces:(id)sender;
+// The selected exchange's trace, the span that sent it chosen.
+- (IBAction)showTraceOfExchange:(id)sender;
+- (IBAction)clearTraces:(id)sender;
 
 @end

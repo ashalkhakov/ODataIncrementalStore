@@ -272,7 +272,7 @@ Not done yet, roughly in the order they would help:
 - **The service's own queues.** Asynchronous requests queued and running,
   requests per `$batch`, and each readiness check's answer and time.
 - **More of the process.** CPU seconds, open file descriptors, threads.
-- **A trace view.** Spans kept in memory (`OTInMemoryExporter`) and shown
-  as a tree beside each exchange: plan, execution, store requests. In the
-  Workbench, or in WorkflowKit's app, where a BPMN execution's own spans
-  would join the service's.
+- **A trace view in WorkflowKit's app**, where a BPMN execution's own spans
+  would join the service's, as the Workbench's trace window
+  (`Examples/Workbench/WBTraces.m`) shows the store's and the built-in
+  service's.

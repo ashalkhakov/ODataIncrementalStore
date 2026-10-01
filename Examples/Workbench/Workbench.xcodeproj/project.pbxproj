@@ -30,6 +30,7 @@
 		AA00000000000000000000C3 /* WBConnection.m in Sources */ = {isa = PBXBuildFile; fileRef = AA00000000000000000000C4 /* WBConnection.m */; };
 		AA00000000000000000000C5 /* WBQuery.m in Sources */ = {isa = PBXBuildFile; fileRef = AA00000000000000000000C6 /* WBQuery.m */; };
 		AA00000000000000000000C7 /* WBResults.m in Sources */ = {isa = PBXBuildFile; fileRef = AA00000000000000000000C8 /* WBResults.m */; };
+		AA00000000000000000000E0 /* WBTraces.m in Sources */ = {isa = PBXBuildFile; fileRef = AA00000000000000000000E1 /* WBTraces.m */; };
 		AA00000000000000000000C9 /* WorkbenchSupport.m in Sources */ = {isa = PBXBuildFile; fileRef = AA00000000000000000000CA /* WorkbenchSupport.m */; };
 /* End PBXBuildFile section */
 
@@ -145,10 +146,12 @@
 		AA00000000000000000000C4 /* WBConnection.m */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.objc; path = "WBConnection.m"; sourceTree = "<group>"; };
 		AA00000000000000000000C6 /* WBQuery.m */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.objc; path = "WBQuery.m"; sourceTree = "<group>"; };
 		AA00000000000000000000C8 /* WBResults.m */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.objc; path = "WBResults.m"; sourceTree = "<group>"; };
+		AA00000000000000000000E1 /* WBTraces.m */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.objc; path = "WBTraces.m"; sourceTree = "<group>"; };
 		AA00000000000000000000CA /* WorkbenchSupport.m */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.objc; path = "WorkbenchSupport.m"; sourceTree = "<group>"; };
 		AA00000000000000000000D1 /* WBConnection.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = "WBConnection.h"; sourceTree = "<group>"; };
 		AA00000000000000000000D2 /* WBQuery.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = "WBQuery.h"; sourceTree = "<group>"; };
 		AA00000000000000000000D3 /* WBResults.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = "WBResults.h"; sourceTree = "<group>"; };
+		AA00000000000000000000E2 /* WBTraces.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = "WBTraces.h"; sourceTree = "<group>"; };
 		AA00000000000000000000D4 /* WorkbenchSupport.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = "WorkbenchSupport.h"; sourceTree = "<group>"; };
 		AA00000000000000000000D5 /* WorkbenchController+Private.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = "WorkbenchController+Private.h"; sourceTree = "<group>"; };
 /* End PBXFileReference section */
@@ -193,10 +196,12 @@
 				AA00000000000000000000C4 /* WBConnection.m */,
 				AA00000000000000000000C6 /* WBQuery.m */,
 				AA00000000000000000000C8 /* WBResults.m */,
+				AA00000000000000000000E1 /* WBTraces.m */,
 				AA00000000000000000000CA /* WorkbenchSupport.m */,
 				AA00000000000000000000D1 /* WBConnection.h */,
 				AA00000000000000000000D2 /* WBQuery.h */,
 				AA00000000000000000000D3 /* WBResults.h */,
+				AA00000000000000000000E2 /* WBTraces.h */,
 				AA00000000000000000000D4 /* WorkbenchSupport.h */,
 				AA00000000000000000000D5 /* WorkbenchController+Private.h */,
 				AA000000000000000000009F /* WorkbenchEngine.h */,
@@ -377,6 +382,7 @@
 				AA00000000000000000000C3 /* WBConnection.m in Sources */,
 				AA00000000000000000000C5 /* WBQuery.m in Sources */,
 				AA00000000000000000000C7 /* WBResults.m in Sources */,
+				AA00000000000000000000E0 /* WBTraces.m in Sources */,
 				AA00000000000000000000C9 /* WorkbenchSupport.m in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
