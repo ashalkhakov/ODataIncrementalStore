@@ -319,6 +319,21 @@
   XCTAssertEqualObjects(compound.segments[1].name, @"$count");
   ODataResourcePath *segment = [ODataResourcePath pathWithString:@"Products/1" error:&error];
   XCTAssertEqualObjects([segment.segments valueForKey:@"name"], (@[ @"Products", @"1" ]), @"a key as a segment");
+  // One the lexer reads as several tokens: as written.
+  ODataResourcePath *colon = [ODataResourcePath pathWithString:@"Forms/1B99E324-0C77-49C5-9EE1-34FBEA1B8FE9:approve/Document"
+                                                         error:&error];
+  XCTAssertNotNil(colon, @"%@", error);
+  XCTAssertEqualObjects([colon.segments valueForKey:@"name"],
+                        (@[ @"Forms", @"1B99E324-0C77-49C5-9EE1-34FBEA1B8FE9:approve", @"Document" ]));
+  ODataResourcePath *spaced = [ODataResourcePath pathWithString:@"Notes/a b-c" error:&error];
+  XCTAssertEqualObjects(spaced.segments.lastObject.name, @"a b-c", @"%@", error);
+  XCTAssertNil([ODataResourcePath pathWithString:@"Forms//Document" error:NULL], @"an empty segment is none");
+  XCTAssertNil([ODataResourcePath pathWithString:@"Forms//a:b" error:NULL]);
+  // What is not a key still parses as before: a cast, a call, $filter(...).
+  ODataResourcePath *calls = [ODataResourcePath pathWithString:@"Employees/NS.Manager/NS.Promote(Level=2)/$filter(@f)/$count" error:&error];
+  XCTAssertEqualObjects([calls.segments valueForKey:@"name"], (@[ @"Employees", @"NS.Manager", @"NS.Promote", @"$filter", @"$count" ]), @"%@", error);
+  XCTAssertTrue(calls.segments[2].isCall);
+  XCTAssertNotNil(calls.segments[2].arguments[@"Level"]);
 }
 
 @end

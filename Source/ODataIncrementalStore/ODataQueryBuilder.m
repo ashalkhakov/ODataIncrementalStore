@@ -123,7 +123,8 @@ static NSString *OISPercentEncode(NSString *value)
   NSArray *names = [entity.relationshipsByName.allKeys sortedArrayUsingSelector:@selector(compare:)];
   for (NSString *name in names) {
     NSRelationshipDescription *rel = entity.relationshipsByName[name];
-    if (rel.isToMany || !rel.destinationEntity) continue;
+    // One the service does not serve is kept by the store, not read.
+    if (rel.isToMany || !rel.destinationEntity || ![self.mapper servesProperty:rel]) continue;
     NSString *wire = [self.mapper propertyForRelationship:rel];
     if ([expanded containsObject:wire] || ![self expands:wire entity:entity]) continue;
     NSMutableArray *keys = [NSMutableArray array];

@@ -1150,6 +1150,20 @@ static const NSInteger OISMaxNesting = 100;
   while (_token.kind != OISTokenEnd) {
     ODataPathSegment *segment = [[ODataPathSegment alloc] init];
     OISToken *t = _token;
+    OISTokenKind next = [self peek].kind;
+    // (Not an empty segment, Forms//Document: still none at all.)
+    if (segments.count > 0 && t.kind != OISTokenSlash && next != OISTokenSlash && next != OISTokenEnd && next != OISTokenLParen) {
+      // A key as a segment of its own, of more than one token
+      // (Forms/a:b, Items/2024-01-01T10:00): as written, up to the next '/'.
+      NSUInteger start = t.range.location;
+      while (_token.kind != OISTokenSlash && _token.kind != OISTokenEnd) [self advance];
+      NSUInteger end = _token.kind == OISTokenEnd ? _lexer.string.length : _token.range.location;
+      segment.name = [_lexer.string substringWithRange:NSMakeRange(start, end - start)];
+      [segments addObject:segment];
+      if (_token.kind == OISTokenEnd) break;
+      [self advance];
+      continue;
+    }
     if (t.kind == OISTokenName) {
       segment.name = t.text;
     } else if (t.kind == OISTokenNumber || t.kind == OISTokenString || t.kind == OISTokenTyped) {

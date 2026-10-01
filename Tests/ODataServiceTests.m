@@ -4692,6 +4692,34 @@ static NSManagedObjectModel *OISCatalogKeeping(NSArray<NSString *> *names)
   XCTAssertNil(body[@"QuantityPerUnit"], @"%@", body);
 }
 
+// A to-one relationship the service does not serve: rows are read
+// without it, though the store expands every other to-one's key, to
+// know what a row's relationships hold.
+- (void)testTheClientAsksForNoToOneThatIsNotServed
+{
+  NSManagedObjectModel *model = OISCatalogKeeping(@[ @"category" ]);
+  [self serveModel:model];
+  OISRecordingTransport *transport = [[OISRecordingTransport alloc] init];
+  transport.next = _service;
+  [ODataIncrementalStore registerStore];
+  NSPersistentStoreCoordinator *client = [[NSPersistentStoreCoordinator alloc] initWithManagedObjectModel:model];
+  NSError *error = nil;
+  ODataIncrementalStore *store = (ODataIncrementalStore *)[client addPersistentStoreWithType:[ODataIncrementalStore storeType] configuration:nil
+                                                                                        URL:[NSURL URLWithString:@"http://example.test/odata/"]
+                                                                                    options:@{ ODataIncrementalStoreTransportOption: transport } error:&error];
+  XCTAssertNotNil(store, @"%@", error);
+  NSManagedObjectContext *context = [[NSManagedObjectContext alloc] init];
+  context.persistentStoreCoordinator = client;
+  NSFetchRequest *fetch = [NSFetchRequest fetchRequestWithEntityName:@"Product"];
+  fetch.predicate = [NSPredicate predicateWithFormat:@"id == 1"];
+  NSManagedObject *chai = [[context executeFetchRequest:fetch error:&error] firstObject];
+  XCTAssertEqualObjects([chai valueForKey:@"name"], @"Chai", @"%@", error);
+  XCTAssertNil([chai valueForKey:@"category"]);
+  for (NSURLRequest *request in transport.requests) {
+    XCTAssertFalse([[request.URL.absoluteString stringByRemovingPercentEncoding] containsString:@"Category"], @"%@", request.URL);
+  }
+}
+
 // Only Products and Categories: Stocks, Locations and Suppliers are not
 // there, nor is anything that leads to them.
 - (void)testOnlyAConfigurationsEntities
