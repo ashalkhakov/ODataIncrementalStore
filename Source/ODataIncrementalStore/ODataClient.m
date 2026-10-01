@@ -123,7 +123,10 @@ static NSString *OISHeaderOf(NSHTTPURLResponse *response, NSString *name)
     ODataIncrementalStoreErrorCode code = http.statusCode == 412
         ? ODataIncrementalStoreErrorOptimisticLocking
         : (ODataIncrementalStoreErrorCode)(ODataIncrementalStoreErrorHTTP + http.statusCode);
-    if (error) *error = OISHTTPError(code, http.statusCode, http.URL ?: wire.request.URL, body);
+    if (error) {
+      *error = OISHTTPErrorWithChallenge(OISHTTPError(code, http.statusCode, http.URL ?: wire.request.URL, body),
+                                         OISHeaderOf(http, @"WWW-Authenticate"));
+    }
     return nil;
   }
   ODataHTTPResponse *out = [[ODataHTTPResponse alloc] init];
@@ -392,7 +395,7 @@ static NSString *OISHeaderOf(NSHTTPURLResponse *response, NSString *name)
     ODataIncrementalStoreErrorCode code = part.status == 412
         ? ODataIncrementalStoreErrorOptimisticLocking
         : (ODataIncrementalStoreErrorCode)(ODataIncrementalStoreErrorHTTP + part.status);
-    if (error) *error = OISHTTPError(code, part.status, failed, part.body);
+    if (error) *error = OISHTTPErrorWithChallenge(OISHTTPError(code, part.status, failed, part.body), [part valueForHeader:@"WWW-Authenticate"]);
     return nil;
   }
   if (parts.count != requests.count) {

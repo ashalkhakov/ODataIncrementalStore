@@ -130,6 +130,16 @@ static void OISRefuse(ODataRequest *request, ODataReply *reply, NSInteger status
   [reply failWithError:ODataServiceError(status, description)];
 }
 
+// A token without the scopes every request needs: 403, the challenge
+// naming them (insufficient_scope).
+static void OISRefuseScopes(ODataReply *reply, NSArray<NSString *> *scopes)
+{
+  NSString *description = [NSString stringWithFormat:@"The token needs the scopes %@", [scopes componentsJoinedByString:@" "]];
+  NSMutableDictionary *info = [ODataServiceError(403, description).userInfo mutableCopy];
+  info[ODataErrorScopesKey] = scopes;
+  [reply failWithError:[NSError errorWithDomain:ODataServiceErrorDomain code:403 userInfo:info]];
+}
+
 static NSString *OISBearerChallenge(ODataRequest *request)
 {
   NSMutableString *challenge = [NSMutableString stringWithString:@"Bearer realm=\"odata\""];
@@ -173,8 +183,7 @@ static ODataPrincipal *OISPrincipal(ODataRequest *request, ODataReply *reply, NS
     return nil;
   }
   if (requiredScopes.count && ![requiredScopes isSubsetOfSet:OISScopes(claims)]) {
-    NSString *needed = [[requiredScopes.allObjects sortedArrayUsingSelector:@selector(compare:)] componentsJoinedByString:@" "];
-    OISRefuse(request, reply, 403, @"insufficient_scope", [NSString stringWithFormat:@"The token needs the scopes %@", needed]);
+    OISRefuseScopes(reply, [requiredScopes.allObjects sortedArrayUsingSelector:@selector(compare:)]);
     return nil;
   }
   return [[ODataPrincipal alloc] initWithSubject:subject claims:claims];

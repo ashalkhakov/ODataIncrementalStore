@@ -19,6 +19,10 @@ NS_ASSUME_NONNULL_BEGIN
 
 @class OISServedOperation, OISPlan, OISPlanNode, OISRelation;
 
+// What a permission lets the caller do to an entity set's rows: its
+// handler's readScopes, insertScopes, updateScopes or deleteScopes.
+typedef NS_ENUM(NSInteger, OISAccess) { OISAccessRead, OISAccessInsert, OISAccessUpdate, OISAccessDelete };
+
 @interface ODataRequest ()
 // Which entity a handler is asked about (a nested write's, while it answers).
 @property (nonatomic, readwrite, strong, nullable) NSEntityDescription *entity;
@@ -235,8 +239,16 @@ typedef NS_ENUM(NSInteger, OISTargetKind) {
 - (void)respondError:(NSError *)error;
 - (void)fail:(NSInteger)status message:(NSString *)message;
 // Whether the caller has one of the scopes (none needed: YES); answered 403
-// when it has none, for what it asked to do.
+// when it has none, for what it asked to do (401 when no one asks), the
+// challenge naming them.
 - (BOOL)permits:(nullable NSSet<NSString *> *)scopes to:(NSString *)what;
+// The same, not answered.
+- (BOOL)holds:(nullable NSSet<NSString *> *)scopes;
+// Whether it has one of each permission's scopes, by what each permits:
+// answered for the first it lacks, in order.
+- (BOOL)permitsAll:(NSDictionary<NSString *, NSSet<NSString *> *> *)permissions;
+// An operation's: its call, and the read of what it answers with.
+- (NSDictionary<NSString *, NSSet<NSString *> *> *)permissionsOfOperation;
 - (NSString *)canonicalPathOf:(NSManagedObject *)object;
 - (NSPredicate *)predicateForObjects:(NSArray<NSManagedObject *> *)objects;
 - (nullable NSPredicate *)membersOfNavigation;
@@ -302,6 +314,15 @@ typedef NS_ENUM(NSInteger, OISStoreAsk) { OISAskObjects, OISAskCount, OISAskGrou
 // Plans are run from the top, again when a handler answers later; then
 // after, with planResult set.
 - (void)runPlan:(OISPlan *)plan then:(SEL)after;
+// Permissions (each by what it permits, its scopes): the one to do access
+// to the entity's set, added to permissions when its handler asks for
+// one; whether the caller has it. What a read reaches: an expression over
+// entity, query options over it, a plan's nodes.
+- (void)need:(OISAccess)access entity:(nullable NSEntityDescription *)entity into:(NSMutableDictionary *)permissions;
+- (BOOL)permitsTo:(OISAccess)access entity:(nullable NSEntityDescription *)entity;
+- (void)readExpression:(nullable ODataExpression *)e entity:(NSEntityDescription *)entity into:(NSMutableDictionary *)permissions;
+- (void)readOptions:(nullable ODataQueryOptions *)options entity:(nullable NSEntityDescription *)entity into:(NSMutableDictionary *)permissions;
+- (void)addReadsOf:(OISPlan *)plan into:(NSMutableDictionary *)permissions;
 // The parents' members of a to-many relationship, as the store selects
 // them (with the predicate and sort), read through the handler for them
 // all, by parent object ID: under key, what the plan knows; nil until
@@ -336,6 +357,10 @@ typedef NS_ENUM(NSInteger, OISStoreAsk) { OISAskObjects, OISAskCount, OISAskGrou
 - (nullable OISPlanNode *)lookupOfReference:(id)reference error:(NSError **)error;
 - (nullable id)resultOf:(OISPlanNode *)node;
 - (void)resumeWrite;
+// What a write's nodes write that asks for a permission, as far as is
+// known before anything is read: not a Merge's branches, nor a Temporal
+// action's slices, which are checked once known.
+- (void)addWritesOf:(OISPlanNode *)node into:(NSMutableDictionary *)permissions;
 @end
 
 NSArray<ODataExpression *> *OISTheseOfFilter(ODataQueryOptions *options);

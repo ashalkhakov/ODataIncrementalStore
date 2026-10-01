@@ -12,6 +12,7 @@ NSString * const ODataErrorCodeKey = @"ODataErrorCode";
 NSString * const ODataErrorTargetKey = @"ODataErrorTarget";
 NSString * const ODataErrorDetailsKey = @"ODataErrorDetails";
 NSString * const ODataErrorResponseBodyKey = @"ODataErrorResponseBody";
+NSString * const ODataErrorScopesKey = @"ODataErrorScopes";
 
 static NSString *OISString(id value)
 {
@@ -68,6 +69,66 @@ NSError *OISHTTPError(ODataIncrementalStoreErrorCode code, NSInteger status, NSU
   info[NSLocalizedDescriptionKey] = message;
   info[NSLocalizedFailureReasonErrorKey] = [NSString stringWithFormat:@"HTTP %ld at %@", (long)status, url.absoluteString ?: @"?"];
   return [NSError errorWithDomain:ODataIncrementalStoreErrorDomain code:code userInfo:info];
+}
+
+// A challenge's auth-params, by lowercased name: name="value" (\" escapes)
+// or name=token, after the scheme.
+static NSDictionary<NSString *, NSString *> *OISChallengeParameters(NSString *challenge)
+{
+  NSMutableDictionary *parameters = [NSMutableDictionary dictionary];
+  NSScanner *scanner = [NSScanner scannerWithString:challenge];
+  scanner.charactersToBeSkipped = nil;
+  NSCharacterSet *space = [NSCharacterSet whitespaceCharacterSet];
+  NSCharacterSet *nameEnd = [NSCharacterSet characterSetWithCharactersInString:@"=, \t"];
+  // The scheme, Bearer.
+  [scanner scanUpToCharactersFromSet:space intoString:NULL];
+  while (!scanner.isAtEnd) {
+    [scanner scanCharactersFromSet:[NSCharacterSet characterSetWithCharactersInString:@", \t"] intoString:NULL];
+    NSString *name = nil;
+    if (![scanner scanUpToCharactersFromSet:nameEnd intoString:&name]) break;
+    [scanner scanCharactersFromSet:space intoString:NULL];
+    if (![scanner scanString:@"=" intoString:NULL]) continue;
+    [scanner scanCharactersFromSet:space intoString:NULL];
+    NSMutableString *value = [NSMutableString string];
+    if ([scanner scanString:@"\"" intoString:NULL]) {
+      while (!scanner.isAtEnd) {
+        NSString *run = nil;
+        if ([scanner scanUpToCharactersFromSet:[NSCharacterSet characterSetWithCharactersInString:@"\"\\"] intoString:&run]) [value appendString:run];
+        if ([scanner scanString:@"\"" intoString:NULL]) break;
+        if ([scanner scanString:@"\\" intoString:NULL] && !scanner.isAtEnd) {
+          [value appendString:[challenge substringWithRange:NSMakeRange(scanner.scanLocation, 1)]];
+          scanner.scanLocation += 1;
+        }
+      }
+    } else {
+      NSString *token = nil;
+      if ([scanner scanUpToCharactersFromSet:[NSCharacterSet characterSetWithCharactersInString:@", \t"] intoString:&token]) [value appendString:token];
+    }
+    parameters[name.lowercaseString] = value;
+  }
+  return parameters;
+}
+
+NSError *OISHTTPErrorWithChallenge(NSError *error, NSString *challenge)
+{
+  NSInteger status = [error.userInfo[ODataErrorHTTPStatusKey] integerValue];
+  if ((status != 401 && status != 403) || !challenge.length) return error;
+  NSDictionary *parameters = OISChallengeParameters(challenge);
+  NSMutableArray *scopes = [NSMutableArray array];
+  for (NSString *scope in [parameters[@"scope"] componentsSeparatedByCharactersInSet:[NSCharacterSet whitespaceCharacterSet]]) {
+    if (scope.length) [scopes addObject:scope];
+  }
+  BOOL insufficient = [parameters[@"error"] isEqualToString:@"insufficient_scope"];
+  if (!scopes.count && !insufficient) return error;
+  NSMutableDictionary *info = [error.userInfo mutableCopy];
+  if (scopes.count) info[ODataErrorScopesKey] = scopes;
+  if (insufficient) {
+    info[NSLocalizedRecoverySuggestionErrorKey] = scopes.count
+        ? [NSString stringWithFormat:@"The access token's scopes do not allow this: sign in again, asking the identity "
+                                     @"provider for the scopes the service names (%@)", [scopes componentsJoinedByString:@", "]]
+        : @"The access token's scopes do not allow this: sign in again, asking the identity provider for more";
+  }
+  return [NSError errorWithDomain:error.domain code:error.code userInfo:info];
 }
 
 NSError *OISError(ODataIncrementalStoreErrorCode code, NSString *message)

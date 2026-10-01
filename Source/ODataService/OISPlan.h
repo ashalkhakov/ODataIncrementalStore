@@ -175,6 +175,12 @@ typedef NS_ENUM(NSInteger, OISPlanOperator) {
 // The largest integer key each new row of an entity is given in the
 // request, by "Entity.attribute": a sequence counts on from above it.
 @property (nonatomic, strong) NSMutableDictionary<NSString *, NSNumber *> *givenKeys;
+// What the caller needs to run it, worked out before it runs: for each
+// thing it does that asks for a permission (read Products, update
+// Categories, call NS.Raise), the scopes any one of which allows it. A
+// Merge's branch, and a Temporal action's slices, are known only once
+// read, and checked then, before anything is written.
+@property (nonatomic, copy) NSDictionary<NSString *, NSSet<NSString *> *> *permissions;
 - (NSString *)treeDescription;
 @end
 

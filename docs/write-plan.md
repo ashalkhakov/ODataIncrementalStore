@@ -159,7 +159,11 @@ otherwise `204`. `$filter(…)` path segments are taken by reads too
 `POST`, `PATCH`, `PUT` and `DELETE` on `<root>/$explain/<resource path>`,
 with the body, answer the plan without running it (`EXPLAIN`, not
 `EXPLAIN ANALYZE`): Lookups and Sequences appear as the nodes they are,
-not as what they would find, and a Merge with both its branches.
+not as what they would find, and a Merge with both its branches. The
+permissions the plan needs follow it (`Permission to insert into
+Products: Products.Add`): what each write node writes, and what the
+answer's expansions read. A Merge's branch and a temporal action's slices
+are checked in the check pass, once known, before anything is written.
 `logsPlans` logs a write's plan as it does a read's.
 
 ## Batches

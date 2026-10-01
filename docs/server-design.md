@@ -147,15 +147,39 @@ property.
   carries (its token's `scope` or `scp`), any one of them enough: a
   permission names what it allows, and which people hold it is the
   identity provider's to say, so it outlasts a reorganization that roles
-  would not. A read needs the read scopes of every set it reaches -- along
-  its path, and through `$expand` -- and a write those of the set it
-  writes; an operation names its own in `+ODataOperationScopes`. A caller
-  without one is answered `403`. `$metadata` says them, as the
-  Capabilities vocabulary has it: each set's `ReadRestrictions` and its
-  siblings, and each operation's `OperationRestrictions`, carry
-  `Permissions` under the authenticator's security scheme, so a client
-  knows which scopes to ask its provider for. That decides what a caller
-  may do; which rows it sees is the next item's.
+  would not. What a request needs is worked out from its plan, before
+  anything runs (the plan's `permissions`, which `$explain` prints):
+  - a read needs the read scopes of every set it reaches -- along its
+    path, and through `$expand`, `$filter` (lambdas, `$count` of a
+    navigation, a path's `$filter(…)`), `$orderby`, `$compute` and
+    `$apply`, since a filter on `Category/CategoryName` reads categories
+    as surely as expanding them does;
+  - a write needs the scope of each row it makes, changes or deletes:
+    deep inserts and updates row by row, an open type's dynamic properties
+    with the rest, a `$ref` as an update of the row whose navigation
+    property it is, a temporal action slice by slice. Its path reads the
+    sets it passes through, not the one it writes. A Merge's branch and a
+    temporal action's slices are known only once read, so they are checked
+    then -- with the rest, in the check pass, before the first write;
+  - what a write answers with is what it wrote, and an operation's result
+    is the operation's: neither needs reading. What else the answer reads
+    does: a client's `$expand`, checked before the write or the call. The
+    nested entities a deep write expands unasked are left out where the
+    caller may not read them, since the expansion holds every member, not
+    only those written;
+  - an operation names its own in `+ODataOperationScopes`; a bound one's
+    path is read. Scopes that name no scope, or name no operation, are
+    `operationProblems`, since either would leave an operation open.
+
+  A caller without a permission is answered `403` (`401` when no one
+  asks), with `WWW-Authenticate: Bearer error="insufficient_scope",
+  scope="…"` (RFC 6750 section 3.1); the client reads the scopes back into
+  `ODataErrorScopesKey`, with a recovery suggestion. `$metadata` says them,
+  as the Capabilities vocabulary has it: each set's `ReadRestrictions` and
+  its siblings, and each operation overload's `OperationRestrictions`,
+  carry `Permissions` under the authenticator's security scheme, so a
+  client knows which scopes to ask its provider for. That decides what a
+  caller may do; which rows it sees is the next item's.
 - `-predicateForVisibleObjectsInRequest:` scopes the rows the caller may
   see however they are reached: fetched, by key, through navigation,
   through `$expand`, or named in `@odata.bind`. That is where per-caller

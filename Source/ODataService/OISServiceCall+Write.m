@@ -1168,6 +1168,32 @@ static BOOL OISConditionAllows(NSString *condition, NSString *current)
   return found && found != [NSNull null] ? merge.matched : merge.otherwise;
 }
 
+#pragma mark Permissions
+
+// What a node writes: an Insert into its set, an Update, Delete, Link or
+// Unlink of its target's (a Link or Unlink changes the row whose
+// navigation property it is). Lookups and scans are what the write
+// changes, or refers to, not reads of their own.
+- (void)addWritesOf:(OISPlanNode *)node into:(NSMutableDictionary *)permissions seen:(NSHashTable *)seen
+{
+  if (!node || [seen containsObject:node]) return;
+  [seen addObject:node];
+  switch (node.op) {
+    case OISPlanInsert: [self need:OISAccessInsert entity:node.entity into:permissions]; break;
+    case OISPlanUpdate:
+    case OISPlanLink:
+    case OISPlanUnlink: [self need:OISAccessUpdate entity:node.target.entity ?: node.entity into:permissions]; break;
+    case OISPlanDelete: [self need:OISAccessDelete entity:node.target.entity ?: node.entity into:permissions]; break;
+    default: break;
+  }
+  for (OISPlanNode *child in [self childrenOf:node]) [self addWritesOf:child into:permissions seen:seen];
+}
+
+- (void)addWritesOf:(OISPlanNode *)node into:(NSMutableDictionary *)permissions
+{
+  [self addWritesOf:node into:permissions seen:[NSHashTable hashTableWithOptions:NSPointerFunctionsObjectPointerPersonality]];
+}
+
 #pragma mark Reads
 
 - (BOOL)readFor:(OISPlanNode *)node
@@ -1304,6 +1330,7 @@ static BOOL OISConditionAllows(NSString *condition, NSString *current)
       return YES;
     }
     case OISPlanInsert: {
+      if (![self permitsTo:OISAccessInsert entity:node.entity]) return NO;
       NSMutableDictionary *keys = [NSMutableDictionary dictionary];
       for (NSString *name in node.sequences) keys[name] = [self nextKeyOf:node.sequences[name]];
       self.planMemo[OISWriteKey(@"k", node)] = keys;
@@ -1322,6 +1349,8 @@ static BOOL OISConditionAllows(NSString *condition, NSString *current)
           [self fail:405 message:[NSString stringWithFormat:@"%@ cannot be updated here", object.entity.name]];
           return NO;
         }
+        // Anything it changes, named or dynamic properties alike.
+        if (values.count && ![self permitsTo:OISAccessUpdate entity:object.entity]) return NO;
         [all addObject:values];
       }
       self.planMemo[OISWriteKey(@"v", node)] = all;
@@ -1334,6 +1363,7 @@ static BOOL OISConditionAllows(NSString *condition, NSString *current)
       for (NSManagedObject *object in [self rowsOf:node.target]) {
         if ([kept containsObject:object]) continue;
         if (![self allows:node object:object]) return NO;
+        if (![self permitsTo:OISAccessDelete entity:object.entity]) return NO;
         [objects addObject:object];
         [paths addObject:[self removedOf:object]];
       }
@@ -1345,6 +1375,7 @@ static BOOL OISConditionAllows(NSString *condition, NSString *current)
     case OISPlanUnlink: {
       NSManagedObject *holder = [self resultOf:node.target];
       if (![self allows:node object:holder]) return NO;
+      if (![self permitsTo:OISAccessUpdate entity:holder.entity ?: node.target.entity]) return NO;
       if (!node.member || OISIsWrite(node.member)) return YES;
       NSManagedObject *member = [self resultOf:node.member];
       if (member && ![member.entity isKindOfEntity:node.relationship.destinationEntity]) {
@@ -1463,6 +1494,12 @@ static BOOL OISConditionAllows(NSString *condition, NSString *current)
   if (!changes) {
     [self respondError:error ?: ODataServiceError(400, @"The time slices could not be changed")];
     return NO;
+  }
+  // Each slice made, changed or closed needs its permission.
+  for (OISSliceRecord *record in changes.records) {
+    NSEntityDescription *entity = record.entity ?: record.object.entity;
+    OISAccess access = record.isNew ? OISAccessInsert : record.isDeleted ? OISAccessDelete : OISAccessUpdate;
+    if (![self permitsTo:access entity:entity]) return NO;
   }
   for (OISSliceRecord *record in changes.records) {
     NSAttributeDescription *version = [self.service versionAttributeOfEntity:record.entity];
@@ -1598,18 +1635,6 @@ static BOOL OISConditionAllows(NSString *condition, NSString *current)
   return YES;
 }
 
-// Whether the caller may write the entity's set as asked; answered 403 when
-// not.
-- (BOOL)permits:(NSEntityDescription *)entity insert:(BOOL)insert update:(BOOL)update delete:(BOOL)delete
-{
-  ODataEntitySetHandler *handler = [self.service handlerForEntity:entity];
-  NSString *set = [self.service entitySetForEntity:OISRootEntity(entity)] ?: entity.name;
-  if (insert) return [self permits:handler.insertScopes to:[@"insert into " stringByAppendingString:set]];
-  if (update) return [self permits:handler.updateScopes to:[@"update " stringByAppendingString:set]];
-  if (delete) return [self permits:handler.deleteScopes to:[@"delete from " stringByAppendingString:set]];
-  return YES;
-}
-
 // The writes, those a write depends on first: its rows, once written; nil
 // until the handlers have answered (or once one failed).
 - (id)writeFor:(OISPlanNode *)node
@@ -1627,7 +1652,6 @@ static BOOL OISConditionAllows(NSString *condition, NSString *current)
   }
   switch (node.op) {
     case OISPlanInsert: {
-      if (![self permits:node.entity insert:YES update:NO delete:NO]) return nil;
       NSMutableDictionary *values = [[self rowsIn:node.values object:nil] mutableCopy];
       [values addEntriesFromDictionary:self.planMemo[OISWriteKey(@"k", node)]];
       id made = [self ask:[key stringByAppendingString:@"/ask"] node:node entity:node.entity call:^id(ODataEntitySetHandler *handler, ODataReply *reply) {
@@ -1652,7 +1676,6 @@ static BOOL OISConditionAllows(NSString *condition, NSString *current)
           [rows addObject:object];  // only named, or only dynamic properties: not changed here
           continue;
         }
-        if (![self permits:object.entity insert:NO update:YES delete:NO]) return nil;
         NSString *asked = [NSString stringWithFormat:@"%@/%lu", key, (unsigned long)i];
         id changed = [self ask:asked node:node entity:object.entity call:^id(ODataEntitySetHandler *handler, ODataReply *reply) {
           return [handler updateObject:object values:values request:self.request reply:reply];
@@ -1670,7 +1693,6 @@ static BOOL OISConditionAllows(NSString *condition, NSString *current)
       NSArray *objects = self.planMemo[OISWriteKey(@"d", node)];
       for (NSUInteger i = 0; i < objects.count; i++) {
         NSManagedObject *object = objects[i];
-        if (![self permits:object.entity insert:NO update:NO delete:YES]) return nil;
         NSString *asked = [NSString stringWithFormat:@"%@/%lu", key, (unsigned long)i];
         if (![self ask:asked node:node entity:object.entity call:^id(ODataEntitySetHandler *handler, ODataReply *reply) {
               [handler deleteObject:object request:self.request reply:reply];
@@ -1685,7 +1707,6 @@ static BOOL OISConditionAllows(NSString *condition, NSString *current)
     case OISPlanLink:
     case OISPlanUnlink: {
       NSManagedObject *holder = [self resultOf:node.target];
-      if (![self permits:holder.entity insert:NO update:YES delete:NO]) return nil;
       NSRelationshipDescription *relationship = node.relationship;
       NSManagedObject *member = node.member ? [self resultOf:node.member] : nil;
       NSMutableDictionary *values = [NSMutableDictionary dictionaryWithDictionary:node.values];
@@ -1707,13 +1728,6 @@ static BOOL OISConditionAllows(NSString *condition, NSString *current)
     }
     case OISPlanTemporal: {
       OISTimelineChanges *changes = self.planMemo[OISWriteKey(@"t", node)];
-      // Each slice made, changed or closed needs its permission.
-      for (OISSliceRecord *record in changes.records) {
-        if (![self permits:record.entity ?: record.object.entity
-                    insert:record.isNew update:!record.isNew && !record.isDeleted delete:record.isDeleted]) {
-          return nil;
-        }
-      }
       for (NSUInteger i = 0; i < changes.records.count; i++) {
         OISSliceRecord *record = changes.records[i];
         NSString *asked = [NSString stringWithFormat:@"%@/%lu", key, (unsigned long)i];

@@ -264,7 +264,6 @@ static BOOL OISIsTrue(id value)
   if (dot.location != NSNotFound) [self.vocabularies addObject:[term substringToIndex:dot.location]];
 }
 
-// Annotation elements: by term (Term#Qualifier), a term's own annotations
 // Capabilities.PermissionType records: one, under the security scheme,
 // any of whose scopes is enough.
 - (NSArray *)permissionsOf:(NSSet<NSString *> *)scopes
@@ -276,6 +275,7 @@ static BOOL OISIsTrue(id value)
   return @[ @{ @"SchemeName": self.securitySchemeName ?: @"Default", @"Scopes": granted } ];
 }
 
+// Annotation elements: by term (Term#Qualifier), a term's own annotations
 // inside it (Term@Term), as JSON CSDL keys them.
 - (NSArray<NSXMLElement *> *)annotations:(NSDictionary<NSString *, id> *)annotations
 {
@@ -658,10 +658,16 @@ static NSString * const OISEdm = @"http://docs.oasis-open.org/odata/ns/edm";
   BOOL untyped = ![version isEqualToString:@"4.0"];
   for (NSXMLElement *original in self.additionalSchemaElements) {
     NSXMLElement *element = [original copy];
-    NSString *qualified = [NSString stringWithFormat:@"%@.%@", self.namespaceName, [element attributeForName:@"Name"].stringValue];
-    if ([self.operationPermissions[qualified] count]) {
+    // An operation's overload, as a target names it: NS.Name, or bound,
+    // NS.Name(its binding parameter's type); its own permissions inside it.
+    NSMutableString *overload = [NSMutableString stringWithFormat:@"%@.%@", self.namespaceName, [element attributeForName:@"Name"].stringValue];
+    if ([[element attributeForName:@"IsBound"].stringValue isEqualToString:@"true"]) {
+      NSXMLElement *binding = [element elementsForName:@"Parameter"].firstObject;
+      [overload appendFormat:@"(%@)", [binding attributeForName:@"Type"].stringValue ?: @""];
+    }
+    if ([self.operationPermissions[overload] count]) {
       OISAddChildren(element, [self annotations:@{ @"Org.OData.Capabilities.V1.OperationRestrictions":
-                                                     @{ @"Permissions": [self permissionsOf:self.operationPermissions[qualified]] } }]);
+                                                     @{ @"Permissions": [self permissionsOf:self.operationPermissions[overload]] } }]);
     }
     // An operation's JSON parameter or result references the vocabulary.
     for (NSXMLNode *child in element.children) {

@@ -512,7 +512,11 @@ done on both sides; the rest is ❌ unless marked otherwise.
     `ODataCredentialProviding` provider's, asked again for a fresh one
     after a `401`), a user and password for `Http` basic, or an API key in
     the header, query option or cookie `ApiKey` names. Refused still, the
-    error's recovery suggestion says what the service would take. A
+    error's recovery suggestion says what the service would take. A `403`
+    for want of a scope (`WWW-Authenticate: Bearer
+    error="insufficient_scope", scope="…"`) carries the scopes in
+    `ODataErrorScopesKey`, and a recovery suggestion to ask the identity
+    provider for them. A
     service can let anyone read `$metadata` (`allowsAnonymousMetadata`) so
     that a client learns how to sign in.
 

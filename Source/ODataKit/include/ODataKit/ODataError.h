@@ -35,6 +35,12 @@ FOUNDATION_EXPORT NSString * const ODataErrorCodeKey;          // the service's 
 FOUNDATION_EXPORT NSString * const ODataErrorTargetKey;        // the property or entity it concerns
 FOUNDATION_EXPORT NSString * const ODataErrorDetailsKey;       // NSArray of { code, message, target }
 FOUNDATION_EXPORT NSString * const ODataErrorResponseBodyKey;  // the body, as text
+// The OAuth scopes a 401 or 403 says the request needs (NSArray): those of
+// the WWW-Authenticate challenge's scope (RFC 6750 section 3), as a client
+// reads them back; in a service's error, answered with that challenge,
+// error="insufficient_scope" for a 403. The message says whether one of
+// them is enough or all are needed.
+FOUNDATION_EXPORT NSString * const ODataErrorScopesKey;
 
 // A service's error: the code is the HTTP status to answer with, and the
 // userInfo carries the message and, optionally, ODataErrorCodeKey,
@@ -45,5 +51,10 @@ FOUNDATION_EXPORT NSError *ODataServiceError(NSInteger status, NSString *message
 FOUNDATION_EXPORT NSError *ODataServiceErrorWithTarget(NSInteger status, NSString *message, NSString * _Nullable target);
 
 FOUNDATION_EXPORT NSError *OISHTTPError(ODataIncrementalStoreErrorCode code, NSInteger status, NSURL * _Nullable url, NSData * _Nullable body);
+// The error of a 401 or 403 with what its WWW-Authenticate challenge says:
+// the scopes it names (ODataErrorScopesKey), and for insufficient_scope a
+// recovery suggestion naming them. Any other error, or no challenge: the
+// error as it is.
+FOUNDATION_EXPORT NSError *OISHTTPErrorWithChallenge(NSError *error, NSString * _Nullable challenge);
 
 NS_ASSUME_NONNULL_END

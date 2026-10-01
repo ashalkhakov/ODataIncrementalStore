@@ -979,10 +979,20 @@ static NSArray<NSString *> *OISApplyTransformations(void)
   if (details.count) body[@"details"] = details;
   NSMutableDictionary *headers = [NSMutableDictionary dictionary];
   if (status == 405 && error.userInfo[@"Allow"]) headers[@"Allow"] = error.userInfo[@"Allow"];
+  // The scopes it needs, as the challenge names them (RFC 6750 section 3).
+  NSArray *scopes = [error.userInfo[ODataErrorScopesKey] isKindOfClass:[NSArray class]] ? error.userInfo[ODataErrorScopesKey] : nil;
+  NSString *scope = [[scopes componentsJoinedByString:@" "] stringByReplacingOccurrencesOfString:@"\"" withString:@""];
   if (status == 401) {
     id<ODataAuthenticator> authenticator = self.service.authenticator;
     NSString *challenge = [authenticator respondsToSelector:@selector(challengeForRequest:)] ? [authenticator challengeForRequest:self.request] : nil;
-    headers[@"WWW-Authenticate"] = challenge.length ? challenge : @"Bearer";
+    challenge = challenge.length ? challenge : @"Bearer";
+    if (scope.length) challenge = [challenge stringByAppendingFormat:@"%@scope=\"%@\"", [challenge rangeOfString:@" "].location == NSNotFound ? @" " : @", ", scope];
+    headers[@"WWW-Authenticate"] = challenge;
+  } else if (status == 403 && scope.length) {
+    NSCharacterSet *unsafe = [NSCharacterSet characterSetWithCharactersInString:@"\"\\"];
+    NSString *description = [[body[@"message"] componentsSeparatedByCharactersInSet:unsafe] componentsJoinedByString:@"'"];
+    headers[@"WWW-Authenticate"] = [NSString stringWithFormat:@"Bearer realm=\"odata\", error=\"insufficient_scope\", "
+                                                              @"error_description=\"%@\", scope=\"%@\"", description, scope];
   }
   [self respondJSON:@{ @"error": body } status:status headers:headers];
 }
@@ -992,12 +1002,30 @@ static NSArray<NSString *> *OISApplyTransformations(void)
   [self respondError:ODataServiceError(status, message)];
 }
 
+- (BOOL)holds:(NSSet<NSString *> *)scopes
+{
+  return !scopes.count || [scopes intersectsSet:self.request.principal.scopes ?: [NSSet set]];
+}
+
 - (BOOL)permits:(NSSet<NSString *> *)scopes to:(NSString *)what
 {
-  if (!scopes.count || [scopes intersectsSet:self.request.principal.scopes ?: [NSSet set]]) return YES;
-  NSString *named = [[scopes.allObjects sortedArrayUsingSelector:@selector(compare:)] componentsJoinedByString:@" "];
-  [self fail:403 message:[NSString stringWithFormat:@"To %@ needs one of the scopes %@", what, named]];
+  if ([self holds:scopes]) return YES;
+  NSArray *sorted = [scopes.allObjects sortedArrayUsingSelector:@selector(compare:)];
+  // No one at all (an anonymous request): signing in may help.
+  NSInteger status = self.request.principal ? 403 : 401;
+  NSString *message = [NSString stringWithFormat:@"To %@ needs one of the scopes %@", what, [sorted componentsJoinedByString:@" "]];
+  NSMutableDictionary *info = [ODataServiceError(status, message).userInfo mutableCopy];
+  info[ODataErrorScopesKey] = sorted;
+  [self respondError:[NSError errorWithDomain:ODataServiceErrorDomain code:status userInfo:info]];
   return NO;
+}
+
+- (BOOL)permitsAll:(NSDictionary<NSString *, NSSet<NSString *> *> *)permissions
+{
+  for (NSString *what in [permissions.allKeys sortedArrayUsingSelector:@selector(compare:)]) {
+    if (![self permits:permissions[what] to:what]) return NO;
+  }
+  return YES;
 }
 
 - (void)methodNotAllowed:(NSArray<NSString *> *)allowed
@@ -1325,6 +1353,7 @@ static NSUInteger OISExpandDepth(ODataQueryOptions *options)
   self.handler = handler;
   self.entity = handler.entity;
   self.kind = OISTargetCollection;
+  if (![self permitsPathThrough:handler.entity from:1]) return;
   // A key is looked for with the index at its segment, and the walk goes on
   // after it.
   self.index = 0;
@@ -1374,7 +1403,10 @@ static NSUInteger OISExpandDepth(ODataQueryOptions *options)
           continue;
         }
         if ([name isEqualToString:@"$filter"] && segment.keys.count == 1 && segment.keys[@""]) {
-          // The members that pass (Part 2 section 4.12).
+          // The members that pass (Part 2 section 4.12): what it reaches is read.
+          NSMutableDictionary *reached = [NSMutableDictionary dictionary];
+          [self readExpression:segment.keys[@""] entity:self.entity into:reached];
+          if (![self permitsAll:reached]) return;
           if (!self.pathFilters) self.pathFilters = [NSMutableArray array];
           [self.pathFilters addObject:segment.keys[@""]];
           self.index++;
@@ -1473,6 +1505,14 @@ static NSUInteger OISExpandDepth(ODataQueryOptions *options)
           [self fail:404 message:[NSString stringWithFormat:@"%@ leads to no entity set", name]];
           return;
         }
+        // A write's path, going on, reads the entity it is of (a read's did,
+        // reaching it) -- unless it writes that entity's navigation ($ref);
+        // then reaches the set it leads to.
+        BOOL read = [self.request.method isEqualToString:@"GET"];
+        if ((!read && ![self permitsPathThrough:self.object.entity from:self.index]) ||
+            ![self permitsPathThrough:relationship.destinationEntity from:self.index + 1]) {
+          return;
+        }
         self.handler = handler;
         if (relationship.isToMany) {
           self.parent = self.object;
@@ -1523,6 +1563,43 @@ static NSUInteger OISExpandDepth(ODataQueryOptions *options)
   [self dispatch];
 }
 
+// Whether the rest of the path, from index, goes on from the entity to
+// another set -- a navigation, or a bound operation, called on what the
+// path reached -- rather than ending at it: its properties, its $value, a
+// cast, $count, $each, a temporal action, or a navigation's $ref (which
+// writes this entity's navigation property).
+- (BOOL)pathLeaves:(NSEntityDescription *)entity from:(NSUInteger)index
+{
+  NSArray<ODataPathSegment *> *segments = self.request.path.segments;
+  for (NSUInteger i = index; i < segments.count; i++) {
+    ODataPathSegment *segment = segments[i];
+    NSString *name = segment.name;
+    if ([name hasPrefix:@"$"]) continue;
+    if ([name rangeOfString:@"."].location != NSNotFound) {
+      NSEntityDescription *derived = segment.isCall || segment.keys ? nil : [self entityForTypeName:name];
+      if (derived) {
+        entity = derived;
+        continue;
+      }
+      if ([name hasPrefix:@"Temporal."] || [name hasPrefix:@"Org.OData.Temporal.V1."]) continue;
+      return YES;
+    }
+    NSPropertyDescription *property = entity ? [self.mapper propertyForWireName:name entity:entity] : nil;
+    if (![property isKindOfClass:[NSRelationshipDescription class]]) continue;  // a property, a key segment
+    return !(i + 2 == segments.count && [segments[i + 1].name isEqualToString:@"$ref"]);
+  }
+  return NO;
+}
+
+// Every set the path reaches is read -- the one it ends at too, unless the
+// request writes it, which the write's own permission covers: checked as
+// the walk gets there, before any row of it is looked for.
+- (BOOL)permitsPathThrough:(NSEntityDescription *)entity from:(NSUInteger)index
+{
+  if (![self.request.method isEqualToString:@"GET"] && ![self pathLeaves:entity from:index]) return YES;
+  return [self permitsTo:OISAccessRead entity:entity];
+}
+
 - (ODataExpression *)literalForKeySegment:(NSString *)text
 {
   NSAttributeDescription *key = [self.mapper keyAttributesForEntity:OISRootEntity(self.entity)].firstObject;
@@ -1570,12 +1647,6 @@ static NSUInteger OISExpandDepth(ODataQueryOptions *options)
 {
   NSDictionary *key = [self keyFromParts:parts entity:self.entity];
   if (!key) return;
-  // A read reads every set along its path; a write needs its own
-  // permission, not this one, to find the row it changes.
-  if ([self.request.method isEqualToString:@"GET"] &&
-      ![self permits:self.handler.readScopes to:[@"read " stringByAppendingString:[self.service entitySetForEntity:OISRootEntity(self.entity)]]]) {
-    return;
-  }
   ODataReply *reply = [self replyWithAction:@selector(didFindObject:)];
   NSManagedObject *object = [self.handler objectWithKey:key request:self.request reply:reply];
   [reply returned:object];
@@ -4281,9 +4352,24 @@ static NSNumber *OISScalarReturnValue(NSInvocation *invocation, char type)
 
 // The entities its parameters name read first, through their handlers
 // (the call's plan: Lookups, then Call).
+- (NSDictionary<NSString *, NSSet<NSString *> *> *)permissionsOfOperation
+{
+  OISServedOperation *operation = self.operation;
+  NSMutableDictionary *permissions = [NSMutableDictionary dictionary];
+  if (operation.scopes.count) permissions[[@"call " stringByAppendingString:operation.qualifiedName]] = operation.scopes;
+  // What it answers with is its own; what that is read with (expanded)
+  // is read as any response is -- when the path ends at it, else as the
+  // walk goes on from it.
+  BOOL last = self.index >= self.request.path.segments.count;
+  if (operation.returns.entity && last) {
+    [self addReadsOf:[self planOfObjects:@[] options:self.request.options entity:operation.returns.entity] into:permissions];
+  }
+  return permissions;
+}
+
 - (void)invokeOperation
 {
-  if (![self permits:self.operation.scopes to:[NSString stringWithFormat:@"call %@", self.operation.name]]) return;
+  if (![self permitsAll:[self permissionsOfOperation]]) return;
   NSArray *values = [self operationValues];
   if (!values) return;
   NSMutableArray *lookups = [NSMutableArray array];
@@ -4594,6 +4680,9 @@ static NSNumber *OISScalarReturnValue(NSInvocation *invocation, char type)
     NSPropertyDescription *property = [self.mapper propertyForWireName:key entity:entity];
     if (![property isKindOfClass:[NSRelationshipDescription class]]) continue;
     NSRelationshipDescription *relationship = (NSRelationshipDescription *)property;
+    // Not asked for, so left out where the caller may not read it: it may
+    // hold more than the write wrote (the members it had, those named by @id).
+    if (![self holds:[self.service handlerForEntity:relationship.destinationEntity].readScopes]) continue;
     id value = body[key];
     NSDictionary *first = [value isKindOfClass:[NSArray class]] ? [value firstObject] : value;
     NSString *inner = [first isKindOfClass:[NSDictionary class]] ? [self expansionOfBody:first entity:relationship.destinationEntity] : nil;
@@ -5039,14 +5128,21 @@ static NSNumber *OISScalarReturnValue(NSInvocation *invocation, char type)
     NSMutableDictionary *operationPermissions = [NSMutableDictionary dictionary];
     for (OISServedOperation *operation in self.catalog.operations) {
       if (!operation.scopes.count) continue;
-      NSSet *known = operationPermissions[operation.qualifiedName];
-      operationPermissions[operation.qualifiedName] = known ? [known setByAddingObjectsFromSet:operation.scopes] : operation.scopes;
+      NSMutableString *overload = [operation.qualifiedName mutableCopy];
+      if (operation.boundEntity) {
+        NSString *type = [self.writer typeNameForEntity:operation.boundEntity];
+        [overload appendFormat:operation.boundToCollection ? @"(Collection(%@))" : @"(%@)", type];
+      }
+      operationPermissions[overload] = operation.scopes;
     }
-    [signature appendFormat:@";operations:%lu", (unsigned long)operationPermissions.description.hash];
+    for (NSString *overload in [operationPermissions.allKeys sortedArrayUsingSelector:@selector(compare:)]) {
+      [signature appendFormat:@";%@:%@", overload, [[operationPermissions[overload] allObjects] sortedArrayUsingSelector:@selector(compare:)]];
+    }
     id<ODataAuthenticator> authenticator = self.authenticator;
     NSDictionary *authorization = [authenticator respondsToSelector:@selector(authorizationDescription)]
         ? [authenticator authorizationDescription] : nil;
     NSString *schemeName = [authorization[@"Name"] isKindOfClass:[NSString class]] ? authorization[@"Name"] : nil;
+    [signature appendFormat:@";scheme:%@", schemeName ?: @""];
     [signature appendFormat:@";container:%lu", (unsigned long)container.description.hash];
     NSString *xml = self.metadataByVersion[signature];
     if (!xml) {

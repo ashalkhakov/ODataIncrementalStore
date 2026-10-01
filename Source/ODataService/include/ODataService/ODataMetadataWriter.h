@@ -65,8 +65,9 @@ FOUNDATION_EXPORT NSString * const ODataUserInfoContentType;  // @"OData.content
 @property (nonatomic, copy, nullable) NSDictionary<NSString *, NSSet<NSString *> *> *restrictions;
 
 // The scopes each entity set's methods need, by set name, by Read, Insert,
-// Update and Delete; and each operation's, by qualified name: written as
-// the set's restrictions' Permissions and the operation's
+// Update and Delete; and each operation's, by overload (NS.Name, or for a
+// bound one NS.Name(binding parameter type), as an annotation targets it):
+// written as the set's restrictions' Permissions and the overload's
 // OperationRestrictions, under the security scheme of this name.
 @property (nonatomic, copy, nullable) NSDictionary<NSString *, NSDictionary<NSString *, NSSet<NSString *> *> *> *permissions;
 @property (nonatomic, copy, nullable) NSDictionary<NSString *, NSSet<NSString *> *> *operationPermissions;
