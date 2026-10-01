@@ -84,21 +84,44 @@ FOUNDATION_EXPORT NSErrorDomain const ODataServerErrorDomain;
 //   AllowAnonymous  YES: a request that names no one is answered too
 //   HealthPath    default /health; empty for none
 //   AccessLog     YES (the default): a line per request on standard error
-//   Bundles       bundles to load before the store is opened (backends, the
+//   Bundles       bundles to load before the store is opened (the
 //                 application's code; see ODataServerMain)
+//   Libraries     shared libraries to load before the store is opened (a
+//                 store backend's); lib<StoreType> is tried by itself
 //   PrintMetadata YES: write $metadata to standard output and exit
+//
+// Each can come from the environment too (+environmentVariableForSetting:),
+// as a container is configured: OIS_PORT=8080 OIS_LOCALHOST=NO.
 @interface ODataServerConfiguration : NSObject
 - (instancetype)initWithSettings:(NSDictionary<NSString *, id> *)settings NS_DESIGNATED_INITIALIZER;
 - (instancetype)init NS_UNAVAILABLE;
-// The property list -Config names, and the rest of the command line's
-// -Name value pairs, which win.
+// The property list -Config names (or OIS_CONFIG), then the environment's
+// OIS_ variables, then the rest of the command line's -Name value pairs:
+// a later one wins.
 + (nullable instancetype)configurationFromCommandLine:(NSError **)error;
+// The same from given arguments (-Name value pairs, without the dashes)
+// and environment.
++ (nullable instancetype)configurationWithArguments:(NSDictionary<NSString *, id> *)arguments
+                                        environment:(NSDictionary<NSString *, NSString *> *)environment
+                                              error:(NSError **)error;
+// A setting's environment variable: OIS_ and its name in capitals, words
+// apart (Port: OIS_PORT, MaxPageSize: OIS_MAX_PAGE_SIZE, JWTIssuer:
+// OIS_JWT_ISSUER). A value that starts with { or [ is read as JSON (a
+// dictionary, a list); Bundles and Libraries take a list as paths
+// separated by ':'.
++ (NSString *)environmentVariableForSetting:(NSString *)name;
 @property (nonatomic, readonly, copy) NSDictionary<NSString *, id> *settings;
 
 @property (nonatomic, readonly) NSUInteger port;
 @property (nonatomic, readonly) BOOL bindToLocalhost;
 @property (nonatomic, readonly) NSUInteger maxBodySize;
 @property (nonatomic, readonly, copy) NSArray<NSString *> *bundlePaths;
+// Shared libraries loaded before the store is opened: a store backend
+// registers its type when loaded (Libraries). A StoreType no library
+// registers is looked for as lib<StoreType> on the library path, so
+// -StoreType CDPostgreSQLStore needs nothing more where FreeCoreData's
+// backend is installed.
+@property (nonatomic, readonly, copy) NSArray<NSString *> *libraryPaths;
 @property (nonatomic, readonly, copy) NSString *healthPath;
 @property (nonatomic, readonly) BOOL accessLog;
 @property (nonatomic, readonly) BOOL printsMetadata;

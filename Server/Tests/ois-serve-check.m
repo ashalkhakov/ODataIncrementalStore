@@ -226,16 +226,19 @@ static OISReply *OISSend(NSString *method, NSString *target, NSDictionary *heade
 @end
 
 // Collects what an authenticator answered.
+// (A condition lock, not a semaphore: on GNUstep a dispatch object is no
+// Objective-C object a property can keep.)
 @interface OISAnswers : NSObject
-@property (nonatomic, strong) dispatch_semaphore_t done;
+@property (nonatomic, strong) NSConditionLock *done;
 @property (nonatomic, strong) ODataAuthentication *answer;
 @end
 
 @implementation OISAnswers
 - (void)didAuthenticate:(ODataAuthentication *)answer
 {
+  [self.done lock];
   self.answer = answer;
-  dispatch_semaphore_signal(self.done);
+  [self.done unlockWithCondition:1];
 }
 @end
 
@@ -244,11 +247,13 @@ static ODataAuthentication *OISAskLater(NSString *authorization)
   NSMutableURLRequest *request = [NSMutableURLRequest requestWithURL:[NSURL URLWithString:@"http://example.test/anything"]];
   if (authorization) [request setValue:authorization forHTTPHeaderField:@"Authorization"];
   OISAnswers *answers = [[OISAnswers alloc] init];
-  answers.done = dispatch_semaphore_create(0);
+  answers.done = [[NSConditionLock alloc] initWithCondition:0];
   [ODataAuthentication authenticateURLRequest:request with:[[OISLaterAuthenticator alloc] init] timeout:5
                                        target:answers action:@selector(didAuthenticate:)];
-  dispatch_semaphore_wait(answers.done, dispatch_time(DISPATCH_TIME_NOW, (int64_t)(5 * NSEC_PER_SEC)));
-  return answers.answer;
+  if (![answers.done lockWhenCondition:1 beforeDate:[NSDate dateWithTimeIntervalSinceNow:5]]) return nil;
+  ODataAuthentication *answer = answers.answer;
+  [answers.done unlock];
+  return answer;
 }
 
 @interface OISCheckApplication : ODataServerApplication
@@ -425,6 +430,30 @@ int main(int argc, const char *argv[])
     check(bypassed.status == 401, @"proxy-bypassed", [NSString stringWithFormat:@"%ld", (long)bypassed.status]);
     service.authenticator = nil;
     [server stop];
+
+    // Settings from the environment, as a container has them: the property
+    // list first, then OIS_ variables, then the command line.
+    NSDictionary *variables = @{ @"Port": @"OIS_PORT", @"MaxPageSize": @"OIS_MAX_PAGE_SIZE", @"JWTIssuer": @"OIS_JWT_ISSUER",
+                             @"MaxURLLength": @"OIS_MAX_URL_LENGTH", @"ServiceRoot": @"OIS_SERVICE_ROOT", @"MaxJSONDepth": @"OIS_MAX_JSON_DEPTH" };
+    NSMutableArray *misnamed = [NSMutableArray array];
+    for (NSString *name in variables) {
+      NSString *variable = [ODataServerConfiguration environmentVariableForSetting:name];
+      if (![variable isEqualToString:variables[name]]) [misnamed addObject:[NSString stringWithFormat:@"%@: %@", name, variable]];
+    }
+    check(!misnamed.count, @"env-names", [misnamed componentsJoinedByString:@", "]);
+    NSString *plist = [NSTemporaryDirectory() stringByAppendingPathComponent:@"ois-serve-check.plist"];
+    [@{ @"Port": @7000, @"HealthPath": @"/up", @"Namespace": @"FromFile" } writeToFile:plist atomically:YES];
+    ODataServerConfiguration *fromEnvironment = [ODataServerConfiguration configurationWithArguments:@{ @"Namespace": @"FromArguments" }
+      environment:@{ @"OIS_CONFIG": plist, @"OIS_PORT": @"7001", @"OIS_LOCALHOST": @"NO", @"OIS_NAMESPACE": @"FromEnvironment",
+                     @"OIS_TRUSTED_CLAIM_HEADERS": @"{\"email\": \"X-Mail\"}", @"OIS_REPORT_TITLE": @"Daily",
+                     @"OIS_BUNDLES": @"/a.bundle:/b.bundle", @"HOME": @"/root" } error:&error];
+    check(fromEnvironment.port == 7001 && !fromEnvironment.bindToLocalhost && [fromEnvironment.healthPath isEqual:@"/up"] &&
+          [fromEnvironment.settings[@"Namespace"] isEqual:@"FromArguments"] &&
+          [fromEnvironment.settings[@"TrustedClaimHeaders"] isEqual:@{ @"email": @"X-Mail" }] &&
+          [fromEnvironment.settings[@"ReportTitle"] isEqual:@"Daily"] &&
+          [fromEnvironment.bundlePaths isEqual:(@[ @"/a.bundle", @"/b.bundle" ])] && !fromEnvironment.settings[@"Home"],
+          @"env-settings", [NSString stringWithFormat:@"%@ %@", fromEnvironment.settings, error ?: @""]);
+    [[NSFileManager defaultManager] removeItemAtPath:plist error:NULL];
 
     // An authenticator that answers later, asked for a host: no service, no
     // context, and the answer still comes.

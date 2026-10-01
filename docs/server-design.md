@@ -431,6 +431,17 @@ may still change it; then the listener writes it. No thread is started
 for any of it, and the way back must not wait. A stage that answered
 early sees its own answer; stages after it never ran.
 
+Settings come from a property list (`-Config`, or `OIS_CONFIG`), then the
+environment (`OIS_PORT`, `OIS_MAX_PAGE_SIZE`, `OIS_JWT_ISSUER`: each
+setting's name in capitals, words apart; JSON for a dictionary or list),
+then the command line, a later one winning, as a container is configured.
+An application's own settings come the same way (`OIS_REPORT_TITLE` is
+`ReportTitle`). A store backend is a library that registers its store type
+when loaded: `Libraries` loads any before the store is opened, and a
+`StoreType` nothing has registered is looked for as `lib<StoreType>`, so
+`-StoreType CDPostgreSQLStore` is all FreeCoreData's PostgreSQL store needs
+where it is installed.
+
 One sign-in serves every route: the authentication stage asks the
 authenticator once (`ODataAuthentication`, which asks it about a request
 no service is answering), and the mounted service is handed who it found

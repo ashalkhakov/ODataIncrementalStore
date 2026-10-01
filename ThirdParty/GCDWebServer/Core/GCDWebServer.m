@@ -471,6 +471,11 @@ static inline NSString* _EncodeBase64(NSString* string) {
   if (listeningSocket > 0) {
     int yes = 1;
     setsockopt(listeningSocket, SOL_SOCKET, SO_REUSEADDR, &yes, sizeof(yes));
+    if (useIPv6) {
+      // ODataStore port: IPv6 only, beside the IPv4 socket; on Linux an IPv6 wildcard socket otherwise takes IPv4 too,
+      // and binding both to the same port fails with EADDRINUSE
+      setsockopt(listeningSocket, IPPROTO_IPV6, IPV6_V6ONLY, &yes, sizeof(yes));
+    }
 
     if (bind(listeningSocket, address, length) == 0) {
       if (listen(listeningSocket, (int)maxPendingConnections) == 0) {
@@ -584,10 +589,21 @@ static inline NSString* _EncodeBase64(NSString* string) {
   addr6.sin6_family = AF_INET6;
   addr6.sin6_port = htons(port);
   addr6.sin6_addr = bindToLocalhost ? in6addr_loopback : in6addr_any;
-  int listeningSocket6 = [self _createListeningSocket:YES localAddress:&addr6 length:sizeof(addr6) maxPendingConnections:maxPendingConnections error:error];
+  NSError* error6 = nil;
+  int listeningSocket6 = [self _createListeningSocket:YES localAddress:&addr6 length:sizeof(addr6) maxPendingConnections:maxPendingConnections error:&error6];
   if (listeningSocket6 <= 0) {
-    close(listeningSocket4);
-    return NO;
+    // ODataStore port: a host without IPv6 (a container's network often is one) is served over IPv4 alone
+    BOOL noIPv6 = [error6.domain isEqualToString:NSPOSIXErrorDomain] &&
+                  (error6.code == EAFNOSUPPORT || error6.code == EPROTONOSUPPORT || error6.code == EADDRNOTAVAIL);
+    if (!noIPv6) {
+      if (error) {
+        *error = error6;
+      }
+      close(listeningSocket4);
+      return NO;
+    }
+    GWS_LOG_WARNING(@"No IPv6 on this host: listening on IPv4 only");
+    listeningSocket6 = -1;
   }
 
   _serverName = [(NSString*)_GetOption(_options, GCDWebServerOption_ServerName, NSStringFromClass([self class])) copy];
@@ -607,7 +623,9 @@ static inline NSString* _EncodeBase64(NSString* string) {
       *error = [NSError errorWithDomain:kGCDWebServerErrorDomain code:-1 userInfo:@{NSLocalizedDescriptionKey : @"Digest access authentication is not supported"}];
     }
     close(listeningSocket4);
-    close(listeningSocket6);
+    if (listeningSocket6 > 0) {  // ODataStore port: there may be none
+      close(listeningSocket6);
+    }
     _serverName = nil;
     _authenticationRealm = nil;
     _authenticationBasicAccounts = nil;
@@ -639,7 +657,7 @@ static inline NSString* _EncodeBase64(NSString* string) {
 #endif
 
   _source4 = [self _createDispatchSourceWithListeningSocket:listeningSocket4 isIPv6:NO];
-  _source6 = [self _createDispatchSourceWithListeningSocket:listeningSocket6 isIPv6:YES];
+  _source6 = listeningSocket6 > 0 ? [self _createDispatchSourceWithListeningSocket:listeningSocket6 isIPv6:YES] : NULL;  // ODataStore port
   _port = port;
   _bindToLocalhost = bindToLocalhost;
 
@@ -693,7 +711,9 @@ static inline NSString* _EncodeBase64(NSString* string) {
 #endif
 
   dispatch_resume(_source4);
-  dispatch_resume(_source6);
+  if (_source6) {  // ODataStore port: there may be none
+    dispatch_resume(_source6);
+  }
   GWS_LOG_INFO(@"%@ started on port %i and reachable at %@", [self class], (int)_port, self.serverURL);
   if ([_delegate respondsToSelector:@selector(webServerDidStart:)]) {
     dispatch_async(dispatch_get_main_queue(), ^{
@@ -740,11 +760,15 @@ static inline NSString* _EncodeBase64(NSString* string) {
   }
 #endif
 
-  dispatch_source_cancel(_source6);
+  if (_source6) {  // ODataStore port: there may be none
+    dispatch_source_cancel(_source6);
+  }
   dispatch_source_cancel(_source4);
   dispatch_group_wait(_sourceGroup, DISPATCH_TIME_FOREVER);  // Wait until the cancellation handlers have been called which guarantees the listening sockets are closed
 #if !OS_OBJECT_USE_OBJC_RETAIN_RELEASE
-  dispatch_release(_source6);
+  if (_source6) {
+    dispatch_release(_source6);
+  }
 #endif
   _source6 = NULL;
 #if !OS_OBJECT_USE_OBJC_RETAIN_RELEASE

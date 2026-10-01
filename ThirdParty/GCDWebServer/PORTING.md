@@ -141,6 +141,12 @@ Fixed along the way:
 - The socket is closed as soon as the last byte of the response is written
   (`-_finish`), rather than when the connection object is deallocated.
   `-close` and the delegate's disconnect bookkeeping run at the same point.
+- Listening on every address (not bound to localhost) failed on Linux: the
+  IPv6 wildcard socket also takes IPv4 there unless `IPV6_V6ONLY` is set,
+  so binding it after the IPv4 one gave EADDRINUSE. The IPv6 socket is now
+  IPv6 only. A host without IPv6 (EAFNOSUPPORT, EPROTONOSUPPORT,
+  EADDRNOTAVAIL, as in many containers) is served over IPv4 alone instead
+  of failing to start.
 
 ## libobjc2 and stack blocks
 

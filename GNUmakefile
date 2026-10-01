@@ -158,6 +158,23 @@ include $(GNUSTEP_MAKEFILES)/library.make
 # link against libODataKit, so it is built first.
 ODataIncrementalStore.all.library.variables ODataService.all.library.variables: ODataKit.all.library.variables
 
+ODATAKIT_SCRIPTS = Scripts
+# What an application builds against the installed libraries with: a
+# fragment every GNUmakefile includes, and pkg-config files
+# (Scripts/install-build-files.sh, docs/building.md).
+ODATAKIT_VERSION ?= $(shell git -C "$(CURDIR)" describe --tags --always 2>/dev/null || echo 0.0.0)
+ODATAKIT_BUILD_FILES = HEADERS_DIR="$(patsubst $(MAYBE_DESTDIR)%,%,$(GNUSTEP_HEADERS))" \
+	LIBRARIES_DIR="$(patsubst $(MAYBE_DESTDIR)%,%,$(GNUSTEP_LIBRARIES))" MAKEFILES_DIR="$(GNUSTEP_MAKEFILES)" \
+	DESTDIR="$(DESTDIR)" VERSION="$(ODATAKIT_VERSION)" \
+	GNUSTEP_OBJC_FLAGS="$(shell gnustep-config --objc-flags 2>/dev/null)" GNUSTEP_BASE_LIBS="$(shell gnustep-config --base-libs 2>/dev/null)" \
+	sh $(ODATAKIT_SCRIPTS)/install-build-files.sh
+
+after-install::
+	$(ODATAKIT_BUILD_FILES) install libraries
+
+after-uninstall::
+	$(ODATAKIT_BUILD_FILES) uninstall libraries
+
 .PHONY: test
 test: all
 	$(MAKE) -C Tests run-tests

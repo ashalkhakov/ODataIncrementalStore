@@ -1,0 +1,16 @@
+# What the images do not need from the tree (Docker/Dockerfile).
+.git
+.github
+.claude
+**/obj
+**/build
+**/*.o
+**/*.d
+**/DerivedData
+**/*.xcworkspace
+**/*.xcodeproj
+Examples/Workbench
+AppDir
+*.AppImage
+Server/build
+Tests/Snapshots

@@ -5,6 +5,7 @@
 #import "ODataService.h"
 #import "ODataAuthentication.h"
 #import "ODataError.h"
+#include <dlfcn.h>
 
 NSErrorDomain const ODataServerErrorDomain = @"org.gnu.ois.ODataServer";
 
@@ -35,6 +36,21 @@ static NSString *OISStoreType(NSString *name)
   return known[name] ?: name;
 }
 
+// A store type nothing has registered: a backend's library, by its name
+// (CDPostgreSQLStore is libCDPostgreSQLStore), registers it when loaded.
+// Not found is not an error here: opening the store says what is wrong.
+static void OISLoadBackendFor(NSString *type)
+{
+  if ([NSPersistentStoreCoordinator registeredStoreTypes][type]) return;
+  if ([type rangeOfCharacterFromSet:[[NSCharacterSet alphanumericCharacterSet] invertedSet]].location != NSNotFound) return;
+#if defined(__APPLE__)
+  NSString *library = [NSString stringWithFormat:@"lib%@.dylib", type];
+#else
+  NSString *library = [NSString stringWithFormat:@"lib%@.so", type];
+#endif
+  dlopen(library.fileSystemRepresentation, RTLD_NOW | RTLD_GLOBAL);
+}
+
 #pragma mark - Configuration
 
 @implementation ODataServerConfiguration {
@@ -52,9 +68,78 @@ static NSString *OISStoreType(NSString *name)
 
 + (instancetype)configurationFromCommandLine:(NSError **)error
 {
-  NSMutableDictionary *settings = [NSMutableDictionary dictionary];
   NSDictionary *arguments = [[NSUserDefaults standardUserDefaults] volatileDomainForName:NSArgumentDomain];
-  NSString *config = arguments[@"Config"];
+  return [self configurationWithArguments:arguments environment:[NSProcessInfo processInfo].environment error:error];
+}
+
+// Every setting this class reads, for the environment's names of them.
++ (NSArray<NSString *> *)knownSettings
+{
+  return @[ @"Config", @"Model", @"StoreType", @"StoreURL", @"StoreOptions", @"ServiceRoot", @"Port", @"Localhost", @"MaxBodySize",
+            @"MaxPageSize", @"MaxVersion", @"Namespace", @"Container", @"MaxURLLength", @"MaxExpandDepth", @"MaxBatchRequests",
+            @"MaxRowsInMemory", @"MaxJSONDepth", @"MaxAsyncRequests", @"ReplyTimeout", @"AsyncResultDuration",
+            @"RepeatabilityDuration", @"TrustedUserHeader", @"TrustedClaimHeaders", @"ProxySecretHeader",
+            @"ProxySecretEnvironment", @"JWTIssuer", @"JWTAudience", @"JWTKeysURL", @"IntrospectionEndpoint",
+            @"IntrospectionClientID", @"IntrospectionSecretEnvironment", @"RequiredScopes", @"AllowAnonymous", @"HealthPath",
+            @"AccessLog", @"Bundles", @"Libraries", @"PrintMetadata" ];
+}
+
++ (NSString *)environmentVariableForSetting:(NSString *)name
+{
+  // A new word at a capital after a small letter (MaxPage), or at the last
+  // capital of a run before a small letter (JWTIssuer, MaxURLLength).
+  NSMutableString *variable = [NSMutableString stringWithString:@"OIS_"];
+  for (NSUInteger i = 0; i < name.length; i++) {
+    unichar c = [name characterAtIndex:i];
+    BOOL upper = c >= 'A' && c <= 'Z';
+    if (upper && i > 0) {
+      unichar before = [name characterAtIndex:i - 1];
+      unichar after = i + 1 < name.length ? [name characterAtIndex:i + 1] : 0;
+      BOOL lowerBefore = (before >= 'a' && before <= 'z') || (before >= '0' && before <= '9');
+      BOOL upperBefore = before >= 'A' && before <= 'Z';
+      BOOL lowerAfter = after >= 'a' && after <= 'z';
+      if (lowerBefore || (upperBefore && lowerAfter)) [variable appendString:@"_"];
+    }
+    [variable appendFormat:@"%C", (unichar)(upper || !(c >= 'a' && c <= 'z') ? c : c - 32)];
+  }
+  return variable;
+}
+
+// An OIS_ variable not known by name: its words, each capitalized
+// (OIS_REPORT_TITLE: ReportTitle), for an application's own settings.
+static NSString *OISSettingOfVariable(NSString *variable)
+{
+  NSMutableString *name = [NSMutableString string];
+  for (NSString *word in [[variable substringFromIndex:4] componentsSeparatedByString:@"_"]) {
+    if (!word.length) continue;
+    [name appendString:[word substringToIndex:1].uppercaseString];
+    [name appendString:[word substringFromIndex:1].lowercaseString];
+  }
+  return name;
+}
+
+static id OISEnvironmentValue(NSString *text)
+{
+  NSString *trimmed = [text stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceAndNewlineCharacterSet]];
+  if ([trimmed hasPrefix:@"{"] || [trimmed hasPrefix:@"["]) {
+    id json = [NSJSONSerialization JSONObjectWithData:[trimmed dataUsingEncoding:NSUTF8StringEncoding] options:0 error:NULL];
+    if (json) return json;
+  }
+  return text;
+}
+
++ (instancetype)configurationWithArguments:(NSDictionary *)arguments environment:(NSDictionary *)environment error:(NSError **)error
+{
+  NSMutableDictionary *fromEnvironment = [NSMutableDictionary dictionary];
+  NSMutableDictionary *known = [NSMutableDictionary dictionary];
+  for (NSString *name in [self knownSettings]) known[[self environmentVariableForSetting:name]] = name;
+  for (NSString *variable in environment) {
+    if (![variable hasPrefix:@"OIS_"] || variable.length <= 4) continue;
+    fromEnvironment[known[variable] ?: OISSettingOfVariable(variable)] = OISEnvironmentValue(environment[variable]);
+  }
+
+  NSMutableDictionary *settings = [NSMutableDictionary dictionary];
+  NSString *config = arguments[@"Config"] ?: fromEnvironment[@"Config"];
   if (config) {
     NSDictionary *file = [NSDictionary dictionaryWithContentsOfFile:config];
     if (!file) {
@@ -63,6 +148,7 @@ static NSString *OISStoreType(NSString *name)
     }
     [settings addEntriesFromDictionary:file];
   }
+  [settings addEntriesFromDictionary:fromEnvironment];
   [settings addEntriesFromDictionary:arguments];
   return [[self alloc] initWithSettings:settings];
 }
@@ -100,11 +186,28 @@ static NSString *OISStoreType(NSString *name)
   return value ? (NSUInteger)[value integerValue] : 64 * 1024 * 1024;
 }
 
+// A list of paths: an array, or text, ':' between paths.
+- (NSArray<NSString *> *)pathsIn:(NSString *)name
+{
+  id paths = [self setting:name];
+  if ([paths isKindOfClass:[NSString class]]) {
+    NSMutableArray *split = [NSMutableArray array];
+    for (NSString *path in [paths componentsSeparatedByString:@":"]) {
+      if (path.length) [split addObject:path];
+    }
+    return split;
+  }
+  return [paths isKindOfClass:[NSArray class]] ? paths : @[];
+}
+
 - (NSArray<NSString *> *)bundlePaths
 {
-  id bundles = [self setting:@"Bundles"];
-  if ([bundles isKindOfClass:[NSString class]]) return @[ bundles ];
-  return [bundles isKindOfClass:[NSArray class]] ? bundles : @[];
+  return [self pathsIn:@"Bundles"];
+}
+
+- (NSArray<NSString *> *)libraryPaths
+{
+  return [self pathsIn:@"Libraries"];
 }
 
 - (NSString *)healthPath
@@ -208,8 +311,16 @@ static NSString *OISStoreType(NSString *name)
     OISFailWith(error, [NSString stringWithFormat:@"%@ is not a model", modelPath]);
     return nil;
   }
+  for (NSString *path in self.libraryPaths) {
+    if (!dlopen(path.fileSystemRepresentation, RTLD_NOW | RTLD_GLOBAL)) {
+      const char *why = dlerror();
+      OISFailWith(error, [NSString stringWithFormat:@"%@ does not load: %s", path, why ? why : "?"]);
+      return nil;
+    }
+  }
   NSPersistentStoreCoordinator *coordinator = [[NSPersistentStoreCoordinator alloc] initWithManagedObjectModel:model];
   NSString *type = OISStoreType([self setting:@"StoreType"] ?: @"InMemory");
+  OISLoadBackendFor(type);
   NSURL *storeURL = OISURL([self setting:@"StoreURL"]);
   NSError *failure = nil;
   if (![coordinator addPersistentStoreWithType:type configuration:nil URL:storeURL options:[self setting:@"StoreOptions"] error:&failure]) {

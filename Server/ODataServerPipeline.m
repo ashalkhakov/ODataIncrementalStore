@@ -180,7 +180,7 @@
 {
   NSMutableString *text = [NSMutableString stringWithString:@"<ODataServerPipeline"];
   for (ODataServerStage *stage in self.stages) [text appendFormat:@"\n  %@", stage];
-  [text appendFormat:@"\n  -> %@>", self.handler ?: @"(nothing)"];
+  [text appendFormat:@"\n  -> %@>", self.handler ? (id)self.handler : @"(nothing)"];
   return text;
 }
 

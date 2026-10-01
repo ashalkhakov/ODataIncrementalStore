@@ -73,6 +73,14 @@ Server/build/ois-serve -Model Server/build/Catalog.momd -StoreType SQLite \
                        -StoreURL /tmp/catalog.sqlite -Port 8089
 ```
 
+or in a container, with the whole Linux stack built in (`Docker/`,
+[building](docs/building.md#docker)):
+
+```sh
+docker build -f Docker/Dockerfile --target ois-serve -t ois-serve .
+docker run -p 8089:8080 -e OIS_SERVICE_ROOT=http://127.0.0.1:8089/odata/ ois-serve
+```
+
 ```sh
 curl http://127.0.0.1:8089/odata/'$metadata'
 curl -X POST -H 'Content-Type: application/json' -d '{"CategoryID":1,"CategoryName":"Beverages"}' \
