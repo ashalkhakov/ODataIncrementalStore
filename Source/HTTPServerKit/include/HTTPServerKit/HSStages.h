@@ -20,7 +20,9 @@ NS_ASSUME_NONNULL_BEGIN
 // Who is asking, once for every route: the authenticator's answer is the
 // request's principal (nil for no one: whether that is let in is each
 // route's to say, and a mounted service's). A refusal (a token that is not
-// valid) is answered here, with the authenticator's challenge.
+// valid) is answered here, with the authenticator's challenge, its reason
+// in userInfo (HSAuthenticationFailureKey). An "authenticate" span, under
+// the request's, says how it went (auth.outcome, auth.failure_reason).
 @interface HSAuthenticationStage : HSStage
 - (instancetype)initWithAuthenticator:(id<HSAuthenticator>)authenticator NS_DESIGNATED_INITIALIZER;
 - (instancetype)init NS_UNAVAILABLE;
@@ -79,14 +81,15 @@ FOUNDATION_EXPORT NSString * const HSRequestIDKey;
 @end
 
 // One line per request, once answered: who, what, the status, the size and
-// how long it took, and its request id. To standard error; override
-// -writeLine: to send it elsewhere (it must not wait).
+// how long it took, and its request id. To the shared HSLog's -writeLine:
+// (standard error), whatever its level; override -writeLine: to send them
+// elsewhere (it must not wait).
 //
 // As text (the default): remote principal "METHOD target" status size
 // duration request-id. As JSON, a line a log collector reads as it is:
 // time, level (warn for a 5xx, or slower than slowRequestThreshold),
 // remote, principal, method, target, route, operation, status, bytes,
-// duration_ms, request_id, trace_id, user_agent.
+// duration_ms, request_id, trace_id, span_id, user_agent.
 typedef NS_ENUM(NSInteger, HSAccessLogFormat) { HSAccessLogText, HSAccessLogJSON };
 @interface HSAccessLogStage : HSStage
 @property (nonatomic) HSAccessLogFormat format;

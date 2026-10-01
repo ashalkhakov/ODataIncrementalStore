@@ -35,7 +35,7 @@
 
 NS_ASSUME_NONNULL_BEGIN
 
-@class ODataService, ODataRequest, HSPrincipal;
+@class ODataService, ODataRequest, HSPrincipal, HSMetrics, OTTracer;
 @protocol HSAuthenticator;
 
 // userInfo on an Integer attribute: the entity's version, sent as its ETag
@@ -466,6 +466,20 @@ FOUNDATION_EXPORT NSString * const ODataUserInfoETag;  // @"OData.etag"
 // OData, and off by default. With logsPlans, each read's plan is logged.
 @property (nonatomic) BOOL explains;
 @property (nonatomic) BOOL logsPlans;
+// What its work takes. Each request is a span (OTelKit), under the
+// traceparent it came with: "plan" (from the request read to its plan
+// made, the plan's tree an attribute), then "execute", with a span for
+// each request of a handler or the store ("fetch Product", "count Order",
+// "write Order") and each save, current on its thread while the store
+// works, so a store that traces puts its spans under it. Recorded when the
+// shared OTTracerProvider is. Default: ODataService's tracer.
+@property (nonatomic, strong) OTTracer *tracer;
+// Where the same is counted and timed, when set (ODataServiceModule sets
+// the application's): odata_plan_duration_seconds and
+// odata_execution_duration_seconds by entity;
+// odata_store_request_duration_seconds and odata_store_errors_total by
+// operation and entity; odata_store_rows_total by entity.
+@property (nonatomic, strong, nullable) HSMetrics *metrics;
 // Who each request is from (HSAuthentication.h). A request that names
 // no one is answered 401, unless allowsAnonymousRequests; without an
 // authenticator (the default) every request is anonymous and answered.

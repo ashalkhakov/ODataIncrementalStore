@@ -2,6 +2,8 @@
 // SPDX-License-Identifier: LGPL-2.1-or-later
 
 #import "HSMessage.h"
+#import "HSLog.h"
+#import <OTelKit/OTTrace.h>
 #import "HSRouter.h"
 #import "HSAuthentication.h"
 
@@ -211,8 +213,10 @@ static NSString *HSHeaderIn(NSDictionary<NSString *, NSString *> *headers, NSStr
   if (status != 500 || [error.domain isEqualToString:HSErrorDomain]) {
     detail = error.localizedDescription ?: detail;
   } else if (error) {
-    // Its own words may say more of the server than a client should know.
-    NSLog(@"HTTPServerKit: %@", error);
+    // Its own words may say more of the server than a client should know:
+    // they are for the log, and the request's trace.
+    HSLogMessage(HSLogLevelError, @"HTTPServerKit", request, @"%@ %@: %@", request.method, request.target, error);
+    [request.span recordError:error];
   }
   NSMutableDictionary *problem = [NSMutableDictionary dictionary];
   problem[@"type"] = [error.userInfo[HSErrorTypeKey] isKindOfClass:[NSString class]] ? error.userInfo[HSErrorTypeKey] : @"about:blank";

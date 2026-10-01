@@ -112,9 +112,6 @@ static void OISLoadBackendFor(NSString *type)
     if ([name caseInsensitiveCompare:@"Content-Length"] == NSOrderedSame) continue;
     [response setValue:headers[name] forHeader:name];
   }
-  if (http.statusCode >= 500) {
-    NSLog(@"ODataServer: %@ %@ answered %ld", exchange.request.HTTPMethod, exchange.request.URL, (long)http.statusCode);
-  }
   [reply finishWithResponse:response];
 }
 
@@ -217,6 +214,16 @@ static void OISLoadBackendFor(NSString *type)
                                                          [service.operationProblems componentsJoinedByString:@"\n  "]]);
   }
   if (!service.authenticator) service.authenticator = application.authenticator;
+  if (!service.metrics) service.metrics = application.metrics;
+  // A Core Data that traces its stores' work (FreeCoreData; see
+  // docs/observability.md) is handed a tracer of its own name: its spans
+  // go under the service's store requests, current on the thread it works on.
+  Class coordinator = [NSPersistentStoreCoordinator class];
+  SEL setTracer = NSSelectorFromString(@"cd_setTracer:");
+  if ([coordinator respondsToSelector:setTracer]) {
+    void (*set)(id, SEL, id) = (void (*)(id, SEL, id))[coordinator methodForSelector:setTracer];
+    set(coordinator, setTracer, [OTTracer tracerNamed:@"FreeCoreData" version:nil]);
+  }
   NSString *root = service.serviceRoot.path.length ? service.serviceRoot.path : @"/";
   [application.router addRoute:[HSRoute routeWithMethod:nil path:[root stringByAppendingPathComponent:@"*"]
                                                 handler:[[ODataServiceHandler alloc] initWithService:service]]];

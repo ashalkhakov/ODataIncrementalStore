@@ -13,7 +13,8 @@ service's schema.
 | `ODataIncrementalStore` | The client: an `NSIncrementalStore`. Fetch requests become `$filter`, `$orderby`, `$expand` and the rest; saves become POST, PATCH, DELETE and `$batch`; ETags become merge conflicts. |
 | `ODataService` | The server: OData 4.01 (and 4.0) over any Core Data store. `ois-serve` runs it behind a reverse proxy. |
 | `ODataKit` | What both share: the model mapping, CSDL, values, the URL and `$filter` grammar, `$filter` and `$orderby` as Core Data predicates and sort descriptors, `$batch`. |
-| `HTTPServerKit` | The HTTP server the service runs in, for any API beside it: a pipeline of stages, a router, sign-in (trusted proxy, JWT, token introspection), metrics, JSON logs, trace context, readiness, draining. Errors outside OData are `application/problem+json`. |
+| `HTTPServerKit` | The HTTP server the service runs in, for any API beside it: a pipeline of stages, a router, sign-in (trusted proxy, JWT, token introspection), metrics, JSON logs, readiness, draining. Errors outside OData are `application/problem+json`. |
+| `OTelKit` | OpenTelemetry tracing, Foundation only: each request a trace, the service's planning and store requests spans in it, sent over OTLP to a collector ([observability](docs/observability.md)). |
 
 ![The Workbench](Examples/Workbench/Workbench.png)
 
@@ -218,7 +219,8 @@ flowchart LR
 |---|---|
 | `Source/ODataKit/` | The shared core |
 | `Source/ODataIncrementalStore/` | The client store, its HTTP client, model builder, streams |
-| `Source/HTTPServerKit/` | The HTTP server: the listener (vendored GCDWebServer), pipeline, router, sign-in, observability, the application |
+| `Source/OTelKit/` | Tracing: spans, sampling, the OTLP exporter |
+| `Source/HTTPServerKit/` | The HTTP server: the listener (vendored GCDWebServer), pipeline, router, sign-in, logs and metrics, the application |
 | `Source/ODataService/` | The service, its handlers, `$metadata` writer, predicate builder, `$batch`, timelines; `ODataServer.h`, the service as an HTTPServerKit module |
 | `Server/` | `ois-serve`, an example application, the loopback check, deployment examples |
 | `Examples/` | Workbench, Catalog, the quick start |
@@ -229,7 +231,7 @@ flowchart LR
 ## Documentation
 
 - [Building](docs/building.md): toolchains, GNUstep, Xcode, tests
-- [Client guide](docs/client.md) · [Server guide and design](docs/server-design.md)
+- [Client guide](docs/client.md) · [Server guide and design](docs/server-design.md) · [Observability](docs/observability.md)
 - [Query plans](docs/query-plan.md) · [Write plans](docs/write-plan.md): how the service plans reads and writes
 - [How it works](docs/how-it-works.md): the mapping, query translation, what runs where
 - [Client conformance](docs/odata-conformance.md): OData v4, item by item

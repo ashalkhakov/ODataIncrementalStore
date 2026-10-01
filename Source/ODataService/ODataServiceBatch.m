@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: LGPL-2.1-or-later
 
 #import "ODataServiceBatch.h"
+#import "ODataServiceInternal.h"
 #import <HTTPServerKit/HSAuthentication.h>
 #import "ODataBatch.h"
 #import "ODataError.h"
@@ -81,6 +82,12 @@ static void OISAppendText(NSMutableData *data, NSString *text)
   all[@"OData-Version"] = _version;
   _exchange.URLResponse = [[NSHTTPURLResponse alloc] initWithURL:_exchange.request.URL statusCode:status HTTPVersion:@"HTTP/1.1" headerFields:all];
   _exchange.data = body ?: [NSData data];
+  OTSpan *span = self.span;
+  self.span = nil;
+  [span setAttribute:@(status) forKey:@"http.response.status_code"];
+  [span setAttribute:@(_items.count) forKey:@"odata.batch.requests"];
+  if (status >= 500) [span setStatus:OTStatusError message:nil];
+  [span end];
   [_exchange finish];
 }
 
@@ -257,6 +264,8 @@ static void OISAppendText(NSMutableData *data, NSString *text)
     if (![batchOnly containsObject:name.lowercaseString]) [request setValue:outer[name] forHTTPHeaderField:name];
   }
   for (NSString *name in item.headers) [request setValue:item.headers[name] forHTTPHeaderField:name];
+  // Each request's span under the batch's.
+  if (self.span) [request setValue:self.span.context.traceparent forHTTPHeaderField:@"traceparent"];
   request.HTTPBody = [self bodyResolvingReferences:item.body headers:item.headers];
   return request;
 }
@@ -357,7 +366,7 @@ static void OISAppendText(NSMutableData *data, NSString *text)
   __block BOOL saved = NO;
   if (!_groupFailure) {
     [context performBlockAndWait:^{
-      saved = !context.hasChanges || [context save:&error];
+      saved = !context.hasChanges || OISTimedSave(self->_service, context, self.span, nil, &error);
       if (!saved) [context rollback];
     }];
   } else {

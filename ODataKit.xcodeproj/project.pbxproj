@@ -7,19 +7,24 @@
 	objects = {
 
 /* Begin PBXBuildFile section */
+		09EA057834C08904575041C2 /* OTTrace.h in Headers */ = {isa = PBXBuildFile; fileRef = FDCADC09FF8297C9A29BEEB5 /* OTTrace.h */; settings = {ATTRIBUTES = (Public, ); }; };
 		0A0B612C2250544325571EEB /* HSServer.h in Headers */ = {isa = PBXBuildFile; fileRef = 5BBD27471B1DF628C329E22D /* HSServer.h */; settings = {ATTRIBUTES = (Public, ); }; };
 		1097B82DC2F18A177BD59CB6 /* Security.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = B2D17EDD20D3E3D1D2E1BB14 /* Security.framework */; };
 		12386C971645DDC3C26B5F0C /* HSRouter.m in Sources */ = {isa = PBXBuildFile; fileRef = 9B3B41013832A82C3AC5B1E0 /* HSRouter.m */; };
+		14F0A24C3DA465CB7C2B3262 /* OTelKit.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = D7BA1954D987FDFF19FEE609 /* OTelKit.framework */; };
 		195CEBD182893371C71D52D9 /* HTTPServerKit.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = A21CEFC6F685318B7798AD60 /* HTTPServerKit.framework */; };
 		1DC1D24AD03DAB9CCF33B842 /* GCDWebServerMultiPartFormRequest.m in Sources */ = {isa = PBXBuildFile; fileRef = 2DACB660A9EBEE2A01235AAA /* GCDWebServerMultiPartFormRequest.m */; };
 		236F489DCDEC099A90160838 /* GCDWebServerURLEncodedFormRequest.m in Sources */ = {isa = PBXBuildFile; fileRef = 1DCCB8EE0B94FB43D8D3EFB5 /* GCDWebServerURLEncodedFormRequest.m */; };
 		2C48CD41A5FCD727CA4D3B8D /* HSSignature.m in Sources */ = {isa = PBXBuildFile; fileRef = 37759950BAA60C50B9DD9FD7 /* HSSignature.m */; };
 		2ED523E3D2283DD5DE285F99 /* HSPipeline.m in Sources */ = {isa = PBXBuildFile; fileRef = FBAB5A491F0C4D3CE1227A11 /* HSPipeline.m */; };
 		32BA1B283F5CF1EB479C443A /* HSApplication.h in Headers */ = {isa = PBXBuildFile; fileRef = D1E0FF553B4E82F5F203F439 /* HSApplication.h */; settings = {ATTRIBUTES = (Public, ); }; };
+		339BE2D3FD7B385054C6A870 /* Foundation.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = B6EA5FCF47CD332114D2DC1E /* Foundation.framework */; };
 		3BF0BEDFAFCE74537AD3CE44 /* HSMessage.m in Sources */ = {isa = PBXBuildFile; fileRef = F5539978B18751269C69F56C /* HSMessage.m */; };
 		47ECB8066713D1911EEF25EC /* GCDWebServer.m in Sources */ = {isa = PBXBuildFile; fileRef = 7866BD38DB2274E425CBA509 /* GCDWebServer.m */; };
 		4CB8A40514A10C9E2D17C476 /* libz.tbd in Frameworks */ = {isa = PBXBuildFile; fileRef = E143E1DA83E30240815AA4FF /* libz.tbd */; };
+		4F08711E233A93905F44EB4C /* OTLPExporter.m in Sources */ = {isa = PBXBuildFile; fileRef = 7BDB8B074D515FCB1065AA9C /* OTLPExporter.m */; };
 		57544F13B2B5F84E9457D00C /* GCDWebServerHTTPMessage.m in Sources */ = {isa = PBXBuildFile; fileRef = 6FC8FF933E8026A17B3BF4FB /* GCDWebServerHTTPMessage.m */; };
+		6016A47F289536ED4C48802B /* OTelKit.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = D7BA1954D987FDFF19FEE609 /* OTelKit.framework */; };
 		6270C07562A972961ADC2583 /* HSAuthentication.h in Headers */ = {isa = PBXBuildFile; fileRef = 7C2593171E5BB1259D299902 /* HSAuthentication.h */; settings = {ATTRIBUTES = (Public, ); }; };
 		6373E91BA0B97D969CD73F1F /* ODataServer.m in Sources */ = {isa = PBXBuildFile; fileRef = 991CEE198BEEBA950F336123 /* ODataServer.m */; };
 		726895136BBAB46B93CC98FE /* GCDWebServerResponse.m in Sources */ = {isa = PBXBuildFile; fileRef = 89CA8A3FE5574AE1DB0B1E03 /* GCDWebServerResponse.m */; };
@@ -28,9 +33,15 @@
 		7AC1AC5487579069A6836287 /* GCDWebServerErrorResponse.m in Sources */ = {isa = PBXBuildFile; fileRef = 6373106DE52789CBDC5B631E /* GCDWebServerErrorResponse.m */; };
 		7C073C5A74ED7A9FF13941BC /* HSAuthentication.m in Sources */ = {isa = PBXBuildFile; fileRef = 44E5F69A42E9FE53C8B05E05 /* HSAuthentication.m */; };
 		8209F57D9EBAAFF67F0766DA /* SystemConfiguration.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = 7D3B2825F8FCBAB9B7F19DB1 /* SystemConfiguration.framework */; };
+		8907F145DBD0B3DD648DA8C3 /* OTelKitTests.m in Sources */ = {isa = PBXBuildFile; fileRef = 969BD550CC122D1CD9CE5062 /* OTelKitTests.m */; };
 		905175399C05A27E16933605 /* GCDWebServerDataResponse.m in Sources */ = {isa = PBXBuildFile; fileRef = 99423EC3C367D97DC1E52DDB /* GCDWebServerDataResponse.m */; };
+		9891D62A47051E368BE3BD64 /* OTelKit.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = D7BA1954D987FDFF19FEE609 /* OTelKit.framework */; };
+		9908952AF03DBB4989B04A93 /* OTelKit.h in Headers */ = {isa = PBXBuildFile; fileRef = 722CFB75FD3BD10DC817E082 /* OTelKit.h */; settings = {ATTRIBUTES = (Public, ); }; };
+		A6DECA01FCC683A9E92E7953 /* OTLPExporter.h in Headers */ = {isa = PBXBuildFile; fileRef = 0C534AE01BE9EFF51E621713 /* OTLPExporter.h */; settings = {ATTRIBUTES = (Public, ); }; };
 		A853D2BCF039794DFE96A399 /* GCDWebServerFileRequest.m in Sources */ = {isa = PBXBuildFile; fileRef = 41AB79B08F4443CA21C0466C /* GCDWebServerFileRequest.m */; };
+		A89712A4A53B0576A14B3B7F /* HSLog.m in Sources */ = {isa = PBXBuildFile; fileRef = F7F18E1218DE4C847B1A8D88 /* HSLog.m */; };
 		AB61A2BCE3FCE2681869C0A3 /* ODataQuery.h in Headers */ = {isa = PBXBuildFile; fileRef = 4C4695EC08E040805F6D5964 /* ODataQuery.h */; settings = {ATTRIBUTES = (Public, ); }; };
+		AD77957917ADDA26F13AB87F /* HSLog.h in Headers */ = {isa = PBXBuildFile; fileRef = E841D065AFF7B18DB06645E6 /* HSLog.h */; settings = {ATTRIBUTES = (Public, ); }; };
 		B03B84E8BA5512080567AE56 /* ODataPredicateTranslator.m in Sources */ = {isa = PBXBuildFile; fileRef = B46D23185F0C0B62CDA96C23 /* ODataPredicateTranslator.m */; };
 		B056C28D90E548DB0DE4533D /* ODataExpression.h in Headers */ = {isa = PBXBuildFile; fileRef = B3CAB60E43B84AA3A08DEE26 /* ODataExpression.h */; settings = {ATTRIBUTES = (Public, ); }; };
 		B0827FE68E0A5A8C636C2735 /* ODataQueryBuilderTests.m in Sources */ = {isa = PBXBuildFile; fileRef = BC6FA83F81430EB8A0015BEC /* ODataQueryBuilderTests.m */; };
@@ -141,7 +152,9 @@
 		DF3355BFD5DB995EB71C996D /* GCDWebServerFunctions.m in Sources */ = {isa = PBXBuildFile; fileRef = BCB9486BFDBD2F446E75D631 /* GCDWebServerFunctions.m */; };
 		E03B6916EE168A38CF426546 /* ODataHierarchyPredicate.m in Sources */ = {isa = PBXBuildFile; fileRef = FB3BEA472E52DD510C047C9C /* ODataHierarchyPredicate.m */; };
 		E547F2130D4DAED889C52F6A /* HSRouter.h in Headers */ = {isa = PBXBuildFile; fileRef = 19001515DDF607C399A9AB8C /* HSRouter.h */; settings = {ATTRIBUTES = (Public, ); }; };
+		E8707618CF076D5FA3C94CBC /* OISServiceCall+Tracing.m in Sources */ = {isa = PBXBuildFile; fileRef = 7826108C2983976648414196 /* OISServiceCall+Tracing.m */; };
 		E96A85279EFE027D5100AD4F /* ODataServer.h in Headers */ = {isa = PBXBuildFile; fileRef = 4E84D922E84BA2CB3E5D0726 /* ODataServer.h */; settings = {ATTRIBUTES = (Public, ); }; };
+		EAD949171734E97FCAAD631C /* OTTrace.m in Sources */ = {isa = PBXBuildFile; fileRef = 71D4AC41DE5A4D1C560F5CDE /* OTTrace.m */; };
 		EAFD25DF946CDEF004C38F69 /* OISServiceCall+Plan.m in Sources */ = {isa = PBXBuildFile; fileRef = A3D97163BCA83293C65C288D /* OISServiceCall+Plan.m */; };
 		EAFD25DF946CDEF004C38F6A /* OISServiceCall+Write.m in Sources */ = {isa = PBXBuildFile; fileRef = A3D97163BCA83293C65C288E /* OISServiceCall+Write.m */; };
 		EDCB4360EA13C88F15639D96 /* HSPipeline.h in Headers */ = {isa = PBXBuildFile; fileRef = 2946F3D88506F62D1B275C9F /* HSPipeline.h */; settings = {ATTRIBUTES = (Public, ); }; };
@@ -149,12 +162,26 @@
 /* End PBXBuildFile section */
 
 /* Begin PBXContainerItemProxy section */
+		754DDCF98FCF565363C8D79F /* PBXContainerItemProxy */ = {
+			isa = PBXContainerItemProxy;
+			containerPortal = AA0000000000000000000001 /* Project object */;
+			proxyType = 1;
+			remoteGlobalIDString = 4CBB61F9CEEAF8A9C5A1F7CF;
+			remoteInfo = OTelKit;
+		};
 		9A418D87B95A1F85DE568A17 /* PBXContainerItemProxy */ = {
 			isa = PBXContainerItemProxy;
 			containerPortal = AA0000000000000000000001 /* Project object */;
 			proxyType = 1;
 			remoteGlobalIDString = 9828CC078A88AE7706B232C7;
 			remoteInfo = HTTPServerKit;
+		};
+		A8592F1FB788C7E6EE998E9F /* PBXContainerItemProxy */ = {
+			isa = PBXContainerItemProxy;
+			containerPortal = AA0000000000000000000001 /* Project object */;
+			proxyType = 1;
+			remoteGlobalIDString = 4CBB61F9CEEAF8A9C5A1F7CF;
+			remoteInfo = OTelKit;
 		};
 		AB449E54DF9EB9C2BA006421 /* PBXContainerItemProxy */ = {
 			isa = PBXContainerItemProxy;
@@ -198,9 +225,17 @@
 			remoteGlobalIDString = AA0000000000000000000006;
 			remoteInfo = ODataKit;
 		};
+		E404CB65D42572910A0AEA3C /* PBXContainerItemProxy */ = {
+			isa = PBXContainerItemProxy;
+			containerPortal = AA0000000000000000000001 /* Project object */;
+			proxyType = 1;
+			remoteGlobalIDString = 4CBB61F9CEEAF8A9C5A1F7CF;
+			remoteInfo = OTelKit;
+		};
 /* End PBXContainerItemProxy section */
 
 /* Begin PBXFileReference section */
+		0C534AE01BE9EFF51E621713 /* OTLPExporter.h */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.c.h; path = OTLPExporter.h; sourceTree = "<group>"; };
 		171F135EF929C9D8136FFAB1 /* GCDWebServerDataRequest.m */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.c.objc; path = GCDWebServerDataRequest.m; sourceTree = "<group>"; };
 		17E0B91FFBDF1DA5A762C04D /* GCDWebServerConnection.h */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.c.h; path = GCDWebServerConnection.h; sourceTree = "<group>"; };
 		19001515DDF607C399A9AB8C /* HSRouter.h */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.c.h; path = HSRouter.h; sourceTree = "<group>"; };
@@ -226,15 +261,21 @@
 		6AE2AA85A7A4A7696F988AB5 /* GCDWebServerPrivate.h */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.c.h; path = GCDWebServerPrivate.h; sourceTree = "<group>"; };
 		6F85B569E013919BE34FA568 /* GCDWebServerStreamedResponse.h */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.c.h; path = GCDWebServerStreamedResponse.h; sourceTree = "<group>"; };
 		6FC8FF933E8026A17B3BF4FB /* GCDWebServerHTTPMessage.m */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.c.objc; path = GCDWebServerHTTPMessage.m; sourceTree = "<group>"; };
+		71D4AC41DE5A4D1C560F5CDE /* OTTrace.m */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.c.objc; path = OTTrace.m; sourceTree = "<group>"; };
+		722CFB75FD3BD10DC817E082 /* OTelKit.h */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.c.h; path = OTelKit.h; sourceTree = "<group>"; };
 		7304511BB77B33DE4DC3D0D3 /* GCDWebServerErrorResponse.h */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.c.h; path = GCDWebServerErrorResponse.h; sourceTree = "<group>"; };
 		739317747FE7DBD60629E59F /* ODataHierarchyPredicate.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = ODataHierarchyPredicate.h; sourceTree = "<group>"; };
 		73E02C6F8AFFB0CBD0C2791B /* OISPlan.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = OISPlan.h; sourceTree = "<group>"; };
+		7826108C2983976648414196 /* OISServiceCall+Tracing.m */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.c.objc; path = "OISServiceCall+Tracing.m"; sourceTree = "<group>"; };
 		7866BD38DB2274E425CBA509 /* GCDWebServer.m */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.c.objc; path = GCDWebServer.m; sourceTree = "<group>"; };
+		7BDB8B074D515FCB1065AA9C /* OTLPExporter.m */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.c.objc; path = OTLPExporter.m; sourceTree = "<group>"; };
 		7C2593171E5BB1259D299902 /* HSAuthentication.h */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.c.h; path = HSAuthentication.h; sourceTree = "<group>"; };
 		7D3B2825F8FCBAB9B7F19DB1 /* SystemConfiguration.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = SystemConfiguration.framework; path = System/Library/Frameworks/SystemConfiguration.framework; sourceTree = SDKROOT; };
 		89CA8A3FE5574AE1DB0B1E03 /* GCDWebServerResponse.m */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.c.objc; path = GCDWebServerResponse.m; sourceTree = "<group>"; };
+		8D2231CFC88934E099E407A3 /* Cocoa.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = Cocoa.framework; path = Platforms/MacOSX.platform/Developer/SDKs/MacOSX15.0.sdk/System/Library/Frameworks/Cocoa.framework; sourceTree = DEVELOPER_DIR; };
 		90FCE2461D61CBF3C23FD3C4 /* GCDWebServer.h */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.c.h; path = GCDWebServer.h; sourceTree = "<group>"; };
 		95941D51CC3C0E82B1E5CAB8 /* GCDWebServerFileResponse.m */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.c.objc; path = GCDWebServerFileResponse.m; sourceTree = "<group>"; };
+		969BD550CC122D1CD9CE5062 /* OTelKitTests.m */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.c.objc; path = OTelKitTests.m; sourceTree = "<group>"; };
 		991CEE198BEEBA950F336123 /* ODataServer.m */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.c.objc; path = ODataServer.m; sourceTree = "<group>"; };
 		99423EC3C367D97DC1E52DDB /* GCDWebServerDataResponse.m */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.c.objc; path = GCDWebServerDataResponse.m; sourceTree = "<group>"; };
 		9B3B41013832A82C3AC5B1E0 /* HSRouter.m */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.c.objc; path = HSRouter.m; sourceTree = "<group>"; };
@@ -351,21 +392,33 @@
 		CC28E32263F84652025089A3 /* HSMessage.h */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.c.h; path = HSMessage.h; sourceTree = "<group>"; };
 		D1E0FF553B4E82F5F203F439 /* HSApplication.h */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.c.h; path = HSApplication.h; sourceTree = "<group>"; };
 		D70A6F52FD3138E10A75739F /* GCDWebServerDataResponse.h */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.c.h; path = GCDWebServerDataResponse.h; sourceTree = "<group>"; };
+		D7BA1954D987FDFF19FEE609 /* OTelKit.framework */ = {isa = PBXFileReference; explicitFileType = wrapper.framework; includeInIndex = 0; path = OTelKit.framework; sourceTree = BUILT_PRODUCTS_DIR; };
 		DB073108C073EECB30DA9660 /* GCDWebServerHTTPMessage.h */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.c.h; path = GCDWebServerHTTPMessage.h; sourceTree = "<group>"; };
 		DDADD93B330C6F51779911F6 /* GCDWebServerMultiPartFormRequest.h */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.c.h; path = GCDWebServerMultiPartFormRequest.h; sourceTree = "<group>"; };
 		E143E1DA83E30240815AA4FF /* libz.tbd */ = {isa = PBXFileReference; includeInIndex = 1; name = libz.tbd; path = usr/lib/libz.tbd; sourceTree = SDKROOT; };
+		E841D065AFF7B18DB06645E6 /* HSLog.h */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.c.h; path = HSLog.h; sourceTree = "<group>"; };
 		F19A21CB3918F0E3C6DF0848 /* OISPlan.m */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.objc; path = OISPlan.m; sourceTree = "<group>"; };
 		F51300E2CAD137E6B529613E /* GCDWebServerDataRequest.h */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.c.h; path = GCDWebServerDataRequest.h; sourceTree = "<group>"; };
 		F5539978B18751269C69F56C /* HSMessage.m */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.c.objc; path = HSMessage.m; sourceTree = "<group>"; };
 		F6731542A6E54D2FA643D32C /* GCDWebServerStreamedResponse.m */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.c.objc; path = GCDWebServerStreamedResponse.m; sourceTree = "<group>"; };
 		F7F0DED88392FF9848796EC5 /* GCDWebServerResponse.h */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.c.h; path = GCDWebServerResponse.h; sourceTree = "<group>"; };
+		F7F18E1218DE4C847B1A8D88 /* HSLog.m */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.c.objc; path = HSLog.m; sourceTree = "<group>"; };
 		F9FA04DE447BAFE5D6646595 /* ODataQuery.m */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.objc; path = ODataQuery.m; sourceTree = "<group>"; };
 		FB3BEA472E52DD510C047C9C /* ODataHierarchyPredicate.m */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.objc; path = ODataHierarchyPredicate.m; sourceTree = "<group>"; };
 		FBAB5A491F0C4D3CE1227A11 /* HSPipeline.m */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.c.objc; path = HSPipeline.m; sourceTree = "<group>"; };
+		FDCADC09FF8297C9A29BEEB5 /* OTTrace.h */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.c.h; path = OTTrace.h; sourceTree = "<group>"; };
 		FF406B159C22FD3A704309D1 /* GCDWebServerFunctions.h */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.c.h; path = GCDWebServerFunctions.h; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
+		01B2DE3A36398A5A6A797D3C /* Frameworks */ = {
+			isa = PBXFrameworksBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				339BE2D3FD7B385054C6A870 /* Foundation.framework in Frameworks */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
 		B1F02340544B4BDBDBF1B6F2 /* Frameworks */ = {
 			isa = PBXFrameworksBuildPhase;
 			buildActionMask = 2147483647;
@@ -375,6 +428,7 @@
 				BAAB8B5037876849D9045CBB /* ODataService.framework in Frameworks */,
 				BFDD379CA7076830C1BD3EAC /* CoreData.framework in Frameworks */,
 				195CEBD182893371C71D52D9 /* HTTPServerKit.framework in Frameworks */,
+				14F0A24C3DA465CB7C2B3262 /* OTelKit.framework in Frameworks */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -387,6 +441,7 @@
 				8209F57D9EBAAFF67F0766DA /* SystemConfiguration.framework in Frameworks */,
 				C0BDB6D53867C22A2E6A222F /* CoreServices.framework in Frameworks */,
 				4CB8A40514A10C9E2D17C476 /* libz.tbd in Frameworks */,
+				6016A47F289536ED4C48802B /* OTelKit.framework in Frameworks */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -408,6 +463,7 @@
 				B5A27492DCFD33E47FFFEEF6 /* CoreData.framework in Frameworks */,
 				B52F12E9A99E56EB29276C06 /* Security.framework in Frameworks */,
 				75586D17ECE999E45A206026 /* HTTPServerKit.framework in Frameworks */,
+				9891D62A47051E368BE3BD64 /* OTelKit.framework in Frameworks */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -424,6 +480,17 @@
 /* End PBXFrameworksBuildPhase section */
 
 /* Begin PBXGroup section */
+		2074969843D2D4D1449DCEA4 /* OTelKit */ = {
+			isa = PBXGroup;
+			children = (
+				0C534AE01BE9EFF51E621713 /* OTLPExporter.h */,
+				FDCADC09FF8297C9A29BEEB5 /* OTTrace.h */,
+				722CFB75FD3BD10DC817E082 /* OTelKit.h */,
+			);
+			name = OTelKit;
+			path = include/OTelKit;
+			sourceTree = "<group>";
+		};
 		2C4993A4A782A710F4FE8629 /* HTTPServerKit */ = {
 			isa = PBXGroup;
 			children = (
@@ -438,6 +505,7 @@
 				610A7BBECC2AD1EDED24CBBB /* HSSignature.h */,
 				37759950BAA60C50B9DD9FD7 /* HSSignature.m */,
 				A9E277C8D37FF8D217EBAE42 /* HSStages.m */,
+				F7F18E1218DE4C847B1A8D88 /* HSLog.m */,
 			);
 			name = HTTPServerKit;
 			path = HTTPServerKit;
@@ -462,6 +530,7 @@
 		3B94F58489A62DF897B8EAC4 /* OS X */ = {
 			isa = PBXGroup;
 			children = (
+				8D2231CFC88934E099E407A3 /* Cocoa.framework */,
 			);
 			name = "OS X";
 			sourceTree = "<group>";
@@ -478,9 +547,21 @@
 				5BBD27471B1DF628C329E22D /* HSServer.h */,
 				3BF0BF56C43C71838A44BE81 /* HSStages.h */,
 				AD172CBEADCC2A87781984EC /* HTTPServerKit.h */,
+				E841D065AFF7B18DB06645E6 /* HSLog.h */,
 			);
 			name = HTTPServerKit;
 			path = include/HTTPServerKit;
+			sourceTree = "<group>";
+		};
+		652F75E51839A9F1EA1C627F /* OTelKit */ = {
+			isa = PBXGroup;
+			children = (
+				2074969843D2D4D1449DCEA4 /* OTelKit */,
+				7BDB8B074D515FCB1065AA9C /* OTLPExporter.m */,
+				71D4AC41DE5A4D1C560F5CDE /* OTTrace.m */,
+			);
+			name = OTelKit;
+			path = OTelKit;
 			sourceTree = "<group>";
 		};
 		99CADD90CBC0DE2FA3FDC17C /* ThirdParty */ = {
@@ -564,6 +645,7 @@
 				B0E36935DEF624A456553498 /* Catalog.xcdatamodeld */,
 				BA934D5DCEE0B9BFF6B72C76 /* README.md */,
 				BE688693FD0367AEDE595F95 /* GNUmakefile */,
+				969BD550CC122D1CD9CE5062 /* OTelKitTests.m */,
 			);
 			path = Tests;
 			sourceTree = "<group>";
@@ -576,6 +658,7 @@
 				AA000000000000000000000B /* ODataService.framework */,
 				AA0000000000000000000005 /* ODataKitTests.xctest */,
 				A21CEFC6F685318B7798AD60 /* HTTPServerKit.framework */,
+				D7BA1954D987FDFF19FEE609 /* OTelKit.framework */,
 			);
 			name = Products;
 			sourceTree = "<group>";
@@ -679,6 +762,7 @@
 				73E02C6F8AFFB0CBD0C2791B /* OISPlan.h */,
 				2288D9528AE8FEF492ACA5A0 /* ODataServiceInternal.h */,
 				991CEE198BEEBA950F336123 /* ODataServer.m */,
+				7826108C2983976648414196 /* OISServiceCall+Tracing.m */,
 			);
 			path = ODataService;
 			sourceTree = "<group>";
@@ -715,6 +799,7 @@
 				BD169836D62C82FB94B63A56 /* ODataIncrementalStore */,
 				BD111D72ED150E047D0AEC1B /* ODataService */,
 				2C4993A4A782A710F4FE8629 /* HTTPServerKit */,
+				652F75E51839A9F1EA1C627F /* OTelKit */,
 			);
 			path = Source;
 			sourceTree = "<group>";
@@ -822,12 +907,41 @@
 				0A0B612C2250544325571EEB /* HSServer.h in Headers */,
 				CF648AF2A8D60D5795C76A44 /* HSStages.h in Headers */,
 				FDC50A2A0620B8A71A01B14F /* HTTPServerKit.h in Headers */,
+				AD77957917ADDA26F13AB87F /* HSLog.h in Headers */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		C8952D5A7E5CAD5D78052A28 /* Headers */ = {
+			isa = PBXHeadersBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				A6DECA01FCC683A9E92E7953 /* OTLPExporter.h in Headers */,
+				09EA057834C08904575041C2 /* OTTrace.h in Headers */,
+				9908952AF03DBB4989B04A93 /* OTelKit.h in Headers */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
 /* End PBXHeadersBuildPhase section */
 
 /* Begin PBXNativeTarget section */
+		4CBB61F9CEEAF8A9C5A1F7CF /* OTelKit */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = 090F545DE5043B527A44F735 /* Build configuration list for PBXNativeTarget "OTelKit" */;
+			buildPhases = (
+				C8952D5A7E5CAD5D78052A28 /* Headers */,
+				1ACF32A8A753C3FA51A4B1DC /* Sources */,
+				01B2DE3A36398A5A6A797D3C /* Frameworks */,
+				3F348B77EF7C8DAFBCC0FABC /* Resources */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+			);
+			name = OTelKit;
+			productName = OTelKit;
+			productReference = D7BA1954D987FDFF19FEE609 /* OTelKit.framework */;
+			productType = "com.apple.product-type.framework";
+		};
 		9828CC078A88AE7706B232C7 /* HTTPServerKit */ = {
 			isa = PBXNativeTarget;
 			buildConfigurationList = 56DEF0FAE5D0C6AA0128A476 /* Build configuration list for PBXNativeTarget "HTTPServerKit" */;
@@ -840,6 +954,7 @@
 			buildRules = (
 			);
 			dependencies = (
+				BA7D1712F28A6D708F49456C /* PBXTargetDependency */,
 			);
 			name = HTTPServerKit;
 			productName = HTTPServerKit;
@@ -880,6 +995,7 @@
 				B44EC8D779B99271609FDFD0 /* PBXTargetDependency */,
 				B5B2C8540E6E6F51A70D878A /* PBXTargetDependency */,
 				578C7B57FB31029FF5C57D5F /* PBXTargetDependency */,
+				4C69C1090978C9420CE4A505 /* PBXTargetDependency */,
 			);
 			name = ODataKitTests;
 			productName = ODataKitTests;
@@ -918,6 +1034,7 @@
 			dependencies = (
 				BBE9CE3B2CF9D9B0085E1536 /* PBXTargetDependency */,
 				8B57FAC3707EE85EEB80290B /* PBXTargetDependency */,
+				754108499A3488BE050460BB /* PBXTargetDependency */,
 			);
 			name = ODataService;
 			productName = ODataService;
@@ -963,6 +1080,7 @@
 			targets = (
 				AA0000000000000000000006 /* ODataKit */,
 				AA0000000000000000000002 /* ODataIncrementalStore */,
+				4CBB61F9CEEAF8A9C5A1F7CF /* OTelKit */,
 				9828CC078A88AE7706B232C7 /* HTTPServerKit */,
 				AA000000000000000000000A /* ODataService */,
 				AA0000000000000000000004 /* ODataKitTests */,
@@ -971,6 +1089,13 @@
 /* End PBXProject section */
 
 /* Begin PBXResourcesBuildPhase section */
+		3F348B77EF7C8DAFBCC0FABC /* Resources */ = {
+			isa = PBXResourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
 		79EBE849E0AA5475FCA6C8AD /* Resources */ = {
 			isa = PBXResourcesBuildPhase;
 			buildActionMask = 2147483647;
@@ -1038,6 +1163,16 @@
 				7AC1AC5487579069A6836287 /* GCDWebServerErrorResponse.m in Sources */,
 				BEC3F1ED9C11DDD6020A4268 /* GCDWebServerFileResponse.m in Sources */,
 				75BC07BE66565A6DA54974DD /* GCDWebServerStreamedResponse.m in Sources */,
+				A89712A4A53B0576A14B3B7F /* HSLog.m in Sources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		1ACF32A8A753C3FA51A4B1DC /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				4F08711E233A93905F44EB4C /* OTLPExporter.m in Sources */,
+				EAD949171734E97FCAAD631C /* OTTrace.m in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -1060,6 +1195,7 @@
 				B4D68D31BCB0D7D0AA9A8296 /* ODataSnapshotTransport.m in Sources */,
 				BA157150B5CB2C5ADF50B9AC /* ODataValueTests.m in Sources */,
 				B8A3A4CB3D524EA1BCFAEB85 /* OISCatalogModel.m in Sources */,
+				8907F145DBD0B3DD648DA8C3 /* OTelKitTests.m in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -1099,6 +1235,7 @@
 				EAFD25DF946CDEF004C38F69 /* OISServiceCall+Plan.m in Sources */,
 				EAFD25DF946CDEF004C38F6A /* OISServiceCall+Write.m in Sources */,
 				6373E91BA0B97D969CD73F1F /* ODataServer.m in Sources */,
+				E8707618CF076D5FA3C94CBC /* OISServiceCall+Tracing.m in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -1124,11 +1261,23 @@
 /* End PBXSourcesBuildPhase section */
 
 /* Begin PBXTargetDependency section */
+		4C69C1090978C9420CE4A505 /* PBXTargetDependency */ = {
+			isa = PBXTargetDependency;
+			name = OTelKit;
+			target = 4CBB61F9CEEAF8A9C5A1F7CF /* OTelKit */;
+			targetProxy = E404CB65D42572910A0AEA3C /* PBXContainerItemProxy */;
+		};
 		578C7B57FB31029FF5C57D5F /* PBXTargetDependency */ = {
 			isa = PBXTargetDependency;
 			name = HTTPServerKit;
 			target = 9828CC078A88AE7706B232C7 /* HTTPServerKit */;
 			targetProxy = AB449E54DF9EB9C2BA006421 /* PBXContainerItemProxy */;
+		};
+		754108499A3488BE050460BB /* PBXTargetDependency */ = {
+			isa = PBXTargetDependency;
+			name = OTelKit;
+			target = 4CBB61F9CEEAF8A9C5A1F7CF /* OTelKit */;
+			targetProxy = A8592F1FB788C7E6EE998E9F /* PBXContainerItemProxy */;
 		};
 		8B57FAC3707EE85EEB80290B /* PBXTargetDependency */ = {
 			isa = PBXTargetDependency;
@@ -1150,6 +1299,12 @@
 			isa = PBXTargetDependency;
 			target = AA0000000000000000000006 /* ODataKit */;
 			targetProxy = BACDDCF2A7CF8421FE50581B /* PBXContainerItemProxy */;
+		};
+		BA7D1712F28A6D708F49456C /* PBXTargetDependency */ = {
+			isa = PBXTargetDependency;
+			name = OTelKit;
+			target = 4CBB61F9CEEAF8A9C5A1F7CF /* OTelKit */;
+			targetProxy = 754DDCF98FCF565363C8D79F /* PBXContainerItemProxy */;
 		};
 		BBE9CE3B2CF9D9B0085E1536 /* PBXTargetDependency */ = {
 			isa = PBXTargetDependency;
@@ -1183,6 +1338,8 @@
 					"$(SRCROOT)/ThirdParty/GCDWebServer/Core",
 					"$(SRCROOT)/ThirdParty/GCDWebServer/Requests",
 					"$(SRCROOT)/ThirdParty/GCDWebServer/Responses",
+					"$(SRCROOT)/Source/OTelKit/include",
+					"$(SRCROOT)/Source/OTelKit/include/OTelKit",
 				);
 				INFOPLIST_KEY_NSHumanReadableCopyright = "Copyright (C) 2026 OIS contributors. LGPL-2.1-or-later.";
 				INSTALL_PATH = "$(LOCAL_LIBRARY_DIR)/Frameworks";
@@ -1217,6 +1374,8 @@
 					"$(SRCROOT)/ThirdParty/GCDWebServer/Core",
 					"$(SRCROOT)/ThirdParty/GCDWebServer/Requests",
 					"$(SRCROOT)/ThirdParty/GCDWebServer/Responses",
+					"$(SRCROOT)/Source/OTelKit/include",
+					"$(SRCROOT)/Source/OTelKit/include/OTelKit",
 				);
 				INFOPLIST_KEY_NSHumanReadableCopyright = "Copyright (C) 2026 OIS contributors. LGPL-2.1-or-later.";
 				INSTALL_PATH = "$(LOCAL_LIBRARY_DIR)/Frameworks";
@@ -1227,6 +1386,68 @@
 				);
 				MODULEMAP_FILE = "";
 				PRODUCT_BUNDLE_IDENTIFIER = io.github.ashalkhakov.HTTPServerKit;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SKIP_INSTALL = YES;
+			};
+			name = Release;
+		};
+		2A5370BABCF9EE26C8C9B802 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			baseConfigurationReference = B2DC65FC070C5C691975B2C9 /* Debug.xcconfig */;
+			buildSettings = {
+				COMBINE_HIDPI_IMAGES = YES;
+				DEFINES_MODULE = NO;
+				DYLIB_COMPATIBILITY_VERSION = 1;
+				DYLIB_CURRENT_VERSION = 1;
+				DYLIB_INSTALL_NAME_BASE = "@rpath";
+				GCC_PREPROCESSOR_DEFINITIONS = (
+					"$(inherited)",
+					"OTELKIT_VERSION=\\\"$(MARKETING_VERSION)\\\"",
+				);
+				HEADER_SEARCH_PATHS = (
+					"$(SRCROOT)/Source/OTelKit/include",
+					"$(SRCROOT)/Source/OTelKit/include/OTelKit",
+				);
+				INFOPLIST_KEY_NSHumanReadableCopyright = "Copyright (C) 2026 OIS contributors. LGPL-2.1-or-later.";
+				INSTALL_PATH = "$(LOCAL_LIBRARY_DIR)/Frameworks";
+				LD_RUNPATH_SEARCH_PATHS = (
+					"@executable_path/../Frameworks",
+					"@loader_path/Frameworks",
+					"@loader_path/..",
+				);
+				MODULEMAP_FILE = "";
+				PRODUCT_BUNDLE_IDENTIFIER = io.github.ashalkhakov.OTelKit;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SKIP_INSTALL = YES;
+			};
+			name = Debug;
+		};
+		318A0C549B5313CCED8A2CFE /* Release */ = {
+			isa = XCBuildConfiguration;
+			baseConfigurationReference = BC12C590BE6848DD3A5ED165 /* Release.xcconfig */;
+			buildSettings = {
+				COMBINE_HIDPI_IMAGES = YES;
+				DEFINES_MODULE = NO;
+				DYLIB_COMPATIBILITY_VERSION = 1;
+				DYLIB_CURRENT_VERSION = 1;
+				DYLIB_INSTALL_NAME_BASE = "@rpath";
+				GCC_PREPROCESSOR_DEFINITIONS = (
+					"$(inherited)",
+					"OTELKIT_VERSION=\\\"$(MARKETING_VERSION)\\\"",
+				);
+				HEADER_SEARCH_PATHS = (
+					"$(SRCROOT)/Source/OTelKit/include",
+					"$(SRCROOT)/Source/OTelKit/include/OTelKit",
+				);
+				INFOPLIST_KEY_NSHumanReadableCopyright = "Copyright (C) 2026 OIS contributors. LGPL-2.1-or-later.";
+				INSTALL_PATH = "$(LOCAL_LIBRARY_DIR)/Frameworks";
+				LD_RUNPATH_SEARCH_PATHS = (
+					"@executable_path/../Frameworks",
+					"@loader_path/Frameworks",
+					"@loader_path/..",
+				);
+				MODULEMAP_FILE = "";
+				PRODUCT_BUNDLE_IDENTIFIER = io.github.ashalkhakov.OTelKit;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				SKIP_INSTALL = YES;
 			};
@@ -1250,6 +1471,8 @@
 					"$(SRCROOT)/Source/ODataService/include/ODataService",
 					"$(SRCROOT)/Source/HTTPServerKit/include",
 					"$(SRCROOT)/Source/HTTPServerKit/include/HTTPServerKit",
+					"$(SRCROOT)/Source/OTelKit/include",
+					"$(SRCROOT)/Source/OTelKit/include/OTelKit",
 				);
 				INFOPLIST_KEY_NSHumanReadableCopyright = "Copyright (C) 2026 OIS contributors. LGPL-2.1-or-later.";
 				INSTALL_PATH = "$(LOCAL_LIBRARY_DIR)/Frameworks";
@@ -1297,6 +1520,8 @@
 					"$(SRCROOT)/Tests",
 					"$(SRCROOT)/Source/HTTPServerKit/include",
 					"$(SRCROOT)/Source/HTTPServerKit/include/HTTPServerKit",
+					"$(SRCROOT)/Source/OTelKit/include",
+					"$(SRCROOT)/Source/OTelKit/include/OTelKit",
 				);
 				LD_RUNPATH_SEARCH_PATHS = (
 					"$(inherited)",
@@ -1327,6 +1552,8 @@
 					"$(SRCROOT)/Source/ODataService/include/ODataService",
 					"$(SRCROOT)/Source/HTTPServerKit/include",
 					"$(SRCROOT)/Source/HTTPServerKit/include/HTTPServerKit",
+					"$(SRCROOT)/Source/OTelKit/include",
+					"$(SRCROOT)/Source/OTelKit/include/OTelKit",
 				);
 				INFOPLIST_KEY_NSHumanReadableCopyright = "Copyright (C) 2026 OIS contributors. LGPL-2.1-or-later.";
 				INSTALL_PATH = "$(LOCAL_LIBRARY_DIR)/Frameworks";
@@ -1360,6 +1587,8 @@
 					"$(SRCROOT)/Source/ODataService/include/ODataService",
 					"$(SRCROOT)/Source/HTTPServerKit/include",
 					"$(SRCROOT)/Source/HTTPServerKit/include/HTTPServerKit",
+					"$(SRCROOT)/Source/OTelKit/include",
+					"$(SRCROOT)/Source/OTelKit/include/OTelKit",
 				);
 				INFOPLIST_KEY_NSHumanReadableCopyright = "Copyright (C) 2026 OIS contributors. LGPL-2.1-or-later.";
 				INSTALL_PATH = "$(LOCAL_LIBRARY_DIR)/Frameworks";
@@ -1393,6 +1622,8 @@
 					"$(SRCROOT)/Tests",
 					"$(SRCROOT)/Source/HTTPServerKit/include",
 					"$(SRCROOT)/Source/HTTPServerKit/include/HTTPServerKit",
+					"$(SRCROOT)/Source/OTelKit/include",
+					"$(SRCROOT)/Source/OTelKit/include/OTelKit",
 				);
 				LD_RUNPATH_SEARCH_PATHS = (
 					"$(inherited)",
@@ -1423,6 +1654,8 @@
 					"$(SRCROOT)/Source/ODataService/include/ODataService",
 					"$(SRCROOT)/Source/HTTPServerKit/include",
 					"$(SRCROOT)/Source/HTTPServerKit/include/HTTPServerKit",
+					"$(SRCROOT)/Source/OTelKit/include",
+					"$(SRCROOT)/Source/OTelKit/include/OTelKit",
 				);
 				INFOPLIST_KEY_NSHumanReadableCopyright = "Copyright (C) 2026 OIS contributors. LGPL-2.1-or-later.";
 				INSTALL_PATH = "$(LOCAL_LIBRARY_DIR)/Frameworks";
@@ -1456,6 +1689,8 @@
 					"$(SRCROOT)/Source/ODataService/include/ODataService",
 					"$(SRCROOT)/Source/HTTPServerKit/include",
 					"$(SRCROOT)/Source/HTTPServerKit/include/HTTPServerKit",
+					"$(SRCROOT)/Source/OTelKit/include",
+					"$(SRCROOT)/Source/OTelKit/include/OTelKit",
 				);
 				INFOPLIST_KEY_NSHumanReadableCopyright = "Copyright (C) 2026 OIS contributors. LGPL-2.1-or-later.";
 				INSTALL_PATH = "$(LOCAL_LIBRARY_DIR)/Frameworks";
@@ -1489,6 +1724,8 @@
 					"$(SRCROOT)/Source/ODataService/include/ODataService",
 					"$(SRCROOT)/Source/HTTPServerKit/include",
 					"$(SRCROOT)/Source/HTTPServerKit/include/HTTPServerKit",
+					"$(SRCROOT)/Source/OTelKit/include",
+					"$(SRCROOT)/Source/OTelKit/include/OTelKit",
 				);
 				INFOPLIST_KEY_NSHumanReadableCopyright = "Copyright (C) 2026 OIS contributors. LGPL-2.1-or-later.";
 				INSTALL_PATH = "$(LOCAL_LIBRARY_DIR)/Frameworks";
@@ -1507,6 +1744,15 @@
 /* End XCBuildConfiguration section */
 
 /* Begin XCConfigurationList section */
+		090F545DE5043B527A44F735 /* Build configuration list for PBXNativeTarget "OTelKit" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				318A0C549B5313CCED8A2CFE /* Release */,
+				2A5370BABCF9EE26C8C9B802 /* Debug */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
 		56DEF0FAE5D0C6AA0128A476 /* Build configuration list for PBXNativeTarget "HTTPServerKit" */ = {
 			isa = XCConfigurationList;
 			buildConfigurations = (

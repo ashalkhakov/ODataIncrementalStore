@@ -53,6 +53,14 @@ EOF
 case "$action:$component" in
   install:libraries)
     mkdir -p "$fragments" "$pkgconfig"
+    cat > "$fragments/otelkit.make" <<EOF
+# OTelKit, installed (Scripts/install-build-files.sh): OpenTelemetry
+# tracing (spans, OTLP export), for a library or an application of its own.
+OTELKIT_VERSION = $VERSION
+OTELKIT_OBJCFLAGS = $objc_flags
+OTELKIT_INCLUDE_DIRS = -I$HEADERS_DIR -I$HEADERS_DIR/OTelKit
+OTELKIT_LIBS = -L$LIBRARIES_DIR -lOTelKit -ldispatch
+EOF
     cat > "$fragments/httpserverkit.make" <<EOF
 # HTTPServerKit, installed (Scripts/install-build-files.sh): an HTTP server
 # for APIs. What an application's GNUmakefile names to build with it:
@@ -64,8 +72,8 @@ case "$action:$component" in
 #   myserver_TOOL_LIBS += \$(HTTPSERVERKIT_LIBS)
 HTTPSERVERKIT_VERSION = $VERSION
 HTTPSERVERKIT_OBJCFLAGS = $objc_flags
-HTTPSERVERKIT_INCLUDE_DIRS = -I$HEADERS_DIR -I$HEADERS_DIR/HTTPServerKit
-HTTPSERVERKIT_LIBS = -L$LIBRARIES_DIR -lHTTPServerKit -ldispatch -lgnutls -lz
+HTTPSERVERKIT_INCLUDE_DIRS = -I$HEADERS_DIR -I$HEADERS_DIR/HTTPServerKit -I$HEADERS_DIR/OTelKit
+HTTPSERVERKIT_LIBS = -L$LIBRARIES_DIR -lHTTPServerKit -lOTelKit -ldispatch -lgnutls -lz
 EOF
     cat > "$fragments/odatakit.make" <<EOF
 # ODataKit, installed (Scripts/install-build-files.sh): what an
@@ -89,9 +97,11 @@ ODATAINCREMENTALSTORE_LIBS = -lODataIncrementalStore \$(ODATAKIT_LIBS)
 ODATASERVICE_INCLUDE_DIRS = \$(ODATAKIT_INCLUDE_DIRS) -I$HEADERS_DIR/HTTPServerKit -I$HEADERS_DIR/ODataService
 ODATASERVICE_LIBS = -lODataService \$(HTTPSERVERKIT_LIBS) \$(ODATAKIT_LIBS)
 EOF
-    pc httpserverkit "" "An HTTP server for APIs: a pipeline, a router, sign-in and observability" \
-       "-I\${includedir} -I\${includedir}/HTTPServerKit $objc_flags $gnustep_flags" \
-       "-L\${libdir} -lHTTPServerKit -ldispatch -lgnutls -lz $GNUSTEP_BASE_LIBS"
+    pc otelkit "" "OpenTelemetry tracing for Objective-C: spans, sampling, OTLP export" \
+       "-I\${includedir} -I\${includedir}/OTelKit $objc_flags $gnustep_flags" \
+       "-L\${libdir} -lOTelKit -ldispatch $GNUSTEP_BASE_LIBS"
+    pc httpserverkit "otelkit" "An HTTP server for APIs: a pipeline, a router, sign-in and observability" \
+       "-I\${includedir}/HTTPServerKit" "-L\${libdir} -lHTTPServerKit -lgnutls -lz"
     pc odatakit "" "OData for Objective-C: what a client and a service share" \
        "-I\${includedir} -I\${includedir}/ODataKit $objc_flags $gnustep_flags" \
        "-L\${libdir} -lODataKit -lCoreData -ldispatch $GNUSTEP_BASE_LIBS"
@@ -101,7 +111,8 @@ EOF
        "-I\${includedir}/ODataService" "-L\${libdir} -lODataService"
     ;;
   uninstall:libraries)
-    rm -f "$fragments/httpserverkit.make" "$fragments/odatakit.make" "$pkgconfig/httpserverkit.pc" "$pkgconfig/odatakit.pc" \
+    rm -f "$fragments/otelkit.make" "$fragments/httpserverkit.make" "$fragments/odatakit.make" "$pkgconfig/otelkit.pc" \
+      "$pkgconfig/httpserverkit.pc" "$pkgconfig/odatakit.pc" \
       "$pkgconfig/odataincrementalstore.pc" "$pkgconfig/odataservice.pc"
     ;;
   *)

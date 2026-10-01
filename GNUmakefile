@@ -1,6 +1,7 @@
 # GNU Makefile for the ODataKit libraries on GNUstep:
 #   ODataKit               what a client and a service share
 #   ODataIncrementalStore  the client: a Core Data store over an OData service
+#   OTelKit                OpenTelemetry tracing: spans, sampling, OTLP export
 #   HTTPServerKit          an HTTP server for APIs: the listener (GCDWebServer),
 #                          a pipeline and router, sign-in, observability
 #   ODataService           the server: a Core Data store served over OData,
@@ -36,13 +37,13 @@ endif
 OIS_INCLUDE_DIRS = -ISource/ODataKit/include -ISource/ODataIncrementalStore/include -ISource/ODataService/include \
 	-ISource/HTTPServerKit/include -ISource/ODataKit/include/ODataKit \
 	-ISource/ODataIncrementalStore/include/ODataIncrementalStore -ISource/ODataService/include/ODataService \
-	-ISource/HTTPServerKit/include/HTTPServerKit
+	-ISource/HTTPServerKit/include/HTTPServerKit -ISource/OTelKit/include -ISource/OTelKit/include/OTelKit
 OIS_OBJCFLAGS = -fobjc-arc -fblocks -fobjc-runtime=gnustep-2.0 \
 	-fconstant-string-class=NSConstantString -fobjc-exceptions -Wall -Wno-unused-parameter
 ADDITIONAL_OBJCFLAGS += $(OIS_OBJCFLAGS)
 
 # In the order they depend on each other (which make -j is told below).
-LIBRARY_NAME = ODataKit ODataIncrementalStore HTTPServerKit ODataService
+LIBRARY_NAME = ODataKit ODataIncrementalStore OTelKit HTTPServerKit ODataService
 
 include ThirdParty/GCDWebServer/GCDWebServer.make
 # The version httpserverkit_build_info says.
@@ -132,10 +133,29 @@ ODataIncrementalStore_LIBRARIES_DEPEND_UPON += -lODataKit -lCoreData -ldispatch
 ODataIncrementalStore_OBJCFLAGS += $(OIS_OBJCFLAGS)
 ODataIncrementalStore_CFLAGS += -fblocks
 
+OTelKit_NEEDS_GUI = no
+OTelKit_OBJC_FILES = \
+	Source/OTelKit/OTLPExporter.m \
+	Source/OTelKit/OTTrace.m
+
+OTelKit_HEADER_FILES = \
+	OTLPExporter.h \
+	OTTrace.h \
+	OTelKit.h
+
+OTelKit_HEADER_FILES_DIR = Source/OTelKit/include/OTelKit
+OTelKit_HEADER_FILES_INSTALL_DIR = OTelKit
+OTelKit_INCLUDE_DIRS = $(OIS_INCLUDE_DIRS)
+OTelKit_LIB_DIRS = -L./obj
+OTelKit_LIBRARIES_DEPEND_UPON += -ldispatch
+OTelKit_OBJCFLAGS += $(OIS_OBJCFLAGS) -DOTELKIT_VERSION='"$(HTTPSERVERKIT_VERSION)"'
+OTelKit_CFLAGS += -fblocks
+
 HTTPServerKit_NEEDS_GUI = no
 HTTPServerKit_OBJC_FILES = \
 	Source/HTTPServerKit/HSApplication.m \
 	Source/HTTPServerKit/HSAuthentication.m \
+	Source/HTTPServerKit/HSLog.m \
 	Source/HTTPServerKit/HSMessage.m \
 	Source/HTTPServerKit/HSObservability.m \
 	Source/HTTPServerKit/HSPipeline.m \
@@ -148,6 +168,7 @@ HTTPServerKit_OBJC_FILES = \
 HTTPServerKit_HEADER_FILES = \
 	HSApplication.h \
 	HSAuthentication.h \
+	HSLog.h \
 	HSMessage.h \
 	HSObservability.h \
 	HSPipeline.h \
@@ -160,7 +181,7 @@ HTTPServerKit_HEADER_FILES_DIR = Source/HTTPServerKit/include/HTTPServerKit
 HTTPServerKit_HEADER_FILES_INSTALL_DIR = HTTPServerKit
 HTTPServerKit_INCLUDE_DIRS = $(OIS_INCLUDE_DIRS) $(GCDWebServer_INCLUDE_DIRS)
 HTTPServerKit_LIB_DIRS = -L./obj
-HTTPServerKit_LIBRARIES_DEPEND_UPON += -ldispatch -lgnutls $(GCDWebServer_LIBS)
+HTTPServerKit_LIBRARIES_DEPEND_UPON += -lOTelKit -ldispatch -lgnutls $(GCDWebServer_LIBS)
 HTTPServerKit_OBJCFLAGS += $(OIS_OBJCFLAGS) -DHTTPSERVERKIT_VERSION='"$(HTTPSERVERKIT_VERSION)"'
 HTTPServerKit_CFLAGS += -fblocks
 
@@ -174,6 +195,7 @@ ODataService_OBJC_FILES = \
 	Source/ODataService/ODataTimeline.m \
 	Source/ODataService/OISPlan.m \
 	Source/ODataService/OISServiceCall+Plan.m \
+	Source/ODataService/OISServiceCall+Tracing.m \
 	Source/ODataService/OISServiceCall+Write.m
 
 ODataService_HEADER_FILES = \
@@ -185,7 +207,7 @@ ODataService_HEADER_FILES_DIR = Source/ODataService/include/ODataService
 ODataService_HEADER_FILES_INSTALL_DIR = ODataService
 ODataService_INCLUDE_DIRS = $(OIS_INCLUDE_DIRS)
 ODataService_LIB_DIRS = -L./obj
-ODataService_LIBRARIES_DEPEND_UPON += -lHTTPServerKit -lODataKit -lCoreData -ldispatch
+ODataService_LIBRARIES_DEPEND_UPON += -lHTTPServerKit -lOTelKit -lODataKit -lCoreData -ldispatch
 ODataService_OBJCFLAGS += $(OIS_OBJCFLAGS)
 ODataService_CFLAGS += -fblocks
 
@@ -198,6 +220,7 @@ include $(GNUSTEP_MAKEFILES)/library.make
 # libHTTPServerKit too.
 ODataIncrementalStore.all.library.variables ODataService.all.library.variables: ODataKit.all.library.variables
 ODataService.all.library.variables: HTTPServerKit.all.library.variables
+HTTPServerKit.all.library.variables: OTelKit.all.library.variables
 
 ODATAKIT_SCRIPTS = Scripts
 # What an application builds against the installed libraries with: a

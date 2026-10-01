@@ -34,7 +34,19 @@
 #import <Foundation/Foundation.h>
 #import "HSMessage.h"
 
+@class HSMetrics;
+
 NS_ASSUME_NONNULL_BEGIN
+
+// Why a request was refused, in a word, for metrics
+// (http_auth_failures_total) and logs: in a refusal's userInfo, and the
+// authentication stage puts it in the request's. HTTPServerKit's
+// authenticators say malformed, algorithm, token_type, unknown_key,
+// signature, issuer, audience, no_expiry, expired, not_yet_valid,
+// no_subject, insufficient_scope, inactive, proxy_secret,
+// provider_unavailable, timeout. An authenticator of one's own may say its
+// own (a few, never a token or a name).
+FOUNDATION_EXPORT NSString * const HSAuthenticationFailureKey;
 
 // Who a request is from: the provider's subject (OIDC's sub, a user name),
 // and what else is known of them.
@@ -172,6 +184,12 @@ FOUNDATION_EXPORT id<HSFetching> HSDefaultFetcher(void);
 @property (nonatomic) NSTimeInterval keySetRefetchInterval;
 // How it fetches. Default: HSDefaultFetcher().
 @property (nonatomic, strong) id<HSFetching> fetcher;
+// Where its fetches are counted and timed
+// (http_auth_provider_requests_total and
+// http_auth_provider_request_duration_seconds, by endpoint: discovery,
+// keys), when set; the application's. Each fetch is a client span too,
+// under the request that set it off.
+@property (nonatomic, strong, nullable) HSMetrics *metrics;
 @end
 
 // Any access token, opaque or not, checked by asking the provider (RFC
@@ -193,6 +211,8 @@ FOUNDATION_EXPORT id<HSFetching> HSDefaultFetcher(void);
 // Default: 60 seconds. 0: every request asks.
 @property (nonatomic) NSTimeInterval cacheLifetime;
 @property (nonatomic, strong) id<HSFetching> fetcher;
+// As HSJWTAuthenticator's: endpoint introspection.
+@property (nonatomic, strong, nullable) HSMetrics *metrics;
 @end
 
 NS_ASSUME_NONNULL_END

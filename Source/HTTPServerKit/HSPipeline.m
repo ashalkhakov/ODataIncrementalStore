@@ -2,6 +2,8 @@
 // SPDX-License-Identifier: LGPL-2.1-or-later
 
 #import "HSPipeline.h"
+#import "HSLog.h"
+#import <OTelKit/OTTrace.h>
 
 // The rest of a pipeline from one stage on: what that stage's next is.
 @interface HSPipelineRest : NSObject <HSHandler>
@@ -103,7 +105,10 @@
   @try {
     [rest handleRequest:request reply:reply];
   } @catch (NSException *exception) {
-    NSLog(@"HTTPServerKit: %@ %@ raised %@: %@", request.method, request.target, exception.name, exception.reason);
+    HSLogMessage(HSLogLevelError, @"HTTPServerKit", request, @"%@ %@ raised %@: %@", request.method, request.target, exception.name,
+                 exception.reason);
+    [request.span addEventNamed:@"exception" attributes:@{ @"exception.type": exception.name ?: @"", @"exception.message": exception.reason ?: @"" }];
+    [request.span setStatus:OTStatusError message:exception.reason];
     [reply failWithError:HSError(500, @"The server could not answer the request")];
   }
 }

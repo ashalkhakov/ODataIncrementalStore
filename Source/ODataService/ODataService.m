@@ -20,12 +20,18 @@
 
 NSString * const ODataUserInfoETag = @"OData.etag";
 
-// " (request <id>)" for a request a host gave an X-Request-ID, so that what
-// the service logs can be found beside the host's log of the request.
-static NSString *OISRequestIDNote(NSURLRequest *request)
+// With the request id and trace a host gave the request (X-Request-ID,
+// traceparent), so that what the service logs is found beside the host's
+// lines of the request, and its trace.
+void OISLog(HSLogLevel level, NSURLRequest *request, NSString *format, ...)
 {
-  NSString *requestID = [request valueForHTTPHeaderField:@"X-Request-ID"];
-  return requestID.length ? [NSString stringWithFormat:@" (request %@)", requestID] : @"";
+  HSLog *log = [HSLog sharedLog];
+  if (![log logsLevel:level]) return;
+  va_list arguments;
+  va_start(arguments, format);
+  NSString *message = [[NSString alloc] initWithFormat:format arguments:arguments];
+  va_end(arguments);
+  [log log:level component:@"ODataService" message:message fields:[HSLog fieldsOfHeaders:request.allHTTPHeaderFields]];
 }
 
 // A request as the host sees it, for an authenticator.
@@ -897,6 +903,7 @@ static NSArray<NSString *> *OISApplyTransformations(void)
 {
   if (self.done) return;
   self.done = YES;
+  [self traceRespondedWithStatus:status];
   NSMutableDictionary *all = [NSMutableDictionary dictionaryWithDictionary:headers ?: @{}];
   all[@"OData-Version"] = self.request.version ?: @"4.01";
   if (self.repeatabilityKey) {
@@ -969,7 +976,8 @@ static NSArray<NSString *> *OISApplyTransformations(void)
       // One the service keeps for itself: no request can put it right, and
       // Core Data's words name it.
       if (property && ![self.mapper servesProperty:property]) {
-        NSLog(@"ODataService: %@ %@%@: %@ is not valid: %@", self.request.method, self.exchange.request.URL, OISRequestIDNote(self.request.URLRequest), key, e.localizedDescription);
+        OISLog(HSLogLevelError, self.exchange.request, @"%@ %@: %@ is not valid: %@", self.request.method, self.exchange.request.URL, key,
+               e.localizedDescription);
         own = YES;
         continue;
       }
@@ -998,7 +1006,8 @@ static NSArray<NSString *> *OISApplyTransformations(void)
   } else {
     // The store's own failure: logged, and not shown, since it may say
     // more of the service than a client should know.
-    NSLog(@"ODataService: %@ %@ failed%@: %@", self.request.method, self.exchange.request.URL, OISRequestIDNote(self.request.URLRequest), error);
+    OISLog(HSLogLevelError, self.exchange.request, @"%@ %@ failed: %@", self.request.method, self.exchange.request.URL, error);
+    [self.span recordError:error];
     error = ODataServiceError(500, @"The service could not answer the request");
   }
   NSMutableDictionary *body = [NSMutableDictionary dictionary];
@@ -1365,7 +1374,13 @@ static NSUInteger OISExpandDepth(ODataQueryOptions *options)
 
 - (void)answer
 {
+  self.phaseStarted = OTNow();
   if (![self negotiateVersion] || ![self readURL]) return;
+  NSString *resource = self.request.path.segments.firstObject.name;
+  if (resource.length && self.span.recording) {
+    self.span.name = [NSString stringWithFormat:@"ODataService %@ %@", self.request.method, resource];
+    [self.span setAttribute:resource forKey:@"odata.resource"];
+  }
   [self readPreferences];
 
   NSArray<ODataPathSegment *> *segments = self.request.path.segments;
@@ -1393,6 +1408,8 @@ static NSUInteger OISExpandDepth(ODataQueryOptions *options)
     self.done = YES;
     OISBatchCall *batch = [[OISBatchCall alloc] initWithService:self.service exchange:self.exchange version:self.request.version
                                                       principal:self.request.principal];
+    batch.span = self.span;
+    self.span = nil;
     [batch start];
     return;
   }
@@ -4773,7 +4790,7 @@ static NSNumber *OISScalarReturnValue(NSInvocation *invocation, char type)
   }
   if (!self.saves) return YES;
   NSError *error = nil;
-  if ([self.request.context save:&error]) return YES;
+  if (OISTimedSave(self.service, self.request.context, self.executeSpan ?: self.span, self.entity.name, &error)) return YES;
   [self.request.context rollback];
   [self respondError:error];
   return NO;
@@ -4843,6 +4860,7 @@ static NSNumber *OISScalarReturnValue(NSInvocation *invocation, char type)
   _containerName = @"Container";
   _maxVersion = @"4.01";
   _replyTimeout = 60;
+  _tracer = [OTTracer tracerNamed:@"ODataService" version:nil];
   _repeatabilityDuration = 3600;
   _asyncResultDuration = 600;
   _maxAsyncRequests = 1000;
@@ -5517,11 +5535,23 @@ static NSDateFormatter *OISHTTPDateFormatter(void)
     context.persistentStoreCoordinator = self.coordinator;
   }
   call.request.context = context;
+  // The call's span, under the host's (or the batch's) when it says.
+  OTSpanContext *parent = [OTSpanContext contextWithTraceparent:[exchange.request valueForHTTPHeaderField:@"traceparent"]];
+  call.span = [self.tracer startSpanNamed:[@"ODataService " stringByAppendingString:call.request.method ?: @"GET"] kind:OTSpanKindInternal
+                                   parent:parent attributes:nil];
+  if (call.span.recording) {
+    [call.span setAttribute:call.request.method forKey:@"http.request.method"];
+    [call.span setAttribute:exchange.request.URL.path forKey:@"url.path"];
+    [call.span setAttribute:exchange.request.URL.query forKey:@"url.query"];
+    [call.span setAttribute:[exchange.request valueForHTTPHeaderField:@"X-Request-ID"] forKey:@"request.id"];
+  }
   [context performBlockAndWait:^{
     @try {
       [call run];
     } @catch (NSException *exception) {
-      NSLog(@"ODataService: %@ %@ raised %@%@: %@", call.request.method, exchange.request.URL, exception.name, OISRequestIDNote(exchange.request), exception.reason);
+      OISLog(HSLogLevelError, exchange.request, @"%@ %@ raised %@: %@", call.request.method, exchange.request.URL, exception.name,
+             exception.reason);
+      [call.span addEventNamed:@"exception" attributes:@{ @"exception.type": exception.name ?: @"", @"exception.message": exception.reason ?: @"" }];
       [context rollback];
       [call respondError:ODataServiceError(500, @"The request failed inside the service")];
     }

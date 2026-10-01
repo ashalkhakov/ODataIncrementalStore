@@ -54,8 +54,9 @@
 #import "HSRouter.h"
 #import "HSStages.h"
 #import "HSObservability.h"
+#import "HSLog.h"
 
-@class HSApplication;
+@class HSApplication, OTTracerProvider;
 @protocol HSAuthenticator;
 
 NS_ASSUME_NONNULL_BEGIN
@@ -88,7 +89,19 @@ NS_ASSUME_NONNULL_BEGIN
 //                 (JSON). Default 1
 //   Metrics       YES (the default): requests counted and timed
 //                 (HSMetricsStage), at MetricsPath (default /metrics)
-//   TraceContext  YES (the default): W3C traceparent taken and passed on
+//   TraceContext  YES (the default): W3C traceparent taken and passed on,
+//                 each request a span (HSTraceContextStage)
+//   OTLPEndpoint  where spans go, an OpenTelemetry collector's OTLP/HTTP
+//                 base URL (http://collector:4318), as
+//                 OTEL_EXPORTER_OTLP_ENDPOINT, which is read too, with the
+//                 rest of OpenTelemetry's variables (OTTracerProvider).
+//                 Default: none, and nothing is recorded
+//   TraceSampleRatio  of new traces, 0 to 1 (a caller's choice is kept
+//                 for its own): parentbased_traceidratio. Default 1
+//   ServiceName   the traces' service.name. Default: the process's name
+//   LogLevel      debug, info (the default), warn, error: what is logged
+//                 beside the access log (HSLog)
+//   LogFormat     text, or json (the default when AccessLog is json)
 //   AdminPort     a second listener for operators: health, readiness and
 //                 the metrics, which are then not on Port. Loopback unless
 //                 AdminLocalhost is NO. Default: none
@@ -166,10 +179,17 @@ NS_ASSUME_NONNULL_BEGIN
 @property (nonatomic, readonly) BOOL adminBindToLocalhost;
 @property (nonatomic, readonly) NSTimeInterval drainDelay;
 @property (nonatomic, readonly) NSTimeInterval shutdownTimeout;
+@property (nonatomic, readonly) HSLogLevel logLevel;
+@property (nonatomic, readonly) BOOL logJSON;
+// What the configuration was read from: OTEL_ variables are taken from it.
+@property (nonatomic, readonly, copy) NSDictionary<NSString *, NSString *> *environment;
 
 // Who is asking, as the settings say to find out; nil, without an error,
 // when they name no way.
 - (nullable id<HSAuthenticator>)authenticatorWithError:(NSError **)error;
+// Where traces go, as the settings and OTEL_ variables say; nil, without an
+// error, when nowhere.
+- (nullable OTTracerProvider *)tracerProviderWithError:(NSError **)error;
 // What is allowed but probably not meant, one sentence each, once the
 // authenticator is made (a subclass, a module adds its own).
 @property (nonatomic, readonly, copy) NSArray<NSString *> *warnings;
@@ -213,6 +233,11 @@ NS_ASSUME_NONNULL_BEGIN
 // readiness, metrics).
 @property (nonatomic, readonly, strong, nullable) HSRouter *adminRouter;
 @property (nonatomic, readonly, strong, nullable) HSServer *adminServer;
+// The process's tracing while this application runs (made before the
+// modules, so their spans are recorded too); its export
+// counted in otel_exporter_spans_total, and its failures logged. Flushed
+// and put away when it stops.
+@property (nonatomic, readonly, strong, nullable) OTTracerProvider *tracerProvider;
 
 // What an application overrides. Each default does nothing.
 - (void)configureModules:(NSMutableArray<id<HSModule>> *)modules;

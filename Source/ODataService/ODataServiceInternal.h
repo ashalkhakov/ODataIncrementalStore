@@ -6,6 +6,8 @@
 #pragma once
 #import "ODataService.h"
 #import <HTTPServerKit/HSAuthentication.h>
+#import <HTTPServerKit/HSLog.h>
+#import <OTelKit/OTTrace.h>
 #import "ODataError.h"
 #import "ODataValue.h"
 #import "ODataSchema.h"
@@ -229,7 +231,45 @@ typedef NS_ENUM(NSInteger, OISTargetKind) {
 // that one), and whether it is being asked now.
 @property (nonatomic, strong, nullable) HSRequest *authenticationRequest;
 @property (nonatomic) BOOL authenticating;
+
+// What its work took (OISServiceCall+Tracing.m): the call's span, under
+// the traceparent it came with; the execution's, once planned; the store
+// request's under way. Times in nanoseconds (OTNow()): when what is being
+// planned began (once admitted, or when the last execution ended), when
+// execution began, when the store was asked.
+@property (nonatomic, strong, nullable) OTSpan *span;
+@property (nonatomic, strong, nullable) OTSpan *executeSpan;
+@property (nonatomic, strong, nullable) OTSpan *storeSpan;
+@property (nonatomic, copy, nullable) NSString *storeOperation;
+@property (nonatomic, copy, nullable) NSString *storeEntity;
+@property (nonatomic) uint64_t phaseStarted;
+@property (nonatomic) uint64_t executeStarted;
+@property (nonatomic) uint64_t storeStarted;
 @end
+
+@interface OISServiceCall (Tracing)
+// The plan made: planning timed (a "plan" span, its tree an attribute),
+// execution begun.
+- (void)tracePlanned:(OISPlan *)plan;
+- (void)traceExecuted;
+// A handler asked (fetch, count, aggregate, changes, write): timed, and a
+// span, current on this thread while it asks; ended by its answer.
+- (void)beginStoreRequest:(NSString *)operation entity:(nullable NSString *)entity handler:(nullable ODataEntitySetHandler *)handler;
+- (void)endStoreRequest:(nullable id)result error:(nullable NSError *)error;
+// The response made: what is under way ended, the call's span with it.
+- (void)traceRespondedWithStatus:(NSInteger)status;
+@end
+
+// db.system.name for a coordinator's store: sqlite, postgresql, mysql,
+// coredata.
+FOUNDATION_EXPORT NSString *OISStoreSystemName(NSPersistentStoreCoordinator *coordinator);
+// context saved, timed (odata_store_request_duration_seconds, operation
+// save), a span under parent.
+FOUNDATION_EXPORT BOOL OISTimedSave(ODataService *service, NSManagedObjectContext *context, OTSpan *_Nullable parent,
+                                    NSString *_Nullable entity, NSError **error);
+// A line for the shared HSLog, with the request id and trace of a
+// request's headers.
+FOUNDATION_EXPORT void OISLog(HSLogLevel level, NSURLRequest *_Nullable request, NSString *format, ...) NS_FORMAT_FUNCTION(3, 4);
 
 @interface OISComputedRow : NSObject
 @property (nonatomic, strong) NSManagedObject *object;

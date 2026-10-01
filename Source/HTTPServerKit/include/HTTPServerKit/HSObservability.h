@@ -49,7 +49,10 @@ NS_ASSUME_NONNULL_BEGIN
 // http_response_size_bytes, http_requests_in_flight; and, for a request
 // whose handler named its operation (an OpenAPI operationId, an OData
 // entity set), http_operations_total by route and operation too. A request
-// no route took is counted under route "(none)".
+// no route took is counted under route "(none)". A 401 or 403 is counted
+// in http_auth_failures_total by reason: the authenticator's
+// (HSAuthenticationFailureKey: expired, signature, provider_unavailable,
+// ...), else unauthenticated or forbidden.
 @interface HSMetricsStage : HSStage
 - (instancetype)initWithMetrics:(HSMetrics *)metrics NS_DESIGNATED_INITIALIZER;
 - (instancetype)init NS_UNAVAILABLE;
@@ -68,17 +71,27 @@ FOUNDATION_EXPORT NSString * const HSVersion;
 
 #pragma mark - Trace context
 
-// W3C Trace Context: a request's traceparent (00-<trace id>-<parent id>-
-// <flags>) is taken when it is well formed, and a new trace begun when it
-// is not; either way this server's part of it is a new span. In userInfo:
-// the trace id (HSTraceIDKey), the span id (HSSpanIDKey)
-// and the traceparent to send on to what it calls (HSTraceparentKey);
-// a mounted service's handlers see it as the request's traceparent header.
-// The access log writes the trace id.
+// W3C Trace Context and the request's span: a request's traceparent
+// (00-<trace id>-<parent id>-<flags>) is taken when it is well formed, and
+// a new trace begun when it is not; either way this server's part of it is
+// a new span, the request's (request.span), a server span named
+// "METHOD /route/pattern" with OpenTelemetry's HTTP attributes
+// (http.request.method, url.path, url.query, http.route,
+// http.response.status_code, client.address, user_agent.original), an
+// error for a 5xx. It is recorded and exported when the shared
+// OTTracerProvider is (HSApplication makes one from the OTEL_ variables
+// and the OTLPEndpoint setting), and carries the trace on either way. In
+// userInfo: the trace id (HSTraceIDKey), the span id (HSSpanIDKey) and the
+// traceparent to send on to what it calls (HSTraceparentKey); a mounted
+// service's handlers see it as the request's traceparent header. The
+// access log writes the trace id.
 FOUNDATION_EXPORT NSString * const HSTraceIDKey;
 FOUNDATION_EXPORT NSString * const HSSpanIDKey;
 FOUNDATION_EXPORT NSString * const HSTraceparentKey;
+@class OTTracer;
 @interface HSTraceContextStage : HSStage
+// Default: HTTPServerKit's, from the shared provider.
+@property (nonatomic, strong) OTTracer *tracer;
 @end
 
 #pragma mark - Readiness

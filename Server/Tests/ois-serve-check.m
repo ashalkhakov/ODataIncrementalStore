@@ -535,6 +535,110 @@ static NSManagedObject *OISInsert(NSManagedObjectContext *context, NSString *ent
   return object;
 }
 
+#pragma mark Observability
+
+// What the shared log would write, kept.
+@interface OISCapturingLog : HSLog
+- (NSArray<NSString *> *)taken;
+@end
+
+@implementation OISCapturingLog {
+  NSMutableArray<NSString *> *_lines;
+}
+- (void)writeLine:(NSString *)line
+{
+  @synchronized (self) {
+    if (!_lines) _lines = [NSMutableArray array];
+    [_lines addObject:line];
+  }
+}
+- (NSArray<NSString *> *)taken
+{
+  @synchronized (self) {
+    return [_lines copy] ?: @[];
+  }
+}
+@end
+
+// An OpenTelemetry collector (POST /v1/traces, kept) and an identity
+// provider that is down (anything else: 500), in one.
+@interface OISCollector : NSObject <HSHandler>
+- (NSArray<NSDictionary *> *)spans;
+@end
+
+@implementation OISCollector {
+  NSMutableArray<NSDictionary *> *_bodies;
+}
+- (void)handleRequest:(HSRequest *)request reply:(HSReply *)reply
+{
+  if ([request.method isEqualToString:@"POST"] && [request.path isEqualToString:@"/v1/traces"]) {
+    id json = request.JSONBody;
+    @synchronized (self) {
+      if (!_bodies) _bodies = [NSMutableArray array];
+      if (json) [_bodies addObject:json];
+    }
+    [reply finishWithResponse:[HSResponse responseWithJSON:@{} status:200]];
+    return;
+  }
+  [reply finishWithResponse:[HSResponse responseWithStatus:500]];
+}
+// Every span sent, with its resource's service.name as "service".
+- (NSArray<NSDictionary *> *)spans
+{
+  NSMutableArray *all = [NSMutableArray array];
+  @synchronized (self) {
+    for (NSDictionary *body in _bodies) {
+      for (NSDictionary *resourceSpans in body[@"resourceSpans"]) {
+        NSString *service = nil;
+        for (NSDictionary *attribute in resourceSpans[@"resource"][@"attributes"]) {
+          if ([attribute[@"key"] isEqual:@"service.name"]) service = attribute[@"value"][@"stringValue"];
+        }
+        for (NSDictionary *scope in resourceSpans[@"scopeSpans"]) {
+          for (NSDictionary *span in scope[@"spans"]) {
+            NSMutableDictionary *one = [span mutableCopy];
+            one[@"service"] = service ?: @"";
+            one[@"scope"] = scope[@"scope"][@"name"] ?: @"";
+            [all addObject:one];
+          }
+        }
+      }
+    }
+  }
+  return all;
+}
+@end
+
+static OTSpan *OISSpanNamed(NSArray<OTSpan *> *spans, NSString *prefix)
+{
+  for (OTSpan *span in spans) {
+    if ([span.name hasPrefix:prefix]) return span;
+  }
+  return nil;
+}
+
+static NSDictionary *OISSentSpanNamed(NSArray<NSDictionary *> *spans, NSString *name)
+{
+  for (NSDictionary *span in spans) {
+    if ([span[@"name"] isEqual:name]) return span;
+  }
+  return nil;
+}
+
+static id OISSentAttribute(NSDictionary *span, NSString *key)
+{
+  for (NSDictionary *attribute in span[@"attributes"]) {
+    if ([attribute[@"key"] isEqual:key]) return attribute[@"value"];
+  }
+  return nil;
+}
+
+static NSString *OISBase64URL(id json)
+{
+  NSString *text = [[NSJSONSerialization dataWithJSONObject:json options:0 error:NULL] base64EncodedStringWithOptions:0];
+  text = [[text stringByReplacingOccurrencesOfString:@"+" withString:@"-"] stringByReplacingOccurrencesOfString:@"/" withString:@"_"];
+  return [text stringByReplacingOccurrencesOfString:@"=" withString:@""];
+}
+
 int main(int argc, const char *argv[])
 {
   @autoreleasepool {
@@ -995,8 +1099,118 @@ int main(int argc, const char *argv[])
             OISSend(@"GET", @"/odata/Products", proxied, nil).status == 200 && OISSend(@"GET", @"/health", proxied, nil).status == 200,
             @"error-format-by-route", [NSString stringWithFormat:@"%@ | %@", odataRefused.text, otherRefused.text]);
       [brief.server stop];
+      check([brief.metrics valueOf:@"http_auth_failures_total" labels:@{ @"reason": @"proxy_secret" }] >= 3, @"auth-failure-metrics",
+            [NSString stringWithFormat:@"proxy_secret %.0f", [brief.metrics valueOf:@"http_auth_failures_total" labels:@{ @"reason": @"proxy_secret" }]]);
     } else {
       check(NO, @"keep-alive-timeout", error.localizedDescription ?: @"");
+    }
+
+    // A request's trace, in memory: the server's span under the caller's,
+    // the service's under it, and its plan, execution and store requests
+    // under that; the access log's line with the same trace.
+    {
+      OTInMemoryExporter *memory = [[OTInMemoryExporter alloc] init];
+      OTTracerProvider.sharedProvider =
+          [[OTTracerProvider alloc] initWithResource:@{ @"service.name": @"ois-serve-check" } sampler:[[OTRatioSampler alloc] initWithRatio:1]
+                                           processor:[[OTSimpleSpanProcessor alloc] initWithExporter:memory]];
+      OISCapturingLog *captured = [[OISCapturingLog alloc] init];
+      HSLog.sharedLog = captured;
+      ODataServerApplication *traced = [[ODataServerApplication alloc]
+          initWithConfiguration:[[ODataServerConfiguration alloc] initWithSettings:@{ @"Model": modelPath, @"AccessLog": @"json" }]];
+      if ([traced prepare:&error] && [traced.server startOnPort:0 error:&error]) {
+        port = traced.server.port;
+        NSString *caller = @"00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01";
+        OISReply *read = OISSend(@"GET", @"/odata/Products?$top=2", @{ @"traceparent": caller }, nil);
+        NSArray<OTSpan *> *spans = memory.spans;
+        OTSpan *server = OISSpanNamed(spans, @"GET /odata/*");
+        OTSpan *service = OISSpanNamed(spans, @"ODataService GET Products");
+        OTSpan *plan = OISSpanNamed(spans, @"plan");
+        OTSpan *execute = OISSpanNamed(spans, @"execute");
+        OTSpan *fetch = OISSpanNamed(spans, @"fetch Product");
+        BOOL nested = server && service && plan && execute && fetch &&
+                      [server.context.traceID isEqual:@"4bf92f3577b34da6a3ce929d0e0e4736"] && [server.parentSpanID isEqual:@"00f067aa0ba902b7"] &&
+                      server.kind == OTSpanKindServer && [server.attributes[@"http.response.status_code"] isEqual:@200] &&
+                      [service.parentSpanID isEqual:server.context.spanID] && [plan.parentSpanID isEqual:service.context.spanID] &&
+                      [execute.parentSpanID isEqual:service.context.spanID] && [fetch.parentSpanID isEqual:execute.context.spanID] &&
+                      [plan.attributes[@"odata.plan"] length] > 0 && [fetch.attributes[@"db.collection.name"] isEqual:@"Product"] &&
+                      plan.endTime <= execute.startTime && fetch.startTime >= execute.startTime && fetch.endTime <= execute.endTime;
+        check(read.status == 200 && nested, @"trace-nesting",
+              [NSString stringWithFormat:@"%ld: %@", (long)read.status, [[spans valueForKey:@"description"] componentsJoinedByString:@" | "]]);
+
+        NSString *accessLine = nil;
+        for (NSString *line in [captured taken]) {
+          if ([line rangeOfString:@"\"status\":200"].location != NSNotFound && [line rangeOfString:@"Products"].location != NSNotFound) accessLine = line;
+        }
+        NSDictionary *access = accessLine ? [NSJSONSerialization JSONObjectWithData:[accessLine dataUsingEncoding:NSUTF8StringEncoding] options:0 error:NULL] : nil;
+        check([access[@"trace_id"] isEqual:server.context.traceID] && [access[@"span_id"] isEqual:server.context.spanID], @"log-trace",
+              accessLine ?: @"no access log line");
+
+        HSMetrics *metrics = traced.metrics;
+        double fetches = [metrics valueOf:@"odata_store_request_duration_seconds" labels:@{ @"operation": @"fetch", @"entity": @"Product" }];
+        double plans = [metrics valueOf:@"odata_plan_duration_seconds" labels:@{ @"entity": @"Product" }];
+        double executions = [metrics valueOf:@"odata_execution_duration_seconds" labels:@{ @"entity": @"Product" }];
+        check(fetches >= 1 && plans >= 1 && executions >= 1, @"store-metrics",
+              [NSString stringWithFormat:@"fetches %.0f, plans %.0f, executions %.0f", fetches, plans, executions]);
+        [traced stopWithTimeout:5];
+      } else {
+        check(NO, @"trace-nesting", error.localizedDescription ?: @"");
+      }
+      OTTracerProvider.sharedProvider = nil;
+      HSLog.sharedLog = nil;
+    }
+
+    // Spans exported over OTLP/HTTP to a collector, as the settings say;
+    // and the identity provider's failure, counted, logged and traced.
+    {
+      OISCollector *collector = [[OISCollector alloc] init];
+      HSServer *collecting = [[HSServer alloc] initWithHandler:collector];
+      if ([collecting startOnPort:0 error:&error]) {
+        NSString *base = [NSString stringWithFormat:@"http://127.0.0.1:%lu", (unsigned long)collecting.port];
+        ODataServerApplication *exporting = [[ODataServerApplication alloc] initWithConfiguration:[[ODataServerConfiguration alloc] initWithSettings:@{
+          @"Model": modelPath, @"OTLPEndpoint": base, @"ServiceName": @"catalog-check", @"AccessLog": @NO, @"AllowAnonymous": @YES,
+          @"JWTIssuer": @"https://issuer.invalid", @"JWTKeysURL": [base stringByAppendingString:@"/keys"] }]];
+        OISCapturingLog *captured = [[OISCapturingLog alloc] init];
+        HSLog.sharedLog = captured;
+        if ([exporting prepare:&error] && [exporting.server startOnPort:0 error:&error]) {
+          port = exporting.server.port;
+          NSString *token = [@[ OISBase64URL(@{ @"alg": @"RS256", @"kid": @"k1", @"typ": @"JWT" }), OISBase64URL(@{ @"sub": @"ann" }), @"c2ln" ]
+                               componentsJoinedByString:@"."];
+          OISReply *unavailable = OISSend(@"GET", @"/odata/Products", @{ @"Authorization": [@"Bearer " stringByAppendingString:token] }, nil);
+          OISReply *anonymous = OISSend(@"GET", @"/odata/Products", nil, nil);
+          HSMetrics *metrics = exporting.metrics;
+          double refused = [metrics valueOf:@"http_auth_failures_total" labels:@{ @"reason": @"provider_unavailable" }];
+          double asked = [metrics valueOf:@"http_auth_provider_requests_total" labels:@{ @"endpoint": @"keys", @"outcome": @"500" }];
+          BOOL logged = NO;
+          for (NSString *line in [captured taken]) {
+            if ([line rangeOfString:@"HSJWTAuthenticator: warning:"].location != NSNotFound) logged = YES;
+          }
+          check(unavailable.status == 503 && anonymous.status == 200 && refused == 1 && asked == 1 && logged, @"provider-failure",
+                [NSString stringWithFormat:@"%ld %ld, refused %.0f, asked %.0f, logged %@", (long)unavailable.status, (long)anonymous.status,
+                                           refused, asked, logged ? @"YES" : @"NO"]);
+          [exporting stopWithTimeout:5];
+          NSArray<NSDictionary *> *sent = [collector spans];
+          NSDictionary *keys = OISSentSpanNamed(sent, @"GET keys");
+          NSDictionary *authenticate = OISSentSpanNamed(sent, @"authenticate");
+          NSDictionary *fetch = OISSentSpanNamed(sent, @"fetch Product");
+          NSDictionary *server = nil;
+          for (NSDictionary *span in sent) {
+            if ([span[@"name"] isEqual:@"GET /odata/*"] && [OISSentAttribute(span, @"http.response.status_code")[@"intValue"] isEqual:@"503"]) server = span;
+          }
+          BOOL exported = keys && authenticate && fetch && server && [keys[@"service"] isEqual:@"catalog-check"] && [keys[@"kind"] isEqual:@3] &&
+                          [keys[@"parentSpanId"] isEqual:server[@"spanId"]] && [keys[@"traceId"] isEqual:server[@"traceId"]] &&
+                          [OISSentAttribute(authenticate, @"auth.failure_reason")[@"stringValue"] isEqual:@"provider_unavailable"] &&
+                          [server[@"startTimeUnixNano"] isKindOfClass:[NSString class]];
+          check(exported && [exporting.metrics valueOf:@"otel_exporter_spans_total" labels:@{ @"outcome": @"exported" }] >= sent.count,
+                @"otlp-export", [NSString stringWithFormat:@"%lu spans: %@", (unsigned long)sent.count,
+                                                          [[sent valueForKey:@"name"] componentsJoinedByString:@", "]]);
+        } else {
+          check(NO, @"otlp-export", error.localizedDescription ?: @"");
+        }
+        HSLog.sharedLog = nil;
+        [collecting stop];
+      } else {
+        check(NO, @"otlp-export", error.localizedDescription ?: @"");
+      }
     }
     printf("%s: %d failure(s)\n", failures ? "FAILED" : "OK", failures);
   }

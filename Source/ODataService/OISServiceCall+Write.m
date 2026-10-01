@@ -1570,8 +1570,12 @@ static BOOL OISConditionAllows(NSString *condition, NSString *current)
   NSEntityDescription *requested = self.request.entity;
   // The handler has the request's entity until it answers.
   self.request.entity = entity;
+  ODataEntitySetHandler *handler = node.handler ?: self.handler;
+  [self beginStoreRequest:@"write" entity:entity.name handler:handler];
+  OTSpan *span = self.storeSpan;
   ODataReply *reply = [self replyWithAction:@selector(planDidReply:)];
-  [reply returned:call(node.handler ?: self.handler, reply)];
+  [reply returned:call(handler, reply)];
+  [span resignCurrent];
   known = self.planMemo[key];
   if (known) {
     self.request.entity = requested;

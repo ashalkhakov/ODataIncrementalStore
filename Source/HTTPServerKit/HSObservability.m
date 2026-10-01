@@ -4,6 +4,8 @@
 #import "HSObservability.h"
 #import "HSRouter.h"
 #import "HSStages.h"
+#import "HSAuthentication.h"
+#import <OTelKit/OTTrace.h>
 #include <math.h>
 #include <time.h>
 #include <unistd.h>
@@ -285,6 +287,14 @@ static double HSResidentBytes(void)
     [metrics incrementCounter:@"http_operations_total" help:@"Requests answered, by route, the operation its handler named, method and status."
                        labels:@{ @"route": route, @"operation": request.operation, @"method": request.method, @"status": status } by:1];
   }
+  // Refusals, by why: the authenticator's reason when it gave one (an
+  // expired token, a bad signature, a provider away), else by status.
+  NSString *reason = request.userInfo[HSAuthenticationFailureKey];
+  if (reason || response.status == 401 || response.status == 403) {
+    if (!reason) reason = response.status == 401 ? @"unauthenticated" : @"forbidden";
+    [metrics incrementCounter:@"http_auth_failures_total" help:@"Requests refused for who sent them, by reason."
+                       labels:@{ @"reason": reason } by:1];
+  }
 }
 
 - (NSString *)description
@@ -323,52 +333,75 @@ static double HSResidentBytes(void)
 
 #pragma mark - Trace context
 
-// Lower-case hex of count random bytes, never all zero (which W3C reserves).
-static NSString *HSRandomHex(NSUInteger count)
+// The client's address without its port: 192.0.2.1, ::1.
+static NSString *HSClientAddress(NSString *remote)
 {
-  NSMutableString *hex = [NSMutableString string];
-  BOOL zero = YES;
-  while (hex.length < count * 2) {
-    unsigned char bytes[16];
-    [[NSUUID UUID] getUUIDBytes:bytes];
-    // Bytes 6 and 8 carry the UUID's version and variant: the others are random.
-    for (int i = 0; i < 16 && hex.length < count * 2; i++) {
-      if (i == 6 || i == 8) continue;
-      if (bytes[i]) zero = NO;
-      [hex appendFormat:@"%02x", bytes[i]];
-    }
+  if (!remote.length) return nil;
+  NSRange colon = [remote rangeOfString:@":" options:NSBackwardsSearch];
+  NSString *host = colon.location == NSNotFound || [remote rangeOfString:@":"].location != colon.location ||
+                   [remote hasPrefix:@"["] ? remote : [remote substringToIndex:colon.location];
+  if ([host hasPrefix:@"["]) {
+    NSRange close = [host rangeOfString:@"]"];
+    host = close.location == NSNotFound ? host : [host substringWithRange:NSMakeRange(1, close.location - 1)];
   }
-  return zero ? HSRandomHex(count) : hex;
-}
-
-static BOOL HSIsHex(NSString *text, NSUInteger length)
-{
-  if (text.length != length) return NO;
-  BOOL zero = YES;
-  for (NSUInteger i = 0; i < length; i++) {
-    unichar c = [text characterAtIndex:i];
-    if (!((c >= '0' && c <= '9') || (c >= 'a' && c <= 'f'))) return NO;
-    if (c != '0') zero = NO;
-  }
-  return !zero;
+  return host;
 }
 
 @implementation HSTraceContextStage
 
+- (instancetype)init
+{
+  self = [super init];
+  if (!self) return nil;
+  _tracer = [OTTracer tracerNamed:@"HTTPServerKit" version:HSVersion];
+  return self;
+}
+
 - (BOOL)shouldPassRequest:(HSRequest *)request reply:(HSReply *)reply
 {
-  // version-traceid-parentid-flags; a later version may add fields after these.
-  NSArray *parts = [[request valueForHeader:@"traceparent"] ?: @"" componentsSeparatedByString:@"-"];
-  BOOL valid = parts.count >= 4 && [parts[0] length] == 2 && ![parts[0] isEqualToString:@"ff"] &&
-               (![parts[0] isEqualToString:@"00"] || parts.count == 4) && HSIsHex(parts[1], 32) && HSIsHex(parts[2], 16) &&
-               [parts[3] length] == 2;
-  NSString *traceID = valid ? parts[1] : HSRandomHex(16);
-  NSString *flags = valid ? parts[3] : @"01";
-  NSString *spanID = HSRandomHex(8);
-  request.userInfo[HSTraceIDKey] = traceID;
-  request.userInfo[HSSpanIDKey] = spanID;
-  request.userInfo[HSTraceparentKey] = [NSString stringWithFormat:@"00-%@-%@-%@", traceID, spanID, flags];
+  OTSpanContext *parent = [OTSpanContext contextWithTraceparent:[request valueForHeader:@"traceparent"]];
+  NSString *pattern = request.route.pattern;
+  NSMutableDictionary *attributes = [NSMutableDictionary dictionary];
+  attributes[@"http.request.method"] = request.method;
+  attributes[@"url.path"] = request.path;
+  NSRange question = [request.target rangeOfString:@"?"];
+  if (question.location != NSNotFound) attributes[@"url.query"] = [request.target substringFromIndex:question.location + 1];
+  attributes[@"url.scheme"] = @"http";
+  attributes[@"network.protocol.version"] = @"1.1";
+  if (pattern) attributes[@"http.route"] = pattern;
+  attributes[@"client.address"] = HSClientAddress(request.remoteAddress);
+  attributes[@"user_agent.original"] = [request valueForHeader:@"User-Agent"];
+  attributes[@"request.id"] = request.userInfo[HSRequestIDKey];
+  OTSpan *span = [self.tracer startSpanNamed:pattern ? [NSString stringWithFormat:@"%@ %@", request.method, pattern] : request.method
+                                        kind:OTSpanKindServer parent:parent attributes:attributes];
+  request.span = span;
+  request.userInfo[HSTraceIDKey] = span.context.traceID;
+  request.userInfo[HSSpanIDKey] = span.context.spanID;
+  request.userInfo[HSTraceparentKey] = span.context.traceparent;
   return YES;
+}
+
+- (void)request:(HSRequest *)request willSendResponse:(HSResponse *)response
+{
+  OTSpan *span = request.span;
+  if (!span.recording) {
+    [span end];
+    return;
+  }
+  NSString *pattern = request.route.pattern;
+  if (pattern) {
+    span.name = [NSString stringWithFormat:@"%@ %@", request.method, pattern];
+    [span setAttribute:pattern forKey:@"http.route"];
+  }
+  [span setAttribute:@(response.status) forKey:@"http.response.status_code"];
+  [span setAttribute:request.operation forKey:@"operation.name"];
+  if (request.principal) [span setAttribute:@YES forKey:@"enduser.authenticated"];
+  // A server's span is an error for what it got wrong, not the client.
+  if (response.status >= 500) {
+    [span setAttribute:[NSString stringWithFormat:@"%ld", (long)response.status] forKey:@"error.type"];
+    [span setStatus:OTStatusError message:nil];
+  }
+  [span end];
 }
 
 - (NSString *)description

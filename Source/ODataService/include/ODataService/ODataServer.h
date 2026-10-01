@@ -68,7 +68,9 @@ NS_ASSUME_NONNULL_BEGIN
 // The service as an application's module: mounted at its service root's
 // path (ODataServiceHandler), its store a readiness check, the
 // application's authenticator its own (for $metadata, and for requests that
-// reach it otherwise). An operation the service cannot declare stops the
+// reach it otherwise), and the application's metrics its own. A Core Data
+// that traces (one with +[NSPersistentStoreCoordinator cd_setTracer:]) is
+// handed a tracer. An operation the service cannot declare stops the
 // server from starting.
 @interface ODataServiceModule : NSObject <HSModule>
 - (instancetype)initWithService:(ODataService *)service NS_DESIGNATED_INITIALIZER;

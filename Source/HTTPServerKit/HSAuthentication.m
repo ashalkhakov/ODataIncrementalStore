@@ -3,6 +3,19 @@
 
 #import "HSAuthentication.h"
 #import "HSSignature.h"
+#import "HSLog.h"
+#import "HSObservability.h"
+#import <OTelKit/OTTrace.h>
+
+NSString * const HSAuthenticationFailureKey = @"HS.authenticationFailure";
+
+// A refusal, with why in a word.
+static NSError *HSRefusal(NSInteger status, NSString *description, NSString *reason)
+{
+  NSMutableDictionary *info = [HSError(status, description).userInfo mutableCopy];
+  info[HSAuthenticationFailureKey] = reason;
+  return [NSError errorWithDomain:HSErrorDomain code:status userInfo:info];
+}
 
 // The scopes a token has: scope, space-separated, or scp, an array.
 static NSSet *HSScopes(NSDictionary *claims)
@@ -67,7 +80,7 @@ static NSSet *HSScopes(NSDictionary *claims)
   if (timeout <= 0) return;
   HSAuthenticationReply *reply = self;
   dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(timeout * NSEC_PER_SEC)), dispatch_get_global_queue(0, 0), ^{
-    [reply failWithError:HSError(504, @"Who is asking could not be found out in time")];
+    [reply failWithError:HSRefusal(504, @"Who is asking could not be found out in time", @"timeout")];
   });
 }
 
@@ -234,7 +247,7 @@ static BOOL HSSecretsEqual(NSString *given, NSString *expected)
   if (self.secretHeader.length && self.secret.length) {
     NSString *given = [request valueForHeader:self.secretHeader];
     if (!given || !HSSecretsEqual(given, self.secret)) {
-      [reply failWithError:HSError(401, @"The request did not come through the service's proxy")];
+      [reply failWithError:HSRefusal(401, @"The request did not come through the service's proxy", @"proxy_secret")];
       return;
     }
   }
@@ -280,10 +293,11 @@ static NSString *HSBearerToken(HSRequest *request)
   return token.length ? token : nil;
 }
 
-static void HSRefuse(HSRequest *request, HSAuthenticationReply *reply, NSInteger status, NSString *code, NSString *description)
+static void HSRefuse(HSRequest *request, HSAuthenticationReply *reply, NSInteger status, NSString *code, NSString *description,
+                     NSString *reason)
 {
   request.userInfo[HSBearerErrorKey] = @{ @"error": code, @"description": description };
-  [reply failWithError:HSError(status, description)];
+  [reply failWithError:HSRefusal(status, description, reason)];
 }
 
 // A token without the scopes every request needs: 403, the challenge
@@ -291,7 +305,7 @@ static void HSRefuse(HSRequest *request, HSAuthenticationReply *reply, NSInteger
 static void HSRefuseScopes(HSAuthenticationReply *reply, NSArray<NSString *> *scopes)
 {
   NSString *description = [NSString stringWithFormat:@"The token needs the scopes %@", [scopes componentsJoinedByString:@" "]];
-  NSMutableDictionary *info = [HSError(403, description).userInfo mutableCopy];
+  NSMutableDictionary *info = [HSRefusal(403, description, @"insufficient_scope").userInfo mutableCopy];
   info[HSErrorScopesKey] = scopes;
   [reply failWithError:[NSError errorWithDomain:HSErrorDomain code:403 userInfo:info]];
 }
@@ -309,23 +323,37 @@ static NSString *HSBearerChallenge(HSRequest *request)
 }
 
 // What is wrong with a token's claims, or nil: iss, aud, exp, nbf, sub.
-static NSString *HSClaimsProblem(NSDictionary *claims, NSString *issuer, NSString *audience, NSTimeInterval leeway, BOOL needsExpiry)
+static NSString *HSClaimsProblem(NSDictionary *claims, NSString *issuer, NSString *audience, NSTimeInterval leeway, BOOL needsExpiry,
+                                 NSString **reason)
 {
-  if (issuer && ![claims[@"iss"] isEqual:issuer]) return @"The token is not from this service's issuer";
+  if (issuer && ![claims[@"iss"] isEqual:issuer]) {
+    *reason = @"issuer";
+    return @"The token is not from this service's issuer";
+  }
   if (audience) {
     id aud = claims[@"aud"];
     BOOL ours = [aud isEqual:audience] || ([aud isKindOfClass:[NSArray class]] && [aud containsObject:audience]);
-    if (!ours) return @"The token is not for this service";
+    if (!ours) {
+      *reason = @"audience";
+      return @"The token is not for this service";
+    }
   }
   NSTimeInterval now = [[NSDate date] timeIntervalSince1970];
   id exp = claims[@"exp"];
   if (![exp isKindOfClass:[NSNumber class]]) {
-    if (needsExpiry) return @"The token has no expiry";
+    if (needsExpiry) {
+      *reason = @"no_expiry";
+      return @"The token has no expiry";
+    }
   } else if ([exp doubleValue] + leeway <= now) {
+    *reason = @"expired";
     return @"The token has expired";
   }
   id nbf = claims[@"nbf"];
-  if ([nbf isKindOfClass:[NSNumber class]] && [nbf doubleValue] - leeway > now) return @"The token is not valid yet";
+  if ([nbf isKindOfClass:[NSNumber class]] && [nbf doubleValue] - leeway > now) {
+    *reason = @"not_yet_valid";
+    return @"The token is not valid yet";
+  }
   return nil;
 }
 
@@ -335,7 +363,7 @@ static HSPrincipal *HSCheckedPrincipal(HSRequest *request, HSAuthenticationReply
                                     NSSet *requiredScopes)
 {
   if (![subject isKindOfClass:[NSString class]] || ![subject length]) {
-    HSRefuse(request, reply, 401, @"invalid_token", @"The token names no subject");
+    HSRefuse(request, reply, 401, @"invalid_token", @"The token names no subject", @"no_subject");
     return nil;
   }
   if (requiredScopes.count && ![requiredScopes isSubsetOfSet:HSScopes(claims)]) {
@@ -356,23 +384,66 @@ static NSDictionary *HSJSONObject(HSFetch *fetch)
 
 typedef void (^HSFetched)(NSDictionary *json);
 
-// GET or POST, the completion called with the JSON object of a 200, or nil.
+// One fetch of a provider's, under way: timed, counted, and a client span.
 @interface HSJSONFetch : NSObject
-+ (void)request:(NSURLRequest *)request fetcher:(id<HSFetching>)fetcher then:(HSFetched)then;
+@property (nonatomic, copy) HSFetched then;
+@property (nonatomic, copy) NSString *endpoint;
+@property (nonatomic, strong) HSMetrics *metrics;
+@property (nonatomic, strong) OTSpan *span;
+@property (nonatomic) uint64_t started;
+// GET or POST, the completion called with the JSON object of a 200, or nil.
+// endpoint: what metrics and the span name it by (keys, introspection);
+// parent: the request that set it off.
++ (void)request:(NSURLRequest *)request fetcher:(id<HSFetching>)fetcher endpoint:(NSString *)endpoint
+        metrics:(HSMetrics *)metrics parent:(OTSpanContext *)parent then:(HSFetched)then;
 @end
 
 @implementation HSJSONFetch
-+ (void)request:(NSURLRequest *)request fetcher:(id<HSFetching>)fetcher then:(HSFetched)then
++ (void)request:(NSURLRequest *)request fetcher:(id<HSFetching>)fetcher endpoint:(NSString *)endpoint
+        metrics:(HSMetrics *)metrics parent:(OTSpanContext *)parent then:(HSFetched)then
 {
-  HSFetch *fetch = [[HSFetch alloc] initWithRequest:request target:self action:@selector(didFetch:)];
-  fetch.context = [then copy];
+  HSJSONFetch *state = [[HSJSONFetch alloc] init];
+  state.then = then;
+  state.endpoint = endpoint;
+  state.metrics = metrics;
+  state.started = OTNow();
+  NSString *method = request.HTTPMethod ?: @"GET";
+  NSMutableDictionary *attributes = [NSMutableDictionary dictionary];
+  attributes[@"http.request.method"] = method;
+  attributes[@"url.full"] = request.URL.absoluteString;
+  attributes[@"server.address"] = request.URL.host;
+  if (request.URL.port) attributes[@"server.port"] = request.URL.port;
+  state.span = [[OTTracer tracerNamed:@"HTTPServerKit" version:HSVersion] startSpanNamed:[NSString stringWithFormat:@"%@ %@", method, endpoint]
+                                                                                 kind:OTSpanKindClient parent:parent attributes:attributes];
+  // The provider's own traces join this one.
+  NSMutableURLRequest *sent = [request mutableCopy];
+  [sent setValue:state.span.context.traceparent forHTTPHeaderField:@"traceparent"];
+  HSFetch *fetch = [[HSFetch alloc] initWithRequest:sent target:self action:@selector(didFetch:)];
+  fetch.context = state;
   [fetcher startFetch:fetch];
 }
 
 + (void)didFetch:(HSFetch *)fetch
 {
-  HSFetched then = fetch.context;
-  then(HSJSONObject(fetch));
+  HSJSONFetch *state = fetch.context;
+  NSHTTPURLResponse *http = [fetch.response isKindOfClass:[NSHTTPURLResponse class]] ? (NSHTTPURLResponse *)fetch.response : nil;
+  NSDictionary *json = HSJSONObject(fetch);
+  NSString *outcome = http ? [NSString stringWithFormat:@"%ld", (long)http.statusCode] : @"error";
+  if (http) [state.span setAttribute:@(http.statusCode) forKey:@"http.response.status_code"];
+  if (fetch.error) {
+    [state.span setAttribute:fetch.error.domain forKey:@"error.type"];
+    [state.span recordError:fetch.error];
+  } else if (!json) {
+    [state.span setAttribute:http ? outcome : @"invalid_response" forKey:@"error.type"];
+    [state.span setStatus:OTStatusError message:http.statusCode == 200 ? @"not a JSON object" : nil];
+  }
+  [state.span end];
+  [state.metrics incrementCounter:@"http_auth_provider_requests_total"
+                             help:@"Requests to the identity provider, by endpoint and outcome (a status, or error)."
+                           labels:@{ @"endpoint": state.endpoint, @"outcome": outcome } by:1];
+  [state.metrics observeHistogram:@"http_auth_provider_request_duration_seconds" help:@"How long the identity provider took, by endpoint."
+                           labels:@{ @"endpoint": state.endpoint } value:(double)(OTNow() - state.started) / 1e9 buckets:nil];
+  state.then(json);
 }
 @end
 
@@ -426,25 +497,25 @@ typedef void (^HSFetched)(NSDictionary *json);
   NSDictionary *header = headerData ? [NSJSONSerialization JSONObjectWithData:headerData options:0 error:NULL] : nil;
   NSDictionary *claims = payloadData ? [NSJSONSerialization JSONObjectWithData:payloadData options:0 error:NULL] : nil;
   if (![header isKindOfClass:[NSDictionary class]] || ![claims isKindOfClass:[NSDictionary class]] || !signature) {
-    HSRefuse(request, reply, 401, @"invalid_token", @"The token is not a signed JWT");
+    HSRefuse(request, reply, 401, @"invalid_token", @"The token is not a signed JWT", @"malformed");
     return;
   }
   // The algorithm is the service's to choose, not the token's: none and
   // HMAC (with the public key as its secret) are the classic forgeries.
   NSString *alg = header[@"alg"];
   if (![alg isKindOfClass:[NSString class]] || ![self.algorithms containsObject:alg] || ![HSSignatureAlgorithms() containsObject:alg]) {
-    HSRefuse(request, reply, 401, @"invalid_token", [NSString stringWithFormat:@"The token's algorithm %@ is not taken here", alg]);
+    HSRefuse(request, reply, 401, @"invalid_token", [NSString stringWithFormat:@"The token's algorithm %@ is not taken here", alg], @"algorithm");
     return;
   }
   if (header[@"crit"]) {
-    HSRefuse(request, reply, 401, @"invalid_token", @"The token has critical header parameters this service does not know");
+    HSRefuse(request, reply, 401, @"invalid_token", @"The token has critical header parameters this service does not know", @"malformed");
     return;
   }
   id typ = header[@"typ"];
   if (typ) {
     NSString *type = [typ isKindOfClass:[NSString class]] ? [typ lowercaseString] : @"";
     if (![@[ @"jwt", @"at+jwt", @"application/at+jwt" ] containsObject:type]) {
-      HSRefuse(request, reply, 401, @"invalid_token", [NSString stringWithFormat:@"A %@ is not an access token", typ]);
+      HSRefuse(request, reply, 401, @"invalid_token", [NSString stringWithFormat:@"A %@ is not an access token", typ], @"token_type");
       return;
     }
   }
@@ -460,7 +531,7 @@ typedef void (^HSFetched)(NSDictionary *json);
     check(keys);
     return;
   }
-  [self fetchKeysThen:^(NSArray *fetched, NSError *error) {
+  [self fetchKeysFor:request then:^(NSArray *fetched, NSError *error) {
     if (error) {
       [reply failWithError:error];
     } else {
@@ -475,6 +546,7 @@ typedef void (^HSFetched)(NSDictionary *json);
   // The key the token names; without a name, each key there is.
   BOOL verified = NO;
   NSString *reason = kid ? [NSString stringWithFormat:@"The issuer has no key %@", kid] : @"The issuer has no key";
+  NSString *failure = @"unknown_key";
   for (NSDictionary *key in keys) {
     if (![key isKindOfClass:[NSDictionary class]]) continue;
     if (kid && ![key[@"kid"] isEqual:kid]) continue;
@@ -484,14 +556,15 @@ typedef void (^HSFetched)(NSDictionary *json);
       break;
     }
     reason = [NSString stringWithFormat:@"The token's signature: %@", why];
+    failure = @"signature";
   }
   if (!verified) {
-    HSRefuse(request, reply, 401, @"invalid_token", reason);
+    HSRefuse(request, reply, 401, @"invalid_token", reason, failure);
     return;
   }
-  NSString *problem = HSClaimsProblem(claims, self.issuer, self.audience, self.leeway, YES);
+  NSString *problem = HSClaimsProblem(claims, self.issuer, self.audience, self.leeway, YES, &failure);
   if (problem) {
-    HSRefuse(request, reply, 401, @"invalid_token", problem);
+    HSRefuse(request, reply, 401, @"invalid_token", problem, failure);
     return;
   }
   HSPrincipal *principal = HSCheckedPrincipal(request, reply, claims, claims[@"sub"], self.requiredScopes);
@@ -523,8 +596,9 @@ typedef void (^HSFetched)(NSDictionary *json);
   }
 }
 
-- (void)fetchKeysThen:(void (^)(NSArray *keys, NSError *error))then
+- (void)fetchKeysFor:(HSRequest *)request then:(void (^)(NSArray *keys, NSError *error))then
 {
+  OTSpanContext *parent = request.span.context;
   @synchronized (self) {
     [_waiters addObject:[then copy]];
     if (_fetching) return;
@@ -535,7 +609,7 @@ typedef void (^HSFetched)(NSDictionary *json);
     if (!keySetURL) keySetURL = _discoveredKeySetURL;
   }
   if (keySetURL) {
-    [self fetchKeySet:keySetURL];
+    [self fetchKeySet:keySetURL parent:parent];
     return;
   }
   // OpenID Connect Discovery 1.0, section 4.
@@ -545,7 +619,8 @@ typedef void (^HSFetched)(NSDictionary *json);
     [self fetched:nil failure:@"The issuer is not a URL"];
     return;
   }
-  [HSJSONFetch request:[NSURLRequest requestWithURL:discovery] fetcher:self.fetcher then:^(NSDictionary *json) {
+  [HSJSONFetch request:[NSURLRequest requestWithURL:discovery] fetcher:self.fetcher endpoint:@"discovery" metrics:self.metrics
+                parent:parent then:^(NSDictionary *json) {
     NSURL *found = [json[@"jwks_uri"] isKindOfClass:[NSString class]] ? [NSURL URLWithString:json[@"jwks_uri"]] : nil;
     if (!json || ![json[@"issuer"] isEqual:self.issuer] || !found) {
       [self fetched:nil failure:@"The issuer's discovery document does not name its keys"];
@@ -554,13 +629,14 @@ typedef void (^HSFetched)(NSDictionary *json);
     @synchronized (self) {
       self->_discoveredKeySetURL = found;
     }
-    [self fetchKeySet:found];
+    [self fetchKeySet:found parent:parent];
   }];
 }
 
-- (void)fetchKeySet:(NSURL *)url
+- (void)fetchKeySet:(NSURL *)url parent:(OTSpanContext *)parent
 {
-  [HSJSONFetch request:[NSURLRequest requestWithURL:url] fetcher:self.fetcher then:^(NSDictionary *json) {
+  [HSJSONFetch request:[NSURLRequest requestWithURL:url] fetcher:self.fetcher endpoint:@"keys" metrics:self.metrics
+                parent:parent then:^(NSDictionary *json) {
     NSArray *keys = [json[@"keys"] isKindOfClass:[NSArray class]] ? json[@"keys"] : nil;
     [self fetched:keys failure:keys ? nil : @"The issuer's keys could not be fetched"];
   }];
@@ -578,8 +654,8 @@ typedef void (^HSFetched)(NSDictionary *json);
     [_waiters removeAllObjects];
     _fetching = NO;
   }
-  if (failure) NSLog(@"HSJWTAuthenticator: %@", failure);
-  NSError *error = failure ? HSError(503, failure) : nil;
+  if (failure) HSLogMessage(HSLogLevelWarn, @"HSJWTAuthenticator", nil, @"%@", failure);
+  NSError *error = failure ? HSRefusal(503, failure, @"provider_unavailable") : nil;
   for (void (^waiter)(NSArray *, NSError *) in waiters) waiter(keys, error);
 }
 
@@ -656,10 +732,11 @@ static NSString *HSFormEncoded(NSString *text)
   NSString *basic = [[credentials dataUsingEncoding:NSUTF8StringEncoding] base64EncodedStringWithOptions:0];
   [post setValue:[@"Basic " stringByAppendingString:basic] forHTTPHeaderField:@"Authorization"];
   post.HTTPBody = [[NSString stringWithFormat:@"token=%@&token_type_hint=access_token", HSFormEncoded(token)] dataUsingEncoding:NSUTF8StringEncoding];
-  [HSJSONFetch request:post fetcher:self.fetcher then:^(NSDictionary *json) {
+  [HSJSONFetch request:post fetcher:self.fetcher endpoint:@"introspection" metrics:self.metrics
+                parent:request.span.context then:^(NSDictionary *json) {
     if (!json) {
-      NSLog(@"HSTokenIntrospectionAuthenticator: %@ did not answer", self.endpoint);
-      [reply failWithError:HSError(503, @"The identity provider could not be asked about the token")];
+      HSLogMessage(HSLogLevelWarn, @"HSTokenIntrospectionAuthenticator", request, @"%@ did not answer", self.endpoint);
+      [reply failWithError:HSRefusal(503, @"The identity provider could not be asked about the token", @"provider_unavailable")];
       return;
     }
     NSDictionary *claims = [json[@"active"] isEqual:@YES] ? json : nil;
@@ -692,12 +769,13 @@ static NSString *HSFormEncoded(NSString *text)
 - (void)answer:(HSRequest *)request reply:(HSAuthenticationReply *)reply claims:(NSDictionary *)claims
 {
   if (!claims) {
-    HSRefuse(request, reply, 401, @"invalid_token", @"The token is not active");
+    HSRefuse(request, reply, 401, @"invalid_token", @"The token is not active", @"inactive");
     return;
   }
-  NSString *problem = HSClaimsProblem(claims, self.issuer, self.audience, 0, NO);
+  NSString *failure = nil;
+  NSString *problem = HSClaimsProblem(claims, self.issuer, self.audience, 0, NO, &failure);
   if (problem) {
-    HSRefuse(request, reply, 401, @"invalid_token", problem);
+    HSRefuse(request, reply, 401, @"invalid_token", problem, failure);
     return;
   }
   id subject = claims[@"sub"] ?: claims[@"username"];

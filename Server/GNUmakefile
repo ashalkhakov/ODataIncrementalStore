@@ -1,6 +1,6 @@
 # ois-serve, an example application of its own (catalog-server), and the
 # loopback check: tools over the libraries at the repository root
-# (HTTPServerKit, ODataService), which are built there first.
+# (OTelKit, HTTPServerKit, ODataService), which are built there first.
 #
 # GNUstep, with gnustep-make:
 #   . /path/to/GNUstep.sh
@@ -17,7 +17,7 @@ include $(GCDWebServer_DIR)/GCDWebServer.make
 INCLUDE_DIRS = -I../Source/ODataKit/include -I../Source/ODataIncrementalStore/include -I../Source/ODataService/include \
 	-I../Source/HTTPServerKit/include -I../Source/ODataKit/include/ODataKit \
 	-I../Source/ODataIncrementalStore/include/ODataIncrementalStore -I../Source/ODataService/include/ODataService \
-	-I../Source/HTTPServerKit/include/HTTPServerKit
+	-I../Source/HTTPServerKit/include/HTTPServerKit -I../Source/OTelKit/include -I../Source/OTelKit/include/OTelKit
 
 ifneq ($(GNUSTEP_MAKEFILES),)
 
@@ -28,7 +28,7 @@ OBJC = clang
 
 FLAGS = -fobjc-arc -fblocks -fobjc-runtime=gnustep-2.0 \
 	-fconstant-string-class=NSConstantString -fobjc-exceptions -Wall -Wno-unused-parameter
-TOOL_LIBS_ALL = -lODataService -lHTTPServerKit -lODataKit -lCoreData -ldispatch -lz
+TOOL_LIBS_ALL = -lODataService -lHTTPServerKit -lOTelKit -lODataKit -lCoreData -ldispatch -lz
 
 TOOL_NAME = ois-serve ois-serve-check catalog-server
 ois-serve_OBJC_FILES = ois-serve.m

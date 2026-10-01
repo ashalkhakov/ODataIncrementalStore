@@ -4,6 +4,8 @@
 #import "HSApplication.h"
 #import "HSAuthentication.h"
 #import "HSObservability.h"
+#import "HSLog.h"
+#import <OTelKit/OTelKit.h>
 #include <dlfcn.h>
 #include <signal.h>
 #include <stdlib.h>
@@ -30,6 +32,7 @@ static NSURL *HSURL(id text)
 
 @implementation HSConfiguration {
   NSMutableArray<NSString *> *_warnings;
+  NSDictionary<NSString *, NSString *> *_environment;
 }
 
 - (instancetype)initWithSettings:(NSDictionary *)settings
@@ -60,7 +63,8 @@ static NSURL *HSURL(id text)
             @"IntrospectionClientID", @"IntrospectionSecretEnvironment", @"RequiredScopes", @"HealthPath",
             @"AccessLog", @"CORSOrigins", @"CORSCredentials", @"Compression", @"MaxBodyInMemory", @"KeepAliveTimeout",
             @"MaxRequestsPerConnection", @"SlowRequestThreshold", @"Metrics", @"MetricsPath", @"ReadyPath", @"TraceContext",
-            @"AdminPort", @"AdminLocalhost", @"DrainDelay", @"ShutdownTimeout", @"Bundles", @"Libraries" ];
+            @"AdminPort", @"AdminLocalhost", @"DrainDelay", @"ShutdownTimeout", @"Bundles", @"Libraries", @"LogLevel",
+            @"LogFormat", @"OTLPEndpoint", @"TraceSampleRatio", @"ServiceName" ];
 }
 
 + (NSString *)environmentVariableForSetting:(NSString *)name
@@ -130,7 +134,14 @@ static id HSEnvironmentValue(NSString *text)
   }
   [settings addEntriesFromDictionary:fromEnvironment];
   [settings addEntriesFromDictionary:arguments];
-  return [[self alloc] initWithSettings:settings];
+  HSConfiguration *configuration = [[self alloc] initWithSettings:settings];
+  configuration->_environment = [environment copy];
+  return configuration;
+}
+
+- (NSDictionary<NSString *, NSString *> *)environment
+{
+  return _environment ?: [NSProcessInfo processInfo].environment;
 }
 
 - (id)setting:(NSString *)name
@@ -310,6 +321,48 @@ static id HSEnvironmentValue(NSString *text)
   return [_warnings copy];
 }
 
+- (HSLogLevel)logLevel
+{
+  NSNumber *level = [HSLog levelNamed:[self setting:@"LogLevel"]];
+  return level ? (HSLogLevel)level.integerValue : HSLogLevelInfo;
+}
+
+- (BOOL)logJSON
+{
+  id value = [self setting:@"LogFormat"];
+  if ([value isKindOfClass:[NSString class]]) return [value caseInsensitiveCompare:@"json"] == NSOrderedSame;
+  return self.accessLogJSON;
+}
+
+- (OTTracerProvider *)tracerProviderWithError:(NSError **)error
+{
+  // The settings as the OTEL_ variables they stand for, over the
+  // environment's own.
+  NSMutableDictionary *environment = [NSMutableDictionary dictionary];
+  NSDictionary *given = self.environment;
+  for (NSString *name in given) {
+    if ([name hasPrefix:@"OTEL_"]) environment[name] = given[name];
+  }
+  id endpoint = [self setting:@"OTLPEndpoint"];
+  if ([endpoint isKindOfClass:[NSString class]] && [endpoint length]) {
+    environment[@"OTEL_EXPORTER_OTLP_ENDPOINT"] = endpoint;
+    [environment removeObjectForKey:@"OTEL_EXPORTER_OTLP_TRACES_ENDPOINT"];
+    [environment removeObjectForKey:@"OTEL_TRACES_EXPORTER"];
+  }
+  id ratio = [self setting:@"TraceSampleRatio"];
+  if ([ratio respondsToSelector:@selector(doubleValue)]) {
+    environment[@"OTEL_TRACES_SAMPLER"] = @"parentbased_traceidratio";
+    environment[@"OTEL_TRACES_SAMPLER_ARG"] = [NSString stringWithFormat:@"%g", [ratio doubleValue]];
+  }
+  id service = [self setting:@"ServiceName"];
+  if ([service isKindOfClass:[NSString class]] && [service length]) environment[@"OTEL_SERVICE_NAME"] = service;
+  NSDictionary *defaults = @{ @"service.name": [NSProcessInfo processInfo].processName ?: @"server", @"service.version": HSVersion };
+  NSError *failure = nil;
+  OTTracerProvider *provider = [OTTracerProvider providerWithEnvironment:environment defaults:defaults error:&failure];
+  if (error) *error = failure;
+  return provider;
+}
+
 // A secret is taken from the environment, not the command line, where
 // anyone on the machine can read it.
 - (NSString *)secretIn:(NSString *)setting
@@ -395,9 +448,15 @@ static id HSEnvironmentValue(NSString *text)
 @property (nonatomic, readwrite, strong, nullable) HSReadinessHandler *readiness;
 @property (nonatomic, readwrite, strong, nullable) HSRouter *adminRouter;
 @property (nonatomic, readwrite, strong, nullable) HSServer *adminServer;
+@property (nonatomic, readwrite, strong, nullable) OTTracerProvider *tracerProvider;
 @end
 
-@implementation HSApplication
+@interface HSApplication () <OTExportObserver>
+@end
+
+@implementation HSApplication {
+  NSDate *_lastExportWarning;
+}
 
 + (Class)configurationClass
 {
@@ -446,6 +505,10 @@ static id HSEnvironmentValue(NSString *text)
       return HSFailWith(error, [NSString stringWithFormat:@"%@ does not load: %s", path, why ? why : "?"]);
     }
   }
+  HSLog *log = [HSLog sharedLog];
+  log.level = configuration.logLevel;
+  log.format = configuration.logJSON ? HSLogFormatJSON : HSLogFormatText;
+
   NSError *failure = nil;
   id<HSAuthenticator> authenticator = [configuration authenticatorWithError:&failure];
   if (failure) {
@@ -456,6 +519,20 @@ static id HSEnvironmentValue(NSString *text)
 
   HSMetrics *metrics = [[HSMetrics alloc] init];
   self.metrics = metrics;
+  if ([(NSObject *)authenticator respondsToSelector:@selector(setMetrics:)]) [(id)authenticator setMetrics:metrics];
+
+  // Traces, when the settings or the OTEL_ variables name where to send
+  // them: the process's provider from now on.
+  OTTracerProvider *provider = [configuration tracerProviderWithError:&failure];
+  if (failure) {
+    if (error) *error = failure;
+    return NO;
+  }
+  if (provider) {
+    if ([provider.processor isKindOfClass:[OTBatchSpanProcessor class]]) [(OTBatchSpanProcessor *)provider.processor setObserver:self];
+    self.tracerProvider = provider;
+    OTTracerProvider.sharedProvider = provider;
+  }
   self.readiness = [[HSReadinessHandler alloc] init];
 
   // Health and readiness on every listener, for whatever asks; metrics on
@@ -553,7 +630,49 @@ static id HSEnvironmentValue(NSString *text)
   while (self.server.requestsInFlight > 0 && [deadline timeIntervalSinceNow] > 0) [NSThread sleepForTimeInterval:0.05];
   BOOL finished = self.server.requestsInFlight == 0;
   [self.adminServer stop];
+  // The last spans out, and the process's tracing as it was.
+  OTTracerProvider *provider = self.tracerProvider;
+  if (provider) {
+    [provider shutdownWithTimeout:MAX(MIN([deadline timeIntervalSinceNow], 5), 1)];
+    if (OTTracerProvider.sharedProvider == provider) OTTracerProvider.sharedProvider = nil;
+    self.tracerProvider = nil;
+  }
   return finished;
+}
+
+#pragma mark Export
+
+- (void)countSpans:(NSUInteger)count outcome:(NSString *)outcome
+{
+  [self.metrics incrementCounter:@"otel_exporter_spans_total" help:@"Spans handed to the exporter, by outcome: exported, failed, dropped."
+                          labels:@{ @"outcome": outcome } by:count];
+}
+
+// At most a warning a minute: a collector away for an hour is not 720 lines.
+- (void)warnOfExport:(NSString *)message
+{
+  @synchronized (self) {
+    if (_lastExportWarning && -[_lastExportWarning timeIntervalSinceNow] < 60) return;
+    _lastExportWarning = [NSDate date];
+  }
+  HSLogMessage(HSLogLevelWarn, @"OTelKit", nil, @"%@", message);
+}
+
+- (void)spanProcessor:(id<OTSpanProcessor>)processor didExportSpans:(NSUInteger)count
+{
+  [self countSpans:count outcome:@"exported"];
+}
+
+- (void)spanProcessor:(id<OTSpanProcessor>)processor didFailToExportSpans:(NSUInteger)count error:(NSError *)error
+{
+  [self countSpans:count outcome:@"failed"];
+  [self warnOfExport:[NSString stringWithFormat:@"%lu spans not exported: %@", (unsigned long)count, error.localizedDescription]];
+}
+
+- (void)spanProcessor:(id<OTSpanProcessor>)processor didDropSpans:(NSUInteger)count
+{
+  [self countSpans:count outcome:@"dropped"];
+  [self warnOfExport:[NSString stringWithFormat:@"%lu spans dropped: the export queue was full", (unsigned long)count]];
 }
 
 - (NSArray<NSString *> *)startupLines
@@ -567,6 +686,13 @@ static id HSEnvironmentValue(NSString *text)
     [lines addObject:[NSString stringWithFormat:@"admin (health, readiness, metrics) on port %lu%s", (unsigned long)self.adminServer.port,
                                                 self.adminServer.bindToLocalhost ? " (loopback)" : ""]];
   }
+  OTTracerProvider *provider = self.tracerProvider;
+  id<OTSpanProcessor> processor = provider.processor;
+  if (provider) {
+    id exporter = [processor isKindOfClass:[OTBatchSpanProcessor class]] ? (id)[(OTBatchSpanProcessor *)processor exporter] : (id)processor;
+    NSString *to = [exporter isKindOfClass:[OTLPExporter class]] ? [(OTLPExporter *)exporter endpoint].absoluteString : [exporter description];
+    [lines addObject:[NSString stringWithFormat:@"traces of %@ to %@ (%@)", provider.resource[@"service.name"], to, provider.sampler]];
+  }
   return lines;
 }
 
@@ -576,13 +702,14 @@ static volatile sig_atomic_t HSStopSignal;
 - (int)run
 {
   NSString *name = [NSProcessInfo processInfo].processName;
+  HSLog *log = [HSLog sharedLog];
   NSError *error = nil;
   if (![self prepare:&error]) {
-    fprintf(stderr, "%s: %s\n", name.UTF8String, error.localizedDescription.UTF8String);
+    [log log:HSLogLevelError component:name message:error.localizedDescription fields:nil];
     return 1;
   }
   HSConfiguration *configuration = self.configuration;
-  for (NSString *warning in configuration.warnings) fprintf(stderr, "%s: warning: %s\n", name.UTF8String, warning.UTF8String);
+  for (NSString *warning in configuration.warnings) [log log:HSLogLevelWarn component:name message:warning fields:nil];
 
   // The signals are taken before listening, so one that comes early stops
   // the server rather than the process. (Kept in a static array: on GNUstep
@@ -601,10 +728,10 @@ static volatile sig_atomic_t HSStopSignal;
   }
 
   if (![self start:&error]) {
-    fprintf(stderr, "%s: cannot listen: %s\n", name.UTF8String, error.localizedDescription.UTF8String);
+    [log log:HSLogLevelError component:name message:[@"cannot listen: " stringByAppendingString:error.localizedDescription] fields:nil];
     return 1;
   }
-  for (NSString *line in [self startupLines]) fprintf(stderr, "%s: %s\n", name.UTF8String, line.UTF8String);
+  for (NSString *line in [self startupLines]) [log log:HSLogLevelInfo component:name message:line fields:nil];
 
   // The main thread runs its run loop (and so the main queue) until a
   // signal comes; a timer keeps the loop from finding nothing to wait for.
@@ -618,16 +745,17 @@ static volatile sig_atomic_t HSStopSignal;
 
   // Draining: not ready, so a load balancer stops sending; a while for it to
   // notice; then no new connections, and those under way finished.
-  fprintf(stderr, "%s: draining\n", name.UTF8String);
+  [log log:HSLogLevelInfo component:name message:@"draining" fields:nil];
   [self drain];
   if (configuration.drainDelay > 0) [NSThread sleepForTimeInterval:configuration.drainDelay];
   BOOL finished = [self stopWithTimeout:configuration.shutdownTimeout];
   if (!finished) {
-    fprintf(stderr, "%s: stopped with %lu requests unanswered after %.0f s\n", name.UTF8String,
-            (unsigned long)self.server.requestsInFlight, configuration.shutdownTimeout);
+    [log log:HSLogLevelError component:name
+         message:[NSString stringWithFormat:@"stopped with %lu requests unanswered after %.0f s", (unsigned long)self.server.requestsInFlight,
+                                            configuration.shutdownTimeout] fields:nil];
     return 1;
   }
-  fprintf(stderr, "%s: stopped\n", name.UTF8String);
+  [log log:HSLogLevelInfo component:name message:@"stopped" fields:nil];
   return 0;
 }
 

@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: LGPL-2.1-or-later
 
 #import "HSServer.h"
+#import "HSLog.h"
 #import "HSRouter.h"
 #import "GCDWebServer.h"
 #import "GCDWebServerDataRequest.h"
@@ -35,7 +36,7 @@
   if (!self.headOnly && answer.bodyFileURL) {
     GCDWebServerFileResponse *file = [GCDWebServerFileResponse responseWithFile:answer.bodyFileURL.path];
     if (!file) {
-      NSLog(@"HTTPServerKit: %@ cannot be read", answer.bodyFileURL.path);
+      HSLogMessage(HSLogLevelError, @"HTTPServerKit", nil, @"%@ cannot be read", answer.bodyFileURL.path);
       self.completion([GCDWebServerResponse responseWithStatusCode:500]);
       return;
     }

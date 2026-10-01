@@ -8,8 +8,10 @@
 /* Begin PBXBuildFile section */
 		AB00000000000000000E1300 /* ODataService.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = AB00000000000000000E1200 /* ODataService.framework */; };
 		AB00000000000000000E1900 /* HTTPServerKit.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = AB00000000000000000E1800 /* HTTPServerKit.framework */; };
+		AB00000000000000000E1F00 /* OTelKit.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = AB00000000000000000E1E00 /* OTelKit.framework */; };
 		AB00000000000000000E1400 /* ODataService.framework in Embed Frameworks */ = {isa = PBXBuildFile; fileRef = AB00000000000000000E1200 /* ODataService.framework */; settings = {ATTRIBUTES = (CodeSignOnCopy, RemoveHeadersOnCopy, ); }; };
 		AB00000000000000000E1A00 /* HTTPServerKit.framework in Embed Frameworks */ = {isa = PBXBuildFile; fileRef = AB00000000000000000E1800 /* HTTPServerKit.framework */; settings = {ATTRIBUTES = (CodeSignOnCopy, RemoveHeadersOnCopy, ); }; };
+		AB00000000000000000E2000 /* OTelKit.framework in Embed Frameworks */ = {isa = PBXBuildFile; fileRef = AB00000000000000000E1E00 /* OTelKit.framework */; settings = {ATTRIBUTES = (CodeSignOnCopy, RemoveHeadersOnCopy, ); }; };
 		AB00000000000000000E0300 /* ODataKit.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = AB00000000000000000E0200 /* ODataKit.framework */; };
 		AB00000000000000000E0400 /* ODataKit.framework in Embed Frameworks */ = {isa = PBXBuildFile; fileRef = AB00000000000000000E0200 /* ODataKit.framework */; settings = {ATTRIBUTES = (CodeSignOnCopy, RemoveHeadersOnCopy, ); }; };
 		AA000000000000000000008A /* main.m in Sources */ = {isa = PBXBuildFile; fileRef = AA000000000000000000008B /* main.m */; };
@@ -46,6 +48,13 @@
 			remoteGlobalIDString = 9828CC078A88AE7706B232C7;
 			remoteInfo = HTTPServerKit;
 		};
+		AB00000000000000000E1C00 /* PBXContainerItemProxy */ = {
+			isa = PBXContainerItemProxy;
+			containerPortal = AA0000000000000000000099 /* ODataKit.xcodeproj */;
+			proxyType = 1;
+			remoteGlobalIDString = 4CBB61F9CEEAF8A9C5A1F7CF;
+			remoteInfo = OTelKit;
+		};
 		AB00000000000000000E1100 /* PBXContainerItemProxy */ = {
 			isa = PBXContainerItemProxy;
 			containerPortal = AA0000000000000000000099 /* ODataKit.xcodeproj */;
@@ -59,6 +68,13 @@
 			proxyType = 2;
 			remoteGlobalIDString = A21CEFC6F685318B7798AD60;
 			remoteInfo = HTTPServerKit;
+		};
+		AB00000000000000000E1D00 /* PBXContainerItemProxy */ = {
+			isa = PBXContainerItemProxy;
+			containerPortal = AA0000000000000000000099 /* ODataKit.xcodeproj */;
+			proxyType = 2;
+			remoteGlobalIDString = D7BA1954D987FDFF19FEE609;
+			remoteInfo = OTelKit;
 		};
 		AB00000000000000000E0000 /* PBXContainerItemProxy */ = {
 			isa = PBXContainerItemProxy;
@@ -100,6 +116,7 @@
 				AA0000000000000000000097 /* ODataIncrementalStore.framework in Embed Frameworks */,
 				AB00000000000000000E1400 /* ODataService.framework in Embed Frameworks */,
 				AB00000000000000000E1A00 /* HTTPServerKit.framework in Embed Frameworks */,
+				AB00000000000000000E2000 /* OTelKit.framework in Embed Frameworks */,
 				AB00000000000000000E0400 /* ODataKit.framework in Embed Frameworks */,
 			);
 			name = "Embed Frameworks";
@@ -144,6 +161,7 @@
 				AA0000000000000000000092 /* ODataIncrementalStore.framework in Frameworks */,
 				AB00000000000000000E1300 /* ODataService.framework in Frameworks */,
 				AB00000000000000000E1900 /* HTTPServerKit.framework in Frameworks */,
+				AB00000000000000000E1F00 /* OTelKit.framework in Frameworks */,
 				AB00000000000000000E0300 /* ODataKit.framework in Frameworks */,
 				AA0000000000000000000094 /* Cocoa.framework in Frameworks */,
 				AA0000000000000000000096 /* CoreData.framework in Frameworks */,
@@ -197,6 +215,7 @@
 				AA0000000000000000000093 /* ODataIncrementalStore.framework */,
 				AB00000000000000000E1200 /* ODataService.framework */,
 				AB00000000000000000E1800 /* HTTPServerKit.framework */,
+				AB00000000000000000E1E00 /* OTelKit.framework */,
 				AB00000000000000000E0200 /* ODataKit.framework */,
 			);
 			name = Products;
@@ -246,6 +265,7 @@
 				AA00000000000000000000AA /* PBXTargetDependency */,
 				AB00000000000000000E1500 /* PBXTargetDependency */,
 				AB00000000000000000E1B00 /* PBXTargetDependency */,
+				AB00000000000000000E2100 /* PBXTargetDependency */,
 				AB00000000000000000E0500 /* PBXTargetDependency */,
 			);
 			name = Workbench;
@@ -307,6 +327,13 @@
 			remoteRef = AB00000000000000000E1700 /* PBXContainerItemProxy */;
 			sourceTree = BUILT_PRODUCTS_DIR;
 		};
+		AB00000000000000000E1E00 /* OTelKit.framework */ = {
+			isa = PBXReferenceProxy;
+			fileType = wrapper.framework;
+			path = OTelKit.framework;
+			remoteRef = AB00000000000000000E1D00 /* PBXContainerItemProxy */;
+			sourceTree = BUILT_PRODUCTS_DIR;
+		};
 		AB00000000000000000E0200 /* ODataKit.framework */ = {
 			isa = PBXReferenceProxy;
 			fileType = wrapper.framework;
@@ -366,6 +393,11 @@
 			isa = PBXTargetDependency;
 			name = HTTPServerKit;
 			targetProxy = AB00000000000000000E1600 /* PBXContainerItemProxy */;
+		};
+		AB00000000000000000E2100 /* PBXTargetDependency */ = {
+			isa = PBXTargetDependency;
+			name = OTelKit;
+			targetProxy = AB00000000000000000E1C00 /* PBXContainerItemProxy */;
 		};
 		AB00000000000000000E0500 /* PBXTargetDependency */ = {
 			isa = PBXTargetDependency;

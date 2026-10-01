@@ -44,7 +44,8 @@ xcodebuild -workspace ODataKit.xcworkspace -scheme ODataKitTests -destination 'p
 
 A client app embeds `ODataKit.framework` and `ODataIncrementalStore.framework`
 (Catalog does); one that serves as well adds `ODataService.framework` and
-`HTTPServerKit.framework`, which it links (Workbench does). The server tools build with plain clang, with no Xcode
+`HTTPServerKit.framework` and `OTelKit.framework`, which it links
+(Workbench does). The server tools build with plain clang, with no Xcode
 project: `make -C Server` writes `Server/build/ois-serve`, and
 `make -C Server check` runs it over a loopback socket.
 
@@ -63,7 +64,7 @@ install` there): the tests and example apps compile `Catalog.xcdatamodeld` to
 
 ```sh
 . /usr/share/GNUstep/Makefiles/GNUstep.sh
-make && make install                 # libODataKit, libODataIncrementalStore, libHTTPServerKit, libODataService
+make && make install                 # libODataKit, libODataIncrementalStore, libOTelKit, libHTTPServerKit, libODataService
 make -C Server && make -C Server install   # ois-serve
 ```
 
@@ -89,10 +90,11 @@ include $(GNUSTEP_MAKEFILES)/tool.make
 `ODATAKIT_*` is what a client and a service share, `ODATAINCREMENTALSTORE_*`
 the client, `ODATASERVICE_*` the service, on its own or on the network
 (`ODataServer.h`); `HTTPSERVERKIT_*` is the HTTP server alone, for an
-application with no OData in it.
+application with no OData in it; `OTELKIT_*` the tracing alone.
 
-Without it, pkg-config (`odatakit`, `odataincrementalstore`, `httpserverkit`,
-`odataservice`) gives the same, GNUstep's own flags included:
+Without it, pkg-config (`odatakit`, `odataincrementalstore`, `otelkit`,
+`httpserverkit`, `odataservice`) gives the same, GNUstep's own flags
+included:
 
 ```sh
 export PKG_CONFIG_PATH=$(gnustep-config --variable=GNUSTEP_LOCAL_LIBRARIES)/pkgconfig

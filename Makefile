@@ -13,7 +13,7 @@ ifeq ($(origin CC),default)
 CC = clang
 endif
 SRC_DIR = Source
-LIBS_ = ODataKit ODataIncrementalStore HTTPServerKit ODataService
+LIBS_ = ODataKit ODataIncrementalStore OTelKit HTTPServerKit ODataService
 GCDWebServer_DIR = ThirdParty/GCDWebServer
 include $(GCDWebServer_DIR)/GCDWebServer.make
 INC = $(foreach l,$(LIBS_),-I$(SRC_DIR)/$(l)/include -I$(SRC_DIR)/$(l)/include/$(l))
@@ -45,16 +45,17 @@ OBJCFLAGS = $(GNUSTEP_FLAGS) \
 
 KIT_SRCS = $(wildcard $(SRC_DIR)/ODataKit/*.m)
 CLIENT_SRCS = $(wildcard $(SRC_DIR)/ODataIncrementalStore/*.m)
+TRACE_SRCS = $(wildcard $(SRC_DIR)/OTelKit/*.m)
 HOST_SRCS = $(wildcard $(SRC_DIR)/HTTPServerKit/*.m)
 SERVICE_SRCS = $(wildcard $(SRC_DIR)/ODataService/*.m)
-SRCS = $(KIT_SRCS) $(CLIENT_SRCS) $(HOST_SRCS) $(SERVICE_SRCS)
+SRCS = $(KIT_SRCS) $(CLIENT_SRCS) $(TRACE_SRCS) $(HOST_SRCS) $(SERVICE_SRCS)
 GCDWebServer_OBJS = $(GCDWebServer_OBJC_FILES:.m=.o)
 
 OBJS = $(SRCS:.m=.o)
 
 .PHONY: all clean test
 
-all: libODataKit.so libODataIncrementalStore.so libHTTPServerKit.so libODataService.so ois-filter ois-model Catalog.momd
+all: libODataKit.so libODataIncrementalStore.so libOTelKit.so libOTelKit.so libHTTPServerKit.so libODataService.so ois-filter ois-model Catalog.momd
 
 libODataKit.so: $(KIT_SRCS:.m=.o)
 	$(CC) -shared -o $@ $^ $(GNUSTEP_LIBS)
@@ -62,11 +63,14 @@ libODataKit.so: $(KIT_SRCS:.m=.o)
 libODataIncrementalStore.so: $(CLIENT_SRCS:.m=.o) libODataKit.so
 	$(CC) -shared -o $@ $(CLIENT_SRCS:.m=.o) -L. -lODataKit $(GNUSTEP_LIBS)
 
-libHTTPServerKit.so: $(HOST_SRCS:.m=.o) $(GCDWebServer_OBJS)
-	$(CC) -shared -o $@ $^ $(GNUSTEP_LIBS) -lgnutls $(GCDWebServer_LIBS)
+libOTelKit.so: $(TRACE_SRCS:.m=.o)
+	$(CC) -shared -o $@ $^ $(GNUSTEP_LIBS)
+
+libHTTPServerKit.so: $(HOST_SRCS:.m=.o) $(GCDWebServer_OBJS) libOTelKit.so
+	$(CC) -shared -o $@ $(HOST_SRCS:.m=.o) $(GCDWebServer_OBJS) -L. -lOTelKit $(GNUSTEP_LIBS) -lgnutls $(GCDWebServer_LIBS)
 
 libODataService.so: $(SERVICE_SRCS:.m=.o) libODataKit.so libHTTPServerKit.so
-	$(CC) -shared -o $@ $(SERVICE_SRCS:.m=.o) -L. -lHTTPServerKit -lODataKit $(GNUSTEP_LIBS)
+	$(CC) -shared -o $@ $(SERVICE_SRCS:.m=.o) -L. -lHTTPServerKit -lOTelKit -lODataKit $(GNUSTEP_LIBS)
 
 $(SRC_DIR)/HTTPServerKit/%.o: $(SRC_DIR)/HTTPServerKit/%.m
 	$(CC) $(OBJCFLAGS) $(GCDWebServer_INCLUDE_DIRS) -DHTTPSERVERKIT_VERSION='"$(HTTPSERVERKIT_VERSION)"' -c $< -o $@

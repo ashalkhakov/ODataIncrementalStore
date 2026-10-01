@@ -971,7 +971,8 @@ static NSEntityDescription *OISEntityUnder(OISPlanNode *node)
   self.planMemo = [NSMutableDictionary dictionary];
   self.nestResults = [NSMapTable mapTableWithKeyOptions:NSPointerFunctionsObjectPointerPersonality | NSPointerFunctionsStrongMemory
                                            valueOptions:NSPointerFunctionsStrongMemory];
-  if (self.service.logsPlans) NSLog(@"ODataService: %@ %@\n%@", self.request.method, self.exchange.request.URL, [plan treeDescription]);
+  if (self.service.logsPlans) OISLog(HSLogLevelInfo, self.exchange.request, @"%@ %@\n%@", self.request.method, self.exchange.request.URL, [plan treeDescription]);
+  [self tracePlanned:plan];
   if (self.explaining) {
     [self respondExplaining:plan];
     return;
@@ -1039,7 +1040,14 @@ static NSEntityDescription *OISEntityUnder(OISPlanNode *node)
 - (id)answerFor:(NSString *)key ask:(OISStoreAsk)ask fetch:(NSFetchRequest *)fetch handler:(ODataEntitySetHandler *)handler
 {
   ODataEntitySetHandler *asked = handler ?: self.handler;
-  return [self answerFor:key asking:^(ODataReply *reply) {
+  // Timed and traced only when it is asked, not when it is known.
+  OTSpan *span = nil;
+  if (!self.planMemo[key] && !self.planPending && !self.done) {
+    NSArray *operations = @[ @"fetch", @"count", @"aggregate", @"changes" ];
+    [self beginStoreRequest:operations[ask] entity:fetch.entityName ?: asked.entity.name handler:asked];
+    span = self.storeSpan;
+  }
+  id answer = [self answerFor:key asking:^(ODataReply *reply) {
     switch (ask) {
       case OISAskObjects: [reply returned:[asked objectsForFetchRequest:fetch request:self.request reply:reply]]; break;
       case OISAskCount: [reply returned:[asked countForFetchRequest:fetch request:self.request reply:reply]]; break;
@@ -1047,6 +1055,9 @@ static NSEntityDescription *OISEntityUnder(OISPlanNode *node)
       case OISAskChanges: [reply returned:[asked changesSince:self.deltaToken request:self.request reply:reply]]; break;
     }
   }];
+  // A later answer ends it on another thread: it is current here no more.
+  [span resignCurrent];
+  return answer;
 }
 
 - (id)answerFor:(NSString *)key asking:(void (^)(ODataReply *reply))ask
@@ -1067,6 +1078,7 @@ static NSEntityDescription *OISEntityUnder(OISPlanNode *node)
 
 - (void)planDidReply:(ODataReply *)reply
 {
+  [self endStoreRequest:reply.result error:reply.error];
   if (reply.error) {
     // A write's: nothing of it is kept.
     if (self.plan.write) [self.request.context rollback];

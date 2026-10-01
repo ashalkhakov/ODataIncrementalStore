@@ -490,41 +490,36 @@ where it is installed.
 ### Observability
 
 What operators expect of a server today, as stages and handlers like the
-rest (`<HTTPServerKit/HSObservability.h>`):
+rest; [observability.md](observability.md) has the whole of it:
 
-- **Logs.** The access log writes a line per request, as text or, with
-  `AccessLog json`, as a JSON object a log collector reads as it is: time,
-  level (`warn` for a 5xx or a request slower than `SlowRequestThreshold`),
-  remote, principal, method, target, route pattern, operation, status,
-  bytes, duration, request id and trace id. The service's own errors are
-  logged with the request id the mount hands it.
+- **Logs.** The access log, and everything else the server and the service
+  say (`HSLog`), as text or JSON lines, each with the request id, trace id
+  and span id of the request it is about.
 - **Metrics,** in Prometheus's text format (`HSMetrics`, which an
-  application adds its own to): `http_requests_total`,
-  `http_request_duration_seconds` and `http_response_size_bytes` by method
-  and route pattern, `http_requests_in_flight`, `http_operations_total` by
-  the operation a handler names (an OData entity set, an OpenAPI
-  operationId), and the process's start time, resident memory and build.
-  Labels are route patterns and operations, never paths, so a client cannot
-  make up new series; a request no route took counts under `(none)`, and an
-  OData name that is no entity set under `(other)`.
-- **Trace context.** W3C `traceparent` is taken when well formed (a new
-  trace begun when not), this server's span made, and passed on: in
-  `userInfo` for handlers, as the `traceparent` header a mounted service's
-  handlers see, and as the trace id in the log.
+  application adds its own to): requests by method, route pattern and
+  status; sign-in refusals by reason, and the identity provider's answers
+  and their times; the service's planning, execution and store requests
+  by entity; the process's start time, resident memory and build. Labels
+  are route patterns, operations and entities, never paths, so a client
+  cannot make up new series.
+- **Traces.** W3C `traceparent` is taken when well formed (a new trace
+  begun when not), and each request is a span under it, the service's
+  plan, execution and store requests spans under that, exported over
+  OTLP/HTTP when an endpoint is named (`OTLPEndpoint`, or OpenTelemetry's
+  `OTEL_` variables). OTelKit, the library that makes and sends them, is
+  Foundation only, so a store underneath (FreeCoreData) can trace into the
+  same spans without linking it.
 - **Liveness and readiness.** `/health` says the process runs; `/ready`
   says whether to send it requests: 503 while it drains, or when one of its
   checks fails or does not answer within five seconds
   (`HSReadinessCheck`; a mounted service's store is one).
 - **Draining.** `SIGTERM` (or `SIGINT`) makes the server not ready, waits
-  `DrainDelay` for a load balancer to notice, stops accepting, and gives
-  the requests under way `ShutdownTimeout` to finish; a second signal exits
-  at once.
+  `DrainDelay` for a load balancer to notice, stops accepting, gives the
+  requests under way `ShutdownTimeout` to finish, and sends its last
+  spans; a second signal exits at once.
 - **An admin listener.** With `AdminPort`, metrics leave the public
   listener for one of their own (loopback unless `AdminLocalhost NO`), with
   health and readiness on both.
-
-Exporting spans (OpenTelemetry, OTLP) is not done yet: the trace context
-is in place for it.
 
 One sign-in serves every route: sign-in is the host's
 (`<HTTPServerKit/HSAuthentication.h>`: trusted proxy headers, JWTs,
@@ -1510,21 +1505,22 @@ gnustep-patches stack.
 
 ## Layout
 
-The repository is ODataKit, and it builds four libraries, one directory
+The repository is ODataKit, and it builds five libraries, one directory
 each under `Source/`, public headers in `include/<Library>/`:
 
 | Library | Holds | Links |
 |---|---|---|
 | `ODataKit` | Schema, values, property mapping, the `$filter` lexer and parser, `$batch`, errors, the transport protocol and HTTP transports | Core Data |
 | `ODataIncrementalStore` | The client: the store, configuration, query building and predicate translation, the model builder and class writer, history, operation calls | `ODataKit` |
-| `HTTPServerKit` | An HTTP server for any API: the listener (GCDWebServer), the pipeline, router and stages, sign-in and JWT signatures, observability, the application | Foundation |
+| `OTelKit` | OpenTelemetry tracing: span context (W3C Trace Context), spans, sampling, batching, the OTLP/HTTP exporter | Foundation |
+| `HTTPServerKit` | An HTTP server for any API: the listener (GCDWebServer), the pipeline, router and stages, sign-in and JWT signatures, logs, metrics, the application | `OTelKit` |
 | `ODataService` | The core of the server: `ODataService`, `$batch`, the predicate builder, the metadata writer, operations; and the service as an `HTTPServerKit` module (`ODataServer.h`) | `ODataKit`, `HTTPServerKit` |
 
 The client and the server share only `ODataKit`, so an app that consumes a
 service does not carry the server and one that serves does not carry the
 store. Class names keep their `OData` prefix; only the headers moved, so
 an import is `<ODataKit/ODataSchema.h>`, `<ODataIncrementalStore/…>` or
-`<ODataService/…>`. `HTTPServerKit`'s classes are `HS`-prefixed.
+`<ODataService/…>`. `HTTPServerKit`'s classes are `HS`-prefixed, `OTelKit`'s `OT`.
 
 The HTTP server is a library of its own, `HTTPServerKit` (with the vendored
 GCDWebServer, and sign-in), which knows nothing of OData; `ODataService`

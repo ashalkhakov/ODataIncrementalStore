@@ -19,6 +19,8 @@
 #pragma once
 #import "ODataService.h"
 
+@class OTSpan;
+
 NS_ASSUME_NONNULL_BEGIN
 
 @interface ODataService (OISBatchSupport)
@@ -43,6 +45,9 @@ FOUNDATION_EXPORT BOOL ODataJSONNestedWithin(NSData *data, NSUInteger depth);
                       principal:(nullable HSPrincipal *)principal;
 // Reads the batch and answers its requests, then the exchange.
 - (void)start;
+// The batch's span: each request's goes under it, and it ends when the
+// batch is answered.
+@property (nonatomic, strong, nullable) OTSpan *span;
 @end
 
 NS_ASSUME_NONNULL_END

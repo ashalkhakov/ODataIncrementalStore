@@ -5,6 +5,8 @@
 #import "HSAuthentication.h"
 #import "HSRouter.h"
 #import "HSObservability.h"
+#import "HSLog.h"
+#import <OTelKit/OTTrace.h>
 #include <zlib.h>
 #include <time.h>
 #include <sys/time.h>
@@ -48,12 +50,19 @@ static NSString * const HSStartKey = @"HS.started";
 @property (nonatomic, strong) HSRequest *request;
 @property (nonatomic, strong) HSReply *reply;
 @property (nonatomic, strong) id<HSHandler> next;
+@property (nonatomic, strong) OTSpan *span;
 @end
 
 @implementation HSAuthenticationStep
 
 - (void)didAuthenticate:(HSAuthenticationReply *)answer
 {
+  NSString *reason = answer.error.userInfo[HSAuthenticationFailureKey];
+  if (reason) self.request.userInfo[HSAuthenticationFailureKey] = reason;
+  [self.span setAttribute:answer.error ? @"refused" : answer.principal ? @"authenticated" : @"anonymous" forKey:@"auth.outcome"];
+  [self.span setAttribute:reason forKey:@"auth.failure_reason"];
+  if ([HSResponse statusOfError:answer.error] >= 500) [self.span recordError:answer.error];
+  [self.span end];
   if (answer.error) {
     HSResponse *response = [HSResponse responseWithError:answer.error request:self.request];
     // A 401's challenge is the authenticator's: it knows why it refused.
@@ -91,6 +100,8 @@ static NSString * const HSStartKey = @"HS.started";
   step.request = request;
   step.reply = reply;
   step.next = next;
+  step.span = [[OTTracer tracerNamed:@"HTTPServerKit" version:HSVersion] startSpanNamed:@"authenticate" kind:OTSpanKindInternal
+                                                                                parent:request.span.context attributes:nil];
   HSAuthenticationReply *answer = [[HSAuthenticationReply alloc] initWithTarget:step action:@selector(didAuthenticate:)];
   answer.timeout = self.timeout;
   [self.authenticator authenticateRequest:request reply:answer];
@@ -311,16 +322,7 @@ static NSData *HSGzip(NSData *data)
 #pragma mark - Access log
 
 // Now, as RFC 3339 in UTC with milliseconds.
-static NSString *HSTimestamp(void)
-{
-  struct timeval now;
-  gettimeofday(&now, NULL);
-  struct tm utc;
-  gmtime_r(&now.tv_sec, &utc);
-  char text[32];
-  strftime(text, sizeof(text), "%Y-%m-%dT%H:%M:%S", &utc);
-  return [NSString stringWithFormat:@"%s.%03dZ", text, (int)(now.tv_usec / 1000)];
-}
+FOUNDATION_EXPORT NSString *HSLogTimestamp(void);
 
 @implementation HSAccessLogStage
 
@@ -345,7 +347,7 @@ static NSString *HSTimestamp(void)
   NSString *who = request.principal.subject ?: @"-";
   if (self.format == HSAccessLogJSON) {
     NSMutableDictionary *entry = [NSMutableDictionary dictionary];
-    entry[@"time"] = HSTimestamp();
+    entry[@"time"] = HSLogTimestamp();
     entry[@"level"] = response.status >= 500 || milliseconds > self.slowRequestThreshold * 1000 ? @"warn" : @"info";
     entry[@"remote"] = request.remoteAddress ?: [NSNull null];
     entry[@"principal"] = request.principal.subject ?: [NSNull null];
@@ -357,6 +359,7 @@ static NSString *HSTimestamp(void)
     entry[@"bytes"] = response.bodyFileURL || response.bodyStream ? [NSNull null] : @(response.body.length);
     entry[@"request_id"] = request.userInfo[HSRequestIDKey] ?: [NSNull null];
     entry[@"trace_id"] = request.userInfo[HSTraceIDKey] ?: [NSNull null];
+    entry[@"span_id"] = request.userInfo[HSSpanIDKey] ?: [NSNull null];
     entry[@"user_agent"] = [request valueForHeader:@"User-Agent"] ?: [NSNull null];
     NSData *json = [NSJSONSerialization dataWithJSONObject:entry options:0 error:NULL];
     NSString *line = [[NSString alloc] initWithData:json encoding:NSUTF8StringEncoding];
@@ -377,7 +380,7 @@ static NSString *HSTimestamp(void)
 
 - (void)writeLine:(NSString *)line
 {
-  fprintf(stderr, "%s\n", line.UTF8String);
+  [[HSLog sharedLog] writeLine:line];
 }
 
 @end

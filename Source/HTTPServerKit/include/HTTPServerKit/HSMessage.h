@@ -11,7 +11,7 @@
 #pragma once
 #import <Foundation/Foundation.h>
 
-@class HSPrincipal, HSRoute, HSRequest, HSResponse;
+@class HSPrincipal, HSRoute, HSRequest, HSResponse, OTSpan;
 
 NS_ASSUME_NONNULL_BEGIN
 
@@ -85,6 +85,11 @@ FOUNDATION_EXPORT void HSRegisterStatusErrorDomain(NSErrorDomain domain);
 // knows it: an OpenAPI operationId, an OData entity set ($metadata,
 // $batch). Metrics count by it, and logs say it, beside the route.
 @property (nonatomic, copy, nullable) NSString *operation;
+// This server's span of the request (OTelKit), once HSTraceContextStage
+// has begun it: a handler's own spans go under its context, and it may add
+// attributes. It records nothing when tracing is off, but still carries
+// the trace on.
+@property (nonatomic, strong, nullable) OTSpan *span;
 // The stages' and handlers' own, for the length of the request.
 @property (nonatomic, readonly, strong) NSMutableDictionary *userInfo;
 
