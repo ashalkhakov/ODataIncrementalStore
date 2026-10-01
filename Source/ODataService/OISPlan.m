@@ -255,6 +255,7 @@ static NSString *OISJoined(NSArray *items, NSString *separator)
   _closures = @[];
   _spans = @[];
   _dynamicSets = @[];
+  _permissions = @{};
   _givenKeys = [NSMutableDictionary dictionary];
   return self;
 }
@@ -270,6 +271,7 @@ static NSString *OISJoined(NSArray *items, NSString *separator)
       }
     }
     [self.write describeInto:text depth:0];
+    [self describePermissionsInto:text];
     return text;
   }
   for (OISPlanNode *closure in self.closures) [closure describeInto:text depth:0];
@@ -281,7 +283,16 @@ static NSString *OISJoined(NSArray *items, NSString *separator)
     [self.count describeInto:text depth:1];
   }
   for (NSString *set in self.dynamicSets) [text appendFormat:@"Dynamic properties (%@)\n", set];
+  [self describePermissionsInto:text];
   return text;
+}
+
+- (void)describePermissionsInto:(NSMutableString *)text
+{
+  for (NSString *what in [self.permissions.allKeys sortedArrayUsingSelector:@selector(compare:)]) {
+    NSArray *scopes = [self.permissions[what].allObjects sortedArrayUsingSelector:@selector(compare:)];
+    [text appendFormat:@"Permission to %@: %@\n", what, [scopes componentsJoinedByString:@" or "]];
+  }
 }
 
 @end

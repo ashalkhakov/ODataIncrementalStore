@@ -109,8 +109,19 @@ FOUNDATION_EXPORT NSString * const ODataUserInfoETag;  // @"OData.etag"
 //   { return @{ @"pricierThanPrice:reply:": @"MorePricey",
 //               @"pricierThanPrice:reply:.price": @"Floor" }; }
 //
+// An operation that needs a permission says so in another class method,
+// any one of the scopes it names being enough (403 without; $metadata says
+// it as the overload's OperationRestrictions). What it answers with is its
+// own; what that is expanded with, or a bound one is called on, is read
+// (the sets' readScopes), all checked before it is called:
+//
+//   + (NSDictionary *)ODataOperationScopes
+//   { return @{ @"raisePriceByPercent:reply:": @[ @"Products.Write" ] }; }
+//
 // A declaration the service cannot type is listed in operationProblems and
-// left out; ois-serve refuses to start with any.
+// left out; so is one whose scopes name no scope (a scope, or an array or
+// set of them), and a scope named for no operation (a typo) is listed too.
+// ois-serve refuses to start with any.
 @protocol ODataFunctions
 @end
 @protocol ODataActions
@@ -185,6 +196,28 @@ FOUNDATION_EXPORT NSString * const ODataUserInfoETag;  // @"OData.etag"
 @property (nonatomic) BOOL allowsInsert;
 @property (nonatomic) BOOL allowsUpdate;
 @property (nonatomic) BOOL allowsDelete;
+// The permissions the set's methods need, as OAuth scopes the caller's
+// principal has (ODataPrincipal's scopes): any one of a set's is enough;
+// nil or empty, the default, none is needed. Read is every read that
+// reaches the set's rows -- along the path (an entity, a navigation to
+// them), and through $expand, $filter (a lambda, a path's $filter), $orderby,
+// $compute, $apply. The others are the writes, of an entity, a property, a
+// $ref (the row whose navigation property it is), in a deep insert or
+// update, a $batch or a temporal action; a write's path reads the sets it
+// passes through, not the one it writes, and its answer is what it wrote
+// (what else it is asked to expand is read; what the service expands
+// unasked, the nested entities of a deep write, is left out where the
+// caller may not read it). Everything a request needs is checked before
+// anything is written; a caller without it is answered 403 (401 when no
+// one asks), WWW-Authenticate naming the scopes (RFC 6750,
+// insufficient_scope). $metadata says them as the set's ReadRestrictions,
+// InsertRestrictions, UpdateRestrictions and DeleteRestrictions
+// Permissions, under the authenticator's scheme (Capabilities and
+// Authorization vocabularies); $explain, as the plan's.
+@property (nonatomic, copy, nullable) NSSet<NSString *> *readScopes;
+@property (nonatomic, copy, nullable) NSSet<NSString *> *insertScopes;
+@property (nonatomic, copy, nullable) NSSet<NSString *> *updateScopes;
+@property (nonatomic, copy, nullable) NSSet<NSString *> *deleteScopes;
 // Properties (wire names) of the set's entities that $filter, and
 // $orderby, may not use: answered 400, and said in $metadata
 // (Capabilities.FilterRestrictions, SortRestrictions). Empty by default.

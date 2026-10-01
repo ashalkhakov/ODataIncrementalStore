@@ -685,8 +685,284 @@ static BOOL OISNestsPerParent(ODataQueryOptions *options)
 
 #pragma mark - Running
 
+#pragma mark Permissions
+
+- (void)need:(OISAccess)access entity:(NSEntityDescription *)entity into:(NSMutableDictionary *)permissions
+{
+  ODataEntitySetHandler *handler = [self.service handlerForEntity:entity];
+  if (!handler) return;
+  NSSet *scopes = nil;
+  NSString *verb = nil;
+  switch (access) {
+    case OISAccessRead: scopes = handler.readScopes; verb = @"read"; break;
+    case OISAccessInsert: scopes = handler.insertScopes; verb = @"insert into"; break;
+    case OISAccessUpdate: scopes = handler.updateScopes; verb = @"update"; break;
+    case OISAccessDelete: scopes = handler.deleteScopes; verb = @"delete from"; break;
+  }
+  if (!scopes.count) return;
+  permissions[[NSString stringWithFormat:@"%@ %@", verb, [self.service entitySetForEntity:entity]]] = scopes;
+}
+
+- (BOOL)permitsTo:(OISAccess)access entity:(NSEntityDescription *)entity
+{
+  NSMutableDictionary *needed = [NSMutableDictionary dictionary];
+  [self need:access entity:entity into:needed];
+  return [self permitsAll:needed];
+}
+
+// The entity a path of names leads to (a navigation's destination, a
+// cast's type), each set it passes through read; nil once it leaves
+// entities (a property, a name it does not know). The first name may be
+// an alias $apply gave a join's members.
+- (NSEntityDescription *)readPath:(NSArray<NSString *> *)path from:(NSEntityDescription *)entity aliases:(NSDictionary *)aliases
+                             into:(NSMutableDictionary *)permissions
+{
+  NSEntityDescription *at = entity;
+  for (NSUInteger i = 0; i < path.count && at; i++) {
+    NSString *name = path[i];
+    if (i == 0 && aliases[name]) {
+      at = aliases[name];
+      continue;
+    }
+    if ([name rangeOfString:@"."].location != NSNotFound) {
+      at = [self entityForTypeName:name];
+      continue;
+    }
+    NSPropertyDescription *property = [self.mapper propertyForWireName:name entity:at];
+    if (![property isKindOfClass:[NSRelationshipDescription class]]) return nil;
+    at = ((NSRelationshipDescription *)property).destinationEntity;
+    [self need:OISAccessRead entity:at into:permissions];
+  }
+  return at;
+}
+
+// The entity an expression stands for (a member path to one, a lambda's
+// variable, a cast), each set its paths pass through read -- in a
+// comparison, a lambda, an aggregate, wherever they are; nil for any other
+// value. it is the entity $it is; variables, a lambda's.
+- (NSEntityDescription *)readExpression:(ODataExpression *)e it:(NSEntityDescription *)it variables:(NSDictionary *)variables
+                                   into:(NSMutableDictionary *)permissions
+{
+  if (!e) return nil;
+  switch (e.kind) {
+    case ODataExpressionMember: {
+      // $root/SalesOrganizations: a set, named from the service root.
+      if (e.operand.kind == ODataExpressionVariable && [e.operand.name isEqualToString:@"$root"]) {
+        ODataEntitySetHandler *handler = [self.service handlerForEntitySet:e.name];
+        [self need:OISAccessRead entity:handler.entity into:permissions];
+        return handler.entity;
+      }
+      NSEntityDescription *base = e.operand ? [self readExpression:e.operand it:it variables:variables into:permissions] : it;
+      return base ? [self readPath:@[ e.name ] from:base aliases:nil into:permissions] : nil;
+    }
+    case ODataExpressionVariable:
+      return [e.name isEqualToString:@"$it"] || [e.name isEqualToString:@"$this"] ? it : variables[e.name];
+    case ODataExpressionCast: {
+      NSEntityDescription *base = e.operand ? [self readExpression:e.operand it:it variables:variables into:permissions] : it;
+      NSEntityDescription *cast = [self entityForTypeName:e.name];
+      return base && cast ? cast : nil;
+    }
+    case ODataExpressionLambda: {
+      NSEntityDescription *members = [self readExpression:e.operand it:it variables:variables into:permissions];
+      NSMutableDictionary *inner = [NSMutableDictionary dictionaryWithDictionary:variables ?: @{}];
+      if (e.variable && members) inner[e.variable] = members;
+      [self readExpression:e.body it:it variables:inner into:permissions];
+      return nil;
+    }
+    case ODataExpressionCall: {
+      NSEntityDescription *base = e.operand ? [self readExpression:e.operand it:it variables:variables into:permissions] : nil;
+      if ([e.aggregate isKindOfClass:[ODataAggregate class]]) {
+        // Sales/aggregate(Amount with sum): the aggregate's paths are the collection's.
+        [self readAggregate:e.aggregate from:e.operand ? base : it aliases:nil into:permissions];
+      }
+      for (ODataExpression *argument in e.arguments) [self readExpression:argument it:it variables:variables into:permissions];
+      for (NSString *name in e.namedArguments) [self readExpression:e.namedArguments[name] it:it variables:variables into:permissions];
+      // cast(Boss,NS.Manager): the type, of what it stands for.
+      if ([e.name isEqualToString:@"cast"] && e.arguments.count == 2) {
+        ODataExpression *type = e.arguments[1];
+        NSEntityDescription *cast = [type.value isKindOfClass:[NSString class]] ? [self entityForTypeName:type.value]
+                                                                               : [self entityForTypeName:type.name ?: @""];
+        return cast;
+      }
+      return nil;
+    }
+    default:
+      [self readExpression:e.operand it:it variables:variables into:permissions];
+      [self readExpression:e.left it:it variables:variables into:permissions];
+      [self readExpression:e.right it:it variables:variables into:permissions];
+      for (ODataExpression *argument in e.arguments) [self readExpression:argument it:it variables:variables into:permissions];
+      [self readExpression:e.body it:it variables:variables into:permissions];
+      return nil;
+  }
+}
+
+- (void)readExpression:(ODataExpression *)e entity:(NSEntityDescription *)entity into:(NSMutableDictionary *)permissions
+{
+  [self readExpression:e it:entity variables:@{} into:permissions];
+}
+
+- (void)readAggregate:(ODataAggregate *)aggregate from:(NSEntityDescription *)entity aliases:(NSDictionary *)aliases
+                 into:(NSMutableDictionary *)permissions
+{
+  if (!entity) return;
+  if (aggregate.path) [self readPath:aggregate.path from:entity aliases:aliases into:permissions];
+  if (aggregate.expression) [self readExpression:aggregate.expression entity:entity into:permissions];
+}
+
+// $apply's transformations over entity: what their expressions, paths and
+// expansions reach. A join's alias names its members after it; what a
+// grouping or compute names reaches no set.
+- (void)readTransformations:(NSArray<ODataApplyTransformation *> *)transformations entity:(NSEntityDescription *)entity
+                    aliases:(NSMutableDictionary *)aliases into:(NSMutableDictionary *)permissions
+{
+  for (ODataApplyTransformation *t in transformations) {
+    [self readExpression:t.filter entity:entity into:permissions];
+    [self readExpression:t.expression entity:entity into:permissions];
+    [self readExpression:t.numberExpression entity:entity into:permissions];
+    for (NSArray *path in t.groupPaths) [self readPath:path from:entity aliases:aliases into:permissions];
+    for (ODataAggregate *aggregate in t.aggregates) [self readAggregate:aggregate from:entity aliases:aliases into:permissions];
+    for (ODataComputeItem *item in t.compute) [self readExpression:item.expression entity:entity into:permissions];
+    for (ODataOrderItem *item in t.orderBy) [self readExpression:item.expression entity:entity into:permissions];
+    if (t.kind == ODataApplyExpand && t.expansion) {
+      ODataQueryOptions *expanded = [ODataQueryOptions optionsWithQuery:@{ @"$expand": t.expansion } error:NULL];
+      for (ODataExpandItem *item in expanded.expand) [self readExpansion:item entity:entity into:permissions];
+    }
+    if (t.kind == ODataApplyJoin && t.joinPath) {
+      NSEntityDescription *members = [self readPath:t.joinPath from:entity aliases:aliases into:permissions];
+      if (members && t.alias) aliases[t.alias] = members;
+      if (members) [self readTransformations:t.sequence entity:members aliases:[NSMutableDictionary dictionary] into:permissions];
+    } else {
+      [self readTransformations:t.sequence entity:entity aliases:aliases into:permissions];
+    }
+    if (t.hierarchy.count) {
+      ODataEntitySetHandler *handler = [self.service handlerForEntitySet:t.hierarchy[0]];
+      if (handler) [self need:OISAccessRead entity:handler.entity into:permissions];
+    }
+    if (t.nodePath) [self readPath:t.nodePath from:entity aliases:aliases into:permissions];
+    for (NSArray *branch in t.branches) [self readTransformations:branch entity:entity aliases:[aliases mutableCopy] into:permissions];
+  }
+}
+
+// What query options over entity reach: $filter, $orderby, $compute,
+// $apply, and $expand, with their own options, to any depth.
+- (void)readOptions:(ODataQueryOptions *)options entity:(NSEntityDescription *)entity into:(NSMutableDictionary *)permissions
+{
+  if (!options || !entity) return;
+  [self readExpression:options.filter entity:entity into:permissions];
+  for (ODataOrderItem *item in options.orderBy) [self readExpression:item.expression entity:entity into:permissions];
+  for (ODataComputeItem *item in options.compute) [self readExpression:item.expression entity:entity into:permissions];
+  [self readTransformations:options.apply entity:entity aliases:[NSMutableDictionary dictionary] into:permissions];
+  for (ODataExpandItem *item in options.expand) [self readExpansion:item entity:entity into:permissions];
+}
+
+// An $expand item: the sets it reaches (every one *'s does), $ref and
+// $count of them too, then its own options over them.
+- (void)readExpansion:(ODataExpandItem *)item entity:(NSEntityDescription *)entity into:(NSMutableDictionary *)permissions
+{
+  NSMutableArray *destinations = [NSMutableArray array];
+  if (item.isStar) {
+    for (NSRelationshipDescription *relationship in entity.relationshipsByName.allValues) {
+      if (![self.mapper servesProperty:relationship]) continue;
+      [self need:OISAccessRead entity:relationship.destinationEntity into:permissions];
+      [destinations addObject:relationship.destinationEntity];
+    }
+  } else {
+    NSEntityDescription *destination = [self readPath:item.path from:entity aliases:nil into:permissions];
+    if (destination) [destinations addObject:destination];
+  }
+  for (NSEntityDescription *destination in destinations) [self readOptions:item.options entity:destination into:permissions];
+}
+
+// The entity a node's expressions are over: its own, or its input's.
+static NSEntityDescription *OISEntityUnder(OISPlanNode *node)
+{
+  for (OISPlanNode *n = node; n; n = n.input) {
+    if (n.entity) return n.entity;
+  }
+  return nil;
+}
+
+// A read's nodes: the sets they scan, count, aggregate or follow changes
+// of, and what their expressions reach. Objects given (an entity the path
+// reached, a write's or an operation's) are not read again; what is read of
+// them, their expansions, is.
+- (void)readNode:(OISPlanNode *)node into:(NSMutableDictionary *)permissions seen:(NSHashTable *)seen
+{
+  if (!node || [seen containsObject:node]) return;
+  [seen addObject:node];
+  switch (node.op) {
+    case OISPlanScan:
+    case OISPlanStoreScan:
+    case OISPlanStoreCount:
+    case OISPlanStoreAggregate:
+    case OISPlanChanges:
+    case OISPlanSpan:
+      // A function's results, read on from, are its own, as an action's are.
+      if (self.members && [[self.service entitySetForEntity:node.entity] isEqualToString:[self.service entitySetForEntity:self.entity]]) break;
+      [self need:OISAccessRead entity:node.entity into:permissions];
+      break;
+    case OISPlanClosure: {
+      ODataEntitySetHandler *handler = node.hierarchy.count ? [self.service handlerForEntitySet:node.hierarchy[0]] : nil;
+      if (handler) [self need:OISAccessRead entity:handler.entity into:permissions];
+      break;
+    }
+    default:
+      break;
+  }
+  NSEntityDescription *entity = OISEntityUnder(node);
+  if (entity) {
+    for (ODataExpression *filter in node.filters) [self readExpression:filter entity:entity into:permissions];
+    for (ODataOrderItem *item in node.order) [self readExpression:item.expression entity:entity into:permissions];
+    for (id value in node.computed.allValues) {
+      if ([value isKindOfClass:[ODataExpression class]]) [self readExpression:value entity:entity into:permissions];
+    }
+    [self readExpression:node.expression entity:entity into:permissions];
+    if (node.transformation) {
+      [self readTransformations:@[ node.transformation ] entity:entity aliases:[NSMutableDictionary dictionary] into:permissions];
+    }
+    if (node.item) [self readExpansion:node.item entity:entity into:permissions];
+  }
+  [self readNode:node.input into:permissions seen:seen];
+  [self readNode:node.nested into:permissions seen:seen];
+  for (OISPlanNode *nest in node.nests) [self readNode:nest into:permissions seen:seen];
+  for (NSString *name in node.bindings) [self readNode:node.bindings[name] into:permissions seen:seen];
+}
+
+- (void)addReadsOf:(OISPlan *)plan into:(NSMutableDictionary *)permissions
+{
+  NSHashTable *seen = [NSHashTable hashTableWithOptions:NSPointerFunctionsObjectPointerPersonality];
+  [self readNode:plan.root into:permissions seen:seen];
+  [self readNode:plan.count into:permissions seen:seen];
+  for (OISPlanNode *node in plan.closures) [self readNode:node into:permissions seen:seen];
+  for (OISPlanNode *node in plan.spans) [self readNode:node into:permissions seen:seen];
+  for (OISPlanNode *node in plan.nests) [self readNode:node into:permissions seen:seen];
+}
+
+// Everything the plan does that asks for a permission, before it runs: a
+// read, what it reaches; a write, what it writes (Write's), and what it
+// answers with -- its returning read, or the read of what it wrote that a
+// collection's write, or a temporal action's, answers with; an operation's
+// call, and what it answers with (permissionsOfOperation).
+- (NSDictionary<NSString *, NSSet<NSString *> *> *)permissionsOf:(OISPlan *)plan
+{
+  NSMutableDictionary *permissions = [NSMutableDictionary dictionary];
+  if (!plan.write) {
+    [self addReadsOf:plan into:permissions];
+  } else if (plan.write.op == OISPlanCall) {
+    [permissions addEntriesFromDictionary:[self permissionsOfOperation]];
+  } else {
+    [self addWritesOf:plan.write into:permissions];
+    OISPlan *answer = plan.returning ?: [self planOfObjects:@[] options:self.request.options entity:self.entity];
+    [self addReadsOf:answer into:permissions];
+  }
+  return permissions;
+}
+
 - (void)runPlan:(OISPlan *)plan then:(SEL)after
 {
+  // Every permission it needs, before anything runs.
+  plan.permissions = [self permissionsOf:plan];
+  if (![self permitsAll:plan.permissions]) return;
   if (!plan.write) plan.dynamicSets = [self dynamicSetsOf:plan];
   if (plan.returning) plan.returning.dynamicSets = [self dynamicSetsOf:plan.returning];
   self.plan = plan;

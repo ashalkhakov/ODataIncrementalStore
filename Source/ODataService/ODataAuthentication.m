@@ -5,6 +5,19 @@
 #import "ODataError.h"
 #import "OISSignature.h"
 
+// The scopes a token has: scope, space-separated, or scp, an array.
+static NSSet *OISScopes(NSDictionary *claims)
+{
+  id scope = claims[@"scope"];
+  if ([scope isKindOfClass:[NSString class]]) {
+    return [NSSet setWithArray:[scope componentsSeparatedByCharactersInSet:[NSCharacterSet whitespaceCharacterSet]]];
+  }
+  id scp = claims[@"scp"];
+  if ([scp isKindOfClass:[NSArray class]]) return [NSSet setWithArray:scp];
+  if ([scp isKindOfClass:[NSString class]]) return [NSSet setWithArray:[scp componentsSeparatedByString:@" "]];
+  return [NSSet set];
+}
+
 @implementation ODataPrincipal
 
 - (instancetype)initWithSubject:(NSString *)subject claims:(NSDictionary *)claims
@@ -14,6 +27,11 @@
   _subject = [subject copy];
   _claims = [claims copy] ?: @{};
   return self;
+}
+
+- (NSSet<NSString *> *)scopes
+{
+  return OISScopes(self.claims);
 }
 
 - (NSString *)description
@@ -112,6 +130,16 @@ static void OISRefuse(ODataRequest *request, ODataReply *reply, NSInteger status
   [reply failWithError:ODataServiceError(status, description)];
 }
 
+// A token without the scopes every request needs: 403, the challenge
+// naming them (insufficient_scope).
+static void OISRefuseScopes(ODataReply *reply, NSArray<NSString *> *scopes)
+{
+  NSString *description = [NSString stringWithFormat:@"The token needs the scopes %@", [scopes componentsJoinedByString:@" "]];
+  NSMutableDictionary *info = [ODataServiceError(403, description).userInfo mutableCopy];
+  info[ODataErrorScopesKey] = scopes;
+  [reply failWithError:[NSError errorWithDomain:ODataServiceErrorDomain code:403 userInfo:info]];
+}
+
 static NSString *OISBearerChallenge(ODataRequest *request)
 {
   NSMutableString *challenge = [NSMutableString stringWithString:@"Bearer realm=\"odata\""];
@@ -145,18 +173,6 @@ static NSString *OISClaimsProblem(NSDictionary *claims, NSString *issuer, NSStri
   return nil;
 }
 
-// The scopes a token has: scope, space-separated, or scp, an array.
-static NSSet *OISScopes(NSDictionary *claims)
-{
-  id scope = claims[@"scope"];
-  if ([scope isKindOfClass:[NSString class]]) {
-    return [NSSet setWithArray:[scope componentsSeparatedByCharactersInSet:[NSCharacterSet whitespaceCharacterSet]]];
-  }
-  id scp = claims[@"scp"];
-  if ([scp isKindOfClass:[NSArray class]]) return [NSSet setWithArray:scp];
-  if ([scp isKindOfClass:[NSString class]]) return [NSSet setWithArray:[scp componentsSeparatedByString:@" "]];
-  return [NSSet set];
-}
 
 // The principal, when the token's claims hold: 401 or 403 otherwise.
 static ODataPrincipal *OISPrincipal(ODataRequest *request, ODataReply *reply, NSDictionary *claims, NSString *subject,
@@ -167,8 +183,7 @@ static ODataPrincipal *OISPrincipal(ODataRequest *request, ODataReply *reply, NS
     return nil;
   }
   if (requiredScopes.count && ![requiredScopes isSubsetOfSet:OISScopes(claims)]) {
-    NSString *needed = [[requiredScopes.allObjects sortedArrayUsingSelector:@selector(compare:)] componentsJoinedByString:@" "];
-    OISRefuse(request, reply, 403, @"insufficient_scope", [NSString stringWithFormat:@"The token needs the scopes %@", needed]);
+    OISRefuseScopes(reply, [requiredScopes.allObjects sortedArrayUsingSelector:@selector(compare:)]);
     return nil;
   }
   return [[ODataPrincipal alloc] initWithSubject:subject claims:claims];

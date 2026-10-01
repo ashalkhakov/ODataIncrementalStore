@@ -37,7 +37,7 @@ OIS_OBJCFLAGS = -fobjc-arc -fblocks -fobjc-runtime=gnustep-2.0 \
 	-fconstant-string-class=NSConstantString -fobjc-exceptions -Wall -Wno-unused-parameter
 ADDITIONAL_OBJCFLAGS += $(OIS_OBJCFLAGS)
 
-# In the order they depend on each other.
+# In the order they depend on each other (which make -j is told below).
 LIBRARY_NAME = ODataKit ODataIncrementalStore ODataService
 
 ODataKit_NEEDS_GUI = no
@@ -153,6 +153,10 @@ ODataService_CFLAGS += -fblocks
 -include GNUmakefile.preamble
 include $(GNUSTEP_MAKEFILES)/library.make
 -include GNUmakefile.postamble
+
+# make -j builds the libraries side by side: the client and the service
+# link against libODataKit, so it is built first.
+ODataIncrementalStore.all.library.variables ODataService.all.library.variables: ODataKit.all.library.variables
 
 .PHONY: test
 test: all

@@ -376,6 +376,134 @@
 }
 @end
 
+// Everyone is someone: X-Scopes (or the bearer token itself) is what they
+// may do, as a token's scope claim has it.
+@interface OISScopeAuthenticator : NSObject <ODataAuthenticator>
+@end
+
+@implementation OISScopeAuthenticator
+- (void)authenticateRequest:(ODataRequest *)request reply:(ODataReply *)reply
+{
+  NSString *bearer = [request valueForHeader:@"Authorization"];
+  bearer = [bearer hasPrefix:@"Bearer "] ? [bearer substringFromIndex:7] : nil;
+  NSString *scopes = [request valueForHeader:@"X-Scopes"] ?: bearer ?: @"";
+  [reply finishWithResult:[[ODataPrincipal alloc] initWithSubject:@"someone" claims:@{ @"scope": scopes }]];
+}
+
+- (NSDictionary *)authorizationDescription
+{
+  return @{ @"@type": @"Org.OData.Authorization.V1.OpenIDConnect", @"Name": @"Provider",
+            @"IssuerUrl": @"https://id.example.test/" };
+}
+@end
+
+@protocol OISScopedActions <ODataActions>
+- (int32_t)tallyWithAmount:(int32_t)amount reply:(ODataReply *)reply;
+- (NSArray *)restock:(ODataReply *)reply;
+- (NSManagedObject *)favourite:(ODataReply *)reply;
+@end
+
+@protocol OISScopedFunctions <ODataFunctions>
+- (NSArray *)bargains:(ODataReply *)reply;
+@end
+
+// Operations that need a permission of their own; three answer with
+// products, and count their calls.
+@interface OISScopedOperations : NSObject <OISScopedActions, OISScopedFunctions>
+@property (nonatomic) NSInteger calls;
+@end
+
+@implementation OISScopedOperations
++ (NSDictionary *)ODataOperationScopes
+{
+  return @{ @"tallyWithAmount:reply:": @[ @"Tally.Run", @"Tally.Admin" ],
+            @"restock:": @"Stock.Keep",
+            @"favourite:": [NSSet setWithObject:@"Stock.Keep"],
+            @"bargains:": @"Stock.Keep" };
+}
+
++ (NSDictionary *)ODataOperationTypes
+{
+  return @{ @"restock:": @"Collection(Default.Product)", @"favourite:": @"Default.Product", @"bargains:": @"Collection(Default.Product)" };
+}
+
+- (NSArray *)bargains:(ODataReply *)reply
+{
+  return [[self productsIn:reply] subarrayWithRange:NSMakeRange(0, 3)];
+}
+
+- (int32_t)tallyWithAmount:(int32_t)amount reply:(ODataReply *)reply
+{
+  return amount + 1;
+}
+
+- (NSArray *)productsIn:(ODataReply *)reply
+{
+  NSFetchRequest *fetch = [NSFetchRequest fetchRequestWithEntityName:@"Product"];
+  fetch.sortDescriptors = @[ [NSSortDescriptor sortDescriptorWithKey:@"id" ascending:YES] ];
+  return [reply.request.context executeFetchRequest:fetch error:NULL];
+}
+
+- (NSArray *)restock:(ODataReply *)reply
+{
+  self.calls++;
+  return [[self productsIn:reply] subarrayWithRange:NSMakeRange(0, 2)];
+}
+
+- (NSManagedObject *)favourite:(ODataReply *)reply
+{
+  self.calls++;
+  return [self productsIn:reply].firstObject;
+}
+@end
+
+// Scopes that name no scope, or no operation: each would leave one open.
+@protocol OISMisscopedActions <ODataActions>
+- (int32_t)countWithAmount:(int32_t)amount reply:(ODataReply *)reply;
+- (int32_t)measureWithAmount:(int32_t)amount reply:(ODataReply *)reply;
+@end
+
+@interface OISMisscopedOperations : NSObject <OISMisscopedActions>
+@end
+
+@implementation OISMisscopedOperations
++ (NSDictionary *)ODataOperationScopes
+{
+  return @{ @"countWithAmount:reply:": @[ @"" ], @"measureWithAmount:reply:": @[ @"Measure.Run" ], @"mesureWithAmount:reply:": @"Measure.Run" };
+}
+
+- (int32_t)countWithAmount:(int32_t)amount reply:(ODataReply *)reply
+{
+  return amount;
+}
+
+- (int32_t)measureWithAmount:(int32_t)amount reply:(ODataReply *)reply
+{
+  return amount;
+}
+@end
+
+@protocol OISScopedProductActions <ODataActions>
+- (void)raisePriceByPercent:(double)percent reply:(ODataReply *)reply;
+@end
+
+// A bound action that needs a permission.
+@interface OISScopedProduct : NSManagedObject <OISScopedProductActions>
+@end
+
+@implementation OISScopedProduct
++ (NSDictionary *)ODataOperationScopes
+{
+  return @{ @"raisePriceByPercent:reply:": @[ @"Prices.Raise" ] };
+}
+
+- (void)raisePriceByPercent:(double)percent reply:(ODataReply *)reply
+{
+  NSDecimalNumber *factor = [NSDecimalNumber decimalNumberWithMantissa:(unsigned long long)(100 + percent) exponent:-2 isNegative:NO];
+  [self setValue:[[self valueForKey:@"unitPrice"] decimalNumberByMultiplyingBy:factor] forKey:@"unitPrice"];
+}
+@end
+
 // Asks elsewhere, and answers later: Authorization: Token <name> is <name>,
 // Token banned is refused.
 @interface OISLaterAuthenticator : NSObject <ODataAuthenticator>
@@ -6428,6 +6556,382 @@ static NSExpressionDescription *OISAggregateOf(NSString *function, NSString *key
   XCTAssertEqual(([self send:@"PATCH" path:@"Categories(1)" headers:nil body:@{ @"Products": @[ @{ @"ProductID": @1 }, @{ @"@id": @"Products(3)" } ] }].status), 204,
                  @"naming entities, without changing them, only links them");
   XCTAssertEqualObjects([self productIDsOf:@"Categories(1)/Products"], (@[ @1, @3 ]));
+}
+
+// What a caller may do is the scopes it has: reading a set, through any
+// path or expansion, writing it, calling an operation; $metadata says
+// which each needs.
+- (void)testScopesPermitWhatACallerMayDo
+{
+  _service.authenticator = [[OISScopeAuthenticator alloc] init];
+  _service.serviceOperations = [[OISScopedOperations alloc] init];
+  ODataEntitySetHandler *products = [[ODataEntitySetHandler alloc] initWithEntity:OISCatalogEntity(@"Product")];
+  products.readScopes = [NSSet setWithObjects:@"Products.Read", @"Catalog.Admin", nil];
+  products.updateScopes = [NSSet setWithObject:@"Products.Write"];
+  [_service setHandler:products forEntitySet:@"Products"];
+  ODataEntitySetHandler *categories = [[ODataEntitySetHandler alloc] initWithEntity:OISCatalogEntity(@"Category")];
+  categories.readScopes = [NSSet setWithObject:@"Categories.Read"];
+  [_service setHandler:categories forEntitySet:@"Categories"];
+  NSInteger (^status)(NSString *, NSString *, NSString *, id) = ^NSInteger(NSString *method, NSString *path, NSString *scopes, id body) {
+    return [self send:method path:path headers:@{ @"X-Scopes": scopes } body:body].status;
+  };
+
+  XCTAssertEqual(status(@"GET", @"Products", @"", nil), 403);
+  OISServiceResponse *refused = [self send:@"GET" path:@"Products" headers:@{ @"X-Scopes": @"Other" } body:nil];
+  XCTAssertTrue([refused.text containsString:@"Catalog.Admin Products.Read"], @"%@", refused.text);
+  XCTAssertEqual(status(@"GET", @"Products", @"Products.Read", nil), 200);
+  XCTAssertEqual(status(@"GET", @"Products", @"Other Catalog.Admin", nil), 200, @"any one of them");
+  XCTAssertEqual(status(@"GET", @"Products(1)/ProductName", @"Products.Read", nil), 200);
+  // Every set a read reaches.
+  XCTAssertEqual(status(@"GET", @"Products?$expand=Category", @"Products.Read", nil), 403);
+  XCTAssertEqual(status(@"GET", @"Products?$expand=Category", @"Products.Read Categories.Read", nil), 200);
+  XCTAssertEqual(status(@"GET", @"Categories(1)/Products", @"Products.Read", nil), 403);
+  XCTAssertEqual(status(@"GET", @"Categories(1)/Products", @"Products.Read Categories.Read", nil), 200);
+  XCTAssertEqual(status(@"GET", @"Suppliers", @"", nil), 200, @"a set that asks for nothing");
+  // Writes.
+  XCTAssertEqual(status(@"PATCH", @"Products(1)", @"Products.Read", @{ @"ProductName": @"Tea" }), 403);
+  XCTAssertEqualObjects([[self send:@"GET" path:@"Products(1)/ProductName" headers:@{ @"X-Scopes": @"Products.Read" } body:nil]
+                         .json objectForKey:@"value"], @"Chai");
+  XCTAssertEqual(status(@"PATCH", @"Products(1)", @"Products.Write", @{ @"ProductName": @"Tea" }), 204);
+  // An operation.
+  XCTAssertEqual(status(@"POST", @"Tally", @"Products.Read", @{ @"Amount": @2 }), 403);
+  OISServiceResponse *tally = [self send:@"POST" path:@"Tally" headers:@{ @"X-Scopes": @"Tally.Run" } body:@{ @"Amount": @2 }];
+  XCTAssertEqual(tally.status, 200, @"%@", tally.text);
+  XCTAssertEqualObjects(tally.json[@"value"], @3);
+
+  // What each needs, in $metadata.
+  OISServiceResponse *metadata = [self send:@"GET" path:@"$metadata" headers:@{ @"X-Scopes": @"" } body:nil];
+  ODataSchema *schema = [ODataSchema schemaWithData:metadata.data error:NULL];
+  NSDictionary *read = [schema capability:@"Capabilities.ReadRestrictions" forEntitySet:@"Products"];
+  NSDictionary *permission = [read[@"Permissions"] firstObject];
+  XCTAssertEqualObjects(permission[@"SchemeName"], @"Provider", @"%@", read);
+  XCTAssertEqualObjects([permission[@"Scopes"] valueForKey:@"Scope"], (@[ @"Catalog.Admin", @"Products.Read" ]));
+  NSDictionary *update = [schema capability:@"Capabilities.UpdateRestrictions" forEntitySet:@"Products"];
+  XCTAssertEqualObjects([[[update[@"Permissions"] firstObject] objectForKey:@"Scopes"] valueForKey:@"Scope"],
+                        @[ @"Products.Write" ]);
+  XCTAssertNil([schema capability:@"Capabilities.ReadRestrictions" forEntitySet:@"Suppliers"]);
+  XCTAssertTrue([metadata.text containsString:@"Org.OData.Capabilities.V1.OperationRestrictions"], @"%@", metadata.text);
+  XCTAssertTrue([metadata.text containsString:@"Tally.Admin"]);
+}
+
+// A request as someone whose token has these scopes (OISScopeAuthenticator).
+- (OISServiceResponse *)send:(NSString *)method path:(NSString *)path scopes:(NSString *)scopes body:(id)body
+{
+  return [self send:method path:path headers:@{ @"X-Scopes": scopes } body:body];
+}
+
+// Each set's read scope: the scope is the set's name and .Read.
+- (NSDictionary<NSString *, NSString *> *)readScopesOfSets:(NSArray<NSString *> *)sets
+{
+  NSMutableDictionary *scopes = [NSMutableDictionary dictionary];
+  for (NSString *set in sets) {
+    scopes[set] = [set stringByAppendingString:@".Read"];
+    [_service handlerForEntitySet:set].readScopes = [NSSet setWithObject:scopes[set]];
+  }
+  return scopes;
+}
+
+// A read needs to read every set it reaches, wherever in it: its path,
+// $filter (and the path's), $orderby, $compute, $apply, lambdas, $count
+// of a navigation, $expand with its own options -- and no more.
+- (void)testScopesAreNeededWhereverAReadReaches
+{
+  _service.authenticator = [[OISScopeAuthenticator alloc] init];
+  NSDictionary *scopes = [self readScopesOfSets:@[ @"Products", @"Categories", @"Suppliers" ]];
+  NSDictionary *reaches = @{
+    @"Products?$filter=Category/CategoryName eq 'Beverages'": @[ @"Products", @"Categories" ],
+    @"Products?$orderby=Category/CategoryName": @[ @"Products", @"Categories" ],
+    @"Products?$compute=Category/CategoryName as Kind&$select=ProductName,Kind": @[ @"Products", @"Categories" ],
+    @"Products?$filter=Suppliers/any(s:s/City eq 'London')": @[ @"Products", @"Suppliers" ],
+    @"Products?$filter=Suppliers/$count gt 1": @[ @"Products", @"Suppliers" ],
+    @"Products?$apply=groupby((Category/CategoryName))": @[ @"Products", @"Categories" ],
+    @"Products?$apply=filter(Category/CategoryName eq 'Beverages')": @[ @"Products", @"Categories" ],
+    @"Products?$expand=Category($select=CategoryName)": @[ @"Products", @"Categories" ],
+    @"Products?$expand=Category/$ref": @[ @"Products", @"Categories" ],
+    @"Products?$expand=*": @[ @"Products", @"Categories", @"Suppliers" ],
+    @"Products?$select=ProductName": @[ @"Products" ],
+    @"Products/$filter(Category/CategoryName eq 'Beverages')": @[ @"Products", @"Categories" ],
+    @"Products/$count?$filter=Category/CategoryName eq 'Beverages'": @[ @"Products", @"Categories" ],
+    @"Products(1)": @[ @"Products" ],
+    @"Products(1)/Category": @[ @"Products", @"Categories" ],
+    @"Products(1)/Category/CategoryName": @[ @"Products", @"Categories" ],
+    @"Products(1)/Category/$ref": @[ @"Products", @"Categories" ],
+    @"Products(1)/Suppliers": @[ @"Products", @"Suppliers" ],
+    @"Categories(1)/Products?$filter=Suppliers/any(s:s/City eq 'London')": @[ @"Products", @"Categories", @"Suppliers" ],
+    @"Categories?$expand=Products($filter=Suppliers/any(s:s/City eq 'London');$select=ProductName)": @[ @"Products", @"Categories", @"Suppliers" ],
+  };
+  NSArray *sets = [scopes.allKeys sortedArrayUsingSelector:@selector(compare:)];
+  for (NSString *path in [reaches.allKeys sortedArrayUsingSelector:@selector(compare:)]) {
+    OISServiceResponse *r = [self send:@"GET" path:path scopes:[[scopes allValues] componentsJoinedByString:@" "] body:nil];
+    XCTAssertEqual(r.status, 200, @"%@: %@", path, r.text);
+    for (NSString *set in sets) {
+      NSMutableDictionary *held = [scopes mutableCopy];
+      [held removeObjectForKey:set];
+      r = [self send:@"GET" path:path scopes:[held.allValues componentsJoinedByString:@" "] body:nil];
+      if ([reaches[path] containsObject:set]) {
+        XCTAssertEqual(r.status, 403, @"%@ without %@: %@", path, scopes[set], r.text);
+        XCTAssertTrue([r.text containsString:[@"read " stringByAppendingString:set]], @"%@: %@", path, r.text);
+      } else {
+        XCTAssertEqual(r.status, 200, @"%@ needs no %@: %@", path, scopes[set], r.text);
+      }
+    }
+  }
+
+  // $explain says what a plan needs.
+  _service.explains = YES;
+  NSString *physical = [self send:@"GET" path:@"$explain/Products?$filter=Category/CategoryName eq 'Beverages'"
+                           scopes:@"Products.Read Categories.Read" body:nil].json[@"physical"];
+  XCTAssertTrue([physical containsString:@"Permission to read Categories: Categories.Read\n"], @"%@", physical);
+  XCTAssertTrue([physical containsString:@"Permission to read Products: Products.Read\n"], @"%@", physical);
+}
+
+// A write needs the permission of each row it makes, changes or deletes,
+// all of them checked before anything is written -- not the read of what
+// it writes, nor of the rows it answers with, which are its own; what else
+// its answer reads ($expand) needs reading.
+- (void)testScopesAreCheckedBeforeAnythingIsWritten
+{
+  _service.authenticator = [[OISScopeAuthenticator alloc] init];
+  ODataEntitySetHandler *products = [_service handlerForEntitySet:@"Products"];
+  products.readScopes = [NSSet setWithObject:@"Products.Read"];
+  products.insertScopes = [NSSet setWithObject:@"Products.Add"];
+  products.updateScopes = [NSSet setWithObject:@"Products.Write"];
+  products.deleteScopes = [NSSet setWithObject:@"Products.Remove"];
+  ODataEntitySetHandler *categories = [_service handlerForEntitySet:@"Categories"];
+  categories.readScopes = [NSSet setWithObject:@"Categories.Read"];
+  categories.insertScopes = [NSSet setWithObject:@"Categories.Add"];
+  categories.updateScopes = [NSSet setWithObject:@"Categories.Write"];
+  NSString *(^count)(NSString *) = ^NSString *(NSString *set) {
+    return [self send:@"GET" path:[set stringByAppendingString:@"/$count"] scopes:@"Products.Read Categories.Read" body:nil].text;
+  };
+  NSString *products0 = count(@"Products"), *categories0 = count(@"Categories");
+
+  // A deep insert: every row it makes.
+  NSDictionary *tea = @{ @"CategoryName": @"Tea", @"Products": @[ @{ @"ProductName": @"Sencha" } ] };
+  OISServiceResponse *r = [self send:@"POST" path:@"Categories" scopes:@"Categories.Add" body:tea];
+  XCTAssertEqual(r.status, 403, @"%@", r.text);
+  XCTAssertTrue([r.text containsString:@"insert into Products"], @"%@", r.text);
+  XCTAssertEqualObjects(count(@"Categories"), categories0, @"nothing made");
+  XCTAssertEqualObjects(count(@"Products"), products0);
+  r = [self send:@"POST" path:@"Categories" scopes:@"Categories.Add Products.Add" body:tea];
+  XCTAssertEqual(r.status, 201, @"%@", r.text);
+  XCTAssertEqualObjects(r.json[@"CategoryName"], @"Tea", @"what it made is its answer");
+  XCTAssertNil(r.json[@"Products"], @"what it may not read is left out of what it was not asked for: %@", r.text);
+  r = [self send:@"POST" path:@"Categories" scopes:@"Categories.Add Products.Add Products.Read" body:tea];
+  XCTAssertEqualObjects([r.json[@"Products"] valueForKey:@"ProductName"], @[ @"Sencha" ], @"%@", r.text);
+  // What it is asked to expand, it reads: before it writes.
+  NSString *made = count(@"Products");
+  r = [self send:@"POST" path:@"Products?$expand=Category" scopes:@"Products.Add" body:@{ @"ProductName": @"Matcha", @"Category@odata.bind": @"Categories(1)" }];
+  XCTAssertEqual(r.status, 403, @"%@", r.text);
+  XCTAssertEqualObjects(count(@"Products"), made, @"nothing made");
+
+  // An update: of the rows it changes, not a read of them.
+  r = [self send:@"PATCH" path:@"Products(1)" scopes:@"Products.Read" body:@{ @"ProductName": @"Tea" }];
+  XCTAssertEqual(r.status, 403, @"%@", r.text);
+  r = [self send:@"PATCH" path:@"Products(1)" scopes:@"Products.Write" body:@{ @"ProductName": @"Tea" }];
+  XCTAssertEqual(r.status, 204, @"%@", r.text);
+  r = [self send:@"PATCH" path:@"Products(1)" headers:@{ @"X-Scopes": @"Products.Write", @"Prefer": @"return=representation" }
+            body:@{ @"ProductName": @"Chai" }];
+  XCTAssertEqual(r.status, 200, @"its answer is what it wrote: %@", r.text);
+  // A collection's, and its answer.
+  r = [self send:@"PATCH" path:@"Products/$filter(ProductID le 2)/$each" headers:@{ @"X-Scopes": @"Products.Write", @"Prefer": @"return=representation" }
+            body:@{ @"Discontinued": @YES }];
+  XCTAssertEqual(r.status, 200, @"%@", r.text);
+  XCTAssertEqual([r.json[@"value"] count], 2u, @"%@", r.text);
+  r = [self send:@"PATCH" path:@"Products/$filter(ProductID le 2)/$each?$expand=Category" headers:@{ @"X-Scopes": @"Products.Write" }
+            body:@{ @"Discontinued": @NO }];
+  XCTAssertEqual(r.status, 403, @"%@", r.text);
+  XCTAssertEqualObjects([self send:@"GET" path:@"Products(1)/Discontinued" scopes:@"Products.Read" body:nil].json[@"value"], @YES,
+                        @"refused before it was written");
+  // Through a navigation: the set it passes through is read.
+  r = [self send:@"PATCH" path:@"Categories(1)/Products(1)" scopes:@"Products.Write" body:@{ @"ProductName": @"Chai" }];
+  XCTAssertEqual(r.status, 403, @"%@", r.text);
+  XCTAssertTrue([r.text containsString:@"read Categories"], @"%@", r.text);
+  XCTAssertEqual([self send:@"PATCH" path:@"Categories(1)/Products(1)" scopes:@"Products.Write Categories.Read" body:@{ @"ProductName": @"Chai" }].status, 204);
+
+  // A reference: the row whose navigation property it changes.
+  r = [self send:@"PUT" path:@"Products(1)/Category/$ref" scopes:@"Categories.Write" body:@{ @"@odata.id": @"Categories(2)" }];
+  XCTAssertEqual(r.status, 403, @"%@", r.text);
+  XCTAssertTrue([r.text containsString:@"update Products"], @"%@", r.text);
+  r = [self send:@"PUT" path:@"Products(1)/Category/$ref" scopes:@"Products.Write" body:@{ @"@odata.id": @"Categories(2)" }];
+  XCTAssertEqual(r.status, 204, @"%@", r.text);
+  r = [self send:@"POST" path:@"Categories(1)/Products/$ref" scopes:@"Categories.Write" body:@{ @"@odata.id": @"Products(1)" }];
+  XCTAssertEqual(r.status, 204, @"its own navigation, not read: %@", r.text);
+
+  // A delete.
+  XCTAssertEqual([self send:@"DELETE" path:@"Products(7)" scopes:@"Products.Write" body:nil].status, 403);
+  XCTAssertEqual([self send:@"DELETE" path:@"Products(7)" scopes:@"Products.Remove" body:nil].status, 204);
+
+  // A change set: the request refused, and with it the change set.
+  NSString *before = [self send:@"GET" path:@"Products(2)/ProductName" scopes:@"Products.Read" body:nil].json[@"value"];
+  r = [self send:@"POST" path:@"$batch" headers:@{ @"X-Scopes": @"Products.Write" } body:@{ @"requests": @[
+    @{ @"id": @"1", @"atomicityGroup": @"g", @"method": @"PATCH", @"url": @"Products(2)", @"body": @{ @"ProductName": @"Changed" } },
+    @{ @"id": @"2", @"atomicityGroup": @"g", @"method": @"PATCH", @"url": @"Categories(1)", @"body": @{ @"CategoryName": @"Changed" } } ] }];
+  XCTAssertEqual(r.status, 200, @"%@", r.text);
+  XCTAssertEqualObjects([self send:@"GET" path:@"Products(2)/ProductName" scopes:@"Products.Read" body:nil].json[@"value"], before,
+                        @"all or nothing: %@", r.text);
+}
+
+// An open type's dynamic properties are what the caller changes too.
+- (void)testScopesOfDynamicProperties
+{
+  _service.authenticator = [[OISScopeAuthenticator alloc] init];
+  OISOpenCategoriesHandler *handler = [[OISOpenCategoriesHandler alloc] initWithEntity:OISCatalogEntity(@"Category")];
+  handler.updateScopes = [NSSet setWithObject:@"Categories.Write"];
+  [_service setHandler:handler forEntitySet:@"Categories"];
+  OISServiceResponse *r = [self send:@"PATCH" path:@"Categories(1)" scopes:@"" body:@{ @"Mood": @"calm" }];
+  XCTAssertEqual(r.status, 403, @"%@", r.text);
+  XCTAssertNil(handler.written[@1], @"not written: %@", handler.written);
+  r = [self send:@"PATCH" path:@"Categories(1)" scopes:@"Categories.Write" body:@{ @"Mood": @"calm" }];
+  XCTAssertTrue(r.status < 300, @"%ld %@", (long)r.status, r.text);
+  XCTAssertEqualObjects(handler.written[@1][@"Mood"], @"calm");
+}
+
+// A temporal action: each slice it makes, changes or closes, checked before
+// any is; what it answers with is what it wrote.
+- (void)testScopesOfTemporalActions
+{
+  [self serveDepartmentHistory];
+  _service.authenticator = [[OISScopeAuthenticator alloc] init];
+  ODataEntitySetHandler *departments = [_service handlerForEntitySet:@"Departments"];
+  departments.readScopes = [NSSet setWithObject:@"Departments.Read"];
+  departments.insertScopes = [NSSet setWithObject:@"Departments.Add"];
+  departments.updateScopes = [NSSet setWithObject:@"Departments.Write"];
+  NSArray *history = [self historyOf:@"D08"];
+  // Splitting slices makes some.
+  NSDictionary *split = @{ @"deltaTimeslices": @[ @{ @"Timeslice": @{ @"Department": @"D08", @"From": @"2012-04-01", @"To": @"2014-07-01", @"Budget": @1320 } } ] };
+  OISServiceResponse *r = [self send:@"POST" path:@"Departments/Temporal.Update" scopes:@"Departments.Write" body:split];
+  XCTAssertEqual(r.status, 403, @"%@", r.text);
+  XCTAssertTrue([r.text containsString:@"insert into Departments"], @"%@", r.text);
+  XCTAssertEqualObjects([self historyOf:@"D08"], history, @"nothing changed");
+  // One slice as it is: changed only.
+  NSDictionary *within = @{ @"deltaTimeslices": @[ @{ @"Timeslice": @{ @"Department": @"D08", @"From": @"2012-01-01", @"To": @"2012-06-01", @"Budget": @1300 } } ] };
+  r = [self send:@"POST" path:@"Departments/Temporal.Update" scopes:@"Departments.Write" body:within];
+  XCTAssertEqual(r.status, 200, @"%@", r.text);
+  XCTAssertEqualObjects([[r.json[@"value"] valueForKey:@"Timeslice"] valueForKey:@"Budget"], @[ @1300 ], @"%@", r.text);
+  r = [self send:@"POST" path:@"Departments/Temporal.Update" scopes:@"Departments.Write Departments.Add" body:split];
+  XCTAssertEqual(r.status, 200, @"%@", r.text);
+}
+
+// An operation's call needs its scopes; what it answers with is its own,
+// what that is expanded with is read, before it is called; a bound one's
+// path is read.
+- (void)testScopesOfOperations
+{
+  _service.authenticator = [[OISScopeAuthenticator alloc] init];
+  OISScopedOperations *operations = [[OISScopedOperations alloc] init];
+  _service.serviceOperations = operations;
+  [self readScopesOfSets:@[ @"Products", @"Categories" ]];
+  XCTAssertEqualObjects(_service.operationProblems, @[]);
+
+  XCTAssertEqual([self send:@"POST" path:@"Restock" scopes:@"Products.Read" body:@{}].status, 403);
+  XCTAssertEqual(operations.calls, 0);
+  OISServiceResponse *r = [self send:@"POST" path:@"Restock" scopes:@"Stock.Keep" body:@{}];
+  XCTAssertEqual(r.status, 200, @"its answer is its own: %@", r.text);
+  XCTAssertEqual([r.json[@"value"] count], 2u, @"%@", r.text);
+  r = [self send:@"POST" path:@"Favourite" scopes:@"Stock.Keep" body:@{}];
+  XCTAssertEqual(r.status, 200, @"%@", r.text);
+  XCTAssertEqualObjects(r.json[@"ProductName"], @"Chai", @"%@", r.text);
+  NSInteger calls = operations.calls;
+  for (NSString *path in @[ @"Restock?$expand=Category", @"Favourite?$expand=Category" ]) {
+    r = [self send:@"POST" path:path scopes:@"Stock.Keep" body:@{}];
+    XCTAssertEqual(r.status, 403, @"%@: %@", path, r.text);
+    XCTAssertTrue([r.text containsString:@"read Categories"], @"%@", r.text);
+  }
+  XCTAssertEqual(operations.calls, calls, @"refused before it was called");
+  r = [self send:@"POST" path:@"Restock?$expand=Category" scopes:@"Stock.Keep Categories.Read" body:@{}];
+  XCTAssertEqual(r.status, 200, @"%@", r.text);
+  XCTAssertNotNil([r.json[@"value"] firstObject][@"Category"], @"%@", r.text);
+  // A function's, read on from: its own too; what else is reached, read.
+  r = [self send:@"GET" path:@"Bargains()?$filter=ProductName ne 'Chang'" scopes:@"Stock.Keep" body:nil];
+  XCTAssertEqual(r.status, 200, @"%@", r.text);
+  XCTAssertEqual([r.json[@"value"] count], 2u, @"%@", r.text);
+  r = [self send:@"GET" path:@"Bargains()?$filter=Category/CategoryName eq 'Beverages'" scopes:@"Stock.Keep" body:nil];
+  XCTAssertEqual(r.status, 403, @"%@", r.text);
+  XCTAssertTrue([r.text containsString:@"read Categories"], @"%@", r.text);
+  r = [self send:@"GET" path:@"Bargains()?$filter=Category/CategoryName eq 'Beverages'" scopes:@"Stock.Keep Categories.Read" body:nil];
+  XCTAssertEqual(r.status, 200, @"%@", r.text);
+  XCTAssertEqual([self send:@"GET" path:@"Bargains()" scopes:@"Products.Read" body:nil].status, 403);
+
+  // Bound: called on what its path reads.
+  NSManagedObjectModel *model = [OISCatalogModel() conformsToProtocol:@protocol(NSCopying)]
+      ? [OISCatalogModel() copy] : [[NSManagedObjectModel alloc] initWithContentsOfURL:OISCatalogModelURL()];
+  NSEntityDescription *product = model.entitiesByName[@"Product"];
+  product.managedObjectClassName = @"OISScopedProduct";
+  [self serveModel:model];
+  _service.authenticator = [[OISScopeAuthenticator alloc] init];
+  [self readScopesOfSets:@[ @"Products" ]];
+  XCTAssertEqualObjects(_service.operationProblems, @[]);
+  NSString *raise = @"Products(1)/Default.RaisePriceByPercent";
+  XCTAssertEqual([self send:@"POST" path:raise scopes:@"Products.Read" body:@{ @"Percent": @10 }].status, 403);
+  r = [self send:@"POST" path:raise scopes:@"Prices.Raise" body:@{ @"Percent": @10 }];
+  XCTAssertEqual(r.status, 403, @"%@", r.text);
+  XCTAssertTrue([r.text containsString:@"read Products"], @"%@", r.text);
+  XCTAssertEqual([self send:@"POST" path:raise scopes:@"Prices.Raise Products.Read" body:@{ @"Percent": @10 }].status, 204);
+  // $metadata says it of the overload, bound to Product.
+  NSString *metadata = [self send:@"GET" path:@"$metadata" scopes:@"" body:nil].text;
+  NSRange action = [metadata rangeOfString:@"<Action Name=\"RaisePriceByPercent\""];
+  XCTAssertNotEqual(action.location, NSNotFound, @"%@", metadata);
+  NSString *rest = action.location == NSNotFound ? @"" : [metadata substringFromIndex:action.location];
+  NSString *element = [rest substringToIndex:[rest rangeOfString:@"</Action>"].location];
+  XCTAssertTrue([element containsString:@"Org.OData.Capabilities.V1.OperationRestrictions"], @"%@", element);
+  XCTAssertTrue([element containsString:@"Prices.Raise"], @"%@", element);
+}
+
+// Scopes that name no scope, or no operation, would leave one open: the
+// operation is not served, and the problem said.
+- (void)testOperationScopesThatCannotBeUsed
+{
+  _service.serviceOperations = [[OISMisscopedOperations alloc] init];
+  NSString *problems = [_service.operationProblems componentsJoinedByString:@"\n"];
+  XCTAssertEqual(_service.operationProblems.count, 2u, @"%@", problems);
+  XCTAssertTrue([problems containsString:@"countWithAmount:reply:"], @"%@", problems);
+  XCTAssertTrue([problems containsString:@"mesureWithAmount:reply:"], @"%@", problems);
+  NSString *metadata = [self get:@"$metadata"].text;
+  XCTAssertFalse([metadata containsString:@"\"CountWithAmount\""] || [metadata containsString:@"\"Count\""], @"%@", metadata);
+  XCTAssertTrue([metadata containsString:@"Measure.Run"], @"%@", metadata);
+}
+
+// A refusal says which scopes would do, as RFC 6750 has it -- 403, or 401
+// for no one at all -- and the client reads them back.
+- (void)testScopeRefusalsNameTheScopes
+{
+  _service.authenticator = [[OISScopeAuthenticator alloc] init];
+  [_service handlerForEntitySet:@"Products"].readScopes = [NSSet setWithObjects:@"Products.Read", @"Catalog.Admin", nil];
+  [_service handlerForEntitySet:@"Products"].updateScopes = [NSSet setWithObject:@"Products.Write"];
+  OISServiceResponse *r = [self send:@"GET" path:@"Products" scopes:@"Other" body:nil];
+  XCTAssertEqual(r.status, 403);
+  NSString *challenge = [r header:@"WWW-Authenticate"];
+  XCTAssertTrue([challenge hasPrefix:@"Bearer "], @"%@", challenge);
+  XCTAssertTrue([challenge containsString:@"error=\"insufficient_scope\""], @"%@", challenge);
+  XCTAssertTrue([challenge containsString:@"scope=\"Catalog.Admin Products.Read\""], @"%@", challenge);
+
+  // No one at all: 401.
+  _service.authenticator = [[ODataTrustedHeaderAuthenticator alloc] init];
+  _service.allowsAnonymousRequests = YES;
+  r = [self get:@"Products"];
+  XCTAssertEqual(r.status, 401, @"%@", r.text);
+  XCTAssertTrue([[r header:@"WWW-Authenticate"] containsString:@"scope=\"Catalog.Admin Products.Read\""], @"%@", [r header:@"WWW-Authenticate"]);
+  XCTAssertEqual([self get:@"Categories"].status, 200, @"what needs no scope, anyone may");
+
+  // The client: the scopes, and what to do.
+  _service.authenticator = [[OISScopeAuthenticator alloc] init];
+  ODataConfiguration *configuration = [[ODataConfiguration alloc] initWithURL:[NSURL URLWithString:@"http://example.test/odata/"] options:nil];
+  configuration.accessToken = @"Other";
+  ODataClient *client = [[ODataClient alloc] initWithConfiguration:configuration];
+  client.transport = _service;
+  NSError *error = nil;
+  XCTAssertNil([client JSONAtURL:[NSURL URLWithString:@"http://example.test/odata/Products"] error:&error]);
+  XCTAssertEqualObjects(error.userInfo[ODataErrorHTTPStatusKey], @403);
+  XCTAssertEqualObjects(error.userInfo[ODataErrorScopesKey], (@[ @"Catalog.Admin", @"Products.Read" ]));
+  XCTAssertTrue([error.localizedDescription containsString:@"one of the scopes"], @"%@", error.localizedDescription);
+  XCTAssertTrue([error.localizedRecoverySuggestion containsString:@"Catalog.Admin, Products.Read"], @"%@", error.localizedRecoverySuggestion);
+  // In a change set, the request that failed.
+  NSMutableURLRequest *patch = [client requestWithMethod:@"PATCH" URL:[NSURL URLWithString:@"http://example.test/odata/Products(1)"]
+                                                    body:@{ @"ProductName": @"Tea" } etag:nil error:&error];
+  error = nil;
+  XCTAssertNil([client sendChangeSet:@[ patch ] error:&error]);
+  XCTAssertEqualObjects(error.userInfo[ODataErrorScopesKey], @[ @"Products.Write" ], @"%@", error.userInfo);
 }
 
 - (void)testRestrictionsInMetadata

@@ -42,6 +42,9 @@ NS_ASSUME_NONNULL_BEGIN
 // email, preferred_username, groups (an array), ... as the authenticator
 // found them.
 @property (nonatomic, readonly, copy) NSDictionary<NSString *, id> *claims;
+// What the caller may do, as OAuth has it: the scope claim (text, space
+// separated) or scp (an array). Empty when there is neither.
+@property (nonatomic, readonly, copy) NSSet<NSString *> *scopes;
 @end
 
 @protocol ODataAuthenticator <NSObject>

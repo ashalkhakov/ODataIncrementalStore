@@ -264,6 +264,17 @@ static BOOL OISIsTrue(id value)
   if (dot.location != NSNotFound) [self.vocabularies addObject:[term substringToIndex:dot.location]];
 }
 
+// Capabilities.PermissionType records: one, under the security scheme,
+// any of whose scopes is enough.
+- (NSArray *)permissionsOf:(NSSet<NSString *> *)scopes
+{
+  NSMutableArray *granted = [NSMutableArray array];
+  for (NSString *scope in [scopes.allObjects sortedArrayUsingSelector:@selector(compare:)]) {
+    [granted addObject:@{ @"Scope": scope }];
+  }
+  return @[ @{ @"SchemeName": self.securitySchemeName ?: @"Default", @"Scopes": granted } ];
+}
+
 // Annotation elements: by term (Term#Qualifier), a term's own annotations
 // inside it (Term@Term), as JSON CSDL keys them.
 - (NSArray<NSXMLElement *> *)annotations:(NSDictionary<NSString *, id> *)annotations
@@ -583,8 +594,15 @@ static void OISAddChildren(NSXMLElement *parent, NSArray<NSXMLElement *> *childr
     }
     NSString *setName = [self.mapper entitySetForEntity:entity];
     NSMutableDictionary *annotations = [NSMutableDictionary dictionary];
+    NSDictionary *permissions = self.permissions[setName];
+    if ([permissions[@"Read"] count]) {
+      annotations[@"Org.OData.Capabilities.V1.ReadRestrictions"] = @{ @"Permissions": [self permissionsOf:permissions[@"Read"]] };
+    }
     for (NSString *restriction in @[ @"Insert", @"Update", @"Delete" ]) {
       NSMutableDictionary *record = [NSMutableDictionary dictionary];
+      if ([permissions[restriction] count] && ![self.restrictions[setName] containsObject:restriction]) {
+        record[@"Permissions"] = [self permissionsOf:permissions[restriction]];
+      }
       if ([self.restrictions[setName] containsObject:restriction]) {
         NSString *property = [@{ @"Insert": @"Insertable", @"Update": @"Updatable", @"Delete": @"Deletable" } objectForKey:restriction];
         record[property] = @NO;
@@ -640,6 +658,17 @@ static NSString * const OISEdm = @"http://docs.oasis-open.org/odata/ns/edm";
   BOOL untyped = ![version isEqualToString:@"4.0"];
   for (NSXMLElement *original in self.additionalSchemaElements) {
     NSXMLElement *element = [original copy];
+    // An operation's overload, as a target names it: NS.Name, or bound,
+    // NS.Name(its binding parameter's type); its own permissions inside it.
+    NSMutableString *overload = [NSMutableString stringWithFormat:@"%@.%@", self.namespaceName, [element attributeForName:@"Name"].stringValue];
+    if ([[element attributeForName:@"IsBound"].stringValue isEqualToString:@"true"]) {
+      NSXMLElement *binding = [element elementsForName:@"Parameter"].firstObject;
+      [overload appendFormat:@"(%@)", [binding attributeForName:@"Type"].stringValue ?: @""];
+    }
+    if ([self.operationPermissions[overload] count]) {
+      OISAddChildren(element, [self annotations:@{ @"Org.OData.Capabilities.V1.OperationRestrictions":
+                                                     @{ @"Permissions": [self permissionsOf:self.operationPermissions[overload]] } }]);
+    }
     // An operation's JSON parameter or result references the vocabulary.
     for (NSXMLNode *child in element.children) {
       if (child.kind != NSXMLElementKind) continue;

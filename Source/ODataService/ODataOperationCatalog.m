@@ -15,6 +15,7 @@ const char *_protocol_getMethodTypeEncoding(Protocol *protocol, SEL selector, BO
 @interface NSObject (OISOperationDeclarations)
 + (NSDictionary *)ODataOperationTypes;
 + (NSDictionary *)ODataOperationNames;
++ (NSDictionary *)ODataOperationScopes;
 @end
 
 // A method's types, one token each: the return type, self, _cmd, then the
@@ -153,6 +154,20 @@ static void OISCollectProtocols(Protocol *protocol, NSMutableArray *into, NSMuta
   free(inherited);
 }
 
+// The scopes +ODataOperationScopes names for an operation: one, or an
+// array or set of them, each a non-empty string; nil for anything else.
+static NSSet<NSString *> *OISScopesNamed(id named)
+{
+  NSArray *items = [named isKindOfClass:[NSString class]] ? @[ named ]
+                 : [named isKindOfClass:[NSArray class]] ? named
+                 : [named isKindOfClass:[NSSet class]] ? [named allObjects] : nil;
+  if (!items.count) return nil;
+  for (id item in items) {
+    if (![item isKindOfClass:[NSString class]] || ![item length]) return nil;
+  }
+  return [NSSet setWithArray:items];
+}
+
 - (void)readClass:(Class)cls entity:(NSEntityDescription *)entity
 {
   NSMutableArray *protocols = [NSMutableArray array];
@@ -164,6 +179,8 @@ static void OISCollectProtocols(Protocol *protocol, NSMutableArray *into, NSMuta
 
   NSDictionary *types = [cls respondsToSelector:@selector(ODataOperationTypes)] ? [cls ODataOperationTypes] : @{};
   NSDictionary *names = [cls respondsToSelector:@selector(ODataOperationNames)] ? [cls ODataOperationNames] : @{};
+  NSDictionary *scopes = [cls respondsToSelector:@selector(ODataOperationScopes)] ? [cls ODataOperationScopes] : @{};
+  NSMutableSet *declared = [NSMutableSet set];
 
   for (NSValue *pointer in protocols) {
     Protocol *protocol = (__bridge Protocol *)[pointer pointerValue];
@@ -174,6 +191,7 @@ static void OISCollectProtocols(Protocol *protocol, NSMutableArray *into, NSMuta
       unsigned int methods = 0;
       struct objc_method_description *list = protocol_copyMethodDescriptionList(protocol, required, instance, &methods);
       for (unsigned int i = 0; i < methods; i++) {
+        [declared addObject:NSStringFromSelector(list[i].name)];
         const char *extended = _protocol_getMethodTypeEncoding(protocol, list[i].name, required, instance);
         OISServedOperation *operation = [self operationFor:list[i].name
                                               types:extended ?: list[i].types
@@ -183,9 +201,49 @@ static void OISCollectProtocols(Protocol *protocol, NSMutableArray *into, NSMuta
                                              action:isAction
                                           overrides:types
                                               names:names];
-        if (operation) [_operations addObject:operation];
+        if (operation) {
+          id named = scopes[NSStringFromSelector(list[i].name)];
+          if (named) {
+            operation.scopes = OISScopesNamed(named);
+            // Left out, it would be open to everyone: not served at all.
+            if (!operation.scopes) {
+              [self problem:@"%@: +ODataOperationScopes names %@, not a scope or a list of them", operation.signature, named];
+              continue;
+            }
+          }
+          [_operations addObject:operation];
+        }
       }
       free(list);
+    }
+  }
+  // A name that is no operation's (a typo) would leave the one meant open:
+  // said once, of the class whose method it is, which may name those its
+  // superclasses declare.
+  Class superclass = class_getSuperclass(cls);
+  SEL method = @selector(ODataOperationScopes);
+  BOOL inherited = superclass && [superclass respondsToSelector:method] &&
+                   method_getImplementation(class_getClassMethod(cls, method)) == method_getImplementation(class_getClassMethod(superclass, method));
+  if (inherited) return;
+  for (Class c = superclass; c; c = class_getSuperclass(c)) {
+    NSMutableArray *above = [NSMutableArray array];
+    unsigned int n = 0;
+    Protocol * __unsafe_unretained *list = class_copyProtocolList(c, &n);
+    for (unsigned int i = 0; i < n; i++) OISCollectProtocols(list[i], above, seen);
+    free(list);
+    for (NSValue *pointer in above) {
+      Protocol *protocol = (__bridge Protocol *)[pointer pointerValue];
+      for (int kind = 0; kind < 4; kind++) {
+        unsigned int methods = 0;
+        struct objc_method_description *descriptions = protocol_copyMethodDescriptionList(protocol, (kind & 1) == 0, (kind & 2) == 0, &methods);
+        for (unsigned int i = 0; i < methods; i++) [declared addObject:NSStringFromSelector(descriptions[i].name)];
+        free(descriptions);
+      }
+    }
+  }
+  for (NSString *selectorName in [scopes.allKeys sortedArrayUsingSelector:@selector(compare:)]) {
+    if (![declared containsObject:selectorName]) {
+      [self problem:@"+[%@ ODataOperationScopes]: %@ is not an operation it declares", NSStringFromClass(cls), selectorName];
     }
   }
 }

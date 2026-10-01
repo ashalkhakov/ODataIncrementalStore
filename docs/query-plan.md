@@ -155,6 +155,11 @@ $count :=
       ...
 ```
 
+Where the read needs permissions (a handler's `readScopes`), `physical`
+ends with them, one a line, each with the scopes any one of which allows
+it: `Permission to read Categories: Categories.Read`. They are worked out
+from the plan before it runs, and checked then.
+
 The service logs the physical plan of each read when asked to
 (`ODataService.logsPlans`). Tests assert plans beside answers: what went
 to the store is a promise worth testing.

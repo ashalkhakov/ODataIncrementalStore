@@ -7,7 +7,8 @@ set -euo pipefail
 
 WORKSPACE_DIR=$(pwd)
 LOCAL_PREFIX="${GNUSTEP_PREFIX:-/opt/gnustep-prefix}"
-LINUXDEPLOY="${LINUXDEPLOY:-/usr/local/lib/linuxdeploy/AppRun}"
+# Where Scripts/install-linuxdeploy.sh puts it.
+LINUXDEPLOY="${LINUXDEPLOY:-${LINUXDEPLOY_DIR:-${RUNNER_TEMP:-/tmp}/linuxdeploy}/AppRun}"
 arch=$(uname -m)
 
 # What linuxdeploy insists on: a launcher, one desktop entry, its icon.
