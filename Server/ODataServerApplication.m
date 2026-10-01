@@ -81,7 +81,8 @@ static void OISLoadBackendFor(NSString *type)
             @"RepeatabilityDuration", @"TrustedUserHeader", @"TrustedClaimHeaders", @"ProxySecretHeader",
             @"ProxySecretEnvironment", @"JWTIssuer", @"JWTAudience", @"JWTKeysURL", @"IntrospectionEndpoint",
             @"IntrospectionClientID", @"IntrospectionSecretEnvironment", @"RequiredScopes", @"AllowAnonymous", @"HealthPath",
-            @"AccessLog", @"Bundles", @"Libraries", @"PrintMetadata" ];
+            @"AccessLog", @"CORSOrigins", @"CORSCredentials", @"Compression", @"MaxBodyInMemory", @"KeepAliveTimeout", @"MaxRequestsPerConnection", @"Bundles", @"Libraries",
+            @"PrintMetadata" ];
 }
 
 + (NSString *)environmentVariableForSetting:(NSString *)name
@@ -219,6 +220,47 @@ static id OISEnvironmentValue(NSString *text)
 - (BOOL)accessLog
 {
   return [self flag:@"AccessLog" otherwise:YES];
+}
+
+- (NSArray<NSString *> *)corsOrigins
+{
+  id origins = [self setting:@"CORSOrigins"];
+  if ([origins isKindOfClass:[NSArray class]]) return origins;
+  NSMutableArray *split = [NSMutableArray array];
+  if ([origins isKindOfClass:[NSString class]]) {
+    for (NSString *origin in [origins componentsSeparatedByCharactersInSet:[NSCharacterSet characterSetWithCharactersInString:@" ,"]]) {
+      if (origin.length) [split addObject:origin];
+    }
+  }
+  return split;
+}
+
+- (BOOL)corsCredentials
+{
+  return [self flag:@"CORSCredentials" otherwise:NO];
+}
+
+- (BOOL)compression
+{
+  return [self flag:@"Compression" otherwise:YES];
+}
+
+- (NSUInteger)maxBodyInMemory
+{
+  id value = [self setting:@"MaxBodyInMemory"];
+  return value ? (NSUInteger)[value integerValue] : 1024 * 1024;
+}
+
+- (NSTimeInterval)keepAliveTimeout
+{
+  id value = [self setting:@"KeepAliveTimeout"];
+  return value ? [value doubleValue] : 5;
+}
+
+- (NSUInteger)maxRequestsPerConnection
+{
+  id value = [self setting:@"MaxRequestsPerConnection"];
+  return value ? (NSUInteger)[value integerValue] : 100;
 }
 
 - (BOOL)printsMetadata
@@ -427,6 +469,12 @@ static id OISEnvironmentValue(NSString *text)
 
   NSMutableArray *stages = [NSMutableArray arrayWithObject:[[ODataRequestIDStage alloc] init]];
   if (configuration.accessLog) [stages addObject:[[ODataAccessLogStage alloc] init]];
+  if (configuration.corsOrigins.count) {
+    ODataCORSStage *cors = [[ODataCORSStage alloc] initWithAllowedOrigins:configuration.corsOrigins];
+    cors.allowsCredentials = configuration.corsCredentials;
+    [stages addObject:cors];
+  }
+  if (configuration.compression) [stages addObject:[[ODataCompressionStage alloc] init]];
   if (authenticator) [stages addObject:[[ODataAuthenticationStage alloc] initWithAuthenticator:authenticator]];
   ODataServerPipeline *pipeline = [[ODataServerPipeline alloc] initWithStages:stages handler:router];
   self.pipeline = pipeline;
@@ -435,6 +483,9 @@ static id OISEnvironmentValue(NSString *text)
   ODataHTTPServer *server = [[ODataHTTPServer alloc] initWithHandler:pipeline];
   server.bindToLocalhost = configuration.bindToLocalhost;
   server.maxBodySize = configuration.maxBodySize;
+  server.maxBodyInMemory = configuration.maxBodyInMemory;
+  server.keepAliveTimeout = configuration.keepAliveTimeout;
+  server.maxRequestsPerConnection = configuration.maxRequestsPerConnection;
   self.server = server;
   [self configureServer:server];
   return YES;

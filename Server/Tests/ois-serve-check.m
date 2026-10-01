@@ -18,6 +18,7 @@
 #include <netinet/in.h>
 #include <sys/socket.h>
 #include <unistd.h>
+#include <zlib.h>
 
 static int failures;
 static NSUInteger port;
@@ -46,6 +47,42 @@ static void check(BOOL ok, NSString *name, NSString *detail)
   return [[NSString alloc] initWithData:self.body ?: [NSData data] encoding:NSUTF8StringEncoding] ?: @"";
 }
 @end
+
+// A chunked body's chunks, joined; nil if it is not one.
+static NSData *OISUnchunked(NSData *data)
+{
+  NSMutableData *joined = [NSMutableData data];
+  const char *bytes = data.bytes;
+  NSUInteger at = 0;
+  while (at < data.length) {
+    NSUInteger lineEnd = at;
+    while (lineEnd + 1 < data.length && !(bytes[lineEnd] == '\r' && bytes[lineEnd + 1] == '\n')) lineEnd++;
+    NSString *sizeText = [[NSString alloc] initWithBytes:bytes + at length:lineEnd - at encoding:NSASCIIStringEncoding];
+    unsigned long size = strtoul(sizeText.UTF8String, NULL, 16);
+    at = lineEnd + 2;
+    if (size == 0) return joined;
+    if (at + size > data.length) return nil;
+    [joined appendBytes:bytes + at length:size];
+    at += size + 2;
+  }
+  return nil;
+}
+
+static NSData *OISGunzip(NSData *data)
+{
+  z_stream stream;
+  memset(&stream, 0, sizeof(stream));
+  if (inflateInit2(&stream, 15 + 16) != Z_OK) return nil;
+  NSMutableData *out = [NSMutableData dataWithLength:data.length * 20 + 1024];
+  stream.next_in = (Bytef *)data.bytes;
+  stream.avail_in = (uInt)data.length;
+  stream.next_out = out.mutableBytes;
+  stream.avail_out = (uInt)out.length;
+  int status = inflate(&stream, Z_FINISH);
+  out.length = stream.total_out;
+  inflateEnd(&stream);
+  return status == Z_STREAM_END ? out : nil;
+}
 
 // One request, written as given, and the whole response, read to the end
 // (the server closes each connection).
@@ -93,7 +130,100 @@ static OISReply *OISSendRaw(NSData *request)
   }
   reply.headers = headers;
   reply.body = [all subdataWithRange:NSMakeRange(NSMaxRange(end), all.length - NSMaxRange(end))];
+  if ([[headers[@"transfer-encoding"] lowercaseString] isEqualToString:@"chunked"]) reply.body = OISUnchunked(reply.body);
   return reply;
+}
+
+#pragma mark A connection kept open
+
+static int OISConnect(void)
+{
+  int fd = socket(AF_INET, SOCK_STREAM, 0);
+  struct sockaddr_in address;
+  memset(&address, 0, sizeof(address));
+  address.sin_family = AF_INET;
+  address.sin_port = htons((uint16_t)port);
+  address.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+  if (connect(fd, (struct sockaddr *)&address, sizeof(address)) != 0) {
+    close(fd);
+    return -1;
+  }
+  struct timeval timeout = { 5, 0 };
+  setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &timeout, sizeof(timeout));
+  return fd;
+}
+
+// Bytes from the socket into buffer until it holds at least count; NO at its end.
+static BOOL OISFill(int fd, NSMutableData *buffer, NSUInteger count)
+{
+  uint8_t chunk[16384];
+  while (buffer.length < count) {
+    ssize_t n = read(fd, chunk, sizeof(chunk));
+    if (n <= 0) return NO;
+    [buffer appendBytes:chunk length:(NSUInteger)n];
+  }
+  return YES;
+}
+
+// One response off a kept connection, its end found by its Content-Length or
+// its chunks (none for HEAD); what follows it stays in buffer.
+static OISReply *OISReadOne(int fd, NSMutableData *buffer, BOOL head)
+{
+  NSData *separator = [@"\r\n\r\n" dataUsingEncoding:NSUTF8StringEncoding];
+  NSRange end;
+  while ((end = [buffer rangeOfData:separator options:0 range:NSMakeRange(0, buffer.length)]).location == NSNotFound) {
+    if (!OISFill(fd, buffer, buffer.length + 1)) return nil;
+  }
+  NSString *headText = [[NSString alloc] initWithData:[buffer subdataWithRange:NSMakeRange(0, end.location)] encoding:NSUTF8StringEncoding];
+  [buffer replaceBytesInRange:NSMakeRange(0, NSMaxRange(end)) withBytes:NULL length:0];
+  NSArray *lines = [headText componentsSeparatedByString:@"\r\n"];
+  OISReply *reply = [[OISReply alloc] init];
+  NSArray *statusLine = [lines[0] componentsSeparatedByString:@" "];
+  reply.status = statusLine.count > 1 ? [statusLine[1] integerValue] : 0;
+  NSMutableDictionary *headers = [NSMutableDictionary dictionary];
+  for (NSString *line in [lines subarrayWithRange:NSMakeRange(1, lines.count - 1)]) {
+    NSRange colon = [line rangeOfString:@":"];
+    if (colon.location != NSNotFound) {
+      headers[[line substringToIndex:colon.location].lowercaseString] =
+        [[line substringFromIndex:colon.location + 1] stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceCharacterSet]];
+    }
+  }
+  reply.headers = headers;
+  if (head || reply.status == 204 || reply.status == 304) {
+    reply.body = [NSData data];
+  } else if ([[headers[@"transfer-encoding"] lowercaseString] isEqualToString:@"chunked"]) {
+    NSData *last = [@"0\r\n\r\n" dataUsingEncoding:NSUTF8StringEncoding];
+    NSRange done;
+    while ((done = [buffer rangeOfData:last options:0 range:NSMakeRange(0, buffer.length)]).location == NSNotFound) {
+      if (!OISFill(fd, buffer, buffer.length + 1)) return nil;
+    }
+    reply.body = OISUnchunked([buffer subdataWithRange:NSMakeRange(0, NSMaxRange(done))]);
+    [buffer replaceBytesInRange:NSMakeRange(0, NSMaxRange(done)) withBytes:NULL length:0];
+  } else {
+    NSUInteger length = (NSUInteger)[headers[@"content-length"] integerValue];
+    if (!OISFill(fd, buffer, length)) return nil;
+    reply.body = [buffer subdataWithRange:NSMakeRange(0, length)];
+    [buffer replaceBytesInRange:NSMakeRange(0, length) withBytes:NULL length:0];
+  }
+  return reply;
+}
+
+static void OISWrite(int fd, NSString *text)
+{
+  NSData *data = [text dataUsingEncoding:NSUTF8StringEncoding];
+  const uint8_t *bytes = data.bytes;
+  for (NSUInteger sent = 0; sent < data.length;) {
+    ssize_t n = write(fd, bytes + sent, data.length - sent);
+    if (n <= 0) return;
+    sent += (NSUInteger)n;
+  }
+}
+
+// Whether the server has closed the connection (a read gives its end).
+static BOOL OISClosed(int fd)
+{
+  uint8_t byte;
+  return read(fd, &byte, 1) == 0;
 }
 
 static OISReply *OISSend(NSString *method, NSString *target, NSDictionary *headers, id json)
@@ -136,6 +266,37 @@ static OISReply *OISSend(NSString *method, NSString *target, NSDictionary *heade
   dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(30 * NSEC_PER_MSEC)), dispatch_get_global_queue(0, 0), ^{
     [reply finishWithResponse:[ODataServerResponse responseWithText:@"later" status:202]];
   });
+}
+@end
+
+// A file, a stream, a JSON body worth compressing, and what came.
+@interface OISBodiesHandler : NSObject <ODataServerHandler, ODataServerResponseStream>
+@property (nonatomic, copy) NSString *kind;
+@property (nonatomic, strong) NSURL *file;
+@property (nonatomic) NSInteger chunk;
+@end
+
+@implementation OISBodiesHandler
+- (void)handleRequest:(ODataServerRequest *)request reply:(ODataServerReply *)reply
+{
+  if ([self.kind isEqualToString:@"file"]) {
+    [reply finishWithResponse:[ODataServerResponse responseWithFile:self.file contentType:@"application/octet-stream" status:200]];
+  } else if ([self.kind isEqualToString:@"stream"]) {
+    OISBodiesHandler *stream = [[OISBodiesHandler alloc] init];
+    [reply finishWithResponse:[ODataServerResponse responseWithStream:stream contentType:@"text/plain" status:200]];
+  } else if ([self.kind isEqualToString:@"json"]) {
+    NSMutableArray *rows = [NSMutableArray array];
+    for (int i = 0; i < 200; i++) [rows addObject:@{ @"id": @(i), @"name": [NSString stringWithFormat:@"row %d of many", i] }];
+    [reply finishWithResponse:[ODataServerResponse responseWithJSON:@{ @"value": rows } status:200]];
+  } else {
+    [reply finishWithResponse:[ODataServerResponse responseWithJSON:@{ @"size": @(request.body.length), @"inFile": @(request.bodyFileURL != nil) }
+                                                             status:200]];
+  }
+}
+- (NSData *)nextChunk:(NSError **)error
+{
+  NSArray *pieces = @[ @"one,", @"two,", @"three" ];
+  return self.chunk < (NSInteger)pieces.count ? [pieces[self.chunk++] dataUsingEncoding:NSUTF8StringEncoding] : [NSData data];
 }
 @end
 
@@ -258,6 +419,7 @@ static ODataAuthentication *OISAskLater(NSString *authorization)
 
 @interface OISCheckApplication : ODataServerApplication
 @property (nonatomic, strong) OISKeptLog *log;
+@property (nonatomic, strong) NSURL *file;
 @end
 
 @implementation OISCheckApplication
@@ -272,6 +434,12 @@ static ODataAuthentication *OISAskLater(NSString *authorization)
   [router addRoute:members];
   [router addRoute:[ODataServerRoute routeWithMethod:@"GET" path:@"/later" handler:[[OISLaterHandler alloc] init]]];
   [router addRoute:[ODataServerRoute routeWithMethod:@"GET" path:@"/boom" handler:[[OISBoomHandler alloc] init]]];
+  for (NSString *kind in @[ @"file", @"stream", @"json", @"echo" ]) {
+    OISBodiesHandler *bodies = [[OISBodiesHandler alloc] init];
+    bodies.kind = kind;
+    bodies.file = self.file;
+    [router addRoute:[ODataServerRoute routeWithMethod:nil path:[@"/bodies/" stringByAppendingString:kind] handler:bodies]];
+  }
 }
 - (void)configurePipeline:(ODataServerPipeline *)pipeline
 {
@@ -468,8 +636,13 @@ int main(int argc, const char *argv[])
     // An application of its own, made from settings as ois-serve's are:
     // routes and stages around the service, one sign-in for all of them.
     ODataServerConfiguration *configuration = [[ODataServerConfiguration alloc] initWithSettings:@{
-      @"Model": modelPath, @"ServiceRoot": @"https://api.example.test/odata/", @"TrustedUserHeader": @"X-Forwarded-User" }];
+      @"Model": modelPath, @"ServiceRoot": @"https://api.example.test/odata/", @"TrustedUserHeader": @"X-Forwarded-User",
+      @"CORSOrigins": @"https://app.example.test", @"MaxBodyInMemory": @1000 }];
     OISCheckApplication *application = [[OISCheckApplication alloc] initWithConfiguration:configuration];
+    NSMutableData *fileBytes = [NSMutableData dataWithLength:100000];
+    for (NSUInteger i = 0; i < fileBytes.length; i++) ((uint8_t *)fileBytes.mutableBytes)[i] = (uint8_t)(i * 7);
+    application.file = [NSURL fileURLWithPath:[NSTemporaryDirectory() stringByAppendingPathComponent:@"ois-serve-check.bin"]];
+    [fileBytes writeToURL:application.file atomically:YES];
     BOOL prepared = [application prepare:&error];
     check(prepared, @"app-prepare", [NSString stringWithFormat:@"%@\n%@\n%@", error ?: @"", application.pipeline, application.router]);
     if (!prepared) return 1;
@@ -532,7 +705,113 @@ int main(int argc, const char *argv[])
     for (NSString *line in lines) if ([line containsString:@"\"GET /hello/world\" 200"]) helloLine = line;
     check(helloLine && [helloLine containsString:@" ann "], @"app-access-log", helloLine ?: [lines componentsJoinedByString:@"\n"]);
 
+    // Browsers on other origins.
+    NSDictionary *preflightHeaders = @{ @"Origin": @"https://app.example.test", @"Access-Control-Request-Method": @"GET",
+                                        @"Access-Control-Request-Headers": @"authorization, x-unknown" };
+    OISReply *preflight = OISSend(@"OPTIONS", @"/members", preflightHeaders, nil);
+    check(preflight.status == 204 && [preflight.headers[@"access-control-allow-origin"] isEqual:@"https://app.example.test"] &&
+          [preflight.headers[@"access-control-allow-headers"] isEqual:@"Authorization"] && [preflight.headers[@"vary"] containsString:@"Origin"] &&
+          [preflight.headers[@"access-control-max-age"] isEqual:@"600"],
+          @"cors-preflight", [NSString stringWithFormat:@"%ld %@", (long)preflight.status, preflight.headers]);
+    OISReply *foreign = OISSend(@"OPTIONS", @"/hello/x", @{ @"Origin": @"https://evil.example.test", @"Access-Control-Request-Method": @"GET" }, nil);
+    check(foreign.status == 403 && !foreign.headers[@"access-control-allow-origin"], @"cors-preflight-refused",
+          [NSString stringWithFormat:@"%ld", (long)foreign.status]);
+    OISReply *simple = OISSend(@"GET", @"/hello/x", @{ @"Origin": @"https://app.example.test" }, nil);
+    check([simple.headers[@"access-control-allow-origin"] isEqual:@"https://app.example.test"] &&
+          [simple.headers[@"access-control-expose-headers"] containsString:@"OData-Version"], @"cors-simple", [simple.headers description]);
+    check(!OISSend(@"GET", @"/hello/x", nil, nil).headers[@"access-control-allow-origin"] &&
+          !OISSend(@"GET", @"/hello/x", @{ @"Origin": @"https://evil.example.test" }, nil).headers[@"access-control-allow-origin"],
+          @"cors-not-asked", @"");
+
+    // gzip, to a client that takes it.
+    OISReply *plainJSON = OISSend(@"GET", @"/bodies/json", nil, nil);
+    OISReply *gzipped = OISSend(@"GET", @"/bodies/json", @{ @"Accept-Encoding": @"gzip, deflate" }, nil);
+    NSData *inflated = OISGunzip(gzipped.body);
+    check(!plainJSON.headers[@"content-encoding"] && [plainJSON.headers[@"vary"] containsString:@"Accept-Encoding"] &&
+          [gzipped.headers[@"content-encoding"] isEqual:@"gzip"] && gzipped.body.length < plainJSON.body.length &&
+          [inflated isEqualToData:plainJSON.body],
+          @"compression", [NSString stringWithFormat:@"%lu -> %lu bytes, %@", (unsigned long)plainJSON.body.length,
+                                                     (unsigned long)gzipped.body.length, gzipped.headers[@"content-encoding"] ?: @"identity"]);
+    OISReply *refusing = OISSend(@"GET", @"/bodies/json", @{ @"Accept-Encoding": @"gzip;q=0" }, nil);
+    OISReply *small = OISSend(@"GET", @"/hello/x", @{ @"Accept-Encoding": @"gzip" }, nil);
+    check(!refusing.headers[@"content-encoding"] && !small.headers[@"content-encoding"], @"compression-not-asked", @"");
+
+    // Bodies from a file and a stream; a large request body in a file.
+    OISReply *download = OISSend(@"GET", @"/bodies/file", nil, nil);
+    check(download.status == 200 && [download.body isEqualToData:fileBytes], @"file-response",
+          [NSString stringWithFormat:@"%ld, %lu bytes", (long)download.status, (unsigned long)download.body.length]);
+    OISReply *streamed = OISSend(@"GET", @"/bodies/stream", nil, nil);
+    check(streamed.status == 200 && [streamed.text isEqual:@"one,two,three"] && [streamed.headers[@"transfer-encoding"] isEqual:@"chunked"],
+          @"stream-response", [NSString stringWithFormat:@"%ld %@ %@", (long)streamed.status, streamed.text, streamed.headers[@"transfer-encoding"]]);
+    NSMutableString *large = [NSMutableString string];
+    while (large.length < 5000) [large appendString:@"0123456789"];
+    OISReply *inFile = OISSend(@"POST", @"/bodies/echo", nil, @[ large ]);
+    OISReply *inMemory = OISSend(@"POST", @"/bodies/echo", nil, @[ @"small" ]);
+    check([inFile.json[@"inFile"] boolValue] && [inFile.json[@"size"] integerValue] > 5000 &&
+          ![inMemory.json[@"inFile"] boolValue] && [inMemory.json[@"size"] integerValue] == 9,
+          @"request-body-file", [NSString stringWithFormat:@"%@ %@", inFile.text, inMemory.text]);
+
+    // One connection, several requests: kept open between them, closed when
+    // asked, or after a while with nothing more.
+    int fd = OISConnect();
+    NSMutableData *buffer = [NSMutableData data];
+    NSString *host = [NSString stringWithFormat:@"Host: 127.0.0.1:%lu\r\n", (unsigned long)port];
+    OISWrite(fd, [NSString stringWithFormat:@"GET /hello/one HTTP/1.1\r\n%@\r\n", host]);
+    OISReply *first = OISReadOne(fd, buffer, NO);
+    OISWrite(fd, [NSString stringWithFormat:@"GET /bodies/stream HTTP/1.1\r\n%@\r\n", host]);
+    OISReply *second = OISReadOne(fd, buffer, NO);
+    OISWrite(fd, [NSString stringWithFormat:@"POST /bodies/echo HTTP/1.1\r\n%@Content-Type: application/json\r\nContent-Length: 9\r\n\r\n[\"small\"]", host]);
+    OISReply *third = OISReadOne(fd, buffer, NO);
+    OISWrite(fd, [NSString stringWithFormat:@"HEAD /hello/four HTTP/1.1\r\n%@\r\n", host]);
+    OISReply *fourth = OISReadOne(fd, buffer, YES);
+    OISWrite(fd, [NSString stringWithFormat:@"GET /odata/$metadata HTTP/1.1\r\n%@X-Forwarded-User: ann\r\nConnection: close\r\n\r\n", host]);
+    OISReply *last = OISReadOne(fd, buffer, NO);
+    check([first.json[@"hello"] isEqual:@"one"] && [first.headers[@"connection"] isEqual:@"keep-alive"] &&
+          [second.text isEqual:@"one,two,three"] && [third.json[@"size"] integerValue] == 9 &&
+          fourth.status == 200 && last.status == 200 && [last.headers[@"connection"] caseInsensitiveCompare:@"close"] == NSOrderedSame &&
+          OISClosed(fd),
+          @"keep-alive", [NSString stringWithFormat:@"%ld %ld %ld %ld %ld, %@ then %@", (long)first.status, (long)second.status, (long)third.status,
+                                                    (long)fourth.status, (long)last.status, first.headers[@"connection"], last.headers[@"connection"]]);
+    close(fd);
+    // HTTP/1.0, and a request that came with the next one behind it: closed.
+    fd = OISConnect();
+    buffer = [NSMutableData data];
+    OISWrite(fd, @"GET /hello/old HTTP/1.0\r\n\r\n");
+    OISReply *old10 = OISReadOne(fd, buffer, NO);
+    check(old10.status == 200 && OISClosed(fd), @"keep-alive-http10", [NSString stringWithFormat:@"%ld %@", (long)old10.status, old10.headers[@"connection"]]);
+    close(fd);
+    fd = OISConnect();
+    buffer = [NSMutableData data];
+    OISWrite(fd, [NSString stringWithFormat:@"GET /hello/a HTTP/1.1\r\n%@\r\nGET /hello/b HTTP/1.1\r\n%@\r\n", host, host]);
+    OISReply *pipelined = OISReadOne(fd, buffer, NO);
+    check(pipelined.status == 200 && [pipelined.headers[@"connection"] caseInsensitiveCompare:@"close"] == NSOrderedSame,
+          @"keep-alive-pipelined", [NSString stringWithFormat:@"%ld %@", (long)pipelined.status, pipelined.headers[@"connection"]]);
+    close(fd);
+
     [application.server stop];
+    [[NSFileManager defaultManager] removeItemAtURL:application.file error:NULL];
+
+    // A kept connection with nothing more to ask is closed after the timeout.
+    // On every address, IPv4 and IPv6 both (Localhost NO), as in a container.
+    ODataServerConfiguration *briefly = [[ODataServerConfiguration alloc] initWithSettings:@{
+      @"Model": modelPath, @"KeepAliveTimeout": @0.5, @"AccessLog": @NO, @"Localhost": @NO }];
+    ODataServerApplication *brief = [[ODataServerApplication alloc] initWithConfiguration:briefly];
+    if ([brief prepare:&error] && [brief.server startOnPort:0 error:&error]) {
+      port = brief.server.port;
+      fd = OISConnect();
+      buffer = [NSMutableData data];
+      OISWrite(fd, [NSString stringWithFormat:@"GET /health HTTP/1.1\r\nHost: 127.0.0.1\r\n\r\n"]);
+      OISReply *healthy = OISReadOne(fd, buffer, NO);
+      NSDate *started = [NSDate date];
+      BOOL closed = OISClosed(fd);
+      NSTimeInterval waited = -[started timeIntervalSinceNow];
+      check(healthy.status == 200 && closed && waited > 0.3 && waited < 3, @"keep-alive-timeout",
+            [NSString stringWithFormat:@"%ld, closed %@ after %.2fs", (long)healthy.status, closed ? @"YES" : @"NO", waited]);
+      close(fd);
+      [brief.server stop];
+    } else {
+      check(NO, @"keep-alive-timeout", error.localizedDescription ?: @"");
+    }
     printf("%s: %d failure(s)\n", failures ? "FAILED" : "OK", failures);
   }
   return failures ? 1 : 0;

@@ -72,6 +72,8 @@ NSString* const GCDWebServerOption_DispatchQueuePriority = @"DispatchQueuePriori
 NSString* const GCDWebServerOption_MaxHeadSize = @"MaxHeadSize";
 NSString* const GCDWebServerOption_MaxBodySize = @"MaxBodySize";
 NSString* const GCDWebServerOption_ReadTimeout = @"ReadTimeout";
+NSString* const GCDWebServerOption_KeepAliveTimeout = @"KeepAliveTimeout";  // ODataStore port
+NSString* const GCDWebServerOption_MaxRequestsPerConnection = @"MaxRequestsPerConnection";  // ODataStore port
 #if TARGET_OS_IPHONE
 NSString* const GCDWebServerOption_AutomaticallySuspendInBackground = @"AutomaticallySuspendInBackground";
 #endif
@@ -646,6 +648,8 @@ static inline NSString* _EncodeBase64(NSString* string) {
   _maxHeadSize = [(NSNumber*)_GetOption(_options, GCDWebServerOption_MaxHeadSize, @(kGCDWebServerHTTPMessageDefaultMaxHeadSize)) unsignedIntegerValue];
   _maxBodySize = [(NSNumber*)_GetOption(_options, GCDWebServerOption_MaxBodySize, @(64 * 1024 * 1024)) unsignedIntegerValue];
   _readTimeout = [(NSNumber*)_GetOption(_options, GCDWebServerOption_ReadTimeout, @60.0) doubleValue];
+  _keepAliveTimeout = [(NSNumber*)_GetOption(_options, GCDWebServerOption_KeepAliveTimeout, @0.0) doubleValue];  // ODataStore port
+  _maxRequestsPerConnection = [(NSNumber*)_GetOption(_options, GCDWebServerOption_MaxRequestsPerConnection, @100) unsignedIntegerValue];
 
 #if !defined(SO_NOSIGPIPE)
   // ODataStore port: without SO_NOSIGPIPE a write to a socket the peer has closed raises SIGPIPE, which

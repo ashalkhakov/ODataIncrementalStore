@@ -16,16 +16,29 @@ static NSString *OISHeaderIn(NSDictionary<NSString *, NSString *> *headers, NSSt
   return nil;
 }
 
-@implementation ODataServerRequest
+@implementation ODataServerRequest {
+  NSData *_body;
+  id _owner;
+}
 
 - (instancetype)initWithMethod:(NSString *)method URL:(NSURL *)URL headers:(NSDictionary *)headers body:(NSData *)body
+{
+  self = [self initWithMethod:method URL:URL headers:headers bodyFileURL:nil owner:nil];
+  if (!self) return nil;
+  _body = body.length ? [body copy] : nil;
+  return self;
+}
+
+- (instancetype)initWithMethod:(NSString *)method URL:(NSURL *)URL headers:(NSDictionary *)headers
+                   bodyFileURL:(NSURL *)bodyFileURL owner:(id)owner
 {
   self = [super init];
   if (!self) return nil;
   _method = [method.uppercaseString copy];
   _URL = [URL copy];
   _headers = [headers copy] ?: @{};
-  _body = body.length ? [body copy] : nil;
+  _bodyFileURL = [bodyFileURL copy];
+  _owner = owner;
   _pathParameters = @{};
   _userInfo = [NSMutableDictionary dictionary];
   NSURLComponents *components = [NSURLComponents componentsWithURL:URL resolvingAgainstBaseURL:YES];
@@ -41,6 +54,18 @@ static NSString *OISHeaderIn(NSDictionary<NSString *, NSString *> *headers, NSSt
 - (NSString *)valueForHeader:(NSString *)name
 {
   return OISHeaderIn(self.headers, name);
+}
+
+// A file's, mapped rather than read, once.
+- (NSData *)body
+{
+  @synchronized (self) {
+    if (!_body && _bodyFileURL) {
+      NSData *mapped = [NSData dataWithContentsOfURL:_bodyFileURL options:NSDataReadingMappedIfSafe error:NULL];
+      _body = mapped.length ? mapped : nil;
+    }
+    return _body;
+  }
 }
 
 - (id)JSONBody
@@ -107,6 +132,22 @@ static NSString *OISHeaderIn(NSDictionary<NSString *, NSString *> *headers, NSSt
 + (instancetype)responseWithText:(NSString *)text status:(NSInteger)status
 {
   return [self responseWithStatus:status body:[text dataUsingEncoding:NSUTF8StringEncoding] contentType:@"text/plain;charset=utf-8"];
+}
+
++ (instancetype)responseWithFile:(NSURL *)file contentType:(NSString *)contentType status:(NSInteger)status
+{
+  ODataServerResponse *response = [self responseWithStatus:status];
+  response.bodyFileURL = file;
+  [response setValue:contentType ?: @"application/octet-stream" forHeader:@"Content-Type"];
+  return response;
+}
+
++ (instancetype)responseWithStream:(id<ODataServerResponseStream>)stream contentType:(NSString *)contentType status:(NSInteger)status
+{
+  ODataServerResponse *response = [self responseWithStatus:status];
+  response.bodyStream = stream;
+  [response setValue:contentType ?: @"application/octet-stream" forHeader:@"Content-Type"];
+  return response;
 }
 
 + (instancetype)responseWithError:(NSError *)error

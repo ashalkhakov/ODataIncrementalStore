@@ -5,9 +5,9 @@
 // The one part of ODataServer that touches sockets. It listens with the
 // vendored GCDWebServer (ThirdParty/GCDWebServer), turns each request into
 // an ODataServerRequest for its handler -- a pipeline, a router, a mounted
-// service -- and writes the response back. HTTP/1.1, one request a
-// connection, no TLS: it is meant to sit behind a reverse proxy (nginx,
-// Caddy), which passes the request path on unchanged.
+// service -- and writes the response back. HTTP/1.1, with persistent
+// connections (keepAliveTimeout), no TLS: it is meant to sit behind a
+// reverse proxy (nginx, Caddy), which passes the request path on unchanged.
 //
 // Most applications do not make one themselves: ODataServerApplication
 // does, with a pipeline and router around their service.
@@ -49,6 +49,16 @@ NS_ASSUME_NONNULL_BEGIN
 // The largest request body taken, in bytes; a larger one is answered 413.
 // Default: 64 MiB.
 @property (nonatomic) NSUInteger maxBodySize;
+// A larger request body, or a chunked one (whose size is not said), is
+// written to a temporary file as it comes, not kept in memory
+// (ODataServerRequest's bodyFileURL). Default: 1 MiB.
+@property (nonatomic) NSUInteger maxBodyInMemory;
+// How long a connection is kept open for the next request after a
+// response (HTTP/1.1 persistent connections; a proxy's upstream keepalive),
+// and how many requests it answers before it is closed. 0 closes each
+// after one response. Default: 5 seconds, 100 requests.
+@property (nonatomic) NSTimeInterval keepAliveTimeout;
+@property (nonatomic) NSUInteger maxRequestsPerConnection;
 
 // Starts listening; port 0 asks the system for a free one. Handlers run on
 // dispatch queues, so the caller need not run a run loop.

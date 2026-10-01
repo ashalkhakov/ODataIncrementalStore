@@ -34,8 +34,10 @@
 //   the router     GET /health (HealthPath), then the service at its
 //                  service root's path (/odata/*)
 //   the pipeline   ODataRequestIDStage, ODataAccessLogStage (AccessLog),
-//                  ODataAuthenticationStage (with the authenticator, when
-//                  the settings name one), then the router
+//                  ODataCORSStage (CORSOrigins), ODataCompressionStage
+//                  (Compression), ODataAuthenticationStage (with the
+//                  authenticator, when the settings name one), then the
+//                  router
 //   the listener   on Port, loopback unless Localhost is NO
 //
 // and each is handed to its -configure method, to add to or change, before
@@ -84,6 +86,15 @@ FOUNDATION_EXPORT NSErrorDomain const ODataServerErrorDomain;
 //   AllowAnonymous  YES: a request that names no one is answered too
 //   HealthPath    default /health; empty for none
 //   AccessLog     YES (the default): a line per request on standard error
+//   CORSOrigins   origins browsers may call from (a list, or text with
+//                 spaces or commas between; * for any): ODataCORSStage
+//   CORSCredentials  YES: browsers may send cookies and Authorization
+//   Compression   YES (the default): gzip for clients that take it
+//   MaxBodyInMemory  bytes; a larger request body (or a chunked one) waits
+//                 in a temporary file. Default 1 MiB
+//   KeepAliveTimeout  seconds a connection waits for its next request
+//                 (default 5; 0 closes each after one response)
+//   MaxRequestsPerConnection  default 100
 //   Bundles       bundles to load before the store is opened (the
 //                 application's code; see ODataServerMain)
 //   Libraries     shared libraries to load before the store is opened (a
@@ -124,6 +135,12 @@ FOUNDATION_EXPORT NSErrorDomain const ODataServerErrorDomain;
 @property (nonatomic, readonly, copy) NSArray<NSString *> *libraryPaths;
 @property (nonatomic, readonly, copy) NSString *healthPath;
 @property (nonatomic, readonly) BOOL accessLog;
+@property (nonatomic, readonly, copy) NSArray<NSString *> *corsOrigins;
+@property (nonatomic, readonly) BOOL corsCredentials;
+@property (nonatomic, readonly) BOOL compression;
+@property (nonatomic, readonly) NSUInteger maxBodyInMemory;
+@property (nonatomic, readonly) NSTimeInterval keepAliveTimeout;
+@property (nonatomic, readonly) NSUInteger maxRequestsPerConnection;
 @property (nonatomic, readonly) BOOL printsMetadata;
 
 // Who is asking, as the settings say to find out; nil, without an error,

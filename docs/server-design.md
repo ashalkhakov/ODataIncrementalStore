@@ -431,6 +431,26 @@ may still change it; then the listener writes it. No thread is started
 for any of it, and the way back must not wait. A stage that answered
 early sees its own answer; stages after it never ran.
 
+The stages the settings add, besides request ids and the access log:
+
+- `ODataCORSStage` (`CORSOrigins`, `CORSCredentials`): browsers on other
+  origins. A preflight is answered before authentication (403 for an
+  origin not allowed); other responses to an allowed origin carry
+  `Access-Control-Allow-Origin` (the origin itself, with `Vary: Origin`,
+  unless any may read it without credentials) and expose OData's headers.
+- `ODataCompressionStage` (`Compression`, on by default): gzip for a client
+  that takes it, of a JSON, XML or text body of at least 1 KiB, only when
+  it comes out smaller, with `Vary: Accept-Encoding` either way and a
+  strong ETag made weak. After-hooks run last first, so the access log
+  sees what went out.
+
+Bodies need not be in memory. A request body over `MaxBodyInMemory`
+(default 1 MiB), or a chunked one, is written to a temporary file as it
+arrives: `ODataServerRequest`'s `bodyFileURL`, which `body` maps when asked
+(the service reads it so). A response can be a file (`bodyFileURL`, sent
+from disk) or an `ODataServerResponseStream`, asked for its next piece as
+it is sent, chunked.
+
 Settings come from a property list (`-Config`, or `OIS_CONFIG`), then the
 environment (`OIS_PORT`, `OIS_MAX_PAGE_SIZE`, `OIS_JWT_ISSUER`: each
 setting's name in capitals, words apart; JSON for a dictionary or list),
@@ -523,9 +543,11 @@ possible:
   background suspension. Authentication belongs to the proxy or to the
   application's handlers.
 - Add a size limit on request heads and bodies, and a read timeout.
-- Keep-alive is not needed for a first version: nginx speaks HTTP/1.0 to
-  upstreams by default. Add it later if Caddy's pooled connections show
-  it is worth it.
+- Keep-alive came later, for proxies that pool upstream connections
+  (Caddy; nginx with `keepalive` and HTTP/1.1 upstreams): a connection is
+  kept for its next request (`KeepAliveTimeout`, default 5 s, and
+  `MaxRequestsPerConnection`, default 100) whenever that is safe, and
+  closed otherwise (`PORTING.md`).
 
 It lives in `ThirdParty/GCDWebServer/` with its license; `PORTING.md`
 there lists every change, and `upstream.diff` reapplies them to the

@@ -20,7 +20,13 @@ NS_ASSUME_NONNULL_BEGIN
 // escaped), on the host the listener answers.
 - (instancetype)initWithMethod:(NSString *)method URL:(NSURL *)URL
                        headers:(NSDictionary<NSString *, NSString *> *)headers
-                          body:(nullable NSData *)body NS_DESIGNATED_INITIALIZER;
+                          body:(nullable NSData *)body;
+// A body that waits in a file (a large one, which the listener wrote to a
+// temporary file as it came): body maps it when asked. owner is kept as
+// long as the request is (the listener's, which removes the file after).
+- (instancetype)initWithMethod:(NSString *)method URL:(NSURL *)URL
+                       headers:(NSDictionary<NSString *, NSString *> *)headers
+                   bodyFileURL:(nullable NSURL *)bodyFileURL owner:(nullable id)owner NS_DESIGNATED_INITIALIZER;
 - (instancetype)init NS_UNAVAILABLE;
 
 @property (nonatomic, readonly, copy) NSString *method;  // upper case
@@ -35,6 +41,8 @@ NS_ASSUME_NONNULL_BEGIN
 // Header names are case-insensitive.
 - (nullable NSString *)valueForHeader:(NSString *)name;
 @property (nonatomic, readonly, copy, nullable) NSData *body;
+// Where the body waits, when it is a file; nil when it came in memory.
+@property (nonatomic, readonly, copy, nullable) NSURL *bodyFileURL;
 // The body as JSON, or nil when it is none.
 @property (nonatomic, readonly, nullable) id JSONBody;
 // The client's address, as the listener saw it (the proxy's, behind one).
@@ -55,11 +63,22 @@ NS_ASSUME_NONNULL_BEGIN
 - (NSURLRequest *)URLRequestOnOrigin:(nullable NSURL *)origin;
 @end
 
+// A body made as it is sent: asked for its next piece, on a queue of the
+// listener's, one call at a time, until it gives an empty one (the end) or
+// nil (an error: the connection is closed, the status having been sent).
+@protocol ODataServerResponseStream <NSObject>
+- (nullable NSData *)nextChunk:(NSError **)error;
+@end
+
 @interface ODataServerResponse : NSObject
 + (instancetype)responseWithStatus:(NSInteger)status;
 + (instancetype)responseWithStatus:(NSInteger)status body:(nullable NSData *)body contentType:(nullable NSString *)contentType;
 + (instancetype)responseWithJSON:(id)json status:(NSInteger)status;
 + (instancetype)responseWithText:(NSString *)text status:(NSInteger)status;
+// A file, sent from disk as it is read, not loaded first.
++ (instancetype)responseWithFile:(NSURL *)file contentType:(nullable NSString *)contentType status:(NSInteger)status;
+// A stream, sent chunked as it gives its pieces.
++ (instancetype)responseWithStream:(id<ODataServerResponseStream>)stream contentType:(nullable NSString *)contentType status:(NSInteger)status;
 // An error as OData answers one ({"error": {"code", "message"}}), its status
 // the error's code for an ODataServiceError, 500 for any other (whose own
 // message is logged, not shown). A 401 or 403 that names the scopes it
@@ -67,7 +86,10 @@ NS_ASSUME_NONNULL_BEGIN
 + (instancetype)responseWithError:(NSError *)error;
 
 @property (nonatomic) NSInteger status;
+// The body: in memory, or a file, or a stream (one of the three).
 @property (nonatomic, copy, nullable) NSData *body;
+@property (nonatomic, copy, nullable) NSURL *bodyFileURL;
+@property (nonatomic, strong, nullable) id<ODataServerResponseStream> bodyStream;
 @property (nonatomic, readonly, copy) NSDictionary<NSString *, NSString *> *headers;
 // Header names are case-insensitive; nil removes one.
 - (nullable NSString *)valueForHeader:(NSString *)name;

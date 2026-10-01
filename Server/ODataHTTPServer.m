@@ -7,7 +7,10 @@
 #import "ODataService.h"
 #import "GCDWebServer.h"
 #import "GCDWebServerDataRequest.h"
+#import "GCDWebServerFileRequest.h"
 #import "GCDWebServerDataResponse.h"
+#import "GCDWebServerFileResponse.h"
+#import "GCDWebServerStreamedResponse.h"
 #include <errno.h>
 
 // One request's way back to the socket.
@@ -22,10 +25,25 @@
 {
   ODataServerResponse *answer = reply.response;
   NSDictionary *headers = answer.headers;
+  NSString *type = [answer valueForHeader:@"Content-Type"] ?: @"application/octet-stream";
   NSData *body = self.headOnly ? nil : answer.body;
-  GCDWebServerResponse *response;
-  if (body.length) {
-    response = [GCDWebServerDataResponse responseWithData:body contentType:[answer valueForHeader:@"Content-Type"] ?: @"application/octet-stream"];
+  GCDWebServerResponse *response = nil;
+  if (!self.headOnly && answer.bodyFileURL) {
+    GCDWebServerFileResponse *file = [GCDWebServerFileResponse responseWithFile:answer.bodyFileURL.path];
+    if (!file) {
+      NSLog(@"ODataServer: %@ cannot be read", answer.bodyFileURL.path);
+      self.completion([GCDWebServerResponse responseWithStatusCode:500]);
+      return;
+    }
+    file.contentType = type;
+    response = file;
+  } else if (!self.headOnly && answer.bodyStream) {
+    id<ODataServerResponseStream> stream = answer.bodyStream;
+    response = [GCDWebServerStreamedResponse responseWithContentType:type streamBlock:^NSData *(NSError **error) {
+      return [stream nextChunk:error];
+    }];
+  } else if (body.length) {
+    response = [GCDWebServerDataResponse responseWithData:body contentType:type];
   } else {
     response = [GCDWebServerResponse response];
   }
@@ -54,12 +72,24 @@
   _handler = handler;
   _bindToLocalhost = YES;
   _maxBodySize = 64 * 1024 * 1024;
+  _maxBodyInMemory = 1024 * 1024;
+  _keepAliveTimeout = 5;
+  _maxRequestsPerConnection = 100;
   _server = [[GCDWebServer alloc] init];
   __weak ODataHTTPServer *weakSelf = self;
   [_server addHandlerWithMatchBlock:^GCDWebServerRequest *(NSString *method, NSURL *url, NSDictionary *headers, NSString *path, NSDictionary *query) {
-    return [[GCDWebServerDataRequest alloc] initWithMethod:method url:url headers:headers path:path query:query];
+    // A body too large for memory, or of a size not said, goes to a file.
+    NSString *length = nil, *encoding = nil;
+    for (NSString *name in headers) {
+      if ([name caseInsensitiveCompare:@"Content-Length"] == NSOrderedSame) length = headers[name];
+      if ([name caseInsensitiveCompare:@"Transfer-Encoding"] == NSOrderedSame) encoding = headers[name];
+    }
+    NSUInteger inMemory = weakSelf.maxBodyInMemory;
+    BOOL toFile = encoding.length || (inMemory && length.longLongValue > (long long)inMemory);
+    Class kind = toFile ? [GCDWebServerFileRequest class] : [GCDWebServerDataRequest class];
+    return [[kind alloc] initWithMethod:method url:url headers:headers path:path query:query];
   } asyncProcessBlock:^(GCDWebServerRequest *request, GCDWebServerCompletionBlock completion) {
-    [weakSelf answer:(GCDWebServerDataRequest *)request completion:completion];
+    [weakSelf answer:request completion:completion];
   }];
   return self;
 }
@@ -84,6 +114,8 @@
     GCDWebServerOption_MaxBodySize: @(self.maxBodySize),
     GCDWebServerOption_ServerName: @"ODataServer",
     GCDWebServerOption_AutomaticallyMapHEADToGET: @NO,
+    GCDWebServerOption_KeepAliveTimeout: @(self.keepAliveTimeout),
+    GCDWebServerOption_MaxRequestsPerConnection: @(self.maxRequestsPerConnection),
   };
 }
 
@@ -144,7 +176,7 @@
   return [NSURL URLWithString:[NSString stringWithFormat:@"http://%@%@", host, target]];
 }
 
-- (void)answer:(GCDWebServerDataRequest *)request completion:(GCDWebServerCompletionBlock)completion
+- (void)answer:(GCDWebServerRequest *)request completion:(GCDWebServerCompletionBlock)completion
 {
   NSURL *url = [self URLOf:request];
   if (!url) {
@@ -153,8 +185,16 @@
   }
   NSMutableDictionary *headers = [NSMutableDictionary dictionary];
   for (NSString *name in request.headers) headers[name] = request.headers[name];
-  ODataServerRequest *httpRequest = [[ODataServerRequest alloc] initWithMethod:request.method URL:url headers:headers
-                                                                      body:request.hasBody ? request.data : nil];
+  ODataServerRequest *httpRequest;
+  if ([request isKindOfClass:[GCDWebServerFileRequest class]]) {
+    // The file goes when the listener's request does: kept with ours.
+    NSString *path = ((GCDWebServerFileRequest *)request).temporaryPath;
+    httpRequest = [[ODataServerRequest alloc] initWithMethod:request.method URL:url headers:headers
+                                                 bodyFileURL:request.hasBody ? [NSURL fileURLWithPath:path] : nil owner:request];
+  } else {
+    NSData *body = request.hasBody ? ((GCDWebServerDataRequest *)request).data : nil;
+    httpRequest = [[ODataServerRequest alloc] initWithMethod:request.method URL:url headers:headers body:body];
+  }
   httpRequest.remoteAddress = request.remoteAddressString;
   OISListenerAnswer *answer = [[OISListenerAnswer alloc] init];
   answer.completion = completion;

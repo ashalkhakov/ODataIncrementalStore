@@ -237,6 +237,28 @@ extern NSString* const GCDWebServerOption_MaxBodySize;
  */
 extern NSString* const GCDWebServerOption_ReadTimeout;
 
+/**
+ *  ODataStore port: how long in seconds a connection is kept open for the
+ *  next request once a response has been sent (NSNumber / double), as
+ *  HTTP/1.1 persistent connections are. A connection is kept only for an
+ *  HTTP/1.1 request that does not ask to close, whose body was not chunked
+ *  and after which nothing more arrived with it, and whose response says its
+ *  length; any other is closed as before. A kept connection that receives
+ *  nothing in this time is closed without an answer. 0 closes every
+ *  connection after its response.
+ *
+ *  The default value is 0.
+ */
+extern NSString* const GCDWebServerOption_KeepAliveTimeout;
+
+/**
+ *  ODataStore port: how many requests one kept connection answers before it
+ *  is closed (NSNumber / NSUInteger); 0 for no limit.
+ *
+ *  The default value is 100.
+ */
+extern NSString* const GCDWebServerOption_MaxRequestsPerConnection;
+
 #if TARGET_OS_IPHONE
 
 /**
