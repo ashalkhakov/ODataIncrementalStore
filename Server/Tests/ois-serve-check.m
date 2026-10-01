@@ -263,7 +263,8 @@ static OISReply *OISSend(NSString *method, NSString *target, NSDictionary *heade
 @implementation OISLaterHandler
 - (void)handleRequest:(ODataServerRequest *)request reply:(ODataServerReply *)reply
 {
-  dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(30 * NSEC_PER_MSEC)), dispatch_get_global_queue(0, 0), ^{
+  double delay = request.userInfo[@"delay"] ? [request.userInfo[@"delay"] doubleValue] : 0.03;
+  dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(delay * NSEC_PER_SEC)), dispatch_get_global_queue(0, 0), ^{
     [reply finishWithResponse:[ODataServerResponse responseWithText:@"later" status:202]];
   });
 }
@@ -416,6 +417,78 @@ static ODataAuthentication *OISAskLater(NSString *authorization)
   [answers.done unlock];
   return answer;
 }
+
+// What the trace context stage left for handlers, as the response.
+@interface OISTraceHandler : NSObject <ODataServerHandler>
+@end
+
+@implementation OISTraceHandler
+- (void)handleRequest:(ODataServerRequest *)request reply:(ODataServerReply *)reply
+{
+  request.operation = @"echoTrace";
+  [reply finishWithResponse:[ODataServerResponse responseWithJSON:@{ @"trace": request.userInfo[ODataServerTraceIDKey] ?: [NSNull null],
+                                                                      @"span": request.userInfo[ODataServerSpanIDKey] ?: [NSNull null],
+                                                                      @"traceparent": request.userInfo[ODataServerTraceparentKey] ?: [NSNull null] }
+                                                            status:200]];
+}
+@end
+
+// Makes the slow route slow.
+@interface OISSlowStage : ODataServerStage
+@end
+
+@implementation OISSlowStage
+- (BOOL)shouldPassRequest:(ODataServerRequest *)request reply:(ODataServerReply *)reply
+{
+  if ([request.path isEqualToString:@"/slow"]) request.userInfo[@"delay"] = @0.5;
+  return YES;
+}
+@end
+
+// A readiness check the test turns on and off.
+@interface OISSwitchCheck : NSObject <ODataServerReadinessCheck>
+@property (atomic) BOOL failing;
+@end
+
+@implementation OISSwitchCheck
+- (NSString *)name
+{
+  return @"switch";
+}
+- (void)checkReadiness:(ODataServerCheck *)check
+{
+  if (self.failing) {
+    [check failWithReason:@"switched off"];
+  } else {
+    [check pass];
+  }
+}
+@end
+
+// Metrics, logs as JSON, readiness, the admin listener, a graceful stop.
+@interface OISObservedApplication : ODataServerApplication
+@property (nonatomic, strong) OISKeptLog *log;
+@property (nonatomic, strong) OISSwitchCheck *check;
+@end
+
+@implementation OISObservedApplication
+- (void)configureRouter:(ODataServerRouter *)router
+{
+  [router insertRoute:[ODataServerRoute routeWithMethod:@"GET" path:@"/trace" handler:[[OISTraceHandler alloc] init]] atIndex:0];
+  [router insertRoute:[ODataServerRoute routeWithMethod:@"GET" path:@"/slow" handler:[[OISLaterHandler alloc] init]] atIndex:0];
+  self.check = [[OISSwitchCheck alloc] init];
+  [self.readiness addCheck:self.check];
+}
+- (void)configurePipeline:(ODataServerPipeline *)pipeline
+{
+  ODataAccessLogStage *configured = [pipeline stageOfClass:[ODataAccessLogStage class]];
+  self.log = [[OISKeptLog alloc] init];
+  self.log.lines = [NSMutableArray array];
+  self.log.format = configured.format;
+  [pipeline replaceStageOfClass:[ODataAccessLogStage class] withStage:self.log];
+  [pipeline addStage:[[OISSlowStage alloc] init]];
+}
+@end
 
 @interface OISCheckApplication : ODataServerApplication
 @property (nonatomic, strong) OISKeptLog *log;
@@ -790,6 +863,105 @@ int main(int argc, const char *argv[])
 
     [application.server stop];
     [[NSFileManager defaultManager] removeItemAtURL:application.file error:NULL];
+
+    // What the server says about itself.
+    ODataServerConfiguration *observedSettings = [[ODataServerConfiguration alloc] initWithSettings:@{
+      @"Model": modelPath, @"ServiceRoot": @"https://api.example.test/odata/", @"AccessLog": @"json", @"AdminPort": @1 }];
+    OISObservedApplication *observed = [[OISObservedApplication alloc] initWithConfiguration:observedSettings];
+    BOOL observing = [observed prepare:&error] && [observed.server startOnPort:0 error:&error] && [observed.adminServer startOnPort:0 error:&error];
+    check(observing, @"observed-start", [NSString stringWithFormat:@"%@", error ?: @""]);
+    if (observing) {
+      port = observed.server.port;
+      NSUInteger mainPort = port, adminPort = observed.adminServer.port;
+      OISSend(@"GET", @"/trace", nil, nil);
+      OISSend(@"GET", @"/odata/Products", nil, nil);
+      OISSend(@"GET", @"/odata/Products(1)", nil, nil);
+      OISSend(@"GET", @"/odata/Nothing", nil, nil);
+      OISSend(@"GET", @"/nowhere", nil, nil);
+
+      // W3C trace context: a well-formed traceparent's trace is kept, with a
+      // span of this server's; one that is not begins a new trace.
+      NSString *parent = @"00-0af7651916cd43dd8448eb211c80319c-b7ad6b7169203331-01";
+      OISReply *traced = OISSend(@"GET", @"/trace", @{ @"traceparent": parent }, nil);
+      NSString *traceparent = traced.json[@"traceparent"];
+      check([traced.json[@"trace"] isEqual:@"0af7651916cd43dd8448eb211c80319c"] && [traceparent hasPrefix:@"00-0af7651916cd43dd8448eb211c80319c-"] &&
+            [traceparent hasSuffix:@"-01"] && ![traced.json[@"span"] isEqual:@"b7ad6b7169203331"] && [traced.json[@"span"] length] == 16,
+            @"trace-context", traced.text);
+      OISReply *untraced = OISSend(@"GET", @"/trace", @{ @"traceparent": @"00-00000000000000000000000000000000-b7ad6b7169203331-01" }, nil);
+      check([untraced.json[@"trace"] length] == 32 && ![untraced.json[@"trace"] hasPrefix:@"0000"], @"trace-context-new", untraced.text);
+
+      // Metrics: not on the public listener when there is an admin one.
+      check(OISSend(@"GET", @"/metrics", nil, nil).status == 404, @"metrics-not-public", @"");
+      port = adminPort;
+      OISReply *scraped = OISSend(@"GET", @"/metrics", nil, nil);
+      NSString *exposition = scraped.text;
+      // (The store is empty: Products(1) is a 404 too; and the /metrics
+      // asked of the public listener was one no route took.)
+      NSArray *expected = @[ @"http_requests_total{method=\"GET\",route=\"/trace\",status=\"200\"} 3",
+                             @"http_requests_total{method=\"GET\",route=\"(none)\",status=\"404\"} 2",
+                             @"http_requests_total{method=\"GET\",route=\"/odata/*\",status=\"404\"} 2",
+                             @"http_operations_total{method=\"GET\",operation=\"Products\",route=\"/odata/*\",status=\"200\"} 1",
+                             @"http_operations_total{method=\"GET\",operation=\"Products\",route=\"/odata/*\",status=\"404\"} 1",
+                             @"http_operations_total{method=\"GET\",operation=\"(other)\",route=\"/odata/*\",status=\"404\"} 1",
+                             @"http_operations_total{method=\"GET\",operation=\"echoTrace\",route=\"/trace\",status=\"200\"} 3",
+                             @"http_request_duration_seconds_bucket{method=\"GET\",route=\"/trace\",le=\"+Inf\"} 3",
+                             @"http_request_duration_seconds_count{method=\"GET\",route=\"/trace\"} 3",
+                             @"# TYPE http_request_duration_seconds histogram", @"http_requests_in_flight 0",
+                             @"process_start_time_seconds ", @"odataserver_build_info{version=" ];
+      NSMutableArray *missing = [NSMutableArray array];
+      for (NSString *line in expected) if (![exposition containsString:line]) [missing addObject:line];
+      check(scraped.status == 200 && [scraped.headers[@"content-type"] hasPrefix:@"text/plain; version=0.0.4"] && !missing.count,
+            @"metrics", missing.count ? [NSString stringWithFormat:@"missing %@ in\n%@", missing, exposition] : @"");
+
+      // Readiness: the store answers, and every check passes; then one
+      // fails; then the server drains.
+      OISReply *ready = OISSend(@"GET", @"/ready", nil, nil);
+      check(ready.status == 200 && [ready.json[@"checks"][@"store"] isEqual:@"ok"] && [ready.json[@"checks"][@"switch"] isEqual:@"ok"],
+            @"ready", ready.text);
+      observed.check.failing = YES;
+      OISReply *unready = OISSend(@"GET", @"/ready", nil, nil);
+      check(unready.status == 503 && [unready.json[@"checks"][@"switch"] isEqual:@"switched off"], @"ready-check-fails", unready.text);
+      observed.check.failing = NO;
+      check(OISSend(@"GET", @"/health", nil, nil).status == 200, @"health-admin", @"");
+      port = mainPort;
+      check(OISSend(@"GET", @"/health", nil, nil).status == 200 && OISSend(@"GET", @"/ready", nil, nil).status == 200, @"health-public", @"");
+
+      // The access log, as JSON lines.
+      NSDictionary *traceLine = nil;
+      NSArray *jsonLines;
+      @synchronized (observed.log) {
+        jsonLines = [observed.log.lines copy];
+      }
+      for (NSString *line in jsonLines) {
+        NSDictionary *entry = [NSJSONSerialization JSONObjectWithData:[line dataUsingEncoding:NSUTF8StringEncoding] options:0 error:NULL];
+        if ([entry[@"trace_id"] isEqual:@"0af7651916cd43dd8448eb211c80319c"]) traceLine = entry;
+      }
+      check([traceLine[@"route"] isEqual:@"/trace"] && [traceLine[@"operation"] isEqual:@"echoTrace"] && [traceLine[@"status"] integerValue] == 200 &&
+            [traceLine[@"level"] isEqual:@"info"] && [traceLine[@"time"] hasSuffix:@"Z"] && [traceLine[@"request_id"] length] > 0,
+            @"access-log-json", traceLine ? traceLine.description : [jsonLines componentsJoinedByString:@"\n"]);
+
+      // A graceful stop: not ready, no new connections, and the request under
+      // way finished before it returns.
+      __block OISReply *slow = nil;
+      dispatch_semaphore_t slowDone = dispatch_semaphore_create(0);
+      dispatch_async(dispatch_get_global_queue(0, 0), ^{
+        slow = OISSend(@"GET", @"/slow", nil, nil);
+        dispatch_semaphore_signal(slowDone);
+      });
+      [NSThread sleepForTimeInterval:0.15];
+      [observed drain];
+      port = adminPort;
+      OISReply *draining = OISSend(@"GET", @"/ready", nil, nil);
+      port = mainPort;
+      NSDate *stopping = [NSDate date];
+      BOOL stoppedCleanly = [observed stopWithTimeout:5];
+      NSTimeInterval stopTook = -[stopping timeIntervalSinceNow];
+      dispatch_semaphore_wait(slowDone, dispatch_time(DISPATCH_TIME_NOW, (int64_t)(5 * NSEC_PER_SEC)));
+      check(draining.status == 503 && [draining.json[@"status"] isEqual:@"draining"] && stoppedCleanly && slow.status == 202 &&
+            stopTook > 0.2 && OISSend(@"GET", @"/health", nil, nil) == nil,
+            @"graceful-stop", [NSString stringWithFormat:@"ready %ld, stopped %@ after %.2fs, slow %ld", (long)draining.status,
+                                                         stoppedCleanly ? @"cleanly" : @"with requests left", stopTook, (long)slow.status]);
+    }
 
     // A kept connection with nothing more to ask is closed after the timeout.
     // On every address, IPv4 and IPv6 both (Localhost NO), as in a container.

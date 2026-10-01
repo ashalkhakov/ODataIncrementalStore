@@ -69,7 +69,7 @@ COPY . /usr/src/odatakit
 WORKDIR /usr/src/odatakit
 RUN set -e; \
     make -j"$(nproc)" ODATAKIT_VERSION="$VERSION" && make install ODATAKIT_VERSION="$VERSION"; \
-    make -C Server -j"$(nproc)" && make -C Server install ODATAKIT_VERSION="$VERSION"; \
+    make -C Server -j"$(nproc)" ODATASERVER_VERSION="$VERSION" && make -C Server install ODATAKIT_VERSION="$VERSION" ODATASERVER_VERSION="$VERSION"; \
     mkdir -p /usr/local/share/ois-serve; \
     momc Examples/Catalog/Catalog.xcdatamodeld /usr/local/share/ois-serve/Catalog.momd
 ENV PKG_CONFIG_PATH=/opt/gnustep/Local/Library/Libraries/pkgconfig
@@ -115,15 +115,21 @@ FROM runtime AS ois-serve
 RUN useradd --system --home-dir /var/lib/ois-serve --create-home ois
 COPY Docker/service.plist /etc/ois-serve/service.plist
 # In a container: on every address, at 8080. Set OIS_SERVICE_ROOT to the
-# public URL the service is reached at; its links begin with it.
+# public URL the service is reached at; its links begin with it. The access
+# log is JSON lines, for a log collector; metrics, health and readiness are
+# on the admin port, 9090, for Prometheus and the orchestrator (publish it
+# only where they are).
 ENV OIS_CONFIG=/etc/ois-serve/service.plist \
     OIS_PORT=8080 \
     OIS_LOCALHOST=NO \
+    OIS_ACCESS_LOG=json \
+    OIS_ADMIN_PORT=9090 \
+    OIS_ADMIN_LOCALHOST=NO \
     HOME=/var/lib/ois-serve
 USER ois
 WORKDIR /var/lib/ois-serve
 VOLUME /var/lib/ois-serve
-EXPOSE 8080
+EXPOSE 8080 9090
 HEALTHCHECK --interval=30s --timeout=3s \
   CMD ["/bin/bash", "-c", "exec 3<>/dev/tcp/127.0.0.1/${OIS_PORT:-8080} && printf 'GET /health HTTP/1.0\\r\\n\\r\\n' >&3 && grep -q '200 OK' <&3"]
 ENTRYPOINT ["/usr/local/bin/ois-env", "ois-serve"]

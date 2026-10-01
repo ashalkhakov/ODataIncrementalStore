@@ -13,16 +13,22 @@
 #import "GCDWebServerStreamedResponse.h"
 #include <errno.h>
 
+@interface ODataHTTPServer ()
+- (void)requestDidFinish;
+@end
+
 // One request's way back to the socket.
 @interface OISListenerAnswer : NSObject
 @property (nonatomic, copy) GCDWebServerCompletionBlock completion;
 @property (nonatomic) BOOL headOnly;
+@property (nonatomic, weak) ODataHTTPServer *server;
 @end
 
 @implementation OISListenerAnswer
 
 - (void)replyDidFinish:(ODataServerReply *)reply
 {
+  [self.server requestDidFinish];
   ODataServerResponse *answer = reply.response;
   NSDictionary *headers = answer.headers;
   NSString *type = [answer valueForHeader:@"Content-Type"] ?: @"application/octet-stream";
@@ -63,6 +69,21 @@
 
 @implementation ODataHTTPServer {
   GCDWebServer *_server;
+  NSUInteger _inFlight;
+}
+
+- (NSUInteger)requestsInFlight
+{
+  @synchronized (self) {
+    return _inFlight;
+  }
+}
+
+- (void)requestDidFinish
+{
+  @synchronized (self) {
+    if (_inFlight) _inFlight--;
+  }
 }
 
 - (instancetype)initWithHandler:(id<ODataServerHandler>)handler
@@ -199,6 +220,10 @@
   OISListenerAnswer *answer = [[OISListenerAnswer alloc] init];
   answer.completion = completion;
   answer.headOnly = [httpRequest.method isEqualToString:@"HEAD"];
+  answer.server = self;
+  @synchronized (self) {
+    _inFlight++;
+  }
   ODataServerReply *reply = [[ODataServerReply alloc] initWithTarget:answer action:@selector(replyDidFinish:)];
   [self.handler handleRequest:httpRequest reply:reply];
 }

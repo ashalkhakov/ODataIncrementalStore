@@ -5,7 +5,9 @@
 #import "ODataService.h"
 #import "ODataAuthentication.h"
 #import "ODataError.h"
+#import "ODataServerObservability.h"
 #include <dlfcn.h>
+#include <signal.h>
 
 NSErrorDomain const ODataServerErrorDomain = @"org.gnu.ois.ODataServer";
 
@@ -81,7 +83,8 @@ static void OISLoadBackendFor(NSString *type)
             @"RepeatabilityDuration", @"TrustedUserHeader", @"TrustedClaimHeaders", @"ProxySecretHeader",
             @"ProxySecretEnvironment", @"JWTIssuer", @"JWTAudience", @"JWTKeysURL", @"IntrospectionEndpoint",
             @"IntrospectionClientID", @"IntrospectionSecretEnvironment", @"RequiredScopes", @"AllowAnonymous", @"HealthPath",
-            @"AccessLog", @"CORSOrigins", @"CORSCredentials", @"Compression", @"MaxBodyInMemory", @"KeepAliveTimeout", @"MaxRequestsPerConnection", @"Bundles", @"Libraries",
+            @"AccessLog", @"CORSOrigins", @"CORSCredentials", @"Compression", @"MaxBodyInMemory", @"KeepAliveTimeout", @"MaxRequestsPerConnection", @"SlowRequestThreshold", @"Metrics",
+            @"MetricsPath", @"ReadyPath", @"TraceContext", @"AdminPort", @"AdminLocalhost", @"DrainDelay", @"ShutdownTimeout", @"Bundles", @"Libraries",
             @"PrintMetadata" ];
 }
 
@@ -219,7 +222,62 @@ static id OISEnvironmentValue(NSString *text)
 
 - (BOOL)accessLog
 {
-  return [self flag:@"AccessLog" otherwise:YES];
+  return self.accessLogJSON || [self flag:@"AccessLog" otherwise:YES];
+}
+
+- (BOOL)accessLogJSON
+{
+  id value = [self setting:@"AccessLog"];
+  return [value isKindOfClass:[NSString class]] && [value caseInsensitiveCompare:@"json"] == NSOrderedSame;
+}
+
+- (NSTimeInterval)slowRequestThreshold
+{
+  id value = [self setting:@"SlowRequestThreshold"];
+  return value ? [value doubleValue] : 1;
+}
+
+- (BOOL)metrics
+{
+  return [self flag:@"Metrics" otherwise:YES];
+}
+
+- (NSString *)metricsPath
+{
+  id path = [self setting:@"MetricsPath"];
+  return [path isKindOfClass:[NSString class]] ? path : @"/metrics";
+}
+
+- (NSString *)readyPath
+{
+  id path = [self setting:@"ReadyPath"];
+  return [path isKindOfClass:[NSString class]] ? path : @"/ready";
+}
+
+- (BOOL)traceContext
+{
+  return [self flag:@"TraceContext" otherwise:YES];
+}
+
+- (NSUInteger)adminPort
+{
+  return [self count:@"AdminPort"];
+}
+
+- (BOOL)adminBindToLocalhost
+{
+  return [self flag:@"AdminLocalhost" otherwise:YES];
+}
+
+- (NSTimeInterval)drainDelay
+{
+  return [[self setting:@"DrainDelay"] doubleValue];
+}
+
+- (NSTimeInterval)shutdownTimeout
+{
+  id value = [self setting:@"ShutdownTimeout"];
+  return value ? [value doubleValue] : 30;
 }
 
 - (NSArray<NSString *> *)corsOrigins
@@ -402,6 +460,10 @@ static id OISEnvironmentValue(NSString *text)
 @property (nonatomic, readwrite, strong, nullable) ODataServerRouter *router;
 @property (nonatomic, readwrite, strong, nullable) ODataServerPipeline *pipeline;
 @property (nonatomic, readwrite, strong, nullable) ODataHTTPServer *server;
+@property (nonatomic, readwrite, strong, nullable) ODataMetrics *metrics;
+@property (nonatomic, readwrite, strong, nullable) ODataReadinessHandler *readiness;
+@property (nonatomic, readwrite, strong, nullable) ODataServerRouter *adminRouter;
+@property (nonatomic, readwrite, strong, nullable) ODataHTTPServer *adminServer;
 // Principal classes of bundles that configure the service (ODataServerMain).
 @property (nonatomic, copy) NSArray<Class> *serviceConfigurers;
 @end
@@ -433,6 +495,10 @@ static id OISEnvironmentValue(NSString *text)
 {
 }
 
+- (void)configureAdminRouter:(ODataServerRouter *)router
+{
+}
+
 - (BOOL)prepare:(NSError **)error
 {
   if (self.server) return YES;
@@ -445,30 +511,64 @@ static id OISEnvironmentValue(NSString *text)
   }
   self.authenticator = authenticator;
 
-  ODataService *service = [configuration serviceWithAuthenticator:authenticator error:error];
-  if (!service) return NO;
-  self.service = service;
-  [self configureService:service];
-  for (Class configurer in self.serviceConfigurers) [(id<ODataServiceConfiguring>)configurer configureService:service];
-  // An operation that cannot be declared would answer 404 until someone
-  // noticed: better not to start.
-  if (service.operationProblems.count) {
-    return OISFailWith(error, [NSString stringWithFormat:@"the service cannot declare these operations; fix them, or leave them out:\n  %@",
-                                                         [service.operationProblems componentsJoinedByString:@"\n  "]]);
+  // The OData service, when the settings name a model. An application of
+  // its own may answer other APIs without one; ois-serve has nothing else.
+  ODataService *service = nil;
+  if (configuration.settings[@"Model"]) {
+    service = [configuration serviceWithAuthenticator:authenticator error:error];
+    if (!service) return NO;
+    self.service = service;
+    [self configureService:service];
+    for (Class configurer in self.serviceConfigurers) [(id<ODataServiceConfiguring>)configurer configureService:service];
+    // An operation that cannot be declared would answer 404 until someone
+    // noticed: better not to start.
+    if (service.operationProblems.count) {
+      return OISFailWith(error, [NSString stringWithFormat:@"the service cannot declare these operations; fix them, or leave them out:\n  %@",
+                                                           [service.operationProblems componentsJoinedByString:@"\n  "]]);
+    }
+  } else if ([self class] == [ODataServerApplication class]) {
+    return OISFailWith(error, @"no -Model: give the compiled model, or a -Config that names it");
   }
 
-  ODataServerRouter *router = [[ODataServerRouter alloc] init];
+  ODataMetrics *metrics = [[ODataMetrics alloc] init];
+  self.metrics = metrics;
+  ODataReadinessHandler *readiness = [[ODataReadinessHandler alloc] init];
+  if (service) [readiness addCheck:[[ODataServiceStoreCheck alloc] initWithService:service]];
+  self.readiness = readiness;
+
+  // Health and readiness on every listener, for whatever asks; metrics on
+  // the admin listener when there is one, else here.
+  NSMutableArray *operational = [NSMutableArray array];
   if (configuration.healthPath.length) {
-    [router addRoute:[ODataServerRoute routeWithMethod:@"GET" path:configuration.healthPath handler:[[ODataHealthHandler alloc] init]]];
+    [operational addObject:[ODataServerRoute routeWithMethod:@"GET" path:configuration.healthPath handler:[[ODataHealthHandler alloc] init]]];
   }
-  NSString *root = service.serviceRoot.path.length ? service.serviceRoot.path : @"/";
-  [router addRoute:[ODataServerRoute routeWithMethod:nil path:[root stringByAppendingPathComponent:@"*"]
-                                           handler:[[ODataServiceHandler alloc] initWithService:service]]];
+  if (configuration.readyPath.length) {
+    [operational addObject:[ODataServerRoute routeWithMethod:@"GET" path:configuration.readyPath handler:readiness]];
+  }
+  ODataServerRoute *metricsRoute = configuration.metrics && configuration.metricsPath.length
+      ? [ODataServerRoute routeWithMethod:@"GET" path:configuration.metricsPath handler:[[ODataMetricsHandler alloc] initWithMetrics:metrics]]
+      : nil;
+
+  ODataServerRouter *router = [[ODataServerRouter alloc] init];
+  router.routes = operational;
+  if (metricsRoute && !configuration.adminPort) [router addRoute:metricsRoute];
+  if (service) {
+    NSString *root = service.serviceRoot.path.length ? service.serviceRoot.path : @"/";
+    [router addRoute:[ODataServerRoute routeWithMethod:nil path:[root stringByAppendingPathComponent:@"*"]
+                                             handler:[[ODataServiceHandler alloc] initWithService:service]]];
+  }
   self.router = router;
   [self configureRouter:router];
 
   NSMutableArray *stages = [NSMutableArray arrayWithObject:[[ODataRequestIDStage alloc] init]];
-  if (configuration.accessLog) [stages addObject:[[ODataAccessLogStage alloc] init]];
+  if (configuration.traceContext) [stages addObject:[[ODataTraceContextStage alloc] init]];
+  if (configuration.metrics) [stages addObject:[[ODataMetricsStage alloc] initWithMetrics:metrics]];
+  if (configuration.accessLog) {
+    ODataAccessLogStage *log = [[ODataAccessLogStage alloc] init];
+    log.format = configuration.accessLogJSON ? ODataAccessLogJSON : ODataAccessLogText;
+    log.slowRequestThreshold = configuration.slowRequestThreshold;
+    [stages addObject:log];
+  }
   if (configuration.corsOrigins.count) {
     ODataCORSStage *cors = [[ODataCORSStage alloc] initWithAllowedOrigins:configuration.corsOrigins];
     cors.allowsCredentials = configuration.corsCredentials;
@@ -488,8 +588,51 @@ static id OISEnvironmentValue(NSString *text)
   server.maxRequestsPerConnection = configuration.maxRequestsPerConnection;
   self.server = server;
   [self configureServer:server];
+
+  // The admin listener: what is for operators, not clients, apart.
+  if (configuration.adminPort) {
+    ODataServerRouter *admin = [[ODataServerRouter alloc] init];
+    admin.routes = operational;
+    if (metricsRoute) [admin addRoute:metricsRoute];
+    self.adminRouter = admin;
+    [self configureAdminRouter:admin];
+    ODataHTTPServer *adminServer = [[ODataHTTPServer alloc] initWithHandler:admin];
+    adminServer.bindToLocalhost = configuration.adminBindToLocalhost;
+    adminServer.maxBodySize = 64 * 1024;
+    self.adminServer = adminServer;
+  }
   return YES;
 }
+
+- (BOOL)start:(NSError **)error
+{
+  if (![self prepare:error]) return NO;
+  if (![self.server startOnPort:self.configuration.port error:error]) return NO;
+  if (self.adminServer && ![self.adminServer startOnPort:self.configuration.adminPort error:error]) {
+    [self.server stop];
+    return NO;
+  }
+  return YES;
+}
+
+- (void)drain
+{
+  self.readiness.draining = YES;
+}
+
+- (BOOL)stopWithTimeout:(NSTimeInterval)timeout
+{
+  [self drain];
+  [self.server stop];
+  NSDate *deadline = [NSDate dateWithTimeIntervalSinceNow:timeout];
+  while (self.server.requestsInFlight > 0 && [deadline timeIntervalSinceNow] > 0) [NSThread sleepForTimeInterval:0.05];
+  BOOL finished = self.server.requestsInFlight == 0;
+  [self.adminServer stop];
+  return finished;
+}
+
+// SIGTERM or SIGINT, from a queue of their own: the main thread is told.
+static volatile sig_atomic_t OISStopSignal;
 
 - (int)run
 {
@@ -499,18 +642,70 @@ static id OISEnvironmentValue(NSString *text)
     fprintf(stderr, "%s: %s\n", name.UTF8String, error.localizedDescription.UTF8String);
     return 1;
   }
+  ODataServerConfiguration *configuration = self.configuration;
   ODataService *service = self.service;
-  if (self.configuration.printsMetadata) {
+  if (configuration.printsMetadata) {
+    if (!service) {
+      fprintf(stderr, "%s: no -Model: no $metadata to print\n", name.UTF8String);
+      return 1;
+    }
     printf("%s\n", [service metadataXMLForVersion:service.maxVersion].UTF8String);
     return 0;
   }
-  for (NSString *warning in self.configuration.warnings) fprintf(stderr, "%s: warning: %s\n", name.UTF8String, warning.UTF8String);
+  for (NSString *warning in configuration.warnings) fprintf(stderr, "%s: warning: %s\n", name.UTF8String, warning.UTF8String);
   for (NSString *problem in service.metadataProblems) fprintf(stderr, "%s: $metadata: %s\n", name.UTF8String, problem.UTF8String);
-  NSUInteger port = self.configuration.port;
-  fprintf(stderr, "%s: %s on port %lu%s, %lu entity sets\n", name.UTF8String, service.serviceRoot.absoluteString.UTF8String,
-          (unsigned long)port, self.server.bindToLocalhost ? " (loopback)" : "", (unsigned long)service.entitySets.count);
-  if (![self.server runOnPort:port error:&error]) {
-    fprintf(stderr, "%s: cannot listen on %lu: %s\n", name.UTF8String, (unsigned long)port, error.localizedDescription.UTF8String);
+
+  // The signals are taken before listening, so one that comes early stops
+  // the server rather than the process.
+  // (Kept in a static array: on GNUstep a dispatch object is no Objective-C
+  // object a collection can hold.)
+  static dispatch_source_t sources[2];
+  int signals[2] = { SIGTERM, SIGINT };
+  for (int i = 0; i < 2; i++) {
+    int signo = signals[i];
+    signal(signo, SIG_IGN);
+    sources[i] = dispatch_source_create(DISPATCH_SOURCE_TYPE_SIGNAL, (uintptr_t)signo, 0, dispatch_get_global_queue(0, 0));
+    dispatch_source_set_event_handler(sources[i], ^{
+      if (OISStopSignal) _exit(130);  // a second one: now
+      OISStopSignal = signo;
+    });
+    dispatch_resume(sources[i]);
+  }
+
+  if (![self start:&error]) {
+    fprintf(stderr, "%s: cannot listen: %s\n", name.UTF8String, error.localizedDescription.UTF8String);
+    return 1;
+  }
+  if (service) {
+    fprintf(stderr, "%s: %s on port %lu%s, %lu entity sets\n", name.UTF8String, service.serviceRoot.absoluteString.UTF8String,
+            (unsigned long)self.server.port, self.server.bindToLocalhost ? " (loopback)" : "", (unsigned long)service.entitySets.count);
+  } else {
+    fprintf(stderr, "%s: on port %lu%s\n", name.UTF8String, (unsigned long)self.server.port, self.server.bindToLocalhost ? " (loopback)" : "");
+  }
+  if (self.adminServer) {
+    fprintf(stderr, "%s: admin (health, readiness, metrics) on port %lu%s\n", name.UTF8String, (unsigned long)self.adminServer.port,
+            self.adminServer.bindToLocalhost ? " (loopback)" : "");
+  }
+
+  // The main thread runs its run loop (and so the main queue) until a
+  // signal comes; a timer keeps the loop from finding nothing to wait for.
+  NSTimer *keeper = [NSTimer scheduledTimerWithTimeInterval:3600 target:self selector:@selector(description) userInfo:nil repeats:YES];
+  while (!OISStopSignal) {
+    @autoreleasepool {
+      [[NSRunLoop currentRunLoop] runMode:NSDefaultRunLoopMode beforeDate:[NSDate dateWithTimeIntervalSinceNow:0.2]];
+    }
+  }
+  [keeper invalidate];
+
+  // Draining: not ready, so a load balancer stops sending; a while for it to
+  // notice; then no new connections, and those under way finished.
+  fprintf(stderr, "%s: draining\n", name.UTF8String);
+  [self drain];
+  if (configuration.drainDelay > 0) [NSThread sleepForTimeInterval:configuration.drainDelay];
+  BOOL finished = [self stopWithTimeout:configuration.shutdownTimeout];
+  if (!finished) {
+    fprintf(stderr, "%s: stopped with %lu requests unanswered after %.0f s\n", name.UTF8String,
+            (unsigned long)self.server.requestsInFlight, configuration.shutdownTimeout);
     return 1;
   }
   fprintf(stderr, "%s: stopped\n", name.UTF8String);

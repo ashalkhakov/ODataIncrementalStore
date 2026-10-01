@@ -50,6 +50,7 @@
 #import "ODataHTTPServer.h"
 #import "ODataServerRouter.h"
 #import "ODataServerHandlers.h"
+#import "ODataServerObservability.h"
 
 @class ODataService;
 @protocol ODataAuthenticator;
@@ -85,7 +86,23 @@ FOUNDATION_EXPORT NSErrorDomain const ODataServerErrorDomain;
 //   RequiredScopes  scopes every token needs (JWT or introspection)
 //   AllowAnonymous  YES: a request that names no one is answered too
 //   HealthPath    default /health; empty for none
-//   AccessLog     YES (the default): a line per request on standard error
+//   AccessLog     YES (the default): a line per request on standard error;
+//                 json: the same as a JSON object, for a log collector
+//   SlowRequestThreshold  seconds; a slower request is logged at warn
+//                 (JSON). Default 1
+//   Metrics       YES (the default): requests counted and timed
+//                 (ODataMetricsStage), at MetricsPath (default /metrics)
+//   ReadyPath     GET here answers whether to send requests (default
+//                 /ready; empty for none): 503 while draining, or when the
+//                 store does not answer
+//   TraceContext  YES (the default): W3C traceparent taken and passed on
+//   AdminPort     a second listener for operators: health, readiness and
+//                 the metrics, which are then not on Port. Loopback unless
+//                 AdminLocalhost is NO. Default: none
+//   DrainDelay    seconds between SIGTERM and closing the listener, not
+//                 ready meanwhile, for a load balancer to notice (default 0)
+//   ShutdownTimeout  seconds requests under way have to finish after
+//                 that (default 30)
 //   CORSOrigins   origins browsers may call from (a list, or text with
 //                 spaces or commas between; * for any): ODataCORSStage
 //   CORSCredentials  YES: browsers may send cookies and Authorization
@@ -141,6 +158,16 @@ FOUNDATION_EXPORT NSErrorDomain const ODataServerErrorDomain;
 @property (nonatomic, readonly) NSUInteger maxBodyInMemory;
 @property (nonatomic, readonly) NSTimeInterval keepAliveTimeout;
 @property (nonatomic, readonly) NSUInteger maxRequestsPerConnection;
+@property (nonatomic, readonly) BOOL accessLogJSON;
+@property (nonatomic, readonly) NSTimeInterval slowRequestThreshold;
+@property (nonatomic, readonly) BOOL metrics;
+@property (nonatomic, readonly, copy) NSString *metricsPath;
+@property (nonatomic, readonly, copy) NSString *readyPath;
+@property (nonatomic, readonly) BOOL traceContext;
+@property (nonatomic, readonly) NSUInteger adminPort;
+@property (nonatomic, readonly) BOOL adminBindToLocalhost;
+@property (nonatomic, readonly) NSTimeInterval drainDelay;
+@property (nonatomic, readonly) NSTimeInterval shutdownTimeout;
 @property (nonatomic, readonly) BOOL printsMetadata;
 
 // Who is asking, as the settings say to find out; nil, without an error,
@@ -159,24 +186,42 @@ FOUNDATION_EXPORT NSErrorDomain const ODataServerErrorDomain;
 @property (nonatomic, readonly) ODataServerConfiguration *configuration;
 
 // What -prepare: makes, in this order, each handed to its -configure
-// method before the next is made.
+// method before the next is made. The service only when the settings name
+// a Model: an application of its own may answer other APIs without one.
 @property (nonatomic, readonly, strong, nullable) id<ODataAuthenticator> authenticator;
 @property (nonatomic, readonly, strong, nullable) ODataService *service;
+// The metrics every stage and handler may add to, and the readiness
+// handler checks are added to (the service's store, when there is one).
+@property (nonatomic, readonly, strong, nullable) ODataMetrics *metrics;
+@property (nonatomic, readonly, strong, nullable) ODataReadinessHandler *readiness;
 @property (nonatomic, readonly, strong, nullable) ODataServerRouter *router;
 @property (nonatomic, readonly, strong, nullable) ODataServerPipeline *pipeline;
 @property (nonatomic, readonly, strong, nullable) ODataHTTPServer *server;
+// With AdminPort: the operators' listener and its router (health,
+// readiness, metrics).
+@property (nonatomic, readonly, strong, nullable) ODataServerRouter *adminRouter;
+@property (nonatomic, readonly, strong, nullable) ODataHTTPServer *adminServer;
 
 // What an application overrides. Each default does nothing.
 - (void)configureService:(ODataService *)service;
 - (void)configureRouter:(ODataServerRouter *)router;
 - (void)configurePipeline:(ODataServerPipeline *)pipeline;
 - (void)configureServer:(ODataHTTPServer *)server;
+- (void)configureAdminRouter:(ODataServerRouter *)router;
 
 // Makes everything; NO, with the error, for settings it cannot use or an
 // operation the service cannot declare. Once only.
 - (BOOL)prepare:(NSError **)error;
-// Prepares (unless it has), listens, and serves until SIGINT or SIGTERM:
-// the process's exit status, 0 on a clean stop. Says what it is doing on
+// Prepares (unless it has) and listens, on Port and AdminPort.
+- (BOOL)start:(NSError **)error;
+// Not ready any more (readiness answers 503), still serving.
+- (void)drain;
+// Drains, stops listening, and waits for the requests under way, at most
+// timeout seconds: whether they all finished.
+- (BOOL)stopWithTimeout:(NSTimeInterval)timeout;
+// Starts, and serves until SIGTERM or SIGINT (a second one exits at once);
+// then drains for DrainDelay and stops within ShutdownTimeout: the
+// process's exit status, 0 on a clean stop. Says what it is doing on
 // standard error.
 - (int)run;
 @end

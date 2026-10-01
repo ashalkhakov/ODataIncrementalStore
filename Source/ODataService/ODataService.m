@@ -20,6 +20,14 @@
 
 NSString * const ODataUserInfoETag = @"OData.etag";
 
+// " (request <id>)" for a request a host gave an X-Request-ID, so that what
+// the service logs can be found beside the host's log of the request.
+static NSString *OISRequestIDNote(NSURLRequest *request)
+{
+  NSString *requestID = [request valueForHTTPHeaderField:@"X-Request-ID"];
+  return requestID.length ? [NSString stringWithFormat:@" (request %@)", requestID] : @"";
+}
+
 #pragma mark - Replies
 
 @interface ODataReply ()
@@ -1008,7 +1016,7 @@ static NSArray<NSString *> *OISApplyTransformations(void)
       // One the service keeps for itself: no request can put it right, and
       // Core Data's words name it.
       if (property && ![self.mapper servesProperty:property]) {
-        NSLog(@"ODataService: %@ %@: %@ is not valid: %@", self.request.method, self.exchange.request.URL, key, e.localizedDescription);
+        NSLog(@"ODataService: %@ %@%@: %@ is not valid: %@", self.request.method, self.exchange.request.URL, OISRequestIDNote(self.request.URLRequest), key, e.localizedDescription);
         own = YES;
         continue;
       }
@@ -1037,7 +1045,7 @@ static NSArray<NSString *> *OISApplyTransformations(void)
   } else {
     // The store's own failure: logged, and not shown, since it may say
     // more of the service than a client should know.
-    NSLog(@"ODataService: %@ %@ failed: %@", self.request.method, self.exchange.request.URL, error);
+    NSLog(@"ODataService: %@ %@ failed%@: %@", self.request.method, self.exchange.request.URL, OISRequestIDNote(self.request.URLRequest), error);
     error = ODataServiceError(500, @"The service could not answer the request");
   }
   NSMutableDictionary *body = [NSMutableDictionary dictionary];
@@ -5541,7 +5549,7 @@ static NSDateFormatter *OISHTTPDateFormatter(void)
     @try {
       [call run];
     } @catch (NSException *exception) {
-      NSLog(@"ODataService: %@ %@ raised %@: %@", call.request.method, exchange.request.URL, exception.name, exception.reason);
+      NSLog(@"ODataService: %@ %@ raised %@%@: %@", call.request.method, exchange.request.URL, exception.name, OISRequestIDNote(exchange.request), exception.reason);
       [context rollback];
       [call respondError:ODataServiceError(500, @"The request failed inside the service")];
     }

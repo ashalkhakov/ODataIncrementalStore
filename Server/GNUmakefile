@@ -16,8 +16,12 @@ include $(GCDWebServer_DIR)/GCDWebServer.make
 
 # The server library: the listener, the pipeline and router around it, and
 # the application that makes them from its settings.
-SERVER_SOURCES = ODataServerMessage.m ODataServerPipeline.m ODataServerRouter.m ODataServerHandlers.m ODataHTTPServer.m ODataServerApplication.m
-SERVER_HEADERS = ODataServer.h ODataServerMessage.h ODataServerPipeline.h ODataServerRouter.h ODataServerHandlers.h ODataHTTPServer.h ODataServerApplication.h
+SERVER_SOURCES = ODataServerMessage.m ODataServerPipeline.m ODataServerRouter.m ODataServerHandlers.m ODataServerObservability.m ODataHTTPServer.m ODataServerApplication.m
+SERVER_HEADERS = ODataServer.h ODataServerMessage.h ODataServerPipeline.h ODataServerRouter.h ODataServerHandlers.h ODataServerObservability.h ODataHTTPServer.h ODataServerApplication.h
+
+# The version odataserver_build_info says.
+ODATASERVER_VERSION ?= $(shell git -C "$(CURDIR)" describe --tags --always 2>/dev/null || echo dev)
+ODATASERVER_VERSION_FLAG = -DODATASERVER_VERSION='"$(ODATASERVER_VERSION)"'
 
 ifneq ($(GNUSTEP_MAKEFILES),)
 
@@ -34,7 +38,7 @@ libODataHTTPServer_OBJC_FILES = $(SERVER_SOURCES) $(GCDWebServer_OBJC_FILES)
 libODataHTTPServer_HEADER_FILES = $(SERVER_HEADERS)
 libODataHTTPServer_HEADER_FILES_INSTALL_DIR = ODataHTTPServer
 libODataHTTPServer_INCLUDE_DIRS = -I. -I../Source/ODataKit/include -I../Source/ODataIncrementalStore/include -I../Source/ODataService/include -I../Source/ODataKit/include/ODataKit -I../Source/ODataIncrementalStore/include/ODataIncrementalStore -I../Source/ODataService/include/ODataService $(GCDWebServer_INCLUDE_DIRS)
-libODataHTTPServer_OBJCFLAGS = $(FLAGS)
+libODataHTTPServer_OBJCFLAGS = $(FLAGS) $(ODATASERVER_VERSION_FLAG)
 libODataHTTPServer_LIB_DIRS = -L../obj
 libODataHTTPServer_LIBRARIES_DEPEND_UPON = -lODataService -lODataKit -lCoreData $(GCDWebServer_LIBS)
 
@@ -86,7 +90,7 @@ else
 
 CC = clang
 BUILD_DIR = build
-FLAGS = -fobjc-arc -fblocks -fobjc-exceptions -Wall -Wno-unused-parameter
+FLAGS = -fobjc-arc -fblocks -fobjc-exceptions -Wall -Wno-unused-parameter $(ODATASERVER_VERSION_FLAG)
 INCLUDES = -I. -I../Source/ODataKit/include -I../Source/ODataIncrementalStore/include -I../Source/ODataService/include -I../Source/ODataKit/include/ODataKit -I../Source/ODataIncrementalStore/include/ODataIncrementalStore -I../Source/ODataService/include/ODataService $(GCDWebServer_INCLUDE_DIRS)
 LIBS = -framework Foundation -framework CoreData -framework Security -framework SystemConfiguration -framework CoreServices -lz
 LIBRARY_SOURCES = $(wildcard ../Source/*/*.m)

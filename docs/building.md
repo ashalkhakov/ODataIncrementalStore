@@ -116,6 +116,10 @@ docker build -f Docker/Dockerfile --target check .
   a library it would lack fails the image's build, not a server at start.
 - `ois-serve`: the runtime and `ois-serve`, on every address at 8080, as a
   user of its own, with a volume at `/var/lib/ois-serve` and a health check.
+  It logs JSON lines, and answers metrics, health and readiness on an admin
+  port, 9090, for Prometheus and the orchestrator: publish that one only
+  where they are. Under Kubernetes, point the liveness probe at `/health`,
+  the readiness probe at `/ready`, and give `OIS_DRAIN_DELAY` a few seconds.
   Its settings are `ois-serve`'s, as `OIS_` variables
   (`ODataServerApplication.h`), or a property list at `OIS_CONFIG`
   (`/etc/ois-serve/service.plist`: the Catalog example in SQLite):

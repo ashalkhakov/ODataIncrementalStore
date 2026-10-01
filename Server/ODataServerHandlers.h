@@ -93,7 +93,17 @@ FOUNDATION_EXPORT NSString * const ODataServerRequestIDKey;
 // One line per request, once answered: who, what, the status, the size and
 // how long it took, and its request id. To standard error; override
 // -writeLine: to send it elsewhere (it must not wait).
+//
+// As text (the default): remote principal "METHOD target" status size
+// duration request-id. As JSON, a line a log collector reads as it is:
+// time, level (warn for a 5xx, or slower than slowRequestThreshold),
+// remote, principal, method, target, route, operation, status, bytes,
+// duration_ms, request_id, trace_id, user_agent.
+typedef NS_ENUM(NSInteger, ODataAccessLogFormat) { ODataAccessLogText, ODataAccessLogJSON };
 @interface ODataAccessLogStage : ODataServerStage
+@property (nonatomic) ODataAccessLogFormat format;
+// Seconds; a slower request is logged at warn. Default: 1.
+@property (nonatomic) NSTimeInterval slowRequestThreshold;
 - (void)writeLine:(NSString *)line;
 @end
 

@@ -9,7 +9,8 @@
 //   ODataServerPipeline.h     handlers, stages, pipelines
 //   ODataServerRouter.h       routes and the router
 //   ODataServerHandlers.h     the service mounted, health, authentication,
-//                             request ids, the access log
+//                             request ids, CORS, compression, the access log
+//   ODataServerObservability.h  metrics, trace context, readiness
 //   ODataHTTPServer.h         the listener
 //   ODataServerApplication.h  settings, the application, ODataServerMain
 
@@ -18,5 +19,6 @@
 #import "ODataServerPipeline.h"
 #import "ODataServerRouter.h"
 #import "ODataServerHandlers.h"
+#import "ODataServerObservability.h"
 #import "ODataHTTPServer.h"
 #import "ODataServerApplication.h"

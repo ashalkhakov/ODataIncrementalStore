@@ -16,8 +16,11 @@ ENV OIS_MODEL=/usr/local/share/ois-serve/Catalog.momd \
     OIS_STORE_URL=/var/lib/catalog/catalog.sqlite \
     OIS_PORT=8080 \
     OIS_LOCALHOST=NO \
+    OIS_ACCESS_LOG=json \
+    OIS_ADMIN_PORT=9090 \
+    OIS_ADMIN_LOCALHOST=NO \
     HOME=/var/lib/catalog
 USER catalog
 VOLUME /var/lib/catalog
-EXPOSE 8080
+EXPOSE 8080 9090
 ENTRYPOINT ["/usr/local/bin/ois-env", "catalog-server"]

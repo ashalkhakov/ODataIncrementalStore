@@ -132,8 +132,9 @@ static NSArray<NSString *> *OISSegments(NSString *path)
       if ([route.method isEqualToString:@"GET"]) [allowed addObject:@"HEAD"];
       continue;
     }
-    if (![self request:request mayCall:route reply:reply]) return;
     request.pathParameters = parameters;
+    request.route = route;
+    if (![self request:request mayCall:route reply:reply]) return;
     [route.handler handleRequest:request reply:reply];
     return;
   }

@@ -462,6 +462,45 @@ when loaded: `Libraries` loads any before the store is opened, and a
 `-StoreType CDPostgreSQLStore` is all FreeCoreData's PostgreSQL store needs
 where it is installed.
 
+### Observability
+
+What operators expect of a server today, as stages and handlers like the
+rest (`Server/ODataServerObservability.h`):
+
+- **Logs.** The access log writes a line per request, as text or, with
+  `AccessLog json`, as a JSON object a log collector reads as it is: time,
+  level (`warn` for a 5xx or a request slower than `SlowRequestThreshold`),
+  remote, principal, method, target, route pattern, operation, status,
+  bytes, duration, request id and trace id. The service's own errors are
+  logged with the request id the mount hands it.
+- **Metrics,** in Prometheus's text format (`ODataMetrics`, which an
+  application adds its own to): `http_requests_total`,
+  `http_request_duration_seconds` and `http_response_size_bytes` by method
+  and route pattern, `http_requests_in_flight`, `http_operations_total` by
+  the operation a handler names (an OData entity set, an OpenAPI
+  operationId), and the process's start time, resident memory and build.
+  Labels are route patterns and operations, never paths, so a client cannot
+  make up new series; a request no route took counts under `(none)`, and an
+  OData name that is no entity set under `(other)`.
+- **Trace context.** W3C `traceparent` is taken when well formed (a new
+  trace begun when not), this server's span made, and passed on: in
+  `userInfo` for handlers, as the `traceparent` header a mounted service's
+  handlers see, and as the trace id in the log.
+- **Liveness and readiness.** `/health` says the process runs; `/ready`
+  says whether to send it requests: 503 while it drains, or when one of its
+  checks fails or does not answer within five seconds
+  (`ODataServerReadinessCheck`; a mounted service's store is one).
+- **Draining.** `SIGTERM` (or `SIGINT`) makes the server not ready, waits
+  `DrainDelay` for a load balancer to notice, stops accepting, and gives
+  the requests under way `ShutdownTimeout` to finish; a second signal exits
+  at once.
+- **An admin listener.** With `AdminPort`, metrics leave the public
+  listener for one of their own (loopback unless `AdminLocalhost NO`), with
+  health and readiness on both.
+
+Exporting spans (OpenTelemetry, OTLP) is not done yet: the trace context
+is in place for it.
+
 One sign-in serves every route: the authentication stage asks the
 authenticator once (`ODataAuthentication`, which asks it about a request
 no service is answering), and the mounted service is handed who it found

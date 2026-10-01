@@ -11,7 +11,7 @@
 #pragma once
 #import <Foundation/Foundation.h>
 
-@class ODataPrincipal;
+@class ODataPrincipal, ODataServerRoute;
 
 NS_ASSUME_NONNULL_BEGIN
 
@@ -54,6 +54,13 @@ NS_ASSUME_NONNULL_BEGIN
 @property (nonatomic, getter=isAuthenticated) BOOL authenticated;
 // What the route matched: /orders/:id gives id; a trailing * gives "*".
 @property (nonatomic, copy) NSDictionary<NSString *, NSString *> *pathParameters;
+// The route that matched, once the router has found it: its pattern is what
+// metrics and logs name the request by (/orders/:id, not each order's path).
+@property (nonatomic, strong, nullable) ODataServerRoute *route;
+// What was asked, by a name of few values, as the handler that answers
+// knows it: an OpenAPI operationId, an OData entity set ($metadata,
+// $batch). Metrics count by it, and logs say it, beside the route.
+@property (nonatomic, copy, nullable) NSString *operation;
 // The stages' and handlers' own, for the length of the request.
 @property (nonatomic, readonly, strong) NSMutableDictionary *userInfo;
 

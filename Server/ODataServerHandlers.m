@@ -5,7 +5,11 @@
 #import "ODataService.h"
 #import "ODataAuthentication.h"
 #import "ODataError.h"
+#import "ODataServerRouter.h"
+#import "ODataServerObservability.h"
 #include <zlib.h>
+#include <time.h>
+#include <sys/time.h>
 
 NSString * const ODataServerRequestIDKey = @"OData.requestID";
 static NSString * const OISStartKey = @"OData.started";
@@ -22,9 +26,33 @@ static NSString * const OISStartKey = @"OData.started";
   return self;
 }
 
+// What a request under the service root asks, by a name of few values: the
+// entity set (or operation import) it names first, $metadata, $batch...;
+// the service document; or (other), so a client cannot make up new ones.
+- (NSString *)operationOf:(ODataServerRequest *)request
+{
+  NSString *root = self.service.serviceRoot.path.length ? self.service.serviceRoot.path : @"/";
+  NSString *path = request.path;
+  NSString *rest = [path hasPrefix:root] ? [path substringFromIndex:root.length] : @"";
+  if ([rest hasPrefix:@"/"]) rest = [rest substringFromIndex:1];
+  NSString *first = [rest componentsSeparatedByString:@"/"].firstObject ?: @"";
+  NSRange parenthesis = [first rangeOfString:@"("];
+  if (parenthesis.location != NSNotFound) first = [first substringToIndex:parenthesis.location];
+  if (!first.length) return @"(service document)";
+  if ([first hasPrefix:@"$"] && first.length < 20) return first;
+  return [self.service.entitySets containsObject:first] ? first : @"(other)";
+}
+
 - (void)handleRequest:(ODataServerRequest *)request reply:(ODataServerReply *)reply
 {
-  NSURLRequest *urlRequest = [request URLRequestOnOrigin:self.service.serviceRoot];
+  request.operation = [self operationOf:request];
+  NSMutableURLRequest *urlRequest = [[request URLRequestOnOrigin:self.service.serviceRoot] mutableCopy];
+  // Who asked, for the service's handlers and logs: the request id, and the
+  // trace context this server's span carries on.
+  NSString *requestID = request.userInfo[ODataServerRequestIDKey];
+  if (requestID) [urlRequest setValue:requestID forHTTPHeaderField:@"X-Request-ID"];
+  NSString *traceparent = request.userInfo[ODataServerTraceparentKey];
+  if (traceparent) [urlRequest setValue:traceparent forHTTPHeaderField:@"traceparent"];
   ODataExchange *exchange = [[ODataExchange alloc] initWithRequest:urlRequest target:self action:@selector(exchangeDidFinish:)];
   exchange.context = reply;
   if (request.authenticated) {
@@ -352,7 +380,27 @@ static NSData *OISGzip(NSData *data)
 
 #pragma mark - Access log
 
+// Now, as RFC 3339 in UTC with milliseconds.
+static NSString *OISTimestamp(void)
+{
+  struct timeval now;
+  gettimeofday(&now, NULL);
+  struct tm utc;
+  gmtime_r(&now.tv_sec, &utc);
+  char text[32];
+  strftime(text, sizeof(text), "%Y-%m-%dT%H:%M:%S", &utc);
+  return [NSString stringWithFormat:@"%s.%03dZ", text, (int)(now.tv_usec / 1000)];
+}
+
 @implementation ODataAccessLogStage
+
+- (instancetype)init
+{
+  self = [super init];
+  if (!self) return nil;
+  _slowRequestThreshold = 1;
+  return self;
+}
 
 - (BOOL)shouldPassRequest:(ODataServerRequest *)request reply:(ODataServerReply *)reply
 {
@@ -365,6 +413,27 @@ static NSData *OISGzip(NSData *data)
   NSDate *started = request.userInfo[OISStartKey];
   double milliseconds = started ? -[started timeIntervalSinceNow] * 1000.0 : 0;
   NSString *who = request.principal.subject ?: @"-";
+  if (self.format == ODataAccessLogJSON) {
+    NSMutableDictionary *entry = [NSMutableDictionary dictionary];
+    entry[@"time"] = OISTimestamp();
+    entry[@"level"] = response.status >= 500 || milliseconds > self.slowRequestThreshold * 1000 ? @"warn" : @"info";
+    entry[@"remote"] = request.remoteAddress ?: [NSNull null];
+    entry[@"principal"] = request.principal.subject ?: [NSNull null];
+    entry[@"method"] = request.method;
+    entry[@"target"] = request.target;
+    entry[@"route"] = request.route.pattern ?: [NSNull null];
+    entry[@"operation"] = request.operation ?: [NSNull null];
+    entry[@"status"] = @(response.status);
+    entry[@"bytes"] = response.bodyFileURL || response.bodyStream ? [NSNull null] : @(response.body.length);
+    // A decimal, so it is written as 0.7, not as the double nearest it.
+    entry[@"duration_ms"] = [NSDecimalNumber decimalNumberWithString:[NSString stringWithFormat:@"%.1f", milliseconds]];
+    entry[@"request_id"] = request.userInfo[ODataServerRequestIDKey] ?: [NSNull null];
+    entry[@"trace_id"] = request.userInfo[ODataServerTraceIDKey] ?: [NSNull null];
+    entry[@"user_agent"] = [request valueForHeader:@"User-Agent"] ?: [NSNull null];
+    NSData *json = [NSJSONSerialization dataWithJSONObject:entry options:0 error:NULL];
+    [self writeLine:[[NSString alloc] initWithData:json encoding:NSUTF8StringEncoding]];
+    return;
+  }
   // A file's or a stream's size is not known here.
   NSString *size = response.bodyFileURL || response.bodyStream ? @"-" : [NSString stringWithFormat:@"%lu", (unsigned long)response.body.length];
   NSString *line = [NSString stringWithFormat:@"%@ %@ \"%@ %@\" %ld %@ %.1fms %@", request.remoteAddress ?: @"-", who, request.method,
