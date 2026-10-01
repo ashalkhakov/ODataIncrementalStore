@@ -471,8 +471,10 @@ FOUNDATION_EXPORT NSString * const ODataUserInfoETag;  // @"OData.etag"
 // made, the plan's tree an attribute), then "execute", with a span for
 // each request of a handler or the store ("fetch Product", "count Order",
 // "write Order") and each save, current on its thread while the store
-// works, so a store that traces puts its spans under it. Recorded when the
-// shared OTTracerProvider is. Default: ODataService's tracer.
+// works, so a store that traces puts its spans under it; and each call of
+// an action or function ("call Name"), current while its method runs, so
+// the spans of what it does go under it too. Recorded when the shared
+// OTTracerProvider is. Default: ODataService's tracer.
 @property (nonatomic, strong) OTTracer *tracer;
 // Where the same is counted and timed, when set (ODataServiceModule sets
 // the application's): odata_plan_duration_seconds and

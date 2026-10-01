@@ -150,10 +150,34 @@ BOOL OISTimedSave(ODataService *service, NSManagedObjectContext *context, OTSpan
   self.storeStarted = 0;
 }
 
+- (void)beginOperationCall:(OISServedOperation *)operation target:(id)target
+{
+  OTSpan *parent = self.executeSpan ?: self.span;
+  if (!parent.recording) return;
+  // An instance's class, or a class itself (+class answers itself).
+  Class owner = [target class];
+  OTSpan *span = [self.service.tracer startSpanNamed:[@"call " stringByAppendingString:operation.name ?: @"?"]
+                                                kind:OTSpanKindInternal parent:parent.context
+                                          attributes:@{ @"code.namespace": NSStringFromClass(owner),
+                                                        @"code.function": NSStringFromSelector(operation.selector) }];
+  [span becomeCurrent];
+  self.callSpan = span;
+}
+
+- (void)endOperationCall:(NSError *)error
+{
+  OTSpan *span = self.callSpan;
+  if (!span) return;
+  if (error) [span recordError:error];
+  [span end];
+  self.callSpan = nil;
+}
+
 - (void)traceRespondedWithStatus:(NSInteger)status
 {
   [self traceExecuted];
   [self endStoreRequest:nil error:nil];
+  [self endOperationCall:nil];
   OTSpan *span = self.span;
   if (!span) return;
   [span setAttribute:@(status) forKey:@"http.response.status_code"];

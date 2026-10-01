@@ -249,6 +249,24 @@
 
 @end
 
+// What is current while an operation runs: its call's span.
+@protocol OISTracedFunctions <ODataFunctions>
+- (NSString *)currentSpan:(ODataReply *)reply;
+@end
+
+@interface OISTracedOperations : NSObject <OISTracedFunctions>
+@end
+
+@implementation OISTracedOperations
+
+- (NSString *)currentSpan:(ODataReply *)reply
+{
+  OTSpan *span = [OTSpan currentSpan];
+  return span ? [NSString stringWithFormat:@"%@ %@", span.name, span.context.spanID] : @"";
+}
+
+@end
+
 @protocol OISCatalogFunctions <ODataFunctions>
 - (int32_t)countProductsCheaperThanPrice:(double)price reply:(ODataReply *)reply;
 - (NSString *)echoWithText:(NSString *)text times:(int32_t)times reply:(ODataReply *)reply;
@@ -1401,6 +1419,36 @@
   }
   XCTAssertEqualObjects(service.context.traceState, @"vendor=abc,other=1", @"tracestate, sent as it came");
   XCTAssertEqualObjects(storeFetch.attributes[@"db.response.returned_rows"], @(rows.count));
+}
+
+// An operation's code runs under a span of its own, current on its thread:
+// what it does, an engine's or a store's spans, goes under the request.
+- (void)testAnOperationIsCalledUnderASpanOfItsOwn
+{
+  OTInMemoryExporter *memory = [[OTInMemoryExporter alloc] init];
+  OTTracerProvider.sharedProvider = [[OTTracerProvider alloc] initWithResource:@{} sampler:[[OTRatioSampler alloc] initWithRatio:1]
+                                                                    processor:[[OTSimpleSpanProcessor alloc] initWithExporter:memory]];
+  _service.serviceOperations = [[OISTracedOperations alloc] init];
+  OISServiceResponse *r = [self get:@"CurrentSpan()"];
+  OTTracerProvider.sharedProvider = nil;
+  XCTAssertEqual(r.status, 200, @"%@", r.text);
+
+  OTSpan *call = nil, *execute = nil, *service = nil;
+  for (OTSpan *span in memory.spans) {
+    if ([span.name isEqualToString:@"call CurrentSpan"]) call = span;
+    if ([span.name isEqualToString:@"execute"]) execute = span;
+    if ([span.name hasPrefix:@"ODataService GET"]) service = span;
+  }
+  XCTAssertNotNil(call, @"%@", memory.spans);
+  XCTAssertTrue(call.ended);
+  // Under the execution when the call was planned (its entity parameters
+  // read), else under the request's span.
+  XCTAssertEqualObjects(call.parentSpanID, (execute ?: service).context.spanID, @"%@", memory.spans);
+  XCTAssertEqualObjects(call.attributes[@"code.function"], @"currentSpan:");
+  XCTAssertEqualObjects(call.attributes[@"code.namespace"], @"OISTracedOperations");
+  XCTAssertEqualObjects(r.json[@"value"], ([NSString stringWithFormat:@"call CurrentSpan %@", call.context.spanID]),
+                        @"current while the operation ran");
+  XCTAssertNil([OTSpan currentSpan], @"and no longer once it has");
 }
 
 - (void)testNoTraceIsMadeUpForTheService

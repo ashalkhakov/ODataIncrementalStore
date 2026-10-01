@@ -98,6 +98,13 @@ GET /odata/*                          server     http.route, http.response.statu
       └─ save Order                   internal   odata.inserted, odata.updated, odata.deleted
 ```
 
+An action or function is called under a span of its own, `call Name`
+(code.namespace, code.function: whose method it is), under `execute`
+when its entity parameters were read first and under the service's span
+otherwise. It is current on the thread while the method runs, so whatever
+the method does that traces -- the store, an engine of the application's
+own -- goes under the request; it ends when the operation answers.
+
 A `$batch` is one `ODataService POST $batch` span, with each of its
 requests' spans under it.
 

@@ -4524,7 +4524,10 @@ static NSNumber *OISScalarReturnValue(NSInvocation *invocation, char type)
   }
   ODataReply *reply = [self replyWithAction:@selector(didInvokeOperation:)];
   [invocation setArgument:&reply atIndex:(NSInteger)operation.parameters.count + 2];
+  [self beginOperationCall:operation target:target];
   [invocation invoke];
+  // Current while it ran here; what it answers later is still its own.
+  [self.callSpan resignCurrent];
 
   id result = nil;
   if (operation.returns.scalar) {
@@ -4596,6 +4599,7 @@ static NSNumber *OISScalarReturnValue(NSInvocation *invocation, char type)
 - (void)didInvokeOperation:(ODataReply *)reply
 {
   OISServedOperation *operation = self.operation;
+  [self endOperationCall:reply.error];
   if (reply.error) {
     [self.request.context rollback];
     [self respondError:reply.error];
