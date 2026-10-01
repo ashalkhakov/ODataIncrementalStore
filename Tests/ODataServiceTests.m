@@ -6856,7 +6856,8 @@ static NSExpressionDescription *OISAggregateOf(NSString *function, NSString *key
   // Bound: called on what its path reads.
   NSManagedObjectModel *model = [OISCatalogModel() conformsToProtocol:@protocol(NSCopying)]
       ? [OISCatalogModel() copy] : [[NSManagedObjectModel alloc] initWithContentsOfURL:OISCatalogModelURL()];
-  model.entitiesByName[@"Product"].managedObjectClassName = @"OISScopedProduct";
+  NSEntityDescription *product = model.entitiesByName[@"Product"];
+  product.managedObjectClassName = @"OISScopedProduct";
   [self serveModel:model];
   _service.authenticator = [[OISScopeAuthenticator alloc] init];
   [self readScopesOfSets:@[ @"Products" ]];
