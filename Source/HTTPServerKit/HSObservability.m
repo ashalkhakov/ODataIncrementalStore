@@ -359,7 +359,8 @@ static NSString *HSClientAddress(NSString *remote)
 
 - (BOOL)shouldPassRequest:(HSRequest *)request reply:(HSReply *)reply
 {
-  OTSpanContext *parent = [OTSpanContext contextWithTraceparent:[request valueForHeader:@"traceparent"]];
+  OTSpanContext *parent = [OTSpanContext contextWithTraceparent:[request valueForHeader:@"traceparent"]
+                                                      tracestate:[request valueForHeader:@"tracestate"]];
   NSString *pattern = request.route.pattern;
   NSMutableDictionary *attributes = [NSMutableDictionary dictionary];
   attributes[@"http.request.method"] = request.method;

@@ -75,6 +75,7 @@ static BOOL OTIsHex(NSString *text, NSUInteger length)
 @implementation OTSpanContext
 
 - (instancetype)initWithTraceID:(NSString *)traceID spanID:(NSString *)spanID sampled:(BOOL)sampled remote:(BOOL)remote
+                     traceState:(NSString *)traceState
 {
   self = [super init];
   if (!self) return nil;
@@ -82,10 +83,49 @@ static BOOL OTIsHex(NSString *text, NSUInteger length)
   _spanID = [spanID copy];
   _sampled = sampled;
   _remote = remote;
+  _traceState = traceState.length ? [traceState copy] : nil;
   return self;
 }
 
+- (instancetype)initWithTraceID:(NSString *)traceID spanID:(NSString *)spanID sampled:(BOOL)sampled remote:(BOOL)remote
+{
+  return [self initWithTraceID:traceID spanID:spanID sampled:sampled remote:remote traceState:nil];
+}
+
+// A tracestate worth passing on: list-members (key=value) with commas
+// between, at most 32 and 512 characters (W3C Trace Context, 3.3); nil
+// when not, as the specification says to drop it whole.
+static NSString *OTUsableTraceState(NSString *header)
+{
+  NSString *trimmed = [header stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceCharacterSet]];
+  if (!trimmed.length || trimmed.length > 512) return nil;
+  NSUInteger members = 0;
+  for (NSString *member in [trimmed componentsSeparatedByString:@","]) {
+    NSString *item = [member stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceCharacterSet]];
+    if (!item.length) continue;
+    NSRange equals = [item rangeOfString:@"="];
+    if (equals.location == NSNotFound || equals.location == 0 || equals.location + 1 == item.length) return nil;
+    members++;
+  }
+  return members && members <= 32 ? trimmed : nil;
+}
+
 + (instancetype)contextWithTraceparent:(NSString *)traceparent
+{
+  return [self contextWithTraceparent:traceparent tracestate:nil];
+}
+
++ (instancetype)contextWithHeaders:(NSDictionary<NSString *, NSString *> *)headers
+{
+  NSString *traceparent = nil, *tracestate = nil;
+  for (NSString *name in headers) {
+    if ([name caseInsensitiveCompare:@"traceparent"] == NSOrderedSame) traceparent = headers[name];
+    if ([name caseInsensitiveCompare:@"tracestate"] == NSOrderedSame) tracestate = headers[name];
+  }
+  return [self contextWithTraceparent:traceparent tracestate:tracestate];
+}
+
++ (instancetype)contextWithTraceparent:(NSString *)traceparent tracestate:(NSString *)tracestate
 {
   // version-traceid-parentid-flags; a later version may add fields after these.
   NSArray<NSString *> *parts = [traceparent ?: @"" componentsSeparatedByString:@"-"];
@@ -95,7 +135,13 @@ static BOOL OTIsHex(NSString *text, NSUInteger length)
   if (!valid) return nil;
   unsigned flags = 0;
   [[NSScanner scannerWithString:parts[3]] scanHexInt:&flags];
-  return [[self alloc] initWithTraceID:parts[1] spanID:parts[2] sampled:(flags & 1) != 0 remote:YES];
+  return [[self alloc] initWithTraceID:parts[1] spanID:parts[2] sampled:(flags & 1) != 0 remote:YES
+                           traceState:OTUsableTraceState(tracestate)];
+}
+
+- (NSDictionary<NSString *, NSString *> *)propagationHeaders
+{
+  return _traceState ? @{ @"traceparent": self.traceparent, @"tracestate": _traceState } : @{ @"traceparent": self.traceparent };
 }
 
 - (NSString *)traceparent
@@ -802,7 +848,8 @@ static NSString *OTSetting(NSDictionary *environment, NSString *name)
     // Recording nothing, a trace passes through as it came.
     sampled = parent.sampled;
   }
-  OTSpanContext *context = [[OTSpanContext alloc] initWithTraceID:traceID spanID:OTNewSpanID() sampled:sampled remote:NO];
+  OTSpanContext *context = [[OTSpanContext alloc] initWithTraceID:traceID spanID:OTNewSpanID() sampled:sampled remote:NO
+                                                       traceState:parent.traceState];
   OTSpan *span = [[OTSpan alloc] initWithName:name kind:kind context:context parentSpanID:parent.spanID tracer:self
                                      resource:provider.resource processor:sampled ? provider.processor : nil startTime:startTime];
   if (attributes) [span addAttributes:attributes];

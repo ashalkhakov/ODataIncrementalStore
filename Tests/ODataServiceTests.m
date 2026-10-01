@@ -8,6 +8,7 @@
 // service as its transport.
 
 #import <XCTest/XCTest.h>
+#import <OTelKit/OTelKit.h>
 #import "OISCatalogModel.h"
 #import "OISJWTFixtures.h"
 
@@ -1353,6 +1354,65 @@
 }
 
 #pragma mark The client, talking to the service
+
+// The store's fetch, its request, and the service's work, one trace: under
+// the caller's span, its tracestate carried to the service.
+- (void)testATraceFromTheStoreToTheService
+{
+  OTInMemoryExporter *memory = [[OTInMemoryExporter alloc] init];
+  OTTracerProvider.sharedProvider = [[OTTracerProvider alloc] initWithResource:@{} sampler:[[OTRatioSampler alloc] initWithRatio:1]
+                                                                    processor:[[OTSimpleSpanProcessor alloc] initWithExporter:memory]];
+  [ODataIncrementalStore registerStore];
+  NSPersistentStoreCoordinator *client = [[NSPersistentStoreCoordinator alloc] initWithManagedObjectModel:OISCatalogModel()];
+  NSError *error = nil;
+  XCTAssertNotNil([client addPersistentStoreWithType:[ODataIncrementalStore storeType] configuration:nil
+                                                 URL:[NSURL URLWithString:@"http://example.test/odata/"]
+                                             options:@{ ODataIncrementalStoreTransportOption: _service } error:&error], @"%@", error);
+  NSManagedObjectContext *context = [[NSManagedObjectContext alloc] init];
+  context.persistentStoreCoordinator = client;
+
+  OTSpanContext *caller = [OTSpanContext contextWithTraceparent:@"00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01"
+                                                     tracestate:@"vendor=abc,other=1"];
+  OTSpan *work = [[OTTracer tracerNamed:@"Tests" version:nil] startSpanNamed:@"work" kind:OTSpanKindInternal parent:caller attributes:nil];
+  [work becomeCurrent];
+  NSArray *rows = [context executeFetchRequest:[NSFetchRequest fetchRequestWithEntityName:@"Product"] error:&error];
+  [work end];
+  OTTracerProvider.sharedProvider = nil;
+  XCTAssertTrue(rows.count > 0, @"%@", error);
+
+  OTSpan *storeFetch = nil, *request = nil, *service = nil, *execute = nil, *serviceFetch = nil;
+  for (OTSpan *span in memory.spans) {
+    if ([span.name isEqualToString:@"fetch Product"] && [span.scopeName isEqualToString:@"ODataIncrementalStore"]) storeFetch = span;
+    if ([span.name isEqualToString:@"GET Products"]) request = span;
+    if ([span.name hasPrefix:@"ODataService GET Products"]) service = span;
+    if ([span.name isEqualToString:@"execute"]) execute = span;
+    if ([span.name isEqualToString:@"fetch Product"] && [span.scopeName isEqualToString:@"ODataService"]) serviceFetch = span;
+  }
+  XCTAssertNotNil(storeFetch, @"%@", memory.spans);
+  XCTAssertNotNil(serviceFetch, @"%@", memory.spans);
+  XCTAssertEqualObjects(storeFetch.parentSpanID, work.context.spanID);
+  XCTAssertEqual(request.kind, OTSpanKindClient);
+  XCTAssertEqualObjects(request.parentSpanID, storeFetch.context.spanID, @"the wire request under the store's fetch");
+  XCTAssertEqualObjects(request.attributes[@"http.response.status_code"], @200);
+  XCTAssertEqualObjects(service.parentSpanID, request.context.spanID, @"the service's span under the request, by its traceparent");
+  XCTAssertEqualObjects(serviceFetch.parentSpanID, execute.context.spanID);
+  for (OTSpan *span in @[ storeFetch, request, service, serviceFetch ]) {
+    XCTAssertEqualObjects(span.context.traceID, caller.traceID, @"%@", span.name);
+  }
+  XCTAssertEqualObjects(service.context.traceState, @"vendor=abc,other=1", @"tracestate, sent as it came");
+  XCTAssertEqualObjects(storeFetch.attributes[@"db.response.returned_rows"], @(rows.count));
+}
+
+- (void)testNoTraceIsMadeUpForTheService
+{
+  // Nothing records it, and nobody began it: the request carries none.
+  OTSpanContext *seen = nil;
+  NSMutableURLRequest *request = [NSMutableURLRequest requestWithURL:[NSURL URLWithString:@"http://example.test/odata/Products"]];
+  OTSpan *span = [[OTTracer tracerNamed:@"Tests" version:nil] startClientSpanForRequest:request name:nil parent:nil];
+  seen = [OTSpanContext contextWithHeaders:request.allHTTPHeaderFields];
+  XCTAssertNil(seen);
+  XCTAssertFalse(span.recording);
+}
 
 - (void)testIncrementalStoreOverTheService
 {

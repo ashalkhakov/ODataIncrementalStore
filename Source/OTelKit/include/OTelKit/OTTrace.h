@@ -29,14 +29,21 @@
 NS_ASSUME_NONNULL_BEGIN
 
 // Which trace a span is in, and which span it is: what goes from process to
-// process, as traceparent (00-<trace id>-<span id>-<flags>).
+// process, as traceparent (00-<trace id>-<span id>-<flags>), with the
+// tracestate that came with it (vendors' own, passed on as it came).
 @interface OTSpanContext : NSObject <NSCopying>
 // Lower-case hex: 32 digits, and 16; never all zero.
-- (instancetype)initWithTraceID:(NSString *)traceID spanID:(NSString *)spanID sampled:(BOOL)sampled remote:(BOOL)remote NS_DESIGNATED_INITIALIZER;
+- (instancetype)initWithTraceID:(NSString *)traceID spanID:(NSString *)spanID sampled:(BOOL)sampled remote:(BOOL)remote
+                     traceState:(nullable NSString *)traceState NS_DESIGNATED_INITIALIZER;
+- (instancetype)initWithTraceID:(NSString *)traceID spanID:(NSString *)spanID sampled:(BOOL)sampled remote:(BOOL)remote;
 - (instancetype)init NS_UNAVAILABLE;
 // A remote context from a traceparent header, or nil when it is not well
-// formed (W3C Trace Context, level 1).
+// formed (W3C Trace Context, level 1); tracestate kept when it is (at most
+// 32 members, 512 characters), dropped when not.
 + (nullable instancetype)contextWithTraceparent:(nullable NSString *)traceparent;
++ (nullable instancetype)contextWithTraceparent:(nullable NSString *)traceparent tracestate:(nullable NSString *)tracestate;
+// The same from a request's (or a response's) headers, by any case.
++ (nullable instancetype)contextWithHeaders:(nullable NSDictionary<NSString *, NSString *> *)headers;
 @property (nonatomic, readonly, copy) NSString *traceID;
 @property (nonatomic, readonly, copy) NSString *spanID;
 // Whether the trace is being recorded: the flags' sampled bit.
@@ -44,6 +51,11 @@ NS_ASSUME_NONNULL_BEGIN
 // From another process.
 @property (nonatomic, readonly, getter=isRemote) BOOL remote;
 @property (nonatomic, readonly, copy) NSString *traceparent;
+// The caller's tracestate, which each span of the trace here carries on.
+@property (nonatomic, readonly, copy, nullable) NSString *traceState;
+// What to send with a request so its spans join this trace: traceparent,
+// and tracestate when there is one.
+@property (nonatomic, readonly, copy) NSDictionary<NSString *, NSString *> *propagationHeaders;
 @end
 
 // Random IDs, as a span context has them.

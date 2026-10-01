@@ -5,6 +5,7 @@
 
 #import <ODataKit/ODataApply.h>
 #import "ODataIncrementalStore+Private.h"
+#import <OTelKit/OTTrace.h>
 
 // One object's share of a save: the entity body, the $ref requests for
 // to-many changes a body cannot carry, and the relationships that had to
@@ -252,7 +253,42 @@ typedef NS_ENUM(NSInteger, OISWriteMode) {
   return YES;
 }
 
+// Each request a span, current while it runs (its wire requests go under
+// it): fetch Product, count Product, save, ...
 - (id)executeRequest:(NSPersistentStoreRequest *)request
+         withContext:(NSManagedObjectContext *)context
+               error:(NSError **)error
+{
+  NSString *operation = @"request", *entity = nil;
+  if ([request isKindOfClass:[NSFetchRequest class]]) {
+    NSFetchRequest *fetch = (NSFetchRequest *)request;
+    operation = fetch.resultType == NSCountResultType ? @"count" : @"fetch";
+    entity = fetch.entityName ?: fetch.entity.name;
+  } else if (request.requestType == NSSaveRequestType) {
+    operation = @"save";
+  } else if ([request isKindOfClass:[NSBatchUpdateRequest class]]) {
+    operation = @"update";
+    entity = [(NSBatchUpdateRequest *)request entityName];
+  } else if ([request isKindOfClass:[NSBatchDeleteRequest class]]) {
+    operation = @"delete";
+    entity = [(NSBatchDeleteRequest *)request fetchRequest].entityName;
+  }
+  NSMutableDictionary *attributes = [NSMutableDictionary dictionaryWithObject:operation forKey:@"db.operation.name"];
+  attributes[@"db.system.name"] = @"odata";
+  attributes[@"db.collection.name"] = entity;
+  attributes[@"server.address"] = _client.configuration.serviceRoot.host;
+  OTSpan *span = [_client.tracer startSpanNamed:entity ? [NSString stringWithFormat:@"%@ %@", operation, entity] : operation
+                                     attributes:attributes];
+  NSError *failure = nil;
+  id result = [self performRequest:request withContext:context error:&failure];
+  if (!result) [span recordError:failure];
+  if ([result isKindOfClass:[NSArray class]]) [span setAttribute:@([(NSArray *)result count]) forKey:@"db.response.returned_rows"];
+  [span end];
+  if (error) *error = failure;
+  return result;
+}
+
+- (id)performRequest:(NSPersistentStoreRequest *)request
          withContext:(NSManagedObjectContext *)context
                error:(NSError **)error
 {

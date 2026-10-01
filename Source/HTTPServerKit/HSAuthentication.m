@@ -6,6 +6,7 @@
 #import "HSLog.h"
 #import "HSObservability.h"
 #import <OTelKit/OTTrace.h>
+#import <OTelKit/OTHTTP.h>
 
 NSString * const HSAuthenticationFailureKey = @"HS.authenticationFailure";
 
@@ -407,17 +408,10 @@ typedef void (^HSFetched)(NSDictionary *json);
   state.endpoint = endpoint;
   state.metrics = metrics;
   state.started = OTNow();
-  NSString *method = request.HTTPMethod ?: @"GET";
-  NSMutableDictionary *attributes = [NSMutableDictionary dictionary];
-  attributes[@"http.request.method"] = method;
-  attributes[@"url.full"] = request.URL.absoluteString;
-  attributes[@"server.address"] = request.URL.host;
-  if (request.URL.port) attributes[@"server.port"] = request.URL.port;
-  state.span = [[OTTracer tracerNamed:@"HTTPServerKit" version:HSVersion] startSpanNamed:[NSString stringWithFormat:@"%@ %@", method, endpoint]
-                                                                                 kind:OTSpanKindClient parent:parent attributes:attributes];
-  // The provider's own traces join this one.
+  // A client span, its trace passed on so the provider's own join it.
   NSMutableURLRequest *sent = [request mutableCopy];
-  [sent setValue:state.span.context.traceparent forHTTPHeaderField:@"traceparent"];
+  NSString *name = [NSString stringWithFormat:@"%@ %@", request.HTTPMethod ?: @"GET", endpoint];
+  state.span = [[OTTracer tracerNamed:@"HTTPServerKit" version:HSVersion] startClientSpanForRequest:sent name:name parent:parent];
   HSFetch *fetch = [[HSFetch alloc] initWithRequest:sent target:self action:@selector(didFetch:)];
   fetch.context = state;
   [fetcher startFetch:fetch];
@@ -429,15 +423,11 @@ typedef void (^HSFetched)(NSDictionary *json);
   NSHTTPURLResponse *http = [fetch.response isKindOfClass:[NSHTTPURLResponse class]] ? (NSHTTPURLResponse *)fetch.response : nil;
   NSDictionary *json = HSJSONObject(fetch);
   NSString *outcome = http ? [NSString stringWithFormat:@"%ld", (long)http.statusCode] : @"error";
-  if (http) [state.span setAttribute:@(http.statusCode) forKey:@"http.response.status_code"];
-  if (fetch.error) {
-    [state.span setAttribute:fetch.error.domain forKey:@"error.type"];
-    [state.span recordError:fetch.error];
-  } else if (!json) {
-    [state.span setAttribute:http ? outcome : @"invalid_response" forKey:@"error.type"];
-    [state.span setStatus:OTStatusError message:http.statusCode == 200 ? @"not a JSON object" : nil];
+  if (!fetch.error && http.statusCode == 200 && !json) {
+    [state.span setAttribute:@"invalid_response" forKey:@"error.type"];
+    [state.span setStatus:OTStatusError message:@"not a JSON object"];
   }
-  [state.span end];
+  [state.span endWithResponse:fetch.response error:fetch.error];
   [state.metrics incrementCounter:@"http_auth_provider_requests_total"
                              help:@"Requests to the identity provider, by endpoint and outcome (a status, or error)."
                            labels:@{ @"endpoint": state.endpoint, @"outcome": outcome } by:1];

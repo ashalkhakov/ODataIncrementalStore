@@ -80,6 +80,54 @@
   }
 }
 
+- (void)testTraceState
+{
+  OTSpanContext *context = [OTSpanContext contextWithHeaders:@{ @"TraceParent": @"00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01",
+                                                                @"tracestate": @" congo=t61rcWkgMzE, rojo=00f067aa0ba902b7 " }];
+  XCTAssertEqualObjects(context.traceState, @"congo=t61rcWkgMzE, rojo=00f067aa0ba902b7");
+  OTSpan *child = [_tracer startSpanNamed:@"x" kind:OTSpanKindServer parent:context attributes:nil];
+  XCTAssertEqualObjects(child.context.traceState, context.traceState, @"carried on, untouched");
+  XCTAssertEqualObjects(child.context.propagationHeaders[@"tracestate"], context.traceState);
+  XCTAssertEqualObjects(child.context.propagationHeaders[@"traceparent"], child.context.traceparent);
+  [child end];
+  // Not a list of key=value, or too long: dropped whole, the traceparent kept.
+  NSString *parent = @"00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01";
+  for (NSString *bad in @[ @"no-equals", @"=value", @"key=", [@"" stringByPaddingToLength:513 withString:@"a=b," startingAtIndex:0] ]) {
+    OTSpanContext *dropped = [OTSpanContext contextWithTraceparent:parent tracestate:bad];
+    XCTAssertNotNil(dropped);
+    XCTAssertNil(dropped.traceState, @"%@", bad);
+    XCTAssertNil(dropped.propagationHeaders[@"tracestate"]);
+  }
+}
+
+- (void)testClientSpans
+{
+  NSMutableURLRequest *request = [NSMutableURLRequest requestWithURL:[NSURL URLWithString:@"https://ann:secret@billing.example.test/charges?x=1"]];
+  request.HTTPMethod = @"POST";
+  [request setValue:@"stale=1" forHTTPHeaderField:@"tracestate"];
+  OTSpan *span = [_tracer startClientSpanForRequest:request name:@"POST charges" parent:nil];
+  XCTAssertEqual(span.kind, OTSpanKindClient);
+  XCTAssertEqualObjects(span.attributes[@"url.full"], @"https://billing.example.test/charges?x=1", @"no credentials");
+  XCTAssertEqualObjects(span.attributes[@"server.port"], @443);
+  XCTAssertEqualObjects([request valueForHTTPHeaderField:@"traceparent"], span.context.traceparent);
+  XCTAssertNil([request valueForHTTPHeaderField:@"tracestate"], @"not an earlier trace's");
+  NSHTTPURLResponse *refused = [[NSHTTPURLResponse alloc] initWithURL:request.URL statusCode:402 HTTPVersion:@"HTTP/1.1" headerFields:@{}];
+  [span endWithResponse:refused error:nil];
+  XCTAssertEqual(span.status, OTStatusError);
+  XCTAssertEqualObjects(span.attributes[@"error.type"], @"402");
+  XCTAssertEqualObjects(span.attributes[@"http.response.status_code"], @402);
+
+  // Under this thread's current span, when given none.
+  OTSpan *outer = [_tracer startSpanNamed:@"outer" attributes:nil];
+  NSMutableURLRequest *inner = [NSMutableURLRequest requestWithURL:[NSURL URLWithString:@"http://localhost:8080/x"]];
+  OTSpan *call = [_tracer startClientSpanForRequest:inner name:nil parent:nil];
+  XCTAssertEqualObjects(call.parentSpanID, outer.context.spanID);
+  XCTAssertEqualObjects(call.name, @"GET");
+  [call endWithResponse:nil error:[NSError errorWithDomain:NSURLErrorDomain code:-1004 userInfo:nil]];
+  XCTAssertEqualObjects(call.attributes[@"error.type"], NSURLErrorDomain);
+  [outer end];
+}
+
 - (void)testSpansNestByParentAndByThread
 {
   OTSpanContext *remote = [OTSpanContext contextWithTraceparent:@"00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01"];

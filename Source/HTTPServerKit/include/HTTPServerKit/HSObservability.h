@@ -72,8 +72,8 @@ FOUNDATION_EXPORT NSString * const HSVersion;
 #pragma mark - Trace context
 
 // W3C Trace Context and the request's span: a request's traceparent
-// (00-<trace id>-<parent id>-<flags>) is taken when it is well formed, and
-// a new trace begun when it is not; either way this server's part of it is
+// (00-<trace id>-<parent id>-<flags>), with its tracestate, is taken when
+// it is well formed, and a new trace begun when it is not; either way this server's part of it is
 // a new span, the request's (request.span), a server span named
 // "METHOD /route/pattern" with OpenTelemetry's HTTP attributes
 // (http.request.method, url.path, url.query, http.route,

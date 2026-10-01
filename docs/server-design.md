@@ -1511,14 +1511,14 @@ each under `Source/`, public headers in `include/<Library>/`:
 | Library | Holds | Links |
 |---|---|---|
 | `ODataKit` | Schema, values, property mapping, the `$filter` lexer and parser, `$batch`, errors, the transport protocol and HTTP transports | Core Data |
-| `ODataIncrementalStore` | The client: the store, configuration, query building and predicate translation, the model builder and class writer, history, operation calls | `ODataKit` |
+| `ODataIncrementalStore` | The client: the store, configuration, query building and predicate translation, the model builder and class writer, history, operation calls | `ODataKit`, `OTelKit` |
 | `OTelKit` | OpenTelemetry tracing: span context (W3C Trace Context), spans, sampling, batching, the OTLP/HTTP exporter | Foundation |
 | `HTTPServerKit` | An HTTP server for any API: the listener (GCDWebServer), the pipeline, router and stages, sign-in and JWT signatures, logs, metrics, the application | `OTelKit` |
 | `ODataService` | The core of the server: `ODataService`, `$batch`, the predicate builder, the metadata writer, operations; and the service as an `HTTPServerKit` module (`ODataServer.h`) | `ODataKit`, `HTTPServerKit` |
 
-The client and the server share only `ODataKit`, so an app that consumes a
-service does not carry the server and one that serves does not carry the
-store. Class names keep their `OData` prefix; only the headers moved, so
+The client and the server share only `ODataKit` (and `OTelKit`, for
+tracing), so an app that consumes a service does not carry the server and
+one that serves does not carry the store. Class names keep their `OData` prefix; only the headers moved, so
 an import is `<ODataKit/ODataSchema.h>`, `<ODataIncrementalStore/…>` or
 `<ODataService/…>`. `HTTPServerKit`'s classes are `HS`-prefixed, `OTelKit`'s `OT`.
 

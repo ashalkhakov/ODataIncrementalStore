@@ -92,8 +92,8 @@ ODATAKIT_VERSION = $VERSION
 ODATAKIT_OBJCFLAGS = $objc_flags
 ODATAKIT_INCLUDE_DIRS = -I$HEADERS_DIR -I$HEADERS_DIR/ODataKit
 ODATAKIT_LIBS = -L$LIBRARIES_DIR -lODataKit -lCoreData -ldispatch
-ODATAINCREMENTALSTORE_INCLUDE_DIRS = \$(ODATAKIT_INCLUDE_DIRS) -I$HEADERS_DIR/ODataIncrementalStore
-ODATAINCREMENTALSTORE_LIBS = -lODataIncrementalStore \$(ODATAKIT_LIBS)
+ODATAINCREMENTALSTORE_INCLUDE_DIRS = \$(ODATAKIT_INCLUDE_DIRS) -I$HEADERS_DIR/OTelKit -I$HEADERS_DIR/ODataIncrementalStore
+ODATAINCREMENTALSTORE_LIBS = -lODataIncrementalStore \$(OTELKIT_LIBS) \$(ODATAKIT_LIBS)
 ODATASERVICE_INCLUDE_DIRS = \$(ODATAKIT_INCLUDE_DIRS) -I$HEADERS_DIR/HTTPServerKit -I$HEADERS_DIR/ODataService
 ODATASERVICE_LIBS = -lODataService \$(HTTPSERVERKIT_LIBS) \$(ODATAKIT_LIBS)
 EOF
@@ -105,7 +105,7 @@ EOF
     pc odatakit "" "OData for Objective-C: what a client and a service share" \
        "-I\${includedir} -I\${includedir}/ODataKit $objc_flags $gnustep_flags" \
        "-L\${libdir} -lODataKit -lCoreData -ldispatch $GNUSTEP_BASE_LIBS"
-    pc odataincrementalstore "odatakit" "A Core Data store over an OData service" \
+    pc odataincrementalstore "odatakit otelkit" "A Core Data store over an OData service" \
        "-I\${includedir}/ODataIncrementalStore" "-L\${libdir} -lODataIncrementalStore"
     pc odataservice "odatakit httpserverkit" "A Core Data store served over OData, on its own or as an HTTPServerKit application's API" \
        "-I\${includedir}/ODataService" "-L\${libdir} -lODataService"

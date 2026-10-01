@@ -129,16 +129,18 @@ ODataIncrementalStore_HEADER_FILES_DIR = Source/ODataIncrementalStore/include/OD
 ODataIncrementalStore_HEADER_FILES_INSTALL_DIR = ODataIncrementalStore
 ODataIncrementalStore_INCLUDE_DIRS = $(OIS_INCLUDE_DIRS)
 ODataIncrementalStore_LIB_DIRS = -L./obj
-ODataIncrementalStore_LIBRARIES_DEPEND_UPON += -lODataKit -lCoreData -ldispatch
+ODataIncrementalStore_LIBRARIES_DEPEND_UPON += -lODataKit -lOTelKit -lCoreData -ldispatch
 ODataIncrementalStore_OBJCFLAGS += $(OIS_OBJCFLAGS)
 ODataIncrementalStore_CFLAGS += -fblocks
 
 OTelKit_NEEDS_GUI = no
 OTelKit_OBJC_FILES = \
+	Source/OTelKit/OTHTTP.m \
 	Source/OTelKit/OTLPExporter.m \
 	Source/OTelKit/OTTrace.m
 
 OTelKit_HEADER_FILES = \
+	OTHTTP.h \
 	OTLPExporter.h \
 	OTTrace.h \
 	OTelKit.h
@@ -217,10 +219,10 @@ include $(GNUSTEP_MAKEFILES)/library.make
 
 # make -j builds the libraries side by side: the client and the service
 # link against libODataKit, so it is built first; the service against
-# libHTTPServerKit too.
+# libHTTPServerKit too, and the client and the server against libOTelKit.
 ODataIncrementalStore.all.library.variables ODataService.all.library.variables: ODataKit.all.library.variables
 ODataService.all.library.variables: HTTPServerKit.all.library.variables
-HTTPServerKit.all.library.variables: OTelKit.all.library.variables
+HTTPServerKit.all.library.variables ODataIncrementalStore.all.library.variables: OTelKit.all.library.variables
 
 ODATAKIT_SCRIPTS = Scripts
 # What an application builds against the installed libraries with: a

@@ -79,7 +79,8 @@ the handler does something else: a slow `fetch Product` with many
 ## Traces
 
 Each request is a trace, or a part of one: the caller's `traceparent` is
-taken (a proxy's, a client's), and the server's spans go under it. They
+taken (a proxy's, a client's), with its `tracestate` (a vendor's own,
+carried on as it came), and the server's spans go under it. They
 are exported over OTLP/HTTP (JSON) to an OpenTelemetry Collector, or to
 anything that takes OTLP on port 4318 (Jaeger, Tempo, Honeycomb, Datadog's
 agent).
@@ -99,6 +100,22 @@ GET /odata/*                          server     http.route, http.response.statu
 
 A `$batch` is one `ODataService POST $batch` span, with each of its
 requests' spans under it.
+
+The client traces too. An application on ODataIncrementalStore has a span
+for each fetch, count and save of the store, current while it runs, and a
+client span for each request it sends, with the trace in the request's
+headers, so the server's spans go under the application's:
+
+```
+work                                  the application's own, current on its thread
+└─ fetch Product                      internal   ODataIncrementalStore: db.collection.name, db.response.returned_rows
+   └─ GET Products                    client     url.full, http.response.status_code
+      └─ GET /odata/*                 server     (the server's, as above)
+```
+
+The trace goes in a request's headers only when it is recorded here, or
+was by whoever began it (its `traceparent` said sampled): a client that
+records nothing, under nobody's trace, sends none.
 
 ### Turning it on
 
@@ -134,16 +151,22 @@ exits. Only OTLP over HTTP with JSON is spoken: `OTEL_EXPORTER_OTLP_PROTOCOL`
 
 OTelKit (`<OTelKit/OTelKit.h>`) is a library of its own, Foundation only,
 which HTTPServerKit and ODataService use. A handler adds to the request's
-span, or makes its own under it:
+span, or makes its own under it; a request it sends on is a client span
+(`<OTelKit/OTHTTP.h>`), the trace in its headers, so the service it calls
+joins it:
 
 ```objc
 - (void)handleRequest:(HSRequest *)request reply:(HSReply *)reply
 {
   [request.span setAttribute:@(cart.items.count) forKey:@"cart.items"];
-  OTSpan *charge = [[OTTracer tracerNamed:@"Billing" version:@"1.0"]
-                     startSpanNamed:@"charge" kind:OTSpanKindClient parent:request.span.context attributes:nil];
-  ...
-  [charge end];
+  NSMutableURLRequest *charge = [NSMutableURLRequest requestWithURL:billingURL];
+  charge.HTTPMethod = @"POST";
+  OTSpan *span = [[OTTracer tracerNamed:@"Billing" version:@"1.0"] startClientSpanForRequest:charge name:@"POST charges"
+                                                                                       parent:request.span.context];
+  [[session dataTaskWithRequest:charge completionHandler:^(NSData *data, NSURLResponse *response, NSError *error) {
+    [span endWithResponse:response error:error];
+    ...
+  }] resume];
 }
 ```
 
@@ -217,3 +240,39 @@ while a readiness check (a mounted service's store, an application's own
 `SIGTERM` it turns not ready, waits `DrainDelay` for a load balancer to
 notice, stops accepting, and gives the requests under way
 `ShutdownTimeout`.
+
+## To do
+
+Not done yet, roughly in the order they would help:
+
+- **Refusals by limit, and the connections.** Requests refused for a
+  limit counted by which (413 body too large, 414 URL too long, too many
+  `$batch` requests, `$expand` too deep, `MaxRowsInMemory`); open
+  connections, keep-alive reuse, request body sizes.
+- **OTLP's options.** gzip (`OTEL_EXPORTER_OTLP_COMPRESSION`), TLS
+  (`OTEL_EXPORTER_OTLP_CERTIFICATE`, `_CLIENT_CERTIFICATE`, `_CLIENT_KEY`),
+  and perhaps `http/protobuf`, the specification's default protocol.
+- **Metrics and logs over OTLP too**, so one collector takes all three
+  signals without a Prometheus scrape; and exemplars, a trace id on a
+  histogram's bucket, from a slow bucket to a trace that shows it.
+- **An audit log**, perhaps as part of something bigger (an activity
+  history WorkflowKit shows, compliance): a record per change that
+  committed, saying who (subject, client), what (create, update, delete,
+  an action), which (entity set and key, the properties changed, the ETags
+  before and after), the outcome, and the request and trace ids. JSON
+  lines of their own, named as the Elastic Common Schema has them (or
+  OCSF's API Activity), so log stacks and SIEMs read them; later as
+  OpenTelemetry logs. Decided so far (2026-10-01), to revisit:
+  - values too, old and new: WorkflowKit's users need them (so the
+    question becomes which properties are left out, or masked, rather
+    than which are put in);
+  - a log stream, not a table in the store;
+  - changes only: a refused write is not audited (the access log and
+    `http_auth_failures_total` have those).
+- **The service's own queues.** Asynchronous requests queued and running,
+  requests per `$batch`, and each readiness check's answer and time.
+- **More of the process.** CPU seconds, open file descriptors, threads.
+- **A trace view.** Spans kept in memory (`OTInMemoryExporter`) and shown
+  as a tree beside each exchange: plan, execution, store requests. In the
+  Workbench, or in WorkflowKit's app, where a BPMN execution's own spans
+  would join the service's.

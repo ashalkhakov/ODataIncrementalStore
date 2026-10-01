@@ -14,7 +14,7 @@ service's schema.
 | `ODataService` | The server: OData 4.01 (and 4.0) over any Core Data store. `ois-serve` runs it behind a reverse proxy. |
 | `ODataKit` | What both share: the model mapping, CSDL, values, the URL and `$filter` grammar, `$filter` and `$orderby` as Core Data predicates and sort descriptors, `$batch`. |
 | `HTTPServerKit` | The HTTP server the service runs in, for any API beside it: a pipeline of stages, a router, sign-in (trusted proxy, JWT, token introspection), metrics, JSON logs, readiness, draining. Errors outside OData are `application/problem+json`. |
-| `OTelKit` | OpenTelemetry tracing, Foundation only: each request a trace, the service's planning and store requests spans in it, sent over OTLP to a collector ([observability](docs/observability.md)). |
+| `OTelKit` | OpenTelemetry tracing, Foundation only: one trace from an app's fetch through its request to the service's planning and store requests, sent over OTLP to a collector ([observability](docs/observability.md)). |
 
 ![The Workbench](Examples/Workbench/Workbench.png)
 

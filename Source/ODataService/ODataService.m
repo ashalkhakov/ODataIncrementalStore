@@ -5536,7 +5536,7 @@ static NSDateFormatter *OISHTTPDateFormatter(void)
   }
   call.request.context = context;
   // The call's span, under the host's (or the batch's) when it says.
-  OTSpanContext *parent = [OTSpanContext contextWithTraceparent:[exchange.request valueForHTTPHeaderField:@"traceparent"]];
+  OTSpanContext *parent = [OTSpanContext contextWithHeaders:exchange.request.allHTTPHeaderFields];
   call.span = [self.tracer startSpanNamed:[@"ODataService " stringByAppendingString:call.request.method ?: @"GET"] kind:OTSpanKindInternal
                                    parent:parent attributes:nil];
   if (call.span.recording) {

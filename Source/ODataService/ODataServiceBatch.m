@@ -265,12 +265,27 @@ static void OISAppendText(NSMutableData *data, NSString *text)
   }
   for (NSString *name in item.headers) [request setValue:item.headers[name] forHTTPHeaderField:name];
   // Each request's span under the batch's.
-  if (self.span) [request setValue:self.span.context.traceparent forHTTPHeaderField:@"traceparent"];
+  if (self.span) [request ot_setTraceContext:self.span.context];
   request.HTTPBody = [self bodyResolvingReferences:item.body headers:item.headers];
   return request;
 }
 
+// The batch's requests, on from where it is: an exception anywhere in them
+// answers the batch 500, rather than leave its client waiting.
 - (void)next
+{
+  @try {
+    [self runItems];
+  } @catch (NSException *exception) {
+    OISLog(HSLogLevelError, _exchange.request, @"%@ %@ raised %@: %@", _exchange.request.HTTPMethod, _exchange.request.URL, exception.name,
+           exception.reason);
+    _stopped = YES;
+    [self.span addEventNamed:@"exception" attributes:@{ @"exception.type": exception.name ?: @"", @"exception.message": exception.reason ?: @"" }];
+    [self fail:500 message:@"The batch failed inside the service"];
+  }
+}
+
+- (void)runItems
 {
   while (_index < _items.count && !_stopped) {
     OISBatchItem *item = _items[_index];

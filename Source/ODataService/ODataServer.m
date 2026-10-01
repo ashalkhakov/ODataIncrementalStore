@@ -86,8 +86,12 @@ static void OISLoadBackendFor(NSString *type)
   // trace context this server's span carries on.
   NSString *requestID = request.userInfo[HSRequestIDKey];
   if (requestID) [urlRequest setValue:requestID forHTTPHeaderField:@"X-Request-ID"];
-  NSString *traceparent = request.userInfo[HSTraceparentKey];
-  if (traceparent) [urlRequest setValue:traceparent forHTTPHeaderField:@"traceparent"];
+  OTSpanContext *trace = request.span.context;
+  if (trace) {
+    [urlRequest ot_setTraceContext:trace];
+  } else if (request.userInfo[HSTraceparentKey]) {
+    [urlRequest setValue:request.userInfo[HSTraceparentKey] forHTTPHeaderField:@"traceparent"];
+  }
   ODataExchange *exchange = [[ODataExchange alloc] initWithRequest:urlRequest target:self action:@selector(exchangeDidFinish:)];
   exchange.context = reply;
   if (request.authenticated) {

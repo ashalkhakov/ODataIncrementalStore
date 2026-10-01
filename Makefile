@@ -60,8 +60,8 @@ all: libODataKit.so libODataIncrementalStore.so libOTelKit.so libOTelKit.so libH
 libODataKit.so: $(KIT_SRCS:.m=.o)
 	$(CC) -shared -o $@ $^ $(GNUSTEP_LIBS)
 
-libODataIncrementalStore.so: $(CLIENT_SRCS:.m=.o) libODataKit.so
-	$(CC) -shared -o $@ $(CLIENT_SRCS:.m=.o) -L. -lODataKit $(GNUSTEP_LIBS)
+libODataIncrementalStore.so: $(CLIENT_SRCS:.m=.o) libODataKit.so libOTelKit.so
+	$(CC) -shared -o $@ $(CLIENT_SRCS:.m=.o) -L. -lODataKit -lOTelKit $(GNUSTEP_LIBS)
 
 libOTelKit.so: $(TRACE_SRCS:.m=.o)
 	$(CC) -shared -o $@ $^ $(GNUSTEP_LIBS)
@@ -82,12 +82,12 @@ $(GCDWebServer_DIR)/%.o: $(GCDWebServer_DIR)/%.m
 	$(CC) $(OBJCFLAGS) $(GCDWebServer_INCLUDE_DIRS) -c $< -o $@
 
 ois-filter: Tools/ois-filter.m libODataIncrementalStore.so
-	$(CC) $(OBJCFLAGS) -o $@ Tools/ois-filter.m -L. -lODataIncrementalStore -lODataKit $(GNUSTEP_LIBS)
+	$(CC) $(OBJCFLAGS) -o $@ Tools/ois-filter.m -L. -lODataIncrementalStore -lODataKit -lOTelKit $(GNUSTEP_LIBS)
 
 # A Core Data model from a service's $metadata:
 #   ./ois-model https://services.odata.org/V4/Northwind/Northwind.svc/ Northwind.xcdatamodeld
 ois-model: Tools/ois-model.m libODataIncrementalStore.so
-	$(CC) $(OBJCFLAGS) -o $@ Tools/ois-model.m -L. -lODataIncrementalStore -lODataKit $(GNUSTEP_LIBS)
+	$(CC) $(OBJCFLAGS) -o $@ Tools/ois-model.m -L. -lODataIncrementalStore -lODataKit -lOTelKit $(GNUSTEP_LIBS)
 
 # FreeCoreData's model compiler (make -C Tools/momc install there).
 MOMC ?= momc

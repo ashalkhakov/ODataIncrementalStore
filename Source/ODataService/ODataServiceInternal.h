@@ -8,6 +8,7 @@
 #import <HTTPServerKit/HSAuthentication.h>
 #import <HTTPServerKit/HSLog.h>
 #import <OTelKit/OTTrace.h>
+#import <OTelKit/OTHTTP.h>
 #import "ODataError.h"
 #import "ODataValue.h"
 #import "ODataSchema.h"
