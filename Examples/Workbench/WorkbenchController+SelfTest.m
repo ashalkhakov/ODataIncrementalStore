@@ -687,7 +687,10 @@ static void WBCheck(BOOL ok, NSString *what, NSString *detail)
                                      [names componentsJoinedByString:@", "], (long)self.traceWindow.spanOutline.numberOfRows,
                                      (long)self.traceWindow.spanOutline.selectedRow]);
   [self shoot:[NSString stringWithFormat:@"Traces %@", builtIn ? @"built-in" : entry.method] window:self.traceWindow.window];
+  // As it found them: selecting the exchange opened its window too.
   [self.traceWindow.window orderOut:nil];
+  [self.exchangeWindow orderOut:nil];
+  [self.logTable deselectAll:nil];
 }
 
 - (void)runSelfTest
@@ -742,7 +745,8 @@ static void WBCheck(BOOL ok, NSString *what, NSString *detail)
     [self.presetsPopup selectItemAtIndex:0];
     [self applyPreset:self.presetsPopup];
     [self runFetch:nil];
-    NSUInteger russell = [[self.results.rows valueForKey:@"userName"] indexOfObject:@"russellwhyte"];
+    // Paged to where he is: on a short screen he is pages away.
+    NSUInteger russell = [self rowWhere:@"userName" is:@"russellwhyte"];
     if (russell != NSNotFound) {
       [self.tableView selectRowIndexes:[NSIndexSet indexSetWithIndex:russell] byExtendingSelection:NO];
       [self rebuildOperations];
@@ -759,7 +763,7 @@ static void WBCheck(BOOL ok, NSString *what, NSString *detail)
     [self shoot:@"TripPin-operation"];
     [self checkStreams];
     [self runPreset:0];
-    russell = [[self.results.rows valueForKey:@"userName"] indexOfObject:@"russellwhyte"];
+    russell = [self rowWhere:@"userName" is:@"russellwhyte"];
 
     [self editColumn:@"firstName" row:russell value:@"Rusty"];
     WBCheck([self.statusField.stringValue hasPrefix:@"Unsaved: 0 new, 1 changed"], @"an edit waits for Save", self.statusField.stringValue);
