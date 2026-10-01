@@ -92,6 +92,21 @@ The model's `userInfo` names sets, keys and wire names; handlers change what
 a set does; operations are methods declared in a protocol; production runs
 behind nginx or Caddy (`Server/Examples/`) — [the server guide](docs/server-design.md).
 
+Routes and pipeline stages of your own go in an `ODataServerApplication`
+subclass, with `ois-serve`'s settings and everything it does
+(`Server/Examples/CatalogServer.m`):
+
+```objc
+@implementation CatalogServer : ODataServerApplication
+- (void)configureRouter:(ODataServerRouter *)router
+{
+  [router insertRoute:[ODataServerRoute routeWithMethod:@"GET" path:@"/stats" handler:stats] atIndex:0];
+}
+@end
+
+int main(int argc, const char *argv[]) { return ODataServerMain(argc, argv, [CatalogServer class]); }
+```
+
 ### 3. The Workbench
 
 A window onto both: pick a service (this library's own, in the process, or
@@ -195,7 +210,7 @@ flowchart LR
 | `Source/ODataKit/` | The shared core |
 | `Source/ODataIncrementalStore/` | The client store, its HTTP client, model builder, streams |
 | `Source/ODataService/` | The service, its handlers, `$metadata` writer, predicate builder, `$batch`, timelines |
-| `Server/` | `ODataHTTPServer` (vendored GCDWebServer), `ois-serve`, deployment examples |
+| `Server/` | `ODataServer.h`: the listener (vendored GCDWebServer), pipeline, router and application around a service; `ois-serve`; deployment examples |
 | `Examples/` | Workbench, Catalog, the quick start |
 | `Tools/` | `ois-model` (a model from `$metadata`), `ois-filter` |
 | `Tests/` | XCTest: snapshots of real services, the service over loopback; `Tests/Live/` against Northwind and TripPin |

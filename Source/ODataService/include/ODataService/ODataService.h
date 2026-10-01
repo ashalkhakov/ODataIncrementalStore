@@ -516,6 +516,11 @@ FOUNDATION_EXPORT NSString * const ODataUserInfoETag;  // @"OData.etag"
 // ODataTransport: answers the exchange's request. A request whose handlers
 // answer at once is finished before this returns.
 - (void)startExchange:(ODataExchange *)exchange;
+// The same, for a host that has asked who is sending it already, with this
+// service's authenticator (ODataServer's authentication stage): the
+// principal it found, nil for no one. The authenticator is not asked
+// again; allowsAnonymousRequests and allowsAnonymousMetadata apply as ever.
+- (void)startExchange:(ODataExchange *)exchange principal:(nullable ODataPrincipal *)principal;
 
 @end
 

@@ -361,11 +361,82 @@ conforms to `ODataServiceConfiguring` is sent `+configureService:` before
 the first request: that is where an application registers its handlers.
 `-PrintMetadata YES` prints `$metadata` and exits.
 
-It serves until `SIGINT` or `SIGTERM`, logs to standard error, and exits 0.
-An application that would rather link the library runs the same
-`ODataHTTPServer` from its own `main`. `Server/Examples/` has a
-configuration for the Catalog model, a systemd unit, a launchd job, and
-nginx and Caddy configurations.
+It serves until `SIGINT` or `SIGTERM`, logs a line per request to standard
+error (`AccessLog`), answers `GET /health` (`HealthPath`), and exits 0.
+`Server/Examples/` has a configuration for the Catalog model, a systemd
+unit, a launchd job, nginx and Caddy configurations, and `CatalogServer.m`,
+an application of its own.
+
+### An application of its own
+
+`ois-serve` is one call, `ODataServerMain(argc, argv, [ODataServerApplication
+class])` (`Server/ODataServerApplication.h`). An application with routes or
+stages of its own subclasses `ODataServerApplication`, overrides what it
+needs, and makes the same call with its class:
+
+```objc
+@implementation CatalogServer
+- (void)configureService:(ODataService *)service { ... handlers ... }
+- (void)configureRouter:(ODataServerRouter *)router
+{
+  [router insertRoute:[ODataServerRoute routeWithMethod:@"POST" path:@"/webhooks/billing"
+                                                handler:[[BillingWebhook alloc] init]] atIndex:0];
+}
+- (void)configurePipeline:(ODataServerPipeline *)pipeline
+{
+  [pipeline insertStage:[[TenantStage alloc] init] afterStageOfClass:[ODataAuthenticationStage class]];
+}
+@end
+
+int main(int argc, const char *argv[]) { return ODataServerMain(argc, argv, [CatalogServer class]); }
+```
+
+The settings are `ois-serve`'s, read by `ODataServerConfiguration`, and a
+bundle whose principal class is such a subclass is the application too,
+for `ois-serve -Bundles` without a `main` of one's own.
+
+Everything is an object, and the pipeline is built from objects, not
+blocks or conventions:
+
+- An `ODataServerHandler` answers a request: an application's endpoint, the
+  service mounted (`ODataServiceHandler`), the router, a pipeline. Any of
+  them can stand where another does; a route's handler can be a pipeline of
+  its own.
+- An `ODataServerStage` is a step every request through a pipeline takes:
+  `-shouldPassRequest:reply:` on the way in (answer and return `NO` to stop
+  the request there), `-request:willSendResponse:` on the way back, or
+  `-handleRequest:reply:next:` for a stage that has to wait (the
+  authentication stage) or wrap what follows.
+- An `ODataServerPipeline` is an array of stages, to read, reorder or
+  replace (`insertStage:beforeStageOfClass:`, `replaceStageOfClass:withStage:`),
+  then a handler. Its `-description` lists them.
+- An `ODataServerRouter` is an ordered array of `ODataServerRoute`s
+  (`/orders/:id`, `/odata/*`), the first that matches answering: 405 with
+  `Allow` for a path no route takes this method on, 404 for none. A route
+  can require someone signed in (`requiresPrincipal`) or one of some OAuth
+  `scopes`, answered as the service answers its own (401, 403 with the
+  challenge naming them).
+
+What `-prepare:` makes, each handed to its `-configure` method before the
+next: the authenticator and the service; the router (`/health`, then the
+service at its root's path); the pipeline (`ODataRequestIDStage`,
+`ODataAccessLogStage`, `ODataAuthenticationStage` when there is an
+authenticator, then the router); the listener.
+
+A request's life through the pipeline: each stage's way in, in order; the
+handler finishes the reply, now or later, on whatever thread its work
+finished on; finishing it is when the response exists, and in that same
+call each stage it passed through sees it on the way back, last first, and
+may still change it; then the listener writes it. No thread is started
+for any of it, and the way back must not wait. A stage that answered
+early sees its own answer; stages after it never ran.
+
+One sign-in serves every route: the authentication stage asks the
+authenticator once (`ODataAuthentication`, which asks it about a request
+no service is answering), and the mounted service is handed who it found
+(`-startExchange:principal:`), applying `allowsAnonymousRequests` and
+`allowsAnonymousMetadata` as it would to its own authenticator's answer.
+Whether no one is let in is each route's to say.
 
 ### Limits
 
@@ -399,8 +470,10 @@ Data's to-many relationships here are not ordered.
 ### The HTTP adapter
 
 This is the only part that touches sockets, and it should stay small
-enough to replace. Its whole job is to turn bytes into an `NSURLRequest`,
-call `ODataService`, and write the response back.
+enough to replace. Its whole job is to turn bytes into an
+`ODataServerRequest`, hand it to its handler (the pipeline), and write the
+response back; the stages, routes and handlers never see the listener's
+own types.
 
 **Choice: GCDWebServer 3.5.4, vendored and ported.** Four candidates
 were compared: the three first proposed, plus GCDWebServer, the project
@@ -446,8 +519,9 @@ possible:
 It lives in `ThirdParty/GCDWebServer/` with its license; `PORTING.md`
 there lists every change, and `upstream.diff` reapplies them to the
 pristine release. It is built into `libODataHTTPServer` (`Server/`) only,
-with `ODataHTTPServer`, which turns each request into an `ODataExchange`
-for the service and the finished exchange back into a response. The
+with `ODataHTTPServer`, which turns each request into an
+`ODataServerRequest` for its handler and the finished reply back into a
+response. The
 listener's own smoke test and `Server/Tests/ois-serve-check.m` run in CI on
 both platforms.
 

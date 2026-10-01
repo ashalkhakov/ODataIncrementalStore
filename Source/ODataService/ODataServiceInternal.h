@@ -222,6 +222,9 @@ typedef NS_ENUM(NSInteger, OISTargetKind) {
 // Who is asking is known: the authenticator has answered, or a batch
 // the request is part of has been authenticated.
 @property (nonatomic) BOOL authenticated;
+// Who is asking was found by the host (-startExchange:principal:): the
+// request's principal, admitted as the authenticator's answer would be.
+@property (nonatomic) BOOL principalGiven;
 @end
 
 @interface OISComputedRow : NSObject

@@ -1,4 +1,5 @@
-# The HTTP adapter (ODataHTTPServer), ois-serve, and the loopback check.
+# The server library (libODataHTTPServer: ODataServer.h), ois-serve, an
+# example application of its own (catalog-server), and the loopback check.
 # Build the library at the repository root first.
 #
 # GNUstep, with gnustep-make:
@@ -13,6 +14,11 @@
 GCDWebServer_DIR = ../ThirdParty/GCDWebServer
 include $(GCDWebServer_DIR)/GCDWebServer.make
 
+# The server library: the listener, the pipeline and router around it, and
+# the application that makes them from its settings.
+SERVER_SOURCES = ODataServerMessage.m ODataServerPipeline.m ODataServerRouter.m ODataServerHandlers.m ODataHTTPServer.m ODataServerApplication.m
+SERVER_HEADERS = ODataServer.h ODataServerMessage.h ODataServerPipeline.h ODataServerRouter.h ODataServerHandlers.h ODataHTTPServer.h ODataServerApplication.h
+
 ifneq ($(GNUSTEP_MAKEFILES),)
 
 include $(GNUSTEP_MAKEFILES)/common.make
@@ -24,24 +30,29 @@ FLAGS = -fobjc-arc -fblocks -fobjc-runtime=gnustep-2.0 \
 	-fconstant-string-class=NSConstantString -fobjc-exceptions -Wall -Wno-unused-parameter
 
 LIBRARY_NAME = libODataHTTPServer
-libODataHTTPServer_OBJC_FILES = ODataHTTPServer.m $(GCDWebServer_OBJC_FILES)
-libODataHTTPServer_HEADER_FILES = ODataHTTPServer.h
+libODataHTTPServer_OBJC_FILES = $(SERVER_SOURCES) $(GCDWebServer_OBJC_FILES)
+libODataHTTPServer_HEADER_FILES = $(SERVER_HEADERS)
 libODataHTTPServer_HEADER_FILES_INSTALL_DIR = ODataHTTPServer
 libODataHTTPServer_INCLUDE_DIRS = -I. -I../Source/ODataKit/include -I../Source/ODataIncrementalStore/include -I../Source/ODataService/include -I../Source/ODataKit/include/ODataKit -I../Source/ODataIncrementalStore/include/ODataIncrementalStore -I../Source/ODataService/include/ODataService $(GCDWebServer_INCLUDE_DIRS)
 libODataHTTPServer_OBJCFLAGS = $(FLAGS)
 libODataHTTPServer_LIB_DIRS = -L../obj
 libODataHTTPServer_LIBRARIES_DEPEND_UPON = -lODataService -lODataKit -lCoreData $(GCDWebServer_LIBS)
 
-TOOL_NAME = ois-serve ois-serve-check
+TOOL_NAME = ois-serve ois-serve-check catalog-server
 ois-serve_OBJC_FILES = ois-serve.m
 ois-serve-check_OBJC_FILES = Tests/ois-serve-check.m
+catalog-server_OBJC_FILES = Examples/CatalogServer.m
 ois-serve_INCLUDE_DIRS = -I. -I../Source/ODataKit/include -I../Source/ODataIncrementalStore/include -I../Source/ODataService/include -I../Source/ODataKit/include/ODataKit -I../Source/ODataIncrementalStore/include/ODataIncrementalStore -I../Source/ODataService/include/ODataService
+catalog-server_INCLUDE_DIRS = -I. -I../Source/ODataKit/include -I../Source/ODataIncrementalStore/include -I../Source/ODataService/include -I../Source/ODataKit/include/ODataKit -I../Source/ODataIncrementalStore/include/ODataIncrementalStore -I../Source/ODataService/include/ODataService
 ois-serve-check_INCLUDE_DIRS = -I. -I../Source/ODataKit/include -I../Source/ODataIncrementalStore/include -I../Source/ODataService/include -I../Source/ODataKit/include/ODataKit -I../Source/ODataIncrementalStore/include/ODataIncrementalStore -I../Source/ODataService/include/ODataService
 ois-serve_OBJCFLAGS = $(FLAGS)
+catalog-server_OBJCFLAGS = $(FLAGS)
 ois-serve-check_OBJCFLAGS = $(FLAGS)
 ois-serve_LIB_DIRS = -L./obj -L../obj
+catalog-server_LIB_DIRS = -L./obj -L../obj
 ois-serve-check_LIB_DIRS = -L./obj -L../obj
 ois-serve_TOOL_LIBS = -lODataHTTPServer -lODataService -lODataKit -lCoreData $(GCDWebServer_LIBS)
+catalog-server_TOOL_LIBS = -lODataHTTPServer -lODataService -lODataKit -lCoreData $(GCDWebServer_LIBS)
 ois-serve-check_TOOL_LIBS = -lODataHTTPServer -lODataService -lODataKit -lCoreData $(GCDWebServer_LIBS)
 
 include $(GNUSTEP_MAKEFILES)/library.make
@@ -62,14 +73,18 @@ FLAGS = -fobjc-arc -fblocks -fobjc-exceptions -Wall -Wno-unused-parameter
 INCLUDES = -I. -I../Source/ODataKit/include -I../Source/ODataIncrementalStore/include -I../Source/ODataService/include -I../Source/ODataKit/include/ODataKit -I../Source/ODataIncrementalStore/include/ODataIncrementalStore -I../Source/ODataService/include/ODataService $(GCDWebServer_INCLUDE_DIRS)
 LIBS = -framework Foundation -framework CoreData -framework Security -framework SystemConfiguration -framework CoreServices -lz
 LIBRARY_SOURCES = $(wildcard ../Source/*/*.m)
-SOURCES = ODataHTTPServer.m $(LIBRARY_SOURCES) $(GCDWebServer_OBJC_FILES)
+SOURCES = $(SERVER_SOURCES) $(LIBRARY_SOURCES) $(GCDWebServer_OBJC_FILES)
 HEADERS = $(wildcard *.h ../Source/*/include/*/*.h ../Source/*/*.h)
 
-all: $(BUILD_DIR)/ois-serve $(BUILD_DIR)/ois-serve-check
+all: $(BUILD_DIR)/ois-serve $(BUILD_DIR)/ois-serve-check $(BUILD_DIR)/catalog-server
 
 $(BUILD_DIR)/ois-serve: ois-serve.m $(SOURCES) $(HEADERS)
 	@mkdir -p $(BUILD_DIR)
 	$(CC) $(FLAGS) $(INCLUDES) ois-serve.m $(SOURCES) $(LIBS) -o $@
+
+$(BUILD_DIR)/catalog-server: Examples/CatalogServer.m $(SOURCES) $(HEADERS)
+	@mkdir -p $(BUILD_DIR)
+	$(CC) $(FLAGS) $(INCLUDES) Examples/CatalogServer.m $(SOURCES) $(LIBS) -o $@
 
 $(BUILD_DIR)/ois-serve-check: Tests/ois-serve-check.m $(SOURCES) $(HEADERS)
 	@mkdir -p $(BUILD_DIR)

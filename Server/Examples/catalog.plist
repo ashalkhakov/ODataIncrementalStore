@@ -21,6 +21,12 @@
   <integer>200</integer>
   <key>Namespace</key>
   <string>Catalog</string>
+  <!-- GET here answers whether it is up; a line per request on standard
+       error. -->
+  <key>HealthPath</key>
+  <string>/health</string>
+  <key>AccessLog</key>
+  <true/>
   <!-- A bundle whose principal class conforms to ODataServiceConfiguring
        registers its entity set handlers here.
   <key>Bundles</key>

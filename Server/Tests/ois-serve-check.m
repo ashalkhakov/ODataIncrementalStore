@@ -11,8 +11,9 @@
 // is tested without sockets, in Tests/ODataServiceTests.m.
 
 #import "ODataService.h"
-#import "ODataHTTPServer.h"
+#import "ODataServer.h"
 #import <ODataKit/ODataBatch.h>
+#import <ODataKit/ODataError.h>
 #include <arpa/inet.h>
 #include <netinet/in.h>
 #include <sys/socket.h>
@@ -107,6 +108,180 @@ static OISReply *OISSend(NSString *method, NSString *target, NSDictionary *heade
   if (body) [request appendData:body];
   return OISSendRaw(request);
 }
+
+#pragma mark An application of its own
+
+// GET /hello/:name: who it greets, and who asked.
+@interface OISHelloHandler : NSObject <ODataServerHandler>
+@end
+
+@implementation OISHelloHandler
+- (void)handleRequest:(ODataServerRequest *)request reply:(ODataServerReply *)reply
+{
+  NSMutableString *order = request.userInfo[@"order"];
+  [order appendString:@"handler"];
+  [reply finishWithResponse:[ODataServerResponse responseWithJSON:@{ @"hello": request.pathParameters[@"name"] ?: @"",
+                                                                      @"asker": request.principal.subject ?: [NSNull null] }
+                                                            status:200]];
+}
+@end
+
+// Answers later, from another queue, as a handler that asks a database does.
+@interface OISLaterHandler : NSObject <ODataServerHandler>
+@end
+
+@implementation OISLaterHandler
+- (void)handleRequest:(ODataServerRequest *)request reply:(ODataServerReply *)reply
+{
+  dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(30 * NSEC_PER_MSEC)), dispatch_get_global_queue(0, 0), ^{
+    [reply finishWithResponse:[ODataServerResponse responseWithText:@"later" status:202]];
+  });
+}
+@end
+
+@interface OISBoomHandler : NSObject <ODataServerHandler>
+@end
+
+@implementation OISBoomHandler
+- (void)handleRequest:(ODataServerRequest *)request reply:(ODataServerReply *)reply
+{
+  [NSException raise:NSInternalInconsistencyException format:@"on purpose"];
+}
+@end
+
+// Notes the way in and the way out: X-Order shows the order stages ran.
+@interface OISOrderStage : ODataServerStage
+@property (nonatomic, copy) NSString *name;
+@end
+
+@implementation OISOrderStage
+- (BOOL)shouldPassRequest:(ODataServerRequest *)request reply:(ODataServerReply *)reply
+{
+  NSMutableString *order = request.userInfo[@"order"];
+  if (!order) request.userInfo[@"order"] = order = [NSMutableString string];
+  [order appendFormat:@"%@>", self.name];
+  return YES;
+}
+- (void)request:(ODataServerRequest *)request willSendResponse:(ODataServerResponse *)response
+{
+  NSMutableString *order = request.userInfo[@"order"];
+  [order appendFormat:@"<%@", self.name];
+  [response setValue:order forHeader:@"X-Order"];
+}
+@end
+
+// Answers /blocked itself, and sees its own answer on the way back.
+@interface OISBlockingStage : ODataServerStage
+@end
+
+@implementation OISBlockingStage
+- (BOOL)shouldPassRequest:(ODataServerRequest *)request reply:(ODataServerReply *)reply
+{
+  if (![request.path isEqualToString:@"/blocked"]) return YES;
+  [reply finishWithResponse:[ODataServerResponse responseWithText:@"no" status:418]];
+  return NO;
+}
+- (void)request:(ODataServerRequest *)request willSendResponse:(ODataServerResponse *)response
+{
+  if (response.status == 418) [response setValue:@"418" forHeader:@"X-Blocked-Saw"];
+}
+@end
+
+// The access log, kept rather than written.
+@interface OISKeptLog : ODataAccessLogStage
+@property (nonatomic, strong) NSMutableArray<NSString *> *lines;
+@end
+
+@implementation OISKeptLog
+- (void)writeLine:(NSString *)line
+{
+  @synchronized (self) {
+    [self.lines addObject:line];
+  }
+}
+@end
+
+// Asks elsewhere and answers later, from another queue: Token <name> is
+// <name>; Token banned is refused.
+@interface OISLaterAuthenticator : NSObject <ODataAuthenticator>
+@end
+
+@implementation OISLaterAuthenticator
+- (void)authenticateRequest:(ODataRequest *)request reply:(ODataReply *)reply
+{
+  [reply defer];
+  NSString *given = [[request valueForHeader:@"Authorization"] stringByReplacingOccurrencesOfString:@"Token " withString:@""];
+  dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(20 * NSEC_PER_MSEC)), dispatch_get_global_queue(0, 0), ^{
+    if ([given isEqualToString:@"banned"]) {
+      [reply failWithError:ODataServiceError(401, @"That token is not taken here")];
+    } else {
+      [reply finishWithResult:given.length ? [[ODataPrincipal alloc] initWithSubject:given claims:@{}] : nil];
+    }
+  });
+}
+- (NSString *)challengeForRequest:(ODataRequest *)request
+{
+  return @"Token realm=\"check\"";
+}
+@end
+
+// Collects what an authenticator answered.
+@interface OISAnswers : NSObject
+@property (nonatomic, strong) dispatch_semaphore_t done;
+@property (nonatomic, strong) ODataAuthentication *answer;
+@end
+
+@implementation OISAnswers
+- (void)didAuthenticate:(ODataAuthentication *)answer
+{
+  self.answer = answer;
+  dispatch_semaphore_signal(self.done);
+}
+@end
+
+static ODataAuthentication *OISAskLater(NSString *authorization)
+{
+  NSMutableURLRequest *request = [NSMutableURLRequest requestWithURL:[NSURL URLWithString:@"http://example.test/anything"]];
+  if (authorization) [request setValue:authorization forHTTPHeaderField:@"Authorization"];
+  OISAnswers *answers = [[OISAnswers alloc] init];
+  answers.done = dispatch_semaphore_create(0);
+  [ODataAuthentication authenticateURLRequest:request with:[[OISLaterAuthenticator alloc] init] timeout:5
+                                       target:answers action:@selector(didAuthenticate:)];
+  dispatch_semaphore_wait(answers.done, dispatch_time(DISPATCH_TIME_NOW, (int64_t)(5 * NSEC_PER_SEC)));
+  return answers.answer;
+}
+
+@interface OISCheckApplication : ODataServerApplication
+@property (nonatomic, strong) OISKeptLog *log;
+@end
+
+@implementation OISCheckApplication
+- (void)configureRouter:(ODataServerRouter *)router
+{
+  [router insertRoute:[ODataServerRoute routeWithMethod:@"GET" path:@"/hello/:name" handler:[[OISHelloHandler alloc] init]] atIndex:0];
+  ODataServerRoute *billing = [ODataServerRoute routeWithMethod:@"POST" path:@"/webhooks/billing" handler:[[OISLaterHandler alloc] init]];
+  billing.scopes = [NSSet setWithObject:@"Billing.Notify"];
+  [router addRoute:billing];
+  ODataServerRoute *members = [ODataServerRoute routeWithMethod:@"GET" path:@"/members" handler:[[OISHelloHandler alloc] init]];
+  members.requiresPrincipal = YES;
+  [router addRoute:members];
+  [router addRoute:[ODataServerRoute routeWithMethod:@"GET" path:@"/later" handler:[[OISLaterHandler alloc] init]]];
+  [router addRoute:[ODataServerRoute routeWithMethod:@"GET" path:@"/boom" handler:[[OISBoomHandler alloc] init]]];
+}
+- (void)configurePipeline:(ODataServerPipeline *)pipeline
+{
+  // Its own log in place of the standard one, where it was.
+  self.log = [[OISKeptLog alloc] init];
+  self.log.lines = [NSMutableArray array];
+  [pipeline replaceStageOfClass:[ODataAccessLogStage class] withStage:self.log];
+  OISOrderStage *a = [[OISOrderStage alloc] init], *b = [[OISOrderStage alloc] init];
+  a.name = @"a";
+  b.name = @"b";
+  [pipeline addStage:a];
+  [pipeline addStage:b];
+  [pipeline addStage:[[OISBlockingStage alloc] init]];
+}
+@end
 
 static NSManagedObject *OISInsert(NSManagedObjectContext *context, NSString *entity, NSDictionary *values)
 {
@@ -249,8 +424,86 @@ int main(int argc, const char *argv[])
     OISReply *bypassed = OISSend(@"GET", @"/odata/Products", @{ @"X-Forwarded-User": @"ann" }, nil);
     check(bypassed.status == 401, @"proxy-bypassed", [NSString stringWithFormat:@"%ld", (long)bypassed.status]);
     service.authenticator = nil;
-
     [server stop];
+
+    // An authenticator that answers later, asked for a host: no service, no
+    // context, and the answer still comes.
+    ODataAuthentication *deferredAnswer = OISAskLater(@"Token ann");
+    check([deferredAnswer.principal.subject isEqual:@"ann"] && !deferredAnswer.error, @"auth-deferred", deferredAnswer.principal.subject ?: @"(no answer)");
+    ODataAuthentication *nobody = OISAskLater(nil);
+    check(nobody && !nobody.principal && !nobody.error, @"auth-no-one", nobody ? @"no one" : @"(no answer)");
+    ODataAuthentication *banned = OISAskLater(@"Token banned");
+    check(banned.error.code == 401 && [banned.challenge isEqual:@"Token realm=\"check\""], @"auth-refused",
+          [NSString stringWithFormat:@"%ld %@", (long)banned.error.code, banned.challenge]);
+
+    // An application of its own, made from settings as ois-serve's are:
+    // routes and stages around the service, one sign-in for all of them.
+    ODataServerConfiguration *configuration = [[ODataServerConfiguration alloc] initWithSettings:@{
+      @"Model": modelPath, @"ServiceRoot": @"https://api.example.test/odata/", @"TrustedUserHeader": @"X-Forwarded-User" }];
+    OISCheckApplication *application = [[OISCheckApplication alloc] initWithConfiguration:configuration];
+    BOOL prepared = [application prepare:&error];
+    check(prepared, @"app-prepare", [NSString stringWithFormat:@"%@\n%@\n%@", error ?: @"", application.pipeline, application.router]);
+    if (!prepared) return 1;
+    started = [application.server startOnPort:0 error:&error];
+    port = application.server.port;
+    check(started, @"app-start", [NSString stringWithFormat:@"port %lu %@", (unsigned long)port, error ?: @""]);
+    if (!started) return 1;
+    NSDictionary *ann = @{ @"X-Forwarded-User": @"ann" };
+
+    OISReply *health = OISSend(@"GET", @"/health", nil, nil);
+    check(health.status == 200 && [health.json[@"status"] isEqual:@"ok"], @"app-health", health.text);
+    OISReply *hello = OISSend(@"GET", @"/hello/world", ann, nil);
+    check(hello.status == 200 && [hello.json[@"hello"] isEqual:@"world"] && [hello.json[@"asker"] isEqual:@"ann"],
+          @"app-route", [NSString stringWithFormat:@"%ld %@", (long)hello.status, hello.text]);
+    check([hello.headers[@"x-order"] isEqual:@"a>b>handler<b<a"], @"app-stage-order", hello.headers[@"x-order"] ?: @"(none)");
+    check([hello.headers[@"x-request-id"] length] > 0, @"app-request-id", hello.headers[@"x-request-id"] ?: @"(none)");
+    OISReply *given = OISSend(@"GET", @"/hello/x", @{ @"X-Request-ID": @"abc-123" }, nil);
+    check([given.headers[@"x-request-id"] isEqual:@"abc-123"], @"app-request-id-given", given.headers[@"x-request-id"] ?: @"(none)");
+    OISReply *anyone = OISSend(@"GET", @"/hello/x", nil, nil);
+    check(anyone.status == 200 && anyone.json[@"asker"] == [NSNull null], @"app-route-anyone", anyone.text);
+
+    OISReply *blocked = OISSend(@"GET", @"/blocked", nil, nil);
+    check(blocked.status == 418 && [blocked.headers[@"x-blocked-saw"] isEqual:@"418"] && [blocked.headers[@"x-order"] isEqual:@"a>b><b<a"],
+          @"app-stage-answers", [NSString stringWithFormat:@"%ld %@ %@", (long)blocked.status, blocked.headers[@"x-blocked-saw"], blocked.headers[@"x-order"]]);
+    OISReply *later = OISSend(@"GET", @"/later", nil, nil);
+    check(later.status == 202 && [later.text isEqual:@"later"] && [later.headers[@"x-order"] isEqual:@"a>b><b<a"],
+          @"app-deferred", [NSString stringWithFormat:@"%ld %@ %@", (long)later.status, later.text, later.headers[@"x-order"]]);
+    OISReply *boom = OISSend(@"GET", @"/boom", nil, nil);
+    check(boom.status == 500 && [boom.json[@"error"][@"message"] length], @"app-exception", [NSString stringWithFormat:@"%ld %@", (long)boom.status, boom.text]);
+
+    OISReply *wrongMethod = OISSend(@"DELETE", @"/hello/x", nil, nil);
+    check(wrongMethod.status == 405 && [wrongMethod.headers[@"allow"] isEqual:@"GET, HEAD"], @"app-405",
+          [NSString stringWithFormat:@"%ld %@", (long)wrongMethod.status, wrongMethod.headers[@"allow"]]);
+    OISReply *nowhere = OISSend(@"GET", @"/nowhere", nil, nil);
+    check(nowhere.status == 404 && [nowhere.json[@"error"][@"code"] isEqual:@"404"], @"app-404", nowhere.text);
+    OISReply *headOnly = OISSend(@"HEAD", @"/hello/x", nil, nil);
+    check(headOnly.status == 200 && headOnly.body.length == 0, @"app-head", [NSString stringWithFormat:@"%ld, %lu bytes", (long)headOnly.status, (unsigned long)headOnly.body.length]);
+
+    OISReply *noOne = OISSend(@"GET", @"/members", nil, nil);
+    check(noOne.status == 401 && [noOne.headers[@"www-authenticate"] hasPrefix:@"Bearer"], @"app-route-signed-in", [NSString stringWithFormat:@"%ld %@", (long)noOne.status, noOne.headers[@"www-authenticate"]]);
+    check(OISSend(@"GET", @"/members", ann, nil).status == 200, @"app-route-member", @"");
+    OISReply *unscoped = OISSend(@"POST", @"/webhooks/billing", ann, @{});
+    check(unscoped.status == 403 && [unscoped.headers[@"www-authenticate"] containsString:@"scope=\"Billing.Notify\""], @"app-route-scopes",
+          [NSString stringWithFormat:@"%ld %@", (long)unscoped.status, unscoped.headers[@"www-authenticate"]]);
+
+    // The service behind the same sign-in, not asking again.
+    OISReply *odataAnonymous = OISSend(@"GET", @"/odata/Products", nil, nil);
+    check(odataAnonymous.status == 401, @"app-odata-sign-in", [NSString stringWithFormat:@"%ld %@", (long)odataAnonymous.status, odataAnonymous.text]);
+    OISReply *odata = OISSend(@"GET", @"/odata/Products", ann, nil);
+    check(odata.status == 200 && [odata.json[@"@odata.context"] isEqual:@"https://api.example.test/odata/$metadata#Products"], @"app-odata",
+          [NSString stringWithFormat:@"%ld %@", (long)odata.status, odata.text]);
+    OISReply *metadataAgain = OISSend(@"GET", @"/odata/$metadata", ann, nil);
+    check(metadataAgain.status == 200 && [metadataAgain.headers[@"x-order"] isEqual:@"a>b><b<a"], @"app-odata-stages", metadataAgain.headers[@"x-order"] ?: @"(none)");
+
+    NSArray *lines;
+    @synchronized (application.log) {
+      lines = [application.log.lines copy];
+    }
+    NSString *helloLine = nil;
+    for (NSString *line in lines) if ([line containsString:@"\"GET /hello/world\" 200"]) helloLine = line;
+    check(helloLine && [helloLine containsString:@" ann "], @"app-access-log", helloLine ?: [lines componentsJoinedByString:@"\n"]);
+
+    [application.server stop];
     printf("%s: %d failure(s)\n", failures ? "FAILED" : "OK", failures);
   }
   return failures ? 1 : 0;

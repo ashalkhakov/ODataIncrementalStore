@@ -64,6 +64,24 @@ NS_ASSUME_NONNULL_BEGIN
 - (nullable NSDictionary<NSString *, id> *)authorizationDescription;
 @end
 
+// An authenticator asked about a request no service is answering (yet), for
+// a host that asks once for all its routes (ODataServer's authentication
+// stage), and what it answered: who is asking, or why they are refused.
+// The target is sent the action, with this, once, on any thread: now, or
+// when a deferred authenticator answers (within timeout; 0: no limit).
+@interface ODataAuthentication : NSObject
++ (void)authenticateURLRequest:(NSURLRequest *)request with:(id<ODataAuthenticator>)authenticator
+                       timeout:(NSTimeInterval)timeout target:(id)target action:(SEL)action;
+- (instancetype)init NS_UNAVAILABLE;
+@property (nonatomic, readonly) NSURLRequest *URLRequest;
+// nil: no one (whether that is let in is the host's to say).
+@property (nonatomic, readonly, strong, nullable) ODataPrincipal *principal;
+// A refusal (ODataServiceError, 401 or 403), and for a 401 the
+// WWW-Authenticate challenge the authenticator gives with it.
+@property (nonatomic, readonly, strong, nullable) NSError *error;
+@property (nonatomic, readonly, copy, nullable) NSString *challenge;
+@end
+
 @interface ODataTrustedHeaderAuthenticator : NSObject <ODataAuthenticator>
 // The caller's subject from this header (X-Forwarded-User, Remote-User).
 - (instancetype)initWithSubjectHeader:(NSString *)header NS_DESIGNATED_INITIALIZER;

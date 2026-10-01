@@ -74,10 +74,18 @@ NSString * const ODataUserInfoETag = @"OData.etag";
     later = self.deferred;
   }
   if (later) {
+    // In the request's context; a reply that has none (an authenticator
+    // asked by a host) on a queue of its own.
     NSManagedObjectContext *context = self.context;
-    [context performBlock:^{
-      [self fire];
-    }];
+    if (context) {
+      [context performBlock:^{
+        [self fire];
+      }];
+    } else {
+      dispatch_async(dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0), ^{
+        [self fire];
+      });
+    }
   }
 }
 
@@ -203,6 +211,66 @@ NSString * const ODataUserInfoETag = @"OData.etag";
     if ([key caseInsensitiveCompare:name] == NSOrderedSame) return headers[key];
   }
   return nil;
+}
+
+@end
+
+#pragma mark - Authentication for a host
+
+@interface ODataAuthentication ()
+@property (nonatomic, readwrite) NSURLRequest *URLRequest;
+@property (nonatomic, readwrite, strong, nullable) ODataPrincipal *principal;
+@property (nonatomic, readwrite, strong, nullable) NSError *error;
+@property (nonatomic, readwrite, copy, nullable) NSString *challenge;
+@property (nonatomic, strong) id<ODataAuthenticator> authenticator;
+@property (nonatomic, strong) ODataRequest *request;
+@property (nonatomic, strong, nullable) id target;
+@property (nonatomic) SEL action;
+@end
+
+@implementation ODataAuthentication
+
++ (void)authenticateURLRequest:(NSURLRequest *)request with:(id<ODataAuthenticator>)authenticator
+                       timeout:(NSTimeInterval)timeout target:(id)target action:(SEL)action
+{
+  ODataAuthentication *asked = [[self alloc] initWithURLRequest:request authenticator:authenticator target:target action:action];
+  // The authenticator sees a request as the service would show it: its
+  // headers, its URL; it has no context, no path read yet.
+  ODataReply *reply = [[ODataReply alloc] initWithTarget:asked action:@selector(didAnswer:) context:nil];
+  reply.timeout = timeout;
+  reply.request = asked.request;
+  [authenticator authenticateRequest:asked.request reply:reply];
+  [reply returned:nil];
+}
+
+- (instancetype)initWithURLRequest:(NSURLRequest *)request authenticator:(id<ODataAuthenticator>)authenticator
+                            target:(id)target action:(SEL)action
+{
+  self = [super init];
+  if (!self) return nil;
+  _URLRequest = request;
+  _authenticator = authenticator;
+  _request = [[ODataRequest alloc] initWithURLRequest:request];
+  _target = target;
+  _action = action;
+  return self;
+}
+
+- (void)didAnswer:(ODataReply *)reply
+{
+  if (reply.error) {
+    self.error = reply.error;
+    if (reply.error.code == 401) {
+      NSString *challenge = [self.authenticator respondsToSelector:@selector(challengeForRequest:)] ? [self.authenticator challengeForRequest:self.request] : nil;
+      self.challenge = challenge.length ? challenge : @"Bearer";
+    }
+  } else {
+    self.principal = [reply.result isKindOfClass:[ODataPrincipal class]] ? reply.result : nil;
+  }
+  id target = self.target;
+  self.target = nil;
+  void (*send)(id, SEL, id) = (void (*)(id, SEL, id))[target methodForSelector:self.action];
+  send(target, self.action, self);
 }
 
 @end
@@ -1268,6 +1336,11 @@ static NSUInteger OISExpandDepth(ODataQueryOptions *options)
 - (void)run
 {
   self.request.method = [self.request.method isEqualToString:@"HEAD"] ? @"GET" : self.request.method;
+  if (self.principalGiven && !self.authenticated) {
+    self.authenticated = YES;
+    [self admit:self.request.principal];
+    return;
+  }
   if (self.authenticated || !self.service.authenticator) {
     [self answer];
     return;
@@ -1285,7 +1358,18 @@ static NSUInteger OISExpandDepth(ODataQueryOptions *options)
     [self respondError:reply.error];
     return;
   }
-  ODataPrincipal *principal = [reply.result isKindOfClass:[ODataPrincipal class]] ? reply.result : nil;
+  [self admit:[reply.result isKindOfClass:[ODataPrincipal class]] ? reply.result : nil];
+}
+
+// Who the authenticator found, or the host did: no one is answered 401,
+// unless the service lets anyone in (or anyone read $metadata).
+- (void)admit:(ODataPrincipal *)principal
+{
+  if (!self.service.authenticator) {
+    self.request.principal = principal;
+    [self answer];
+    return;
+  }
   NSString *path = self.request.URLRequest.URL.path ?: @"";
   NSString *root = self.service.serviceRoot.path ?: @"/";
   if (![root hasSuffix:@"/"]) root = [root stringByAppendingString:@"/"];
@@ -5208,6 +5292,16 @@ static NSNumber *OISScalarReturnValue(NSInvocation *invocation, char type)
 
 - (void)startExchange:(ODataExchange *)exchange
 {
+  [self startExchange:exchange principal:nil given:NO];
+}
+
+- (void)startExchange:(ODataExchange *)exchange principal:(ODataPrincipal *)principal
+{
+  [self startExchange:exchange principal:principal given:YES];
+}
+
+- (void)startExchange:(ODataExchange *)exchange principal:(ODataPrincipal *)principal given:(BOOL)given
+{
   if (self.maxURLLength && exchange.request.URL.absoluteString.length > self.maxURLLength) {
     NSDictionary *error = @{ @"error": @{ @"code": @"414", @"message": [NSString stringWithFormat:@"The URL is longer than the service takes (%lu characters)",
                                                                                                    (unsigned long)self.maxURLLength] } };
@@ -5217,10 +5311,10 @@ static NSNumber *OISScalarReturnValue(NSInvocation *invocation, char type)
   }
   NSTimeInterval wait = 0;
   if (self.asyncResultDuration > 0 && OISPrefersRespondAsync(exchange.request, &wait) && [self asyncRequestCount] < self.maxAsyncRequests) {
-    [self startAsynchronously:exchange wait:wait];
+    [self startAsynchronously:exchange wait:wait principal:principal given:given];
     return;
   }
-  [self startExchange:exchange inContext:nil saves:YES authenticated:NO principal:nil];
+  [self startExchange:exchange inContext:nil saves:YES authenticated:NO principal:principal given:given];
 }
 
 #pragma mark Asynchronous requests
@@ -5240,7 +5334,7 @@ static BOOL OISPrefersRespondAsync(NSURLRequest *request, NSTimeInterval *wait)
 
 // Answered as any request is; one still under way when that returns, or
 // after wait, is accepted.
-- (void)startAsynchronously:(ODataExchange *)exchange wait:(NSTimeInterval)wait
+- (void)startAsynchronously:(ODataExchange *)exchange wait:(NSTimeInterval)wait principal:(ODataPrincipal *)principal given:(BOOL)given
 {
   OISAsyncJob *job = [[OISAsyncJob alloc] init];
   // A letter first: the monitor's id is a path segment, read as a name.
@@ -5248,7 +5342,7 @@ static BOOL OISPrefersRespondAsync(NSURLRequest *request, NSTimeInterval *wait)
   job.service = self;
   job.exchange = exchange;
   ODataExchange *inner = [[ODataExchange alloc] initWithRequest:exchange.request target:job action:@selector(exchangeDidFinish:)];
-  job.request = [self startExchange:inner inContext:nil saves:YES authenticated:NO principal:nil];
+  job.request = [self startExchange:inner inContext:nil saves:YES authenticated:NO principal:principal given:given];
   if (wait > 0) {
     dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(wait * NSEC_PER_SEC)),
                    dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0), ^{
@@ -5415,7 +5509,7 @@ static NSDateFormatter *OISHTTPDateFormatter(void)
 }
 
 - (ODataRequest *)startExchange:(ODataExchange *)exchange inContext:(NSManagedObjectContext *)shared saves:(BOOL)saves
-                  authenticated:(BOOL)authenticated principal:(ODataPrincipal *)principal
+                  authenticated:(BOOL)authenticated principal:(ODataPrincipal *)principal given:(BOOL)given
 {
   [self prepare];
   NSString *repeatabilityKey = nil, *repeatabilitySignature = nil;
@@ -5435,6 +5529,7 @@ static NSDateFormatter *OISHTTPDateFormatter(void)
 
   call.saves = saves;
   call.authenticated = authenticated;
+  call.principalGiven = given;
   call.request.principal = principal;
   NSManagedObjectContext *context = shared;
   if (!context) {

@@ -291,7 +291,7 @@ static void OISAppendText(NSMutableData *data, NSString *text)
       _starting = YES;
       _finishedWhileStarting = NO;
     }
-    [_service startExchange:exchange inContext:_groupContext saves:(item.group == nil) authenticated:YES principal:_principal];
+    [_service startExchange:exchange inContext:_groupContext saves:(item.group == nil) authenticated:YES principal:_principal given:NO];
     BOOL finished;
     @synchronized (self) {
       _starting = NO;

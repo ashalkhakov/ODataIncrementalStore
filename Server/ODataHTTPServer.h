@@ -1,21 +1,23 @@
-// ODataHTTPServer — an ODataService on the network.
+// ODataHTTPServer — a handler on the network.
 // Copyright (C) 2026 OIS contributors
 // SPDX-License-Identifier: LGPL-2.1-or-later
 //
-// The HTTP adapter of docs/server-design.md: the one part of the server that
-// touches sockets. It listens with the vendored GCDWebServer
-// (ThirdParty/GCDWebServer), turns each request under the service root into
-// an NSURLRequest, hands it to the service as an ODataExchange, and writes
-// the response back. HTTP/1.1, one request a connection, no TLS: it is meant
-// to sit behind a reverse proxy (nginx, Caddy), which passes the request
-// path on unchanged. The URLs the service writes begin with its serviceRoot,
-// so give the service the public one.
+// The one part of ODataServer that touches sockets. It listens with the
+// vendored GCDWebServer (ThirdParty/GCDWebServer), turns each request into
+// an ODataServerRequest for its handler -- a pipeline, a router, a mounted
+// service -- and writes the response back. HTTP/1.1, one request a
+// connection, no TLS: it is meant to sit behind a reverse proxy (nginx,
+// Caddy), which passes the request path on unchanged.
+//
+// Most applications do not make one themselves: ODataServerApplication
+// does, with a pipeline and router around their service.
 //
 // A separate library from ODataService, so that neither the client
 // nor the service's core links the listener.
 
 #pragma once
 #import <Foundation/Foundation.h>
+#import "ODataServerPipeline.h"
 
 @class ODataService;
 
@@ -23,17 +25,24 @@ NS_ASSUME_NONNULL_BEGIN
 
 // What a bundle's principal class implements for ois-serve to hand it the
 // service before the first request: register entity set handlers, set
-// paging, and so on.
+// paging, and so on. (A bundle whose principal class is an
+// ODataServerApplication subclass can add routes and stages too.)
 @protocol ODataServiceConfiguring <NSObject>
 + (void)configureService:(ODataService *)service;
 @end
 
 @interface ODataHTTPServer : NSObject
 
-- (instancetype)initWithService:(ODataService *)service NS_DESIGNATED_INITIALIZER;
+- (instancetype)initWithHandler:(id<ODataServerHandler>)handler NS_DESIGNATED_INITIALIZER;
+// A service alone, at its service root's path: a router with that one
+// route, and nothing in front of it (the service asks its authenticator
+// itself).
+- (instancetype)initWithService:(ODataService *)service;
 - (instancetype)init NS_UNAVAILABLE;
 
-@property (nonatomic, readonly) ODataService *service;
+@property (nonatomic, readonly, strong) id<ODataServerHandler> handler;
+// The service it was made with, if it was.
+@property (nonatomic, readonly, strong, nullable) ODataService *service;
 // Listen on 127.0.0.1 and ::1 only (the default: the proxy is on the same
 // machine), or on every address.
 @property (nonatomic) BOOL bindToLocalhost;
