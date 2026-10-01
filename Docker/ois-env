@@ -1,0 +1,14 @@
+#!/bin/sh
+# Runs a command with the GNUstep stack in its environment: the images'
+# entry point and shell (Docker/Dockerfile).
+#
+#   ois-env ois-serve -Model ...
+#   ois-env make
+# (Not there yet while the stack itself is being built.)
+if [ -f /opt/gnustep/System/Library/Makefiles/GNUstep.sh ]; then
+  . /opt/gnustep/System/Library/Makefiles/GNUstep.sh
+fi
+# libobjc2 and libdispatch are in the prefix's plain lib/, which is not one
+# of GNUstep's library roots.
+export LD_LIBRARY_PATH="/opt/gnustep/lib${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
+exec "$@"

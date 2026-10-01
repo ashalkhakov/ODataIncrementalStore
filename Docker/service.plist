@@ -1,0 +1,18 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!-- The ois-serve image's settings: the Catalog example in SQLite, on the
+     image's volume. Mount your own at /etc/ois-serve/service.plist, or set
+     any setting as an OIS_ variable (OIS_MODEL, OIS_STORE_TYPE,
+     OIS_STORE_URL, OIS_SERVICE_ROOT, ...), which wins over this file. -->
+<plist version="1.0">
+<dict>
+  <key>Model</key>
+  <string>/usr/local/share/ois-serve/Catalog.momd</string>
+  <key>StoreType</key>
+  <string>SQLite</string>
+  <key>StoreURL</key>
+  <string>/var/lib/ois-serve/catalog.sqlite</string>
+  <key>MaxPageSize</key>
+  <integer>200</integer>
+</dict>
+</plist>

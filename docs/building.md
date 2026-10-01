@@ -43,7 +43,8 @@ xcodebuild -workspace ODataKit.xcworkspace -scheme ODataKitTests -destination 'p
 ```
 
 A client app embeds `ODataKit.framework` and `ODataIncrementalStore.framework`
-(Catalog does); one that serves as well adds `ODataService.framework`
+(Catalog does); one that serves as well adds `ODataService.framework` and
+`HTTPServerKit.framework` and `OTelKit.framework`, which it links
 (Workbench does). The server tools build with plain clang, with no Xcode
 project: `make -C Server` writes `Server/build/ois-serve`, and
 `make -C Server check` runs it over a loopback socket.
@@ -63,12 +64,94 @@ install` there): the tests and example apps compile `Catalog.xcdatamodeld` to
 
 ```sh
 . /usr/share/GNUstep/Makefiles/GNUstep.sh
-make && make install         # libODataKit, libODataIncrementalStore, libODataService
-make -C Server               # libODataHTTPServer, Server/obj/ois-serve
+make && make install                 # libODataKit, libODataIncrementalStore, libOTelKit, libHTTPServerKit, libODataService
+make -C Server && make -C Server install   # ois-serve
 ```
 
-Link a client with `-lODataIncrementalStore -lODataKit -lCoreData`, and a
-server with `-lODataService -lODataKit -lCoreData` as well.
+### Building against what is installed
+
+`make install` also installs what an application builds with
+(`Scripts/install-build-files.sh`): a fragment in
+`$GNUSTEP_MAKEFILES/Additional/`, which every GNUmakefile includes by itself,
+and pkg-config files beside the libraries.
+
+With gnustep-make, name its variables (`Server/Examples/Docker/GNUmakefile`):
+
+```make
+include $(GNUSTEP_MAKEFILES)/common.make
+TOOL_NAME = myserver
+myserver_OBJC_FILES = main.m
+myserver_INCLUDE_DIRS = $(ODATASERVICE_INCLUDE_DIRS)
+myserver_OBJCFLAGS = $(ODATAKIT_OBJCFLAGS)
+myserver_TOOL_LIBS = $(ODATASERVICE_LIBS)
+include $(GNUSTEP_MAKEFILES)/tool.make
+```
+
+`ODATAKIT_*` is what a client and a service share, `ODATAINCREMENTALSTORE_*`
+the client, `ODATASERVICE_*` the service, on its own or on the network
+(`ODataServer.h`); `HTTPSERVERKIT_*` is the HTTP server alone, for an
+application with no OData in it; `OTELKIT_*` the tracing alone.
+
+Without it, pkg-config (`odatakit`, `odataincrementalstore`, `otelkit`,
+`httpserverkit`, `odataservice`) gives the same, GNUstep's own flags
+included:
+
+```sh
+export PKG_CONFIG_PATH=$(gnustep-config --variable=GNUSTEP_LOCAL_LIBRARIES)/pkgconfig
+clang main.m $(pkg-config --cflags --libs odataservice) -o myserver
+```
+
+### Docker
+
+`Docker/Dockerfile` builds the stack once, as CI does, into four images:
+
+```sh
+docker build -f Docker/Dockerfile --target sdk       -t odatakit-sdk .
+docker build -f Docker/Dockerfile --target runtime   -t odatakit-runtime .
+docker build -f Docker/Dockerfile --target ois-serve -t ois-serve .
+docker build -f Docker/Dockerfile --target check .
+```
+
+- `odatakit-sdk`: clang, GNUstep, FreeCoreData (with `momc` and its
+  PostgreSQL and MySQL stores), ODataKit and HTTPServerKit installed with the
+  fragment and pkg-config files. Build an application in it.
+- `odatakit-runtime`: what such an application needs to run, and no more;
+  a library it would lack fails the image's build, not a server at start.
+- `ois-serve`: the runtime and `ois-serve`, on every address at 8080, as a
+  user of its own, with a volume at `/var/lib/ois-serve` and a health check.
+  It logs JSON lines, and answers metrics, health and readiness on an admin
+  port, 9090, for Prometheus and the orchestrator: publish that one only
+  where they are. Under Kubernetes, point the liveness probe at `/health`,
+  the readiness probe at `/ready`, and give `OIS_DRAIN_DELAY` a few seconds.
+  Its settings are `ois-serve`'s, as `OIS_` variables
+  (`HSApplication.h`), or a property list at `OIS_CONFIG`
+  (`/etc/ois-serve/service.plist`: the Catalog example in SQLite):
+
+  ```sh
+  docker run -p 8080:8080 -v catalog:/var/lib/ois-serve \
+    -e OIS_SERVICE_ROOT=https://api.example.com/odata/ ois-serve
+  docker run -p 8080:8080 -e OIS_STORE_TYPE=CDPostgreSQLStore \
+    -e OIS_STORE_URL=postgresql://user:secret@db/catalog ois-serve
+  ```
+
+- `check`: the SDK, with the loopback check run and an application built
+  against what is installed, both ways. CI builds it.
+
+An application of its own builds in the SDK and runs on the runtime
+(`Server/Examples/Docker/Dockerfile`):
+
+```dockerfile
+FROM odatakit-sdk AS build
+COPY . /app
+RUN make -C /app
+
+FROM odatakit-runtime
+COPY --from=build /app/obj/myserver /usr/local/bin/myserver
+ENV OIS_PORT=8080 OIS_LOCALHOST=NO
+ENTRYPOINT ["/usr/local/bin/ois-env", "myserver"]
+```
+
+`ois-env` runs a command with the stack in its environment (`GNUstep.sh`).
 
 Without gnustep-make, clang and `gnustep-config` build the command-line tool:
 

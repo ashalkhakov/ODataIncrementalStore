@@ -36,6 +36,10 @@ static BOOL WorkbenchLoadNib(NSString *name, id owner)
   _connection.target = self;
   _connection.connectedAction = @selector(connectionDidConnect:);
   _connection.logAction = @selector(appendLog:);
+  // Every span kept, for the trace window: the store's, its requests', the
+  // built-in service's.
+  _traceRecorder = [[WBTraceRecorder alloc] init];
+  OTTracerProvider.sharedProvider = WBTracerProvider(_traceRecorder);
   [ODataIncrementalStore registerStore];
   if (!WorkbenchLoadNib(@"WorkbenchWindow", self)) {
     NSLog(@"Workbench: failed to load WorkbenchWindow.xib");
@@ -69,6 +73,7 @@ static BOOL WorkbenchLoadNib(NSString *name, id owner)
   _logTable.target = self;
   _logTable.doubleAction = @selector(showExchange:);
   [self keepScroller:_logTable.enclosingScrollView];
+  [self addTraceMenus];
   for (NSTextView *view in @[ self.predicateView, self.inspectorView ]) [self prepareTextView:view fixedPitch:NO];
   [self rebuildStreams];
   [self.servicePopup selectItemAtIndex:WBServiceBuiltIn];
@@ -599,6 +604,79 @@ static NSString *WBRawHeaders(NSDictionary *headers)
   for (NSTextView *view in textViews()) [self prepareTextView:view fixedPitch:YES];
 }
 
+#pragma mark - Traces
+
+// A Trace menu beside the others, and the exchange's trace a right click
+// away in the log.
+- (void)addTraceMenus
+{
+  NSMenu *menu = [[NSMenu alloc] initWithTitle:@"Trace"];
+  NSMenuItem *show = [menu addItemWithTitle:@"Show Traces" action:@selector(showTraces:) keyEquivalent:@"t"];
+  show.keyEquivalentModifierMask = NSEventModifierFlagCommand | NSEventModifierFlagShift;
+  NSMenuItem *exchange = [menu addItemWithTitle:@"Show Trace of Exchange" action:@selector(showTraceOfExchange:) keyEquivalent:@"t"];
+  exchange.keyEquivalentModifierMask = NSEventModifierFlagCommand | NSEventModifierFlagOption;
+  [menu addItem:[NSMenuItem separatorItem]];
+  [menu addItemWithTitle:@"Clear Traces" action:@selector(clearTraces:) keyEquivalent:@""];
+  for (NSMenuItem *item in menu.itemArray) item.target = self;
+  NSMenu *main = [NSApp mainMenu];
+  if (main) {
+    NSMenuItem *holder = [[NSMenuItem alloc] initWithTitle:@"Trace" action:NULL keyEquivalent:@""];
+    holder.submenu = menu;
+    // Before Window and Help, where those are.
+    NSInteger at = main.numberOfItems;
+    for (NSInteger i = 0; i < main.numberOfItems; i++) {
+      NSString *title = [main itemAtIndex:i].title;
+      if ([title isEqualToString:@"Window"] || [title isEqualToString:@"Help"]) {
+        at = i;
+        break;
+      }
+    }
+    [main insertItem:holder atIndex:at];
+  }
+  if (!_logTable.menu) {
+    NSMenu *context = [[NSMenu alloc] initWithTitle:@"Exchange"];
+    [context addItemWithTitle:@"Show Exchange" action:@selector(showExchange:) keyEquivalent:@""].target = self;
+    [context addItemWithTitle:@"Show Trace" action:@selector(showTraceOfExchange:) keyEquivalent:@""].target = self;
+    _logTable.menu = context;
+  }
+}
+
+- (WBTraceWindow *)traces
+{
+  if (!_traceWindow) _traceWindow = [[WBTraceWindow alloc] initWithRecorder:_traceRecorder];
+  return _traceWindow;
+}
+
+- (IBAction)showTraces:(id)sender
+{
+  (void)sender;
+  [[self traces] show];
+}
+
+- (IBAction)showTraceOfExchange:(id)sender
+{
+  (void)sender;
+  // A right click acts on the row clicked, which need not be selected.
+  NSInteger row = _logTable.clickedRow >= 0 ? _logTable.clickedRow : _logTable.selectedRow;
+  if (row < 0 || (NSUInteger)row >= _log.count) {
+    [[self traces] show];
+    return;
+  }
+  WorkbenchLogEntry *entry = _log[(NSUInteger)row];
+  NSString *traceID = WBTraceIDOfHeaders(entry.requestHeaders);
+  if (!traceID || ![[self traces] showTraceWithID:traceID spanID:WBSpanIDOfHeaders(entry.requestHeaders)]) {
+    self.statusField.stringValue = traceID ? @"That exchange's trace is no longer kept." : @"That exchange carries no trace.";
+  }
+  // Asked for (a menu): to the front; following the log: beside it.
+  if (sender) [_traceWindow.window makeKeyAndOrderFront:nil];
+}
+
+- (IBAction)clearTraces:(id)sender
+{
+  (void)sender;
+  [_traceRecorder clear];
+}
+
 - (IBAction)showExchange:(id)sender
 {
   (void)sender;
@@ -738,7 +816,11 @@ static NSString *WBRawHeaders(NSDictionary *headers)
 - (void)tableViewSelectionDidChange:(NSNotification *)n
 {
   if (n.object == _logTable) {
-    if (!_keepingLogSelection) [self showExchange:nil];
+    if (!_keepingLogSelection) {
+      [self showExchange:nil];
+      // The trace window, when open, follows the log.
+      if (_traceWindow.window.isVisible) [self showTraceOfExchange:nil];
+    }
     return;
   }
   if (n.object != self.tableView) return;

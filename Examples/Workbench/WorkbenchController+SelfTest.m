@@ -662,6 +662,37 @@ static void WBCheck(BOOL ok, NSString *what, NSString *detail)
                                      [schema.entitySets.allKeys componentsJoinedByString:@","], self.connection.store.metadataProblems]);
 }
 
+// Traces: the newest exchange's, with the span that sent it chosen; at the
+// built-in service, its planning and execution under the request.
+- (void)checkTracesBuiltIn:(BOOL)builtIn
+{
+  [self.presetsPopup selectItemAtIndex:0];
+  [self applyPreset:self.presetsPopup];
+  [self runFetch:nil];
+  [[NSRunLoop currentRunLoop] runMode:NSDefaultRunLoopMode beforeDate:[NSDate dateWithTimeIntervalSinceNow:0.4]];
+  WorkbenchLogEntry *entry = self.log.firstObject;
+  [self.logTable selectRowIndexes:[NSIndexSet indexSetWithIndex:0] byExtendingSelection:NO];
+  [self showTraceOfExchange:self];
+  WBTrace *trace = [self.traceRecorder traceWithID:WBTraceIDOfHeaders(entry.requestHeaders) ?: @""];
+  NSArray *names = [trace.spans valueForKey:@"name"];
+  OTSpan *chosen = [[self.traceWindow.spanOutline itemAtRow:self.traceWindow.spanOutline.selectedRow] valueForKey:@"span"];
+  BOOL served = !builtIn || ([names containsObject:@"plan"] && [names containsObject:@"execute"] &&
+                             [[names filteredArrayUsingPredicate:[NSPredicate predicateWithFormat:@"SELF BEGINSWITH 'ODataService GET'"]] count]);
+  BOOL shown = self.traceWindow.window.isVisible;
+  BOOL sender = chosen.kind == OTSpanKindClient && [chosen.context.spanID isEqualToString:WBSpanIDOfHeaders(entry.requestHeaders) ?: @""];
+  BOOL detailed = [self.traceWindow.detailView.string rangeOfString:@"http.response.status_code"].location != NSNotFound;
+  WBCheck(trace && shown && sender && detailed && served, @"traces: the exchange's trace, the span that sent it chosen",
+          [NSString stringWithFormat:@"%@%@%@%@%@ (%ld rows, row %ld chosen)", trace ? @"" : @"no trace; ", shown ? @"" : @"not shown; ",
+                                     sender ? @"" : @"not the sender chosen; ", detailed ? @"" : @"no detail; ",
+                                     [names componentsJoinedByString:@", "], (long)self.traceWindow.spanOutline.numberOfRows,
+                                     (long)self.traceWindow.spanOutline.selectedRow]);
+  [self shoot:[NSString stringWithFormat:@"Traces %@", builtIn ? @"built-in" : entry.method] window:self.traceWindow.window];
+  // As it found them: selecting the exchange opened its window too.
+  [self.traceWindow.window orderOut:nil];
+  [self.exchangeWindow orderOut:nil];
+  [self.logTable deselectAll:nil];
+}
+
 - (void)runSelfTest
 {
   NSArray *names = @[ @"Built-in", @"Northwind", @"TripPin" ];
@@ -676,6 +707,7 @@ static void WBCheck(BOOL ok, NSString *what, NSString *detail)
     WBCheck(self.connection.store.schema != nil && !self.connection.store.metadataProblems.count, @"$metadata read, and the model agrees with it",
             [self.connection.store.metadataProblems componentsJoinedByString:@"; "]);
     [self checkExchangeLog];
+    [self checkTracesBuiltIn:service == WBServiceBuiltIn];
     for (NSUInteger i = 0; i < self.presets.count; i++) {
       [self.presetsPopup selectItemAtIndex:(NSInteger)i];
       [self applyPreset:self.presetsPopup];
@@ -713,7 +745,8 @@ static void WBCheck(BOOL ok, NSString *what, NSString *detail)
     [self.presetsPopup selectItemAtIndex:0];
     [self applyPreset:self.presetsPopup];
     [self runFetch:nil];
-    NSUInteger russell = [[self.results.rows valueForKey:@"userName"] indexOfObject:@"russellwhyte"];
+    // Paged to where he is: on a short screen he is pages away.
+    NSUInteger russell = [self rowWhere:@"userName" is:@"russellwhyte"];
     if (russell != NSNotFound) {
       [self.tableView selectRowIndexes:[NSIndexSet indexSetWithIndex:russell] byExtendingSelection:NO];
       [self rebuildOperations];
@@ -730,7 +763,7 @@ static void WBCheck(BOOL ok, NSString *what, NSString *detail)
     [self shoot:@"TripPin-operation"];
     [self checkStreams];
     [self runPreset:0];
-    russell = [[self.results.rows valueForKey:@"userName"] indexOfObject:@"russellwhyte"];
+    russell = [self rowWhere:@"userName" is:@"russellwhyte"];
 
     [self editColumn:@"firstName" row:russell value:@"Rusty"];
     WBCheck([self.statusField.stringValue hasPrefix:@"Unsaved: 0 new, 1 changed"], @"an edit waits for Save", self.statusField.stringValue);

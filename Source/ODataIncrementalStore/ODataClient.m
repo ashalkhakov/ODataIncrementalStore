@@ -9,6 +9,25 @@
 #import "ODataClient.h"
 #import "ODataError.h"
 #import "ODataBatch.h"
+#import <OTelKit/OTTrace.h>
+#import <OTelKit/OTHTTP.h>
+
+// A request's span, ended when its wire exchange finishes, before the
+// client hears of it.
+@interface OISTracedWire : NSObject
+@property (nonatomic, strong) OTSpan *span;
+@property (nonatomic, strong) id target;
+@property (nonatomic) SEL action;
+@end
+
+@implementation OISTracedWire
+- (void)wireDidFinish:(ODataExchange *)wire
+{
+  [self.span endWithResponse:wire.URLResponse error:wire.error];
+  void (*send)(id, SEL, id) = (void (*)(id, SEL, id))[self.target methodForSelector:self.action];
+  send(self.target, self.action, wire);
+}
+@end
 
 @interface OISWaiter : NSObject
 - (void)exchangeDidFinish:(ODataExchange *)exchange;
@@ -77,7 +96,24 @@ static NSString *OISHeaderOf(NSHTTPURLResponse *response, NSString *name)
   self = [super init];
   if (!self) return nil;
   _configuration = configuration;
+  _tracer = [OTTracer tracerNamed:@"ODataIncrementalStore" version:nil];
   return self;
+}
+
+// What a request asks, by a name of few values: the entity set (or
+// operation, $batch, $metadata) its path names first under the service
+// root, for the span's name.
+- (NSString *)spanNameFor:(NSURLRequest *)request
+{
+  NSString *root = self.configuration.serviceRoot.path ?: @"";
+  NSString *path = request.URL.path ?: @"";
+  NSString *rest = [path hasPrefix:root] ? [path substringFromIndex:root.length] : path;
+  if ([rest hasPrefix:@"/"]) rest = [rest substringFromIndex:1];
+  NSString *first = [rest componentsSeparatedByString:@"/"].firstObject ?: @"";
+  NSRange parenthesis = [first rangeOfString:@"("];
+  if (parenthesis.location != NSNotFound) first = [first substringToIndex:parenthesis.location];
+  NSString *method = request.HTTPMethod.length ? request.HTTPMethod : @"GET";
+  return first.length ? [NSString stringWithFormat:@"%@ %@", method, first] : method;
 }
 
 // The client's own exchange rides in the transport's as its context.
@@ -95,7 +131,12 @@ static NSString *OISHeaderOf(NSHTTPURLResponse *response, NSString *name)
 - (void)transport:(NSURLRequest *)request context:(id)context action:(SEL)action
 {
   id<ODataTransport> transport = self.transport ?: ODataDefaultTransport();
-  ODataExchange *wire = [[ODataExchange alloc] initWithRequest:request target:self action:action];
+  NSMutableURLRequest *traced = [request mutableCopy];
+  OISTracedWire *trace = [[OISTracedWire alloc] init];
+  trace.span = [self.tracer startClientSpanForRequest:traced name:[self spanNameFor:request] parent:nil];
+  trace.target = self;
+  trace.action = action;
+  ODataExchange *wire = [[ODataExchange alloc] initWithRequest:traced target:trace action:@selector(wireDidFinish:)];
   wire.context = context;
   if (!transport) {
     wire.error = OISError(ODataIncrementalStoreErrorTransport, @"No transport: this Foundation has neither NSURLSession nor NSURLConnection");

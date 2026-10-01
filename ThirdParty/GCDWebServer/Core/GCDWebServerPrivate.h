@@ -217,6 +217,8 @@ extern NSString* _Nullable GCDWebServerCopyURLQueryString(NSURL* url);  // OData
 @property(nonatomic, readonly) NSUInteger maxHeadSize;  // ODataStore port
 @property(nonatomic, readonly) NSUInteger maxBodySize;  // ODataStore port
 @property(nonatomic, readonly) NSTimeInterval readTimeout;  // ODataStore port
+@property(nonatomic, readonly) NSTimeInterval keepAliveTimeout;  // ODataStore port
+@property(nonatomic, readonly) NSUInteger maxRequestsPerConnection;  // ODataStore port
 - (void)willStartConnection:(GCDWebServerConnection*)connection;
 - (void)didEndConnection:(GCDWebServerConnection*)connection;
 @end

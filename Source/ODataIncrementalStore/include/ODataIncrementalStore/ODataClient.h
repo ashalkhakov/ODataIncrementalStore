@@ -6,12 +6,20 @@
 #import "ODataConfiguration.h"
 #import <ODataKit/ODataTransport.h>
 
+@class OTTracer;
+
 NS_ASSUME_NONNULL_BEGIN
 
 @interface ODataClient : NSObject
 @property (nonatomic, readonly) ODataConfiguration *configuration;
 // nil: ODataDefaultTransport().
 @property (nonatomic, strong, nullable) id<ODataTransport> transport;
+// Each request a client span ("GET Products", OTelKit's HTTP attributes),
+// under this thread's current span (a store's fetch or save); its trace
+// sent with the request (traceparent, tracestate) when it is recorded here
+// or was by whoever began it, so the service's spans join it. Recorded
+// when the shared OTTracerProvider is. Default: ODataIncrementalStore's.
+@property (nonatomic, strong) OTTracer *tracer;
 
 // Sends a request with the configuration's headers. When it is done, on
 // whatever thread the transport finished on, the action goes to the

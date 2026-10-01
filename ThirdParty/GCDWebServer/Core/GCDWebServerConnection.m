@@ -92,6 +92,10 @@ NS_ASSUME_NONNULL_END
   volatile NSInteger _abortStatusCode;  // ODataStore port: status to answer with when reading the request fails
   NSUInteger _bodyBytesRead;  // ODataStore port: GCDWebServerOption_MaxBodySize for chunked bodies
   BOOL _finished;  // ODataStore port: see -_finish
+  BOOL _keepAlive;  // ODataStore port: GCDWebServerOption_KeepAliveTimeout; this response leaves the connection open
+  BOOL _idle;  // ODataStore port: kept open, nothing of the next request read yet
+  BOOL _overRead;  // ODataStore port: bytes after the request came with it (pipelined): the connection is not kept
+  NSUInteger _requestCount;  // ODataStore port: requests answered on this connection
   GCDWebServerResponse* _response;
   NSInteger _statusCode;
 
@@ -136,14 +140,19 @@ NS_ASSUME_NONNULL_END
 - (void)_initializeResponseHeadersWithStatusCode:(NSInteger)statusCode {
   _statusCode = statusCode;
   _responseMessage = [[GCDWebServerHTTPMessage alloc] initResponseWithStatusCode:statusCode];
-  [_responseMessage setValue:@"Close" forHeaderField:@"Connection"];
+  [_responseMessage setValue:(_keepAlive ? @"keep-alive" : @"Close") forHeaderField:@"Connection"];  // ODataStore port
   [_responseMessage setValue:_server.serverName forHeaderField:@"Server"];
   [_responseMessage setValue:GCDWebServerFormatRFC822([NSDate date]) forHeaderField:@"Date"];
 }
 
 // ODataStore port: GCDWebServerOption_ReadTimeout
 - (void)_startReadTimer {
-  NSTimeInterval timeout = _server.readTimeout;
+  [self _startReadTimerWithTimeout:_server.readTimeout];
+}
+
+// ODataStore port: GCDWebServerOption_ReadTimeout, or for a kept connection GCDWebServerOption_KeepAliveTimeout
+- (void)_startReadTimerWithTimeout:(NSTimeInterval)timeout {
+  [self _cancelReadTimer];
   if (timeout <= 0.0) {
     return;
   }
@@ -153,7 +162,11 @@ NS_ASSUME_NONNULL_END
   dispatch_source_set_event_handler(_readTimer, ^{
     GCDWebServerConnection* strongSelf = weakSelf;
     if (strongSelf) {
-      GWS_LOG_WARNING(@"Timed out reading request on socket %i", strongSelf->_socket);
+      if (strongSelf->_idle) {  // ODataStore port: a kept connection with no next request; closed quietly
+        GWS_LOG_DEBUG(@"Closing idle connection on socket %i", strongSelf->_socket);
+      } else {
+        GWS_LOG_WARNING(@"Timed out reading request on socket %i", strongSelf->_socket);
+      }
       strongSelf->_abortStatusCode = kGCDWebServerHTTPStatusCode_RequestTimeout;
       shutdown(strongSelf->_socket, SHUT_RD);  // Makes the pending read complete with end-of-file
     }
@@ -214,7 +227,12 @@ NS_ASSUME_NONNULL_END
   }
 
   if (_response) {
+    _keepAlive = [self _canKeepAliveWithBody:hasBody];  // ODataStore port
     [self _initializeResponseHeadersWithStatusCode:_response.statusCode];
+    if (_keepAlive && !hasBody && _response.contentLength == NSUIntegerMax && !_response.usesChunkedTransferEncoding &&
+        _statusCode >= 200 && _statusCode != 204 && _statusCode != 304 && !_virtualHEAD && ![_request.method isEqualToString:@"HEAD"]) {
+      [_responseMessage setValue:@"0" forHeaderField:@"Content-Length"];  // ODataStore port: a kept connection says there is no body
+    }
     if (_response.lastModifiedDate) {
       [_responseMessage setValue:GCDWebServerFormatRFC822((NSDate*)_response.lastModifiedDate) forHeaderField:@"Last-Modified"];
     }
@@ -245,10 +263,10 @@ NS_ASSUME_NONNULL_END
         if (hasBody) {
           [self writeBodyWithCompletionBlock:^(BOOL successInner) {
             [self->_response performClose];  // TODO: There's nothing we can do on failure as headers have already been sent
-            [self _finish];  // ODataStore port
+            [self _finishOrKeepAlive:successInner];  // ODataStore port
           }];
         } else {
-          [self _finish];  // ODataStore port
+          [self _finishOrKeepAlive:YES];  // ODataStore port
         }
       } else {
         if (hasBody) {
@@ -260,6 +278,58 @@ NS_ASSUME_NONNULL_END
   } else {
     [self abortRequest:_request withStatusCode:kGCDWebServerHTTPStatusCode_InternalServerError];
   }
+}
+
+// ODataStore port: GCDWebServerOption_KeepAliveTimeout. Whether this request's connection can stay open after its
+// response: the server keeps connections, HTTP/1.1 without "Connection: close", no chunked body (whose reading can run
+// past it), nothing read past the request, and a response whose end the client can find without the connection closing.
+- (BOOL)_canKeepAliveWithBody:(BOOL)hasBody {
+  if (_server.keepAliveTimeout <= 0.0 || _overRead || !_request || _request.usesChunkedTransferEncoding) {
+    return NO;
+  }
+  NSUInteger maxRequests = _server.maxRequestsPerConnection;
+  if (maxRequests && _requestCount + 1 >= maxRequests) {
+    return NO;
+  }
+  if (![_requestMessage.httpVersion isEqualToString:@"HTTP/1.1"]) {
+    return NO;
+  }
+  for (NSString* token in [[_request.headers objectForKey:@"Connection"] ?: @"" componentsSeparatedByString:@","]) {
+    if ([[token stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceCharacterSet]] caseInsensitiveCompare:@"close"] == NSOrderedSame) {
+      return NO;
+    }
+  }
+  NSString* responseConnection = [_response.additionalHeaders objectForKey:@"Connection"];
+  if (responseConnection && [responseConnection caseInsensitiveCompare:@"close"] == NSOrderedSame) {
+    return NO;
+  }
+  return !hasBody || _response.contentLength != NSUIntegerMax || _response.usesChunkedTransferEncoding;
+}
+
+// ODataStore port: after a response, the next request on a kept connection, or the end of it.
+- (void)_finishOrKeepAlive:(BOOL)written {
+  if (!_keepAlive || !written || _finished) {
+    [self _finish];
+    return;
+  }
+#ifdef __GCDWEBSERVER_ENABLE_TESTING__
+  [self _finish];  // Recorded connections are one request each
+  return;
+#endif
+  _requestCount += 1;
+  _requestMessage = nil;
+  _request = nil;
+  _handler = nil;
+  _responseMessage = nil;
+  _response = nil;
+  _statusCode = 0;
+  _virtualHEAD = NO;
+  _abortStatusCode = 0;
+  _bodyBytesRead = 0;
+  _keepAlive = NO;
+  _idle = YES;
+  [self _startReadTimerWithTimeout:_server.keepAliveTimeout];
+  [self _readRequestHeaders];
 }
 
 - (void)_readBodyWithLength:(NSUInteger)length initialData:(NSData*)initialData {
@@ -409,6 +479,7 @@ NS_ASSUME_NONNULL_END
                   [self abortRequest:self->_request withStatusCode:kGCDWebServerHTTPStatusCode_BadRequest];
                 }
               } else {
+                self->_overRead = (extraData.length > 0);  // ODataStore port: a pipelined request came with it
                 [self _startProcessingRequest];
               }
             } else {
@@ -420,6 +491,9 @@ NS_ASSUME_NONNULL_END
             // ODataStore port: e.g. a path whose escapes do not decode as UTF-8 ("/%FF"); a client error, not 500 + abort()
             [self abortRequest:nil withStatusCode:kGCDWebServerHTTPStatusCode_BadRequest];
           }
+        } else if (self->_idle) {
+          // ODataStore port: a kept connection the client closed, or that waited too long, without a request: nothing to answer
+          [self _finish];
         } else {
           // ODataStore port: answer parse errors with the parser's status (400, 431, 501, 505) and timeouts with 408
           NSInteger statusCode = self->_abortStatusCode ? self->_abortStatusCode : self->_requestMessage.errorStatusCode;
@@ -506,6 +580,8 @@ NS_ASSUME_NONNULL_END
         } else {
           if (self->_abortStatusCode) {
             // ODataStore port: read shut down by the read timeout, already logged
+          } else if (self->_idle) {
+            // ODataStore port: the client closed a kept connection between requests, as it may
           } else if (self->_totalBytesRead > 0) {
             GWS_LOG_ERROR(@"No more data available on socket %i", self->_socket);
           } else {
@@ -529,6 +605,10 @@ NS_ASSUME_NONNULL_END
            withLength:NSUIntegerMax
       completionBlock:^(BOOL success) {
         if (success) {
+          if (self->_idle) {  // ODataStore port: the next request has begun; it has the read timeout to arrive
+            self->_idle = NO;
+            [self _startReadTimer];
+          }
           GCDWebServerHTTPMessageParseStatus status = [self->_requestMessage appendBytes:headersData.bytes length:headersData.length];
           headersData.length = 0;
           if (status == kGCDWebServerHTTPMessageParseStatus_Incomplete) {

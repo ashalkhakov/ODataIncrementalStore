@@ -13,6 +13,8 @@ service's schema.
 | `ODataIncrementalStore` | The client: an `NSIncrementalStore`. Fetch requests become `$filter`, `$orderby`, `$expand` and the rest; saves become POST, PATCH, DELETE and `$batch`; ETags become merge conflicts. |
 | `ODataService` | The server: OData 4.01 (and 4.0) over any Core Data store. `ois-serve` runs it behind a reverse proxy. |
 | `ODataKit` | What both share: the model mapping, CSDL, values, the URL and `$filter` grammar, `$filter` and `$orderby` as Core Data predicates and sort descriptors, `$batch`. |
+| `HTTPServerKit` | The HTTP server the service runs in, for any API beside it: a pipeline of stages, a router, sign-in (trusted proxy, JWT, token introspection), metrics, JSON logs, readiness, draining. Errors outside OData are `application/problem+json`. |
+| `OTelKit` | OpenTelemetry tracing, Foundation only: one trace from an app's fetch through its request to the service's planning and store requests, sent over OTLP to a collector ([observability](docs/observability.md)). |
 
 ![The Workbench](Examples/Workbench/Workbench.png)
 
@@ -73,6 +75,14 @@ Server/build/ois-serve -Model Server/build/Catalog.momd -StoreType SQLite \
                        -StoreURL /tmp/catalog.sqlite -Port 8089
 ```
 
+or in a container, with the whole Linux stack built in (`Docker/`,
+[building](docs/building.md#docker)):
+
+```sh
+docker build -f Docker/Dockerfile --target ois-serve -t ois-serve .
+docker run -p 8089:8080 -e OIS_SERVICE_ROOT=http://127.0.0.1:8089/odata/ ois-serve
+```
+
 ```sh
 curl http://127.0.0.1:8089/odata/'$metadata'
 curl -X POST -H 'Content-Type: application/json' -d '{"CategoryID":1,"CategoryName":"Beverages"}' \
@@ -91,6 +101,21 @@ curl -g 'http://127.0.0.1:8089/odata/Products?$filter=UnitPrice%20gt%2010&$expan
 The model's `userInfo` names sets, keys and wire names; handlers change what
 a set does; operations are methods declared in a protocol; production runs
 behind nginx or Caddy (`Server/Examples/`) — [the server guide](docs/server-design.md).
+
+Routes and pipeline stages of your own go in an `ODataServerApplication`
+subclass, with `ois-serve`'s settings and everything it does
+(`Server/Examples/CatalogServer.m`):
+
+```objc
+@implementation CatalogServer : ODataServerApplication
+- (void)configureRouter:(HSRouter *)router
+{
+  [router insertRoute:[HSRoute routeWithMethod:@"GET" path:@"/stats" handler:stats] atIndex:0];
+}
+@end
+
+int main(int argc, const char *argv[]) { return HSMain(argc, argv, [CatalogServer class]); }
+```
 
 ### 3. The Workbench
 
@@ -162,7 +187,7 @@ block-beta
     server["ois-serve · your server"]:1
     context["Core Data context"]:1
     space
-    http["ODataHTTPServer"]:1
+    http["HSServer"]:1
     store["ODataIncrementalStore"]:1
     wire<["HTTP (or in process)"]>(x)
     service["ODataService · handlers"]:1
@@ -194,8 +219,10 @@ flowchart LR
 |---|---|
 | `Source/ODataKit/` | The shared core |
 | `Source/ODataIncrementalStore/` | The client store, its HTTP client, model builder, streams |
-| `Source/ODataService/` | The service, its handlers, `$metadata` writer, predicate builder, `$batch`, timelines |
-| `Server/` | `ODataHTTPServer` (vendored GCDWebServer), `ois-serve`, deployment examples |
+| `Source/OTelKit/` | Tracing: spans, sampling, the OTLP exporter |
+| `Source/HTTPServerKit/` | The HTTP server: the listener (vendored GCDWebServer), pipeline, router, sign-in, logs and metrics, the application |
+| `Source/ODataService/` | The service, its handlers, `$metadata` writer, predicate builder, `$batch`, timelines; `ODataServer.h`, the service as an HTTPServerKit module |
+| `Server/` | `ois-serve`, an example application, the loopback check, deployment examples |
 | `Examples/` | Workbench, Catalog, the quick start |
 | `Tools/` | `ois-model` (a model from `$metadata`), `ois-filter` |
 | `Tests/` | XCTest: snapshots of real services, the service over loopback; `Tests/Live/` against Northwind and TripPin |
@@ -204,7 +231,7 @@ flowchart LR
 ## Documentation
 
 - [Building](docs/building.md): toolchains, GNUstep, Xcode, tests
-- [Client guide](docs/client.md) · [Server guide and design](docs/server-design.md)
+- [Client guide](docs/client.md) · [Server guide and design](docs/server-design.md) · [Observability](docs/observability.md)
 - [Query plans](docs/query-plan.md) · [Write plans](docs/write-plan.md): how the service plans reads and writes
 - [How it works](docs/how-it-works.md): the mapping, query translation, what runs where
 - [Client conformance](docs/odata-conformance.md): OData v4, item by item

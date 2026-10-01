@@ -128,6 +128,18 @@ Added:
   shut down and the server answers 408.
 - Chunked bodies: the chunk-size line is limited to 4 KiB and the trailer
   section to the head size limit.
+- `GCDWebServerOption_KeepAliveTimeout` (default 0: off, as upstream) and
+  `GCDWebServerOption_MaxRequestsPerConnection` (default 100, 0 means no
+  limit): HTTP/1.1 persistent connections. After a response the connection
+  waits this long for the next request (`-_finishOrKeepAlive:` resets the
+  per-request state and reads the next head; its first bytes restart the
+  read timeout), and one that receives nothing is closed without an answer.
+  A connection is kept only when it is safe to: an HTTP/1.1 request without
+  `Connection: close`, no chunked request body (reading one can run past
+  it), nothing read past the request (a pipelined request closes it), and a
+  response whose end the client can find (a length, chunks, or no body,
+  for which `Content-Length: 0` is sent). Any other is closed as before,
+  with `Connection: Close`.
 
 Fixed along the way:
 
@@ -141,6 +153,12 @@ Fixed along the way:
 - The socket is closed as soon as the last byte of the response is written
   (`-_finish`), rather than when the connection object is deallocated.
   `-close` and the delegate's disconnect bookkeeping run at the same point.
+- Listening on every address (not bound to localhost) failed on Linux: the
+  IPv6 wildcard socket also takes IPv4 there unless `IPV6_V6ONLY` is set,
+  so binding it after the IPv4 one gave EADDRINUSE. The IPv6 socket is now
+  IPv6 only. A host without IPv6 (EAFNOSUPPORT, EPROTONOSUPPORT,
+  EADDRNOTAVAIL, as in many containers) is served over IPv4 alone instead
+  of failing to start.
 
 ## libobjc2 and stack blocks
 
@@ -179,4 +197,5 @@ this toolchain that captures block parameters in other blocks leaks too.
   GNUstep for odd targets (`//`, `/a?`). Path and query, which the server uses,
   do not.
 - Stricter parsing, the new limits and the status codes listed above.
-- Keep-alive is still not supported (`Connection: Close`), as upstream.
+- Keep-alive, when asked for (`GCDWebServerOption_KeepAliveTimeout`); off
+  by default, closing every connection after one response, as upstream.

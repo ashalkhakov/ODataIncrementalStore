@@ -7,7 +7,11 @@
 	objects = {
 /* Begin PBXBuildFile section */
 		AB00000000000000000E1300 /* ODataService.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = AB00000000000000000E1200 /* ODataService.framework */; };
+		AB00000000000000000E1900 /* HTTPServerKit.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = AB00000000000000000E1800 /* HTTPServerKit.framework */; };
+		AB00000000000000000E1F00 /* OTelKit.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = AB00000000000000000E1E00 /* OTelKit.framework */; };
 		AB00000000000000000E1400 /* ODataService.framework in Embed Frameworks */ = {isa = PBXBuildFile; fileRef = AB00000000000000000E1200 /* ODataService.framework */; settings = {ATTRIBUTES = (CodeSignOnCopy, RemoveHeadersOnCopy, ); }; };
+		AB00000000000000000E1A00 /* HTTPServerKit.framework in Embed Frameworks */ = {isa = PBXBuildFile; fileRef = AB00000000000000000E1800 /* HTTPServerKit.framework */; settings = {ATTRIBUTES = (CodeSignOnCopy, RemoveHeadersOnCopy, ); }; };
+		AB00000000000000000E2000 /* OTelKit.framework in Embed Frameworks */ = {isa = PBXBuildFile; fileRef = AB00000000000000000E1E00 /* OTelKit.framework */; settings = {ATTRIBUTES = (CodeSignOnCopy, RemoveHeadersOnCopy, ); }; };
 		AB00000000000000000E0300 /* ODataKit.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = AB00000000000000000E0200 /* ODataKit.framework */; };
 		AB00000000000000000E0400 /* ODataKit.framework in Embed Frameworks */ = {isa = PBXBuildFile; fileRef = AB00000000000000000E0200 /* ODataKit.framework */; settings = {ATTRIBUTES = (CodeSignOnCopy, RemoveHeadersOnCopy, ); }; };
 		AA000000000000000000008A /* main.m in Sources */ = {isa = PBXBuildFile; fileRef = AA000000000000000000008B /* main.m */; };
@@ -26,6 +30,7 @@
 		AA00000000000000000000C3 /* WBConnection.m in Sources */ = {isa = PBXBuildFile; fileRef = AA00000000000000000000C4 /* WBConnection.m */; };
 		AA00000000000000000000C5 /* WBQuery.m in Sources */ = {isa = PBXBuildFile; fileRef = AA00000000000000000000C6 /* WBQuery.m */; };
 		AA00000000000000000000C7 /* WBResults.m in Sources */ = {isa = PBXBuildFile; fileRef = AA00000000000000000000C8 /* WBResults.m */; };
+		AA00000000000000000000E0 /* WBTraces.m in Sources */ = {isa = PBXBuildFile; fileRef = AA00000000000000000000E1 /* WBTraces.m */; };
 		AA00000000000000000000C9 /* WorkbenchSupport.m in Sources */ = {isa = PBXBuildFile; fileRef = AA00000000000000000000CA /* WorkbenchSupport.m */; };
 /* End PBXBuildFile section */
 
@@ -37,12 +42,40 @@
 			remoteGlobalIDString = AA000000000000000000000A;
 			remoteInfo = ODataService;
 		};
+		AB00000000000000000E1600 /* PBXContainerItemProxy */ = {
+			isa = PBXContainerItemProxy;
+			containerPortal = AA0000000000000000000099 /* ODataKit.xcodeproj */;
+			proxyType = 1;
+			remoteGlobalIDString = 9828CC078A88AE7706B232C7;
+			remoteInfo = HTTPServerKit;
+		};
+		AB00000000000000000E1C00 /* PBXContainerItemProxy */ = {
+			isa = PBXContainerItemProxy;
+			containerPortal = AA0000000000000000000099 /* ODataKit.xcodeproj */;
+			proxyType = 1;
+			remoteGlobalIDString = 4CBB61F9CEEAF8A9C5A1F7CF;
+			remoteInfo = OTelKit;
+		};
 		AB00000000000000000E1100 /* PBXContainerItemProxy */ = {
 			isa = PBXContainerItemProxy;
 			containerPortal = AA0000000000000000000099 /* ODataKit.xcodeproj */;
 			proxyType = 2;
 			remoteGlobalIDString = AA000000000000000000000B;
 			remoteInfo = ODataService;
+		};
+		AB00000000000000000E1700 /* PBXContainerItemProxy */ = {
+			isa = PBXContainerItemProxy;
+			containerPortal = AA0000000000000000000099 /* ODataKit.xcodeproj */;
+			proxyType = 2;
+			remoteGlobalIDString = A21CEFC6F685318B7798AD60;
+			remoteInfo = HTTPServerKit;
+		};
+		AB00000000000000000E1D00 /* PBXContainerItemProxy */ = {
+			isa = PBXContainerItemProxy;
+			containerPortal = AA0000000000000000000099 /* ODataKit.xcodeproj */;
+			proxyType = 2;
+			remoteGlobalIDString = D7BA1954D987FDFF19FEE609;
+			remoteInfo = OTelKit;
 		};
 		AB00000000000000000E0000 /* PBXContainerItemProxy */ = {
 			isa = PBXContainerItemProxy;
@@ -83,6 +116,8 @@
 			files = (
 				AA0000000000000000000097 /* ODataIncrementalStore.framework in Embed Frameworks */,
 				AB00000000000000000E1400 /* ODataService.framework in Embed Frameworks */,
+				AB00000000000000000E1A00 /* HTTPServerKit.framework in Embed Frameworks */,
+				AB00000000000000000E2000 /* OTelKit.framework in Embed Frameworks */,
 				AB00000000000000000E0400 /* ODataKit.framework in Embed Frameworks */,
 			);
 			name = "Embed Frameworks";
@@ -111,10 +146,12 @@
 		AA00000000000000000000C4 /* WBConnection.m */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.objc; path = "WBConnection.m"; sourceTree = "<group>"; };
 		AA00000000000000000000C6 /* WBQuery.m */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.objc; path = "WBQuery.m"; sourceTree = "<group>"; };
 		AA00000000000000000000C8 /* WBResults.m */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.objc; path = "WBResults.m"; sourceTree = "<group>"; };
+		AA00000000000000000000E1 /* WBTraces.m */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.objc; path = "WBTraces.m"; sourceTree = "<group>"; };
 		AA00000000000000000000CA /* WorkbenchSupport.m */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.objc; path = "WorkbenchSupport.m"; sourceTree = "<group>"; };
 		AA00000000000000000000D1 /* WBConnection.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = "WBConnection.h"; sourceTree = "<group>"; };
 		AA00000000000000000000D2 /* WBQuery.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = "WBQuery.h"; sourceTree = "<group>"; };
 		AA00000000000000000000D3 /* WBResults.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = "WBResults.h"; sourceTree = "<group>"; };
+		AA00000000000000000000E2 /* WBTraces.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = "WBTraces.h"; sourceTree = "<group>"; };
 		AA00000000000000000000D4 /* WorkbenchSupport.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = "WorkbenchSupport.h"; sourceTree = "<group>"; };
 		AA00000000000000000000D5 /* WorkbenchController+Private.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = "WorkbenchController+Private.h"; sourceTree = "<group>"; };
 /* End PBXFileReference section */
@@ -126,6 +163,8 @@
 			files = (
 				AA0000000000000000000092 /* ODataIncrementalStore.framework in Frameworks */,
 				AB00000000000000000E1300 /* ODataService.framework in Frameworks */,
+				AB00000000000000000E1900 /* HTTPServerKit.framework in Frameworks */,
+				AB00000000000000000E1F00 /* OTelKit.framework in Frameworks */,
 				AB00000000000000000E0300 /* ODataKit.framework in Frameworks */,
 				AA0000000000000000000094 /* Cocoa.framework in Frameworks */,
 				AA0000000000000000000096 /* CoreData.framework in Frameworks */,
@@ -157,10 +196,12 @@
 				AA00000000000000000000C4 /* WBConnection.m */,
 				AA00000000000000000000C6 /* WBQuery.m */,
 				AA00000000000000000000C8 /* WBResults.m */,
+				AA00000000000000000000E1 /* WBTraces.m */,
 				AA00000000000000000000CA /* WorkbenchSupport.m */,
 				AA00000000000000000000D1 /* WBConnection.h */,
 				AA00000000000000000000D2 /* WBQuery.h */,
 				AA00000000000000000000D3 /* WBResults.h */,
+				AA00000000000000000000E2 /* WBTraces.h */,
 				AA00000000000000000000D4 /* WorkbenchSupport.h */,
 				AA00000000000000000000D5 /* WorkbenchController+Private.h */,
 				AA000000000000000000009F /* WorkbenchEngine.h */,
@@ -178,6 +219,8 @@
 			children = (
 				AA0000000000000000000093 /* ODataIncrementalStore.framework */,
 				AB00000000000000000E1200 /* ODataService.framework */,
+				AB00000000000000000E1800 /* HTTPServerKit.framework */,
+				AB00000000000000000E1E00 /* OTelKit.framework */,
 				AB00000000000000000E0200 /* ODataKit.framework */,
 			);
 			name = Products;
@@ -226,6 +269,8 @@
 			dependencies = (
 				AA00000000000000000000AA /* PBXTargetDependency */,
 				AB00000000000000000E1500 /* PBXTargetDependency */,
+				AB00000000000000000E1B00 /* PBXTargetDependency */,
+				AB00000000000000000E2100 /* PBXTargetDependency */,
 				AB00000000000000000E0500 /* PBXTargetDependency */,
 			);
 			name = Workbench;
@@ -280,6 +325,20 @@
 			remoteRef = AB00000000000000000E1100 /* PBXContainerItemProxy */;
 			sourceTree = BUILT_PRODUCTS_DIR;
 		};
+		AB00000000000000000E1800 /* HTTPServerKit.framework */ = {
+			isa = PBXReferenceProxy;
+			fileType = wrapper.framework;
+			path = HTTPServerKit.framework;
+			remoteRef = AB00000000000000000E1700 /* PBXContainerItemProxy */;
+			sourceTree = BUILT_PRODUCTS_DIR;
+		};
+		AB00000000000000000E1E00 /* OTelKit.framework */ = {
+			isa = PBXReferenceProxy;
+			fileType = wrapper.framework;
+			path = OTelKit.framework;
+			remoteRef = AB00000000000000000E1D00 /* PBXContainerItemProxy */;
+			sourceTree = BUILT_PRODUCTS_DIR;
+		};
 		AB00000000000000000E0200 /* ODataKit.framework */ = {
 			isa = PBXReferenceProxy;
 			fileType = wrapper.framework;
@@ -323,6 +382,7 @@
 				AA00000000000000000000C3 /* WBConnection.m in Sources */,
 				AA00000000000000000000C5 /* WBQuery.m in Sources */,
 				AA00000000000000000000C7 /* WBResults.m in Sources */,
+				AA00000000000000000000E0 /* WBTraces.m in Sources */,
 				AA00000000000000000000C9 /* WorkbenchSupport.m in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
@@ -334,6 +394,16 @@
 			isa = PBXTargetDependency;
 			name = ODataService;
 			targetProxy = AB00000000000000000E1000 /* PBXContainerItemProxy */;
+		};
+		AB00000000000000000E1B00 /* PBXTargetDependency */ = {
+			isa = PBXTargetDependency;
+			name = HTTPServerKit;
+			targetProxy = AB00000000000000000E1600 /* PBXContainerItemProxy */;
+		};
+		AB00000000000000000E2100 /* PBXTargetDependency */ = {
+			isa = PBXTargetDependency;
+			name = OTelKit;
+			targetProxy = AB00000000000000000E1C00 /* PBXContainerItemProxy */;
 		};
 		AB00000000000000000E0500 /* PBXTargetDependency */ = {
 			isa = PBXTargetDependency;

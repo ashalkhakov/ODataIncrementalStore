@@ -19,15 +19,19 @@
 #pragma once
 #import "ODataService.h"
 
+@class OTSpan;
+
 NS_ASSUME_NONNULL_BEGIN
 
 @interface ODataService (OISBatchSupport)
 // An exchange answered in this context, which is saved only when saves is
 // YES; nil: a context of its own, saved. authenticated: from principal
-// (nil: anonymous), without asking the authenticator. Returns the request
-// as the service reads it, whose principal is who is asking once known.
+// (nil: anonymous), without asking the authenticator; given: from
+// principal, which the host found, admitted as the authenticator's answer
+// would be. Returns the request as the service reads it, whose principal
+// is who is asking once known.
 - (ODataRequest *)startExchange:(ODataExchange *)exchange inContext:(nullable NSManagedObjectContext *)context saves:(BOOL)saves
-        authenticated:(BOOL)authenticated principal:(nullable ODataPrincipal *)principal;
+        authenticated:(BOOL)authenticated principal:(nullable HSPrincipal *)principal given:(BOOL)given;
 @end
 
 // Whether JSON nests no deeper than depth (0: any), counted without
@@ -38,9 +42,12 @@ FOUNDATION_EXPORT BOOL ODataJSONNestedWithin(NSData *data, NSUInteger depth);
 // The batch's requests are principal's: the batch was authenticated as a
 // whole, and headers inside it do not change who is asking.
 - (instancetype)initWithService:(ODataService *)service exchange:(ODataExchange *)exchange version:(NSString *)version
-                      principal:(nullable ODataPrincipal *)principal;
+                      principal:(nullable HSPrincipal *)principal;
 // Reads the batch and answers its requests, then the exchange.
 - (void)start;
+// The batch's span: each request's goes under it, and it ends when the
+// batch is answered.
+@property (nonatomic, strong, nullable) OTSpan *span;
 @end
 
 NS_ASSUME_NONNULL_END

@@ -6,7 +6,7 @@
 // it from a Core Data store, and never sees a socket (docs/server-design.md).
 // It is an ODataTransport, so an ODataIncrementalStore can be handed one
 // and talk to a Core Data store through OData in-process; the HTTP adapter
-// (ODataHTTPServer) hands it requests from the network the same way.
+// (HSServer) hands it requests from the network the same way.
 //
 // What it serves, read from the model through ODataPropertyMapper:
 //   - the service document and $metadata (ODataMetadataWriter);
@@ -35,8 +35,8 @@
 
 NS_ASSUME_NONNULL_BEGIN
 
-@class ODataService, ODataRequest, ODataPrincipal;
-@protocol ODataAuthenticator;
+@class ODataService, ODataRequest, HSPrincipal, HSMetrics, OTTracer;
+@protocol HSAuthenticator;
 
 // userInfo on an Integer attribute: the entity's version, sent as its ETag
 // and incremented by every update. Without one, an entity's ETag is a hash
@@ -153,8 +153,8 @@ FOUNDATION_EXPORT NSString * const ODataUserInfoETag;  // @"OData.etag"
 // The application's own, for the length of the request.
 @property (nonatomic, readonly, strong) NSMutableDictionary *userInfo;
 // Who is asking, as the service's authenticator found them; nil without
-// one, or for an anonymous request it allows (ODataAuthentication.h).
-@property (nonatomic, readonly, strong, nullable) ODataPrincipal *principal;
+// one, or for an anonymous request it allows (HSAuthentication.h).
+@property (nonatomic, readonly, strong, nullable) HSPrincipal *principal;
 // Something to tell the client alongside the answer (Core.Messages): a
 // price rounded, a property ignored. Written into the response's JSON
 // body, unless the client's Prefer: odata.include-annotations leaves
@@ -197,7 +197,7 @@ FOUNDATION_EXPORT NSString * const ODataUserInfoETag;  // @"OData.etag"
 @property (nonatomic) BOOL allowsUpdate;
 @property (nonatomic) BOOL allowsDelete;
 // The permissions the set's methods need, as OAuth scopes the caller's
-// principal has (ODataPrincipal's scopes): any one of a set's is enough;
+// principal has (HSPrincipal's scopes): any one of a set's is enough;
 // nil or empty, the default, none is needed. Read is every read that
 // reaches the set's rows -- along the path (an entity, a navigation to
 // them), and through $expand, $filter (a lambda, a path's $filter), $orderby,
@@ -466,10 +466,24 @@ FOUNDATION_EXPORT NSString * const ODataUserInfoETag;  // @"OData.etag"
 // OData, and off by default. With logsPlans, each read's plan is logged.
 @property (nonatomic) BOOL explains;
 @property (nonatomic) BOOL logsPlans;
-// Who each request is from (ODataAuthentication.h). A request that names
+// What its work takes. Each request is a span (OTelKit), under the
+// traceparent it came with: "plan" (from the request read to its plan
+// made, the plan's tree an attribute), then "execute", with a span for
+// each request of a handler or the store ("fetch Product", "count Order",
+// "write Order") and each save, current on its thread while the store
+// works, so a store that traces puts its spans under it. Recorded when the
+// shared OTTracerProvider is. Default: ODataService's tracer.
+@property (nonatomic, strong) OTTracer *tracer;
+// Where the same is counted and timed, when set (ODataServiceModule sets
+// the application's): odata_plan_duration_seconds and
+// odata_execution_duration_seconds by entity;
+// odata_store_request_duration_seconds and odata_store_errors_total by
+// operation and entity; odata_store_rows_total by entity.
+@property (nonatomic, strong, nullable) HSMetrics *metrics;
+// Who each request is from (HSAuthentication.h). A request that names
 // no one is answered 401, unless allowsAnonymousRequests; without an
 // authenticator (the default) every request is anonymous and answered.
-@property (nonatomic, strong, nullable) id<ODataAuthenticator> authenticator;
+@property (nonatomic, strong, nullable) id<HSAuthenticator> authenticator;
 @property (nonatomic) BOOL allowsAnonymousRequests;
 // The service document and $metadata to anyone, as a client needs them
 // to learn how to sign in (the Authorization vocabulary in $metadata).
@@ -516,12 +530,17 @@ FOUNDATION_EXPORT NSString * const ODataUserInfoETag;  // @"OData.etag"
 // ODataTransport: answers the exchange's request. A request whose handlers
 // answer at once is finished before this returns.
 - (void)startExchange:(ODataExchange *)exchange;
+// The same, for a host that has asked who is sending it already, with this
+// service's authenticator (HTTPServerKit's authentication stage): the
+// principal it found, nil for no one. The authenticator is not asked
+// again; allowsAnonymousRequests and allowsAnonymousMetadata apply as ever.
+- (void)startExchange:(ODataExchange *)exchange principal:(nullable HSPrincipal *)principal;
 
 @end
 
 NS_ASSUME_NONNULL_END
 
 // The rest of the server library, for those who import it by this name.
-#import "ODataAuthentication.h"
+#import <HTTPServerKit/HSAuthentication.h>
 #import <ODataKit/ODataPredicateBuilder.h>
 #import "ODataMetadataWriter.h"

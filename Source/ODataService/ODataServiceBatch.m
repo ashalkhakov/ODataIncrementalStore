@@ -2,7 +2,8 @@
 // SPDX-License-Identifier: LGPL-2.1-or-later
 
 #import "ODataServiceBatch.h"
-#import "ODataAuthentication.h"
+#import "ODataServiceInternal.h"
+#import <HTTPServerKit/HSAuthentication.h>
 #import "ODataBatch.h"
 #import "ODataError.h"
 
@@ -55,11 +56,11 @@ static void OISAppendText(NSMutableData *data, NSString *text)
   // Whether the item in flight finished while it was being started.
   BOOL _starting;
   BOOL _finishedWhileStarting;
-  ODataPrincipal *_principal;
+  HSPrincipal *_principal;
 }
 
 - (instancetype)initWithService:(ODataService *)service exchange:(ODataExchange *)exchange version:(NSString *)version
-                      principal:(ODataPrincipal *)principal
+                      principal:(HSPrincipal *)principal
 {
   self = [super init];
   if (!self) return nil;
@@ -81,6 +82,12 @@ static void OISAppendText(NSMutableData *data, NSString *text)
   all[@"OData-Version"] = _version;
   _exchange.URLResponse = [[NSHTTPURLResponse alloc] initWithURL:_exchange.request.URL statusCode:status HTTPVersion:@"HTTP/1.1" headerFields:all];
   _exchange.data = body ?: [NSData data];
+  OTSpan *span = self.span;
+  self.span = nil;
+  [span setAttribute:@(status) forKey:@"http.response.status_code"];
+  [span setAttribute:@(_items.count) forKey:@"odata.batch.requests"];
+  if (status >= 500) [span setStatus:OTStatusError message:nil];
+  [span end];
   [_exchange finish];
 }
 
@@ -257,11 +264,28 @@ static void OISAppendText(NSMutableData *data, NSString *text)
     if (![batchOnly containsObject:name.lowercaseString]) [request setValue:outer[name] forHTTPHeaderField:name];
   }
   for (NSString *name in item.headers) [request setValue:item.headers[name] forHTTPHeaderField:name];
+  // Each request's span under the batch's.
+  if (self.span) [request ot_setTraceContext:self.span.context];
   request.HTTPBody = [self bodyResolvingReferences:item.body headers:item.headers];
   return request;
 }
 
+// The batch's requests, on from where it is: an exception anywhere in them
+// answers the batch 500, rather than leave its client waiting.
 - (void)next
+{
+  @try {
+    [self runItems];
+  } @catch (NSException *exception) {
+    OISLog(HSLogLevelError, _exchange.request, @"%@ %@ raised %@: %@", _exchange.request.HTTPMethod, _exchange.request.URL, exception.name,
+           exception.reason);
+    _stopped = YES;
+    [self.span addEventNamed:@"exception" attributes:@{ @"exception.type": exception.name ?: @"", @"exception.message": exception.reason ?: @"" }];
+    [self fail:500 message:@"The batch failed inside the service"];
+  }
+}
+
+- (void)runItems
 {
   while (_index < _items.count && !_stopped) {
     OISBatchItem *item = _items[_index];
@@ -291,7 +315,7 @@ static void OISAppendText(NSMutableData *data, NSString *text)
       _starting = YES;
       _finishedWhileStarting = NO;
     }
-    [_service startExchange:exchange inContext:_groupContext saves:(item.group == nil) authenticated:YES principal:_principal];
+    [_service startExchange:exchange inContext:_groupContext saves:(item.group == nil) authenticated:YES principal:_principal given:NO];
     BOOL finished;
     @synchronized (self) {
       _starting = NO;
@@ -357,7 +381,7 @@ static void OISAppendText(NSMutableData *data, NSString *text)
   __block BOOL saved = NO;
   if (!_groupFailure) {
     [context performBlockAndWait:^{
-      saved = !context.hasChanges || [context save:&error];
+      saved = !context.hasChanges || OISTimedSave(self->_service, context, self.span, nil, &error);
       if (!saved) [context rollback];
     }];
   } else {
