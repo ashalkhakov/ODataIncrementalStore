@@ -1,0 +1,361 @@
+// Copyright (C) 2026 OIS contributors
+// SPDX-License-Identifier: LGPL-2.1-or-later
+//
+// Down (docs/offline-sync.md, 4): each down and both set read whole the
+// first time, with change tracking, and by its delta link after; applied
+// by key, in a context writing as the remote's down author, and saved with
+// the new delta link.
+
+#import "ODSInternal.h"
+#import <ODataKit/ODataError.h>
+#import <ODataKit/ODataTransport.h>
+
+// A delta link the remote no longer follows.
+static const NSInteger ODSGone = 410;
+
+@implementation ODSDownloader {
+  ODataSyncEngine *_engine;
+  ODataSyncRemote *_remote;
+  ODSCodec *_codec;
+  ODataClient *_client;
+}
+
+- (instancetype)initWithEngine:(ODataSyncEngine *)engine remote:(ODataSyncRemote *)remote
+{
+  self = [super init];
+  if (!self) return nil;
+  _engine = engine;
+  _remote = remote;
+  _codec = engine.codec;
+  _client = [engine clientOf:remote];
+  return self;
+}
+
+- (NSString *)author
+{
+  return [ODataSyncDownAuthorPrefix stringByAppendingString:_remote.identifier];
+}
+
+- (NSArray<NSEntityDescription *> *)entities
+{
+  return [_codec rootEntitiesGoing:[NSSet setWithObjects:@(ODataSyncDirectionDown), @(ODataSyncDirectionBoth), nil]];
+}
+
+#pragma mark Requests
+
+// A GET's JSON; *status the HTTP status of a failure (0: none came).
+- (NSDictionary *)JSONAt:(NSURL *)url prefer:(NSString *)prefer status:(NSInteger *)status error:(NSError **)error
+{
+  NSMutableURLRequest *request = [NSMutableURLRequest requestWithURL:url];
+  [request setValue:@"application/json" forHTTPHeaderField:@"Accept"];
+  if (prefer) [request setValue:prefer forHTTPHeaderField:@"Prefer"];
+  NSError *failure = nil;
+  ODataHTTPResponse *response = [_client sendRequest:request error:&failure];
+  if (status) *status = 0;
+  if (!response) {
+    if (status && failure.code > ODataIncrementalStoreErrorHTTP && failure.code < ODataIncrementalStoreErrorHTTP + 600) {
+      *status = failure.code - ODataIncrementalStoreErrorHTTP;
+    }
+    if (error) *error = failure;
+    return nil;
+  }
+  id json = [response JSONWithError:error];
+  if (![json isKindOfClass:[NSDictionary class]]) {
+    if (error && json) *error = ODSError(1, [NSString stringWithFormat:@"%@ did not answer with a JSON object", url]);
+    return nil;
+  }
+  return json;
+}
+
+// The rows of a read, page after page; the delta link the last page gave.
+- (NSArray<NSDictionary *> *)rowsAt:(NSURL *)url prefer:(NSString *)prefer deltaLink:(NSString **)deltaLink
+                             status:(NSInteger *)status error:(NSError **)error
+{
+  NSMutableArray *rows = [NSMutableArray array];
+  NSURL *next = url;
+  if (deltaLink) *deltaLink = nil;
+  while (next) {
+    NSDictionary *page = [self JSONAt:next prefer:prefer status:status error:error];
+    if (!page) return nil;
+    id value = page[@"value"];
+    if ([value isKindOfClass:[NSArray class]]) [rows addObjectsFromArray:value];
+    NSString *nextLink = [page[@"@odata.nextLink"] isKindOfClass:[NSString class]] ? page[@"@odata.nextLink"] : nil;
+    next = nextLink ? [NSURL URLWithString:nextLink relativeToURL:next].absoluteURL : nil;
+    NSString *delta = [page[@"@odata.deltaLink"] isKindOfClass:[NSString class]] ? page[@"@odata.deltaLink"] : nil;
+    if (delta && deltaLink) *deltaLink = [NSURL URLWithString:delta relativeToURL:url].absoluteString;
+  }
+  return rows;
+}
+
+// A set's read: Set?$filter=...&$expand=to-one keys(&$select=...).
+- (NSURL *)URLOfEntity:(NSEntityDescription *)entity filter:(NSString *)filter select:(NSString *)select expand:(BOOL)expand
+{
+  NSMutableArray *options = [NSMutableArray array];
+  if (filter.length) [options addObject:[@"$filter=" stringByAppendingString:filter]];
+  if (select.length) [options addObject:[@"$select=" stringByAppendingString:select]];
+  NSString *expansion = expand ? [_codec expandOfEntity:entity] : nil;
+  if (expansion) [options addObject:[@"$expand=" stringByAppendingString:expansion]];
+  NSString *path = [_codec.mapper entitySetForEntity:entity];
+  if (options.count) path = [path stringByAppendingFormat:@"?%@", [options componentsJoinedByString:@"&"]];
+  return [_engine URLOf:path remote:_remote];
+}
+
+#pragma mark Applying
+
+// The local object a row names, made when there is none (of the type the
+// row says).
+- (NSManagedObject *)objectFor:(NSDictionary *)row entity:(NSEntityDescription *)entity context:(NSManagedObjectContext *)context
+                       created:(BOOL *)created
+{
+  NSDictionary *key = [_codec keyFromJSON:row entity:entity];
+  if (!key) return nil;
+  NSManagedObject *object = [_codec objectOfEntity:entity key:key inContext:context];
+  if (created) *created = object == nil;
+  if (!object) {
+    NSString *type = [row[@"@odata.type"] isKindOfClass:[NSString class]] ? row[@"@odata.type"] : nil;
+    NSEntityDescription *concrete = type ? [_codec.mapper entity:entity forTypeName:type] : entity;
+    object = [[NSManagedObject alloc] initWithEntity:concrete ?: entity insertIntoManagedObjectContext:context];
+    for (NSString *name in key) [object setValue:key[name] forKey:name];
+  }
+  return object;
+}
+
+// Whether the remote's version of a both object is applied: not when the
+// device changed it too and its own wins (the conflict policy); the
+// shadow's ETag is the remote's either way.
+- (BOOL)takesRemoteVersionOf:(NSEntityDescription *)entity key:(NSDictionary *)key etag:(NSString *)etag
+                     context:(NSManagedObjectContext *)context
+{
+  if ([_codec directionOfEntity:entity] != ODataSyncDirectionBoth) return YES;
+  NSString *keyText = [_codec keyTextOf:key entity:entity];
+  if (etag) [[_engine shadowOf:entity.name keyText:keyText remote:_remote inContext:context make:YES] setValue:etag forKey:@"etag"];
+  NSManagedObject *entry = [_engine entryOf:entity.name keyText:keyText remote:_remote inContext:context];
+  if (!entry) return YES;
+  [_engine count:@"conflicts" by:1];
+  if (_engine.conflictPolicy == ODataSyncLocalWins) return NO;
+  [context deleteObject:entry];
+  return YES;
+}
+
+// Rows applied: objects made first, then each row's values, so a to-one
+// to a row of the same read finds it.
+- (void)applyRows:(NSArray<NSDictionary *> *)rows entity:(NSEntityDescription *)entity context:(NSManagedObjectContext *)context
+             seen:(NSMutableSet<NSString *> *)seen
+{
+  NSMutableArray *pairs = [NSMutableArray array];
+  for (NSDictionary *row in rows) {
+    if (![row isKindOfClass:[NSDictionary class]]) continue;
+    NSDictionary *key = [_codec keyFromJSON:row entity:entity];
+    if (!key) continue;
+    [seen addObject:[_codec keyTextOf:key entity:entity]];
+    NSString *etag = [row[@"@odata.etag"] isKindOfClass:[NSString class]] ? row[@"@odata.etag"] : nil;
+    if (![self takesRemoteVersionOf:entity key:key etag:etag context:context]) continue;
+    NSManagedObject *object = [self objectFor:row entity:entity context:context created:NULL];
+    if (object) [pairs addObject:@[ object, row ]];
+  }
+  for (NSArray *pair in pairs) [_codec applyJSON:pair[1] toObject:pair[0]];
+  [_engine count:@"downloaded" by:pairs.count];
+}
+
+- (void)removeObjectOfEntity:(NSEntityDescription *)entity key:(NSDictionary *)key context:(NSManagedObjectContext *)context
+{
+  NSManagedObject *object = [_codec objectOfEntity:entity key:key inContext:context];
+  if (!object || ![self takesRemoteVersionOf:entity key:key etag:nil context:context]) return;
+  [context deleteObject:object];
+  [_engine count:@"removed" by:1];
+}
+
+// Local objects of the set the remote did not name, deleted (but not one
+// made here and not sent yet).
+- (void)sweep:(NSEntityDescription *)entity keeping:(NSSet<NSString *> *)seen context:(NSManagedObjectContext *)context
+{
+  NSFetchRequest *fetch = [NSFetchRequest fetchRequestWithEntityName:entity.name];
+  fetch.includesSubentities = YES;
+  for (NSManagedObject *object in [context executeFetchRequest:fetch error:NULL]) {
+    NSDictionary *key = [_codec keyOfObject:object];
+    NSString *keyText = [_codec keyTextOf:key entity:entity];
+    if ([seen containsObject:keyText]) continue;
+    NSManagedObject *entry = [_engine entryOf:entity.name keyText:keyText remote:_remote inContext:context];
+    if (entry && [[entry valueForKey:@"operation"] integerValue] == ODataSyncOperationInsert) continue;
+    if (entry) [context deleteObject:entry];
+    [context deleteObject:object];
+    [_engine count:@"removed" by:1];
+  }
+}
+
+#pragma mark Reading
+
+// Whole: every row, by key; what the remote no longer has, gone.
+- (BOOL)readWhole:(NSEntityDescription *)entity context:(NSManagedObjectContext *)context deltaLink:(NSString **)deltaLink
+            error:(NSError **)error
+{
+  NSURL *url = [self URLOfEntity:entity filter:_remote.filters[entity.name] select:nil expand:YES];
+  NSArray *rows = [self rowsAt:url prefer:@"odata.track-changes" deltaLink:deltaLink status:NULL error:error];
+  if (!rows) return NO;
+  NSMutableSet *seen = [NSMutableSet set];
+  [self applyRows:rows entity:entity context:context seen:seen];
+  [self sweep:entity keeping:seen context:context];
+  return YES;
+}
+
+// By the delta link: rows changed, rows removed. NO with *gone when the
+// remote no longer follows it (410).
+- (BOOL)follow:(NSString *)link entity:(NSEntityDescription *)entity context:(NSManagedObjectContext *)context
+     deltaLink:(NSString **)deltaLink gone:(BOOL *)gone error:(NSError **)error
+{
+  NSInteger status = 0;
+  NSError *failure = nil;
+  NSArray *entries = [self rowsAt:[NSURL URLWithString:link] prefer:nil deltaLink:deltaLink status:&status error:&failure];
+  if (!entries) {
+    *gone = status == ODSGone;
+    if (!*gone && error) *error = failure;
+    return NO;
+  }
+  NSMutableArray *rows = [NSMutableArray array];
+  for (NSDictionary *entry in entries) {
+    if (![entry isKindOfClass:[NSDictionary class]]) continue;
+    BOOL removed = entry[@"@odata.removed"] != nil || [entry[@"@odata.context"] hasSuffix:@"$deletedEntity"];
+    if (!removed) {
+      [rows addObject:entry];
+      continue;
+    }
+    NSString *identifier = entry[@"@odata.id"] ?: entry[@"id"];
+    NSDictionary *key = [identifier isKindOfClass:[NSString class]] ? [_codec keyFromID:identifier entity:NULL among:@[ entity ]] : nil;
+    if (key) [self removeObjectOfEntity:entity key:key context:context];
+  }
+  [self applyRows:rows entity:entity context:context seen:[NSMutableSet set]];
+  return YES;
+}
+
+- (BOOL)downloadEntity:(NSEntityDescription *)entity context:(NSManagedObjectContext *)context error:(NSError **)error
+{
+  OTSpan *span = [_engine.tracer startSpanNamed:[@"download " stringByAppendingString:entity.name] attributes:nil];
+  NSManagedObject *state = [_engine stateOf:_remote inContext:context];
+  NSMutableDictionary *links = [ODSUnarchive([state valueForKey:@"deltaLinks"]) mutableCopy] ?: [NSMutableDictionary dictionary];
+  NSMutableDictionary *filters = [ODSUnarchive([state valueForKey:@"filters"]) mutableCopy] ?: [NSMutableDictionary dictionary];
+  NSString *filter = _remote.filters[entity.name];
+  NSString *link = links[entity.name];
+  // A filter that changed is another set: read again.
+  if (link && !(filters[entity.name] == filter || [filters[entity.name] isEqual:filter])) link = nil;
+  NSString *next = nil;
+  BOOL ok = NO;
+  if (link) {
+    BOOL gone = NO;
+    ok = [self follow:link entity:entity context:context deltaLink:&next gone:&gone error:error];
+    if (!ok && !gone) {
+      [span end];
+      return NO;
+    }
+    [span setAttribute:@(gone) forKey:@"odatasync.delta_gone"];
+  }
+  if (!ok && ![self readWhole:entity context:context deltaLink:&next error:error]) {
+    [span end];
+    return NO;
+  }
+  if (next) links[entity.name] = next; else [links removeObjectForKey:entity.name];
+  if (filter) filters[entity.name] = filter; else [filters removeObjectForKey:entity.name];
+  [state setValue:ODSArchive(links) forKey:@"deltaLinks"];
+  [state setValue:ODSArchive(filters) forKey:@"filters"];
+  // The rows and the link that follows them, together.
+  ok = [context save:error];
+  [span end];
+  return ok;
+}
+
+- (BOOL)download:(NSError **)error
+{
+  NSManagedObjectContext *context = [_engine contextWritingAs:[self author]];
+  __block BOOL ok = YES;
+  __block NSError *failure = nil;
+  [context performBlockAndWait:^{
+    for (NSEntityDescription *entity in [self entities]) {
+      NSError *e = nil;
+      if (![self downloadEntity:entity context:context error:&e]) {
+        failure = e;
+        ok = NO;
+        [context rollback];
+        return;
+      }
+    }
+  }];
+  if (!ok && error) *error = failure;
+  return ok;
+}
+
+#pragma mark Reconciling
+
+- (BOOL)reconcileEntity:(NSEntityDescription *)entity context:(NSManagedObjectContext *)context error:(NSError **)error
+{
+  NSString *filter = _remote.filters[entity.name];
+  NSURL *url = [self URLOfEntity:entity filter:filter select:[_codec selectOfKeyOfEntity:entity] expand:NO];
+  NSArray *rows = [self rowsAt:url prefer:nil deltaLink:NULL status:NULL error:error];
+  if (!rows) return NO;
+  NSMutableDictionary<NSString *, NSDictionary *> *remote = [NSMutableDictionary dictionary];
+  for (NSDictionary *row in rows) {
+    NSDictionary *key = [row isKindOfClass:[NSDictionary class]] ? [_codec keyFromJSON:row entity:entity] : nil;
+    if (key) remote[[_codec keyTextOf:key entity:entity]] = key;
+  }
+  [self sweep:entity keeping:[NSSet setWithArray:remote.allKeys] context:context];
+  // What it has that is not here: read, a few keys at a time.
+  NSMutableArray *missing = [NSMutableArray array];
+  for (NSString *keyText in remote) {
+    if (![_codec objectOfEntity:entity key:remote[keyText] inContext:context]) [missing addObject:remote[keyText]];
+  }
+  for (NSUInteger at = 0; at < missing.count; at += 40) {
+    NSArray *keys = [missing subarrayWithRange:NSMakeRange(at, MIN(40u, missing.count - at))];
+    NSString *named = [_codec filterOfKeys:keys entity:entity];
+    NSString *both = filter.length ? [NSString stringWithFormat:@"(%@) and (%@)", filter, named] : named;
+    NSArray *found = [self rowsAt:[self URLOfEntity:entity filter:both select:nil expand:YES] prefer:nil deltaLink:NULL status:NULL error:error];
+    if (!found) return NO;
+    [self applyRows:found entity:entity context:context seen:[NSMutableSet set]];
+  }
+  return [context save:error];
+}
+
+- (BOOL)reconcile:(NSError **)error
+{
+  NSManagedObjectContext *context = [_engine contextWritingAs:[self author]];
+  __block BOOL ok = YES;
+  __block NSError *failure = nil;
+  [context performBlockAndWait:^{
+    for (NSEntityDescription *entity in [self entities]) {
+      NSError *e = nil;
+      if (![self reconcileEntity:entity context:context error:&e]) {
+        failure = e;
+        ok = NO;
+        [context rollback];
+        return;
+      }
+    }
+  }];
+  if (!ok && error) *error = failure;
+  return ok;
+}
+
+#pragma mark One object
+
+- (NSString *)refreshObjectOfEntity:(NSEntityDescription *)entity key:(NSDictionary *)key context:(NSManagedObjectContext *)context
+                              error:(NSError **)error
+{
+  NSString *path = [_codec pathOfEntity:entity key:key];
+  NSString *expansion = [_codec expandOfEntity:[_codec rootOf:entity]];
+  if (expansion) path = [path stringByAppendingFormat:@"?$expand=%@", expansion];
+  NSInteger status = 0;
+  NSError *failure = nil;
+  NSDictionary *row = [self JSONAt:[_engine URLOf:path remote:_remote] prefer:nil status:&status error:&failure];
+  NSManagedObject *object = [_codec objectOfEntity:entity key:key inContext:context];
+  if (!row) {
+    if (status == 404 && object) {
+      [context deleteObject:object];
+      [_engine count:@"removed" by:1];
+    }
+    if (status != 404 && error) *error = failure;
+    return nil;
+  }
+  if (!object) object = [self objectFor:row entity:[_codec rootOf:entity] context:context created:NULL];
+  [_codec applyJSON:row toObject:object];
+  [_engine count:@"downloaded" by:1];
+  return [row[@"@odata.etag"] isKindOfClass:[NSString class]] ? row[@"@odata.etag"] : nil;
+}
+
+@end

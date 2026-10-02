@@ -1,0 +1,679 @@
+// Copyright (C) 2026 OIS contributors
+// SPDX-License-Identifier: LGPL-2.1-or-later
+
+#import "ODSInternal.h"
+#import <ODataKit/ODataExpression.h>
+#import <objc/message.h>
+
+NSString * const ODataSyncDirectionKey = @"ODataSync.direction";
+NSString * const ODataSyncErrorDomain = @"org.gnu.ois.ODataSync";
+NSString * const ODataSyncDownAuthorPrefix = @"ODataSync.down.";
+NSString * const ODataSyncBookkeepingAuthor = @"ODataSync.bookkeeping";
+
+NSString * const ODSRemoteStateEntity = @"ODSRemoteState";
+NSString * const ODSOutboxEntity = @"ODSOutboxEntry";
+NSString * const ODSShadowEntity = @"ODSShadow";
+
+NSError *ODSError(NSInteger code, NSString *message)
+{
+  return [NSError errorWithDomain:ODataSyncErrorDomain code:code userInfo:@{ NSLocalizedDescriptionKey: message ?: @"" }];
+}
+
+NSData *ODSArchive(id plist)
+{
+  if (!plist) return nil;
+  return [NSKeyedArchiver archivedDataWithRootObject:plist requiringSecureCoding:NO error:NULL];
+}
+
+id ODSUnarchive(NSData *data)
+{
+  if (!data.length) return nil;
+  NSSet *classes = [NSSet setWithObjects:[NSDictionary class], [NSArray class], [NSString class], [NSNumber class], [NSDate class],
+                                         [NSUUID class], [NSDecimalNumber class], [NSData class], [NSNull class], [NSSet class], nil];
+  return [NSKeyedUnarchiver unarchivedObjectOfClasses:classes fromData:data error:NULL];
+}
+
+#pragma mark - Remote
+
+@implementation ODataSyncRemote
+
++ (instancetype)remoteWithServiceRoot:(NSURL *)serviceRoot
+{
+  return [[self alloc] initWithServiceRoot:serviceRoot];
+}
+
+- (instancetype)initWithServiceRoot:(NSURL *)serviceRoot
+{
+  self = [super init];
+  if (!self) return nil;
+  _serviceRoot = [serviceRoot copy];
+  _identifier = [serviceRoot.absoluteString copy];
+  _configuration = [[ODataConfiguration alloc] initWithURL:serviceRoot options:nil];
+  _filters = @{};
+  _batchSize = 50;
+  return self;
+}
+
+- (NSString *)description
+{
+  return [NSString stringWithFormat:@"<ODataSyncRemote %@>", _identifier];
+}
+
+@end
+
+#pragma mark - Issues, results
+
+@implementation ODataSyncIssue
+
+- (instancetype)initWithEntry:(NSManagedObject *)entry objectID:(NSManagedObjectID *)objectID
+{
+  self = [super init];
+  if (!self) return nil;
+  _entryID = entry.objectID;
+  _remoteIdentifier = [entry valueForKey:@"remote"] ?: @"";
+  _entityName = [entry valueForKey:@"entityType"] ?: @"";
+  _key = ODSUnarchive([entry valueForKey:@"key"]) ?: @{};
+  _operation = [[entry valueForKey:@"operation"] integerValue];
+  _status = [[entry valueForKey:@"status"] integerValue];
+  _message = [entry valueForKey:@"message"] ?: @"";
+  _objectID = objectID;
+  return self;
+}
+
+- (NSString *)description
+{
+  return [NSString stringWithFormat:@"<ODataSyncIssue %@ %@ %ld: %@>", _entityName, _key, (long)_status, _message];
+}
+
+@end
+
+@implementation ODataSyncResult
+
+- (instancetype)initWithTally:(NSDictionary<NSString *, NSNumber *> *)tally
+{
+  self = [super init];
+  if (!self) return nil;
+  _downloaded = [tally[@"downloaded"] unsignedIntegerValue];
+  _removed = [tally[@"removed"] unsignedIntegerValue];
+  _uploaded = [tally[@"uploaded"] unsignedIntegerValue];
+  _refused = [tally[@"refused"] unsignedIntegerValue];
+  _conflicts = [tally[@"conflicts"] unsignedIntegerValue];
+  return self;
+}
+
+- (NSString *)description
+{
+  return [NSString stringWithFormat:@"<ODataSyncResult down %lu, removed %lu, up %lu, refused %lu, conflicts %lu>",
+                                    (unsigned long)_downloaded, (unsigned long)_removed, (unsigned long)_uploaded,
+                                    (unsigned long)_refused, (unsigned long)_conflicts];
+}
+
+@end
+
+#pragma mark - Codec
+
+@implementation ODSCodec {
+  NSMutableDictionary<NSString *, NSArray *> *_attributes;
+  NSMutableDictionary<NSString *, NSArray *> *_toOnes;
+}
+
+- (instancetype)initWithModel:(NSManagedObjectModel *)model
+{
+  self = [super init];
+  if (!self) return nil;
+  _model = model;
+  _mapper = [[ODataPropertyMapper alloc] init];
+  _attributes = [NSMutableDictionary dictionary];
+  _toOnes = [NSMutableDictionary dictionary];
+  return self;
+}
+
+- (NSEntityDescription *)rootOf:(NSEntityDescription *)entity
+{
+  while (entity.superentity) entity = entity.superentity;
+  return entity;
+}
+
+- (ODataSyncDirection)directionOfEntity:(NSEntityDescription *)entity
+{
+  for (NSEntityDescription *e = entity; e; e = e.superentity) {
+    NSString *direction = [e.userInfo[ODataSyncDirectionKey] lowercaseString];
+    if ([direction isEqualToString:@"down"]) return ODataSyncDirectionDown;
+    if ([direction isEqualToString:@"up"]) return ODataSyncDirectionUp;
+    if ([direction isEqualToString:@"both"]) return ODataSyncDirectionBoth;
+  }
+  return ODataSyncDirectionNone;
+}
+
+- (NSArray<NSEntityDescription *> *)rootEntitiesGoing:(NSSet<NSNumber *> *)directions
+{
+  NSMutableArray *roots = [NSMutableArray array];
+  for (NSEntityDescription *entity in [self.model.entities sortedArrayUsingComparator:^NSComparisonResult(NSEntityDescription *a, NSEntityDescription *b) {
+         return [a.name compare:b.name];
+       }]) {
+    if (entity.superentity || ![directions containsObject:@([self directionOfEntity:entity])]) continue;
+    if (![self.mapper keyAttributesForEntity:entity].count) continue;
+    [roots addObject:entity];
+  }
+  // Parents first: depth-first, an entity after the destinations of its to-ones.
+  NSMutableArray *ordered = [NSMutableArray array];
+  NSMutableSet *visiting = [NSMutableSet set];
+  __block void (^visit)(NSEntityDescription *);
+  __weak __block void (^weakVisit)(NSEntityDescription *);
+  weakVisit = visit = ^(NSEntityDescription *entity) {
+    if ([ordered containsObject:entity] || [visiting containsObject:entity.name]) return;
+    [visiting addObject:entity.name];
+    for (NSRelationshipDescription *toOne in [self toOnesOf:entity]) {
+      NSEntityDescription *destination = [self rootOf:toOne.destinationEntity];
+      if ([roots containsObject:destination]) weakVisit(destination);
+    }
+    [ordered addObject:entity];
+  };
+  for (NSEntityDescription *entity in roots) visit(entity);
+  return ordered;
+}
+
+- (NSArray<NSAttributeDescription *> *)attributesOf:(NSEntityDescription *)entity
+{
+  NSArray *known = _attributes[entity.name];
+  if (known) return known;
+  NSMutableArray *attributes = [NSMutableArray array];
+  NSAttributeDescription *bag = [self.mapper dynamicPropertiesAttributeOfEntity:entity];
+  for (NSString *name in [entity.attributesByName.allKeys sortedArrayUsingSelector:@selector(compare:)]) {
+    NSAttributeDescription *attribute = entity.attributesByName[name];
+    if (attribute.isTransient || attribute == bag || ![self.mapper servesProperty:attribute]) continue;
+    [attributes addObject:attribute];
+  }
+  _attributes[entity.name] = attributes;
+  return attributes;
+}
+
+- (NSArray<NSRelationshipDescription *> *)toOnesOf:(NSEntityDescription *)entity
+{
+  NSArray *known = _toOnes[entity.name];
+  if (known) return known;
+  NSMutableArray *toOnes = [NSMutableArray array];
+  for (NSString *name in [entity.relationshipsByName.allKeys sortedArrayUsingSelector:@selector(compare:)]) {
+    NSRelationshipDescription *relationship = entity.relationshipsByName[name];
+    if (relationship.isToMany || relationship.isTransient || !relationship.destinationEntity) continue;
+    if ([self directionOfEntity:relationship.destinationEntity] == ODataSyncDirectionNone) continue;
+    if (![self.mapper servesProperty:relationship]) continue;
+    [toOnes addObject:relationship];
+  }
+  _toOnes[entity.name] = toOnes;
+  return toOnes;
+}
+
+- (NSArray<NSAttributeDescription *> *)keyAttributesOf:(NSEntityDescription *)entity
+{
+  return [self.mapper keyAttributesForEntity:[self rootOf:entity]];
+}
+
+- (NSDictionary *)keyOfObject:(NSManagedObject *)object
+{
+  NSMutableDictionary *key = [NSMutableDictionary dictionary];
+  for (NSAttributeDescription *attribute in [self keyAttributesOf:object.entity]) {
+    id value = [object valueForKey:attribute.name];
+    if (value) key[attribute.name] = value;
+  }
+  return key;
+}
+
+- (NSDictionary *)keyFromJSON:(NSDictionary *)json entity:(NSEntityDescription *)entity
+{
+  if (![json isKindOfClass:[NSDictionary class]]) return nil;
+  NSMutableDictionary *key = [NSMutableDictionary dictionary];
+  for (NSAttributeDescription *attribute in [self keyAttributesOf:entity]) {
+    id raw = json[[self.mapper propertyForAttribute:attribute]];
+    id value = raw && raw != [NSNull null] ? [self.mapper.values coreDataValueForJSON:raw attribute:attribute] : nil;
+    if (!value) return nil;
+    key[attribute.name] = value;
+  }
+  return key;
+}
+
+- (NSDictionary *)keyFromValues:(NSDictionary *)values entity:(NSEntityDescription *)entity
+{
+  NSMutableDictionary *key = [NSMutableDictionary dictionary];
+  for (NSAttributeDescription *attribute in [self keyAttributesOf:entity]) {
+    id value = values[attribute.name];
+    if (!value || value == [NSNull null]) return nil;
+    key[attribute.name] = value;
+  }
+  return key;
+}
+
+- (NSDictionary *)keyFromID:(NSString *)identifier entity:(NSEntityDescription **)found among:(NSArray<NSEntityDescription *> *)entities
+{
+  NSString *text = [identifier stringByRemovingPercentEncoding] ?: identifier;
+  // A whole URL: from the entity set's name on.
+  for (NSEntityDescription *entity in entities) {
+    NSString *set = [self.mapper entitySetForEntity:entity];
+    NSRange at = [text rangeOfString:[NSString stringWithFormat:@"/%@(", set] options:NSBackwardsSearch];
+    if (at.location != NSNotFound) {
+      text = [text substringFromIndex:at.location + 1];
+      break;
+    }
+  }
+  ODataResourcePath *path = [ODataResourcePath pathWithString:text error:NULL];
+  ODataPathSegment *segment = path.segments.firstObject;
+  if (!segment.keys) return nil;
+  NSEntityDescription *entity = nil;
+  for (NSEntityDescription *candidate in entities) {
+    if ([[self.mapper entitySetForEntity:candidate] isEqualToString:segment.name]) entity = candidate;
+  }
+  if (!entity) return nil;
+  NSArray<NSAttributeDescription *> *attributes = [self keyAttributesOf:entity];
+  NSMutableDictionary *key = [NSMutableDictionary dictionary];
+  for (NSAttributeDescription *attribute in attributes) {
+    ODataExpression *part = segment.keys[[self.mapper propertyForAttribute:attribute]];
+    if (!part && attributes.count == 1) part = segment.keys[@""];
+    id value = part.value ? [self.mapper.values coreDataValueForJSON:part.value attribute:attribute] : nil;
+    if (!value) return nil;
+    key[attribute.name] = value;
+  }
+  if (found) *found = entity;
+  return key;
+}
+
+- (NSString *)keyTextOf:(NSDictionary *)key entity:(NSEntityDescription *)entity
+{
+  NSMutableArray *parts = [NSMutableArray array];
+  for (NSAttributeDescription *attribute in [self keyAttributesOf:entity]) {
+    [parts addObject:[NSString stringWithFormat:@"%@=%@", attribute.name, [self.mapper.values literalForValue:key[attribute.name] attribute:attribute]]];
+  }
+  return [parts componentsJoinedByString:@","];
+}
+
+- (NSString *)pathOfEntity:(NSEntityDescription *)entity key:(NSDictionary *)key
+{
+  NSArray<NSAttributeDescription *> *attributes = [self keyAttributesOf:entity];
+  NSMutableArray *parts = [NSMutableArray array];
+  for (NSAttributeDescription *attribute in attributes) {
+    NSString *literal = [self.mapper.values literalForValue:key[attribute.name] attribute:attribute];
+    [parts addObject:attributes.count == 1 ? literal
+                                           : [NSString stringWithFormat:@"%@=%@", [self.mapper propertyForAttribute:attribute], literal]];
+  }
+  return [NSString stringWithFormat:@"%@(%@)", [self.mapper entitySetForEntity:[self rootOf:entity]], [parts componentsJoinedByString:@","]];
+}
+
+- (NSManagedObject *)objectOfEntity:(NSEntityDescription *)entity key:(NSDictionary *)key inContext:(NSManagedObjectContext *)context
+{
+  NSEntityDescription *root = [self rootOf:entity];
+  NSMutableArray *conditions = [NSMutableArray array];
+  for (NSAttributeDescription *attribute in [self keyAttributesOf:root]) {
+    if (!key[attribute.name]) return nil;
+    [conditions addObject:[NSPredicate predicateWithFormat:@"%K == %@", attribute.name, key[attribute.name]]];
+  }
+  NSFetchRequest *fetch = [NSFetchRequest fetchRequestWithEntityName:root.name];
+  fetch.predicate = [NSCompoundPredicate andPredicateWithSubpredicates:conditions];
+  fetch.includesSubentities = YES;
+  fetch.fetchLimit = 1;
+  return [[context executeFetchRequest:fetch error:NULL] firstObject];
+}
+
+static BOOL ODSSame(id a, id b)
+{
+  return a == b || [a isEqual:b];
+}
+
+- (void)applyJSON:(NSDictionary *)json toObject:(NSManagedObject *)object
+{
+  ODataValueCoder *values = self.mapper.values;
+  for (NSAttributeDescription *attribute in [self attributesOf:object.entity]) {
+    id raw = json[[self.mapper propertyForAttribute:attribute]];
+    if (!raw) continue;
+    id value = raw == [NSNull null] ? nil : [values coreDataValueForJSON:raw attribute:attribute];
+    // Set only what differs: an unchanged value is no change in history.
+    if (!ODSSame([object valueForKey:attribute.name], value)) [object setValue:value forKey:attribute.name];
+  }
+  for (NSRelationshipDescription *toOne in [self toOnesOf:object.entity]) {
+    id raw = json[[self.mapper propertyForRelationship:toOne]];
+    if (!raw) continue;
+    NSManagedObject *related = nil;
+    if ([raw isKindOfClass:[NSDictionary class]]) {
+      NSDictionary *key = [self keyFromJSON:raw entity:toOne.destinationEntity];
+      related = key ? [self objectOfEntity:toOne.destinationEntity key:key inContext:object.managedObjectContext] : nil;
+    }
+    if ([object valueForKey:toOne.name] != related) [object setValue:related forKey:toOne.name];
+  }
+}
+
+- (NSDictionary *)JSONOfObject:(NSManagedObject *)object properties:(NSSet<NSString *> *)properties
+{
+  ODataValueCoder *values = self.mapper.values;
+  NSMutableDictionary *json = [NSMutableDictionary dictionary];
+  for (NSAttributeDescription *attribute in [self attributesOf:object.entity]) {
+    if (properties && ![properties containsObject:attribute.name]) continue;
+    if ([self.mapper attributeIsComputed:attribute]) continue;
+    id value = [object valueForKey:attribute.name];
+    json[[self.mapper propertyForAttribute:attribute]] = value ? [values JSONForCoreDataValue:value attribute:attribute] : [NSNull null];
+  }
+  for (NSRelationshipDescription *toOne in [self toOnesOf:object.entity]) {
+    if (properties && ![properties containsObject:toOne.name]) continue;
+    NSManagedObject *related = [object valueForKey:toOne.name];
+    NSString *name = [self.mapper propertyForRelationship:toOne];
+    if (related) {
+      json[[name stringByAppendingString:@"@odata.bind"]] = [self pathOfEntity:related.entity key:[self keyOfObject:related]];
+    } else if (properties) {
+      json[name] = [NSNull null];  // unlinked (a deep update's null)
+    }
+  }
+  return json;
+}
+
+- (NSString *)expandOfEntity:(NSEntityDescription *)entity
+{
+  NSMutableArray *items = [NSMutableArray array];
+  for (NSRelationshipDescription *toOne in [self toOnesOf:entity]) {
+    [items addObject:[NSString stringWithFormat:@"%@($select=%@)", [self.mapper propertyForRelationship:toOne],
+                                                [self selectOfKeyOfEntity:toOne.destinationEntity]]];
+  }
+  return items.count ? [items componentsJoinedByString:@","] : nil;
+}
+
+- (NSString *)selectOfKeyOfEntity:(NSEntityDescription *)entity
+{
+  NSMutableArray *names = [NSMutableArray array];
+  for (NSAttributeDescription *attribute in [self keyAttributesOf:entity]) [names addObject:[self.mapper propertyForAttribute:attribute]];
+  return [names componentsJoinedByString:@","];
+}
+
+- (NSString *)filterOfKeys:(NSArray<NSDictionary *> *)keys entity:(NSEntityDescription *)entity
+{
+  NSArray<NSAttributeDescription *> *attributes = [self keyAttributesOf:entity];
+  NSMutableArray *alternatives = [NSMutableArray array];
+  for (NSDictionary *key in keys) {
+    NSMutableArray *parts = [NSMutableArray array];
+    for (NSAttributeDescription *attribute in attributes) {
+      [parts addObject:[NSString stringWithFormat:@"%@ eq %@", [self.mapper propertyForAttribute:attribute],
+                                                  [self.mapper.values literalForValue:key[attribute.name] attribute:attribute]]];
+    }
+    NSString *all = [parts componentsJoinedByString:@" and "];
+    [alternatives addObject:parts.count > 1 ? [NSString stringWithFormat:@"(%@)", all] : all];
+  }
+  return [alternatives componentsJoinedByString:@" or "];
+}
+
+@end
+
+#pragma mark - Engine
+
+static NSAttributeDescription *ODSAttribute(NSString *name, NSAttributeType type)
+{
+  NSAttributeDescription *attribute = [[NSAttributeDescription alloc] init];
+  attribute.name = name;
+  attribute.attributeType = type;
+  attribute.optional = YES;
+  // A flag or a count is NO or 0, never NULL (which a predicate's != YES
+  // does not take).
+  if (type == NSBooleanAttributeType) attribute.defaultValue = @NO;
+  if (type == NSInteger16AttributeType || type == NSInteger32AttributeType || type == NSInteger64AttributeType) attribute.defaultValue = @0;
+  return attribute;
+}
+
+static NSEntityDescription *ODSEntity(NSString *name, NSArray<NSAttributeDescription *> *attributes)
+{
+  NSEntityDescription *entity = [[NSEntityDescription alloc] init];
+  entity.name = name;
+  entity.managedObjectClassName = NSStringFromClass([NSManagedObject class]);
+  entity.properties = attributes;
+  return entity;
+}
+
+@implementation ODataSyncEngine {
+  NSMutableArray<ODataSyncRemote *> *_remotes;
+  NSLock *_running;
+  NSMutableDictionary<NSString *, NSNumber *> *_tally;
+}
+
++ (void)addBookkeepingToModel:(NSManagedObjectModel *)model configuration:(NSString *)configuration
+{
+  if (model.entitiesByName[ODSRemoteStateEntity]) return;
+  NSArray *added = @[
+    ODSEntity(ODSRemoteStateEntity, @[ ODSAttribute(@"remote", NSStringAttributeType), ODSAttribute(@"deltaLinks", NSBinaryDataAttributeType),
+                                       ODSAttribute(@"filters", NSBinaryDataAttributeType), ODSAttribute(@"historyToken", NSBinaryDataAttributeType) ]),
+    ODSEntity(ODSOutboxEntity, @[ ODSAttribute(@"remote", NSStringAttributeType), ODSAttribute(@"entityType", NSStringAttributeType),
+                                  ODSAttribute(@"key", NSBinaryDataAttributeType), ODSAttribute(@"keyText", NSStringAttributeType),
+                                  ODSAttribute(@"operation", NSInteger16AttributeType), ODSAttribute(@"properties", NSBinaryDataAttributeType),
+                                  ODSAttribute(@"sequence", NSInteger64AttributeType), ODSAttribute(@"attempts", NSInteger32AttributeType),
+                                  ODSAttribute(@"status", NSInteger32AttributeType), ODSAttribute(@"message", NSStringAttributeType),
+                                  ODSAttribute(@"setAside", NSBooleanAttributeType) ]),
+    ODSEntity(ODSShadowEntity, @[ ODSAttribute(@"remote", NSStringAttributeType), ODSAttribute(@"entityType", NSStringAttributeType),
+                                  ODSAttribute(@"keyText", NSStringAttributeType), ODSAttribute(@"etag", NSStringAttributeType) ]),
+  ];
+  model.entities = [model.entities arrayByAddingObjectsFromArray:added];
+  if (configuration) {
+    NSArray *entities = [model entitiesForConfiguration:configuration] ?: @[];
+    [model setEntities:[entities arrayByAddingObjectsFromArray:added] forConfiguration:configuration];
+  }
+}
+
+- (instancetype)initWithCoordinator:(NSPersistentStoreCoordinator *)coordinator
+{
+  self = [super init];
+  if (!self) return nil;
+  _coordinator = coordinator;
+  _codec = [[ODSCodec alloc] initWithModel:coordinator.managedObjectModel];
+  _remotes = [NSMutableArray array];
+  _running = [[NSLock alloc] init];
+  _tally = [NSMutableDictionary dictionary];
+  _tracer = [OTTracer tracerNamed:@"ODataSync" version:nil];
+  return self;
+}
+
+- (NSArray<ODataSyncRemote *> *)remotes
+{
+  @synchronized (self) {
+    return [_remotes copy];
+  }
+}
+
+- (void)addRemote:(ODataSyncRemote *)remote
+{
+  @synchronized (self) {
+    [_remotes addObject:remote];
+  }
+}
+
+- (NSMutableDictionary<NSString *, NSNumber *> *)tally
+{
+  return _tally;
+}
+
+- (void)count:(NSString *)what by:(NSUInteger)n
+{
+  @synchronized (_tally) {
+    _tally[what] = @([_tally[what] unsignedIntegerValue] + n);
+  }
+}
+
+- (void)setAside:(ODataSyncIssue *)issue
+{
+  [self count:@"refused" by:1];
+  id<ODataSyncDelegate> delegate = self.delegate;
+  if ([delegate respondsToSelector:@selector(syncEngine:didSetAside:)]) [delegate syncEngine:self didSetAside:issue];
+}
+
+- (void)ignoredLocalChangeTo:(NSManagedObjectID *)objectID
+{
+  id<ODataSyncDelegate> delegate = self.delegate;
+  if ([delegate respondsToSelector:@selector(syncEngine:ignoredLocalChangeToObject:)]) [delegate syncEngine:self ignoredLocalChangeToObject:objectID];
+}
+
+- (ODataClient *)clientOf:(ODataSyncRemote *)remote
+{
+  ODataConfiguration *configuration = remote.configuration;
+  configuration.version = @"4.01";
+  ODataClient *client = [[ODataClient alloc] initWithConfiguration:configuration];
+  client.transport = remote.transport;
+  return client;
+}
+
+- (NSManagedObjectContext *)contextWritingAs:(NSString *)author
+{
+  NSManagedObjectContext *context = [[NSManagedObjectContext alloc] initWithConcurrencyType:NSPrivateQueueConcurrencyType];
+  context.persistentStoreCoordinator = self.coordinator;
+  context.mergePolicy = NSMergeByPropertyObjectTrumpMergePolicy;
+  if ([context respondsToSelector:@selector(setTransactionAuthor:)]) context.transactionAuthor = author;
+  return context;
+}
+
+- (NSManagedObject *)stateOf:(ODataSyncRemote *)remote inContext:(NSManagedObjectContext *)context
+{
+  NSFetchRequest *fetch = [NSFetchRequest fetchRequestWithEntityName:ODSRemoteStateEntity];
+  fetch.predicate = [NSPredicate predicateWithFormat:@"remote == %@", remote.identifier];
+  fetch.fetchLimit = 1;
+  NSManagedObject *state = [[context executeFetchRequest:fetch error:NULL] firstObject];
+  if (!state) {
+    state = [NSEntityDescription insertNewObjectForEntityForName:ODSRemoteStateEntity inManagedObjectContext:context];
+    [state setValue:remote.identifier forKey:@"remote"];
+  }
+  return state;
+}
+
+- (NSManagedObject *)entryOf:(NSString *)entityName keyText:(NSString *)keyText remote:(ODataSyncRemote *)remote
+                   inContext:(NSManagedObjectContext *)context
+{
+  NSFetchRequest *fetch = [NSFetchRequest fetchRequestWithEntityName:ODSOutboxEntity];
+  fetch.predicate = [NSPredicate predicateWithFormat:@"remote == %@ AND entityType == %@ AND keyText == %@", remote.identifier, entityName, keyText];
+  fetch.fetchLimit = 1;
+  return [[context executeFetchRequest:fetch error:NULL] firstObject];
+}
+
+- (NSManagedObject *)shadowOf:(NSString *)entityName keyText:(NSString *)keyText remote:(ODataSyncRemote *)remote
+                    inContext:(NSManagedObjectContext *)context make:(BOOL)make
+{
+  NSFetchRequest *fetch = [NSFetchRequest fetchRequestWithEntityName:ODSShadowEntity];
+  fetch.predicate = [NSPredicate predicateWithFormat:@"remote == %@ AND entityType == %@ AND keyText == %@", remote.identifier, entityName, keyText];
+  fetch.fetchLimit = 1;
+  NSManagedObject *shadow = [[context executeFetchRequest:fetch error:NULL] firstObject];
+  if (!shadow && make) {
+    shadow = [NSEntityDescription insertNewObjectForEntityForName:ODSShadowEntity inManagedObjectContext:context];
+    [shadow setValue:remote.identifier forKey:@"remote"];
+    [shadow setValue:entityName forKey:@"entityType"];
+    [shadow setValue:keyText forKey:@"keyText"];
+  }
+  return shadow;
+}
+
+- (NSURL *)URLOf:(NSString *)relative remote:(ODataSyncRemote *)remote
+{
+  NSString *root = remote.serviceRoot.absoluteString;
+  if (![root hasSuffix:@"/"]) root = [root stringByAppendingString:@"/"];
+  NSMutableCharacterSet *allowed = [[NSCharacterSet URLQueryAllowedCharacterSet] mutableCopy];
+  [allowed removeCharactersInString:@"+"];
+  NSString *encoded = [relative stringByAddingPercentEncodingWithAllowedCharacters:allowed];
+  return [NSURL URLWithString:[root stringByAppendingString:encoded]];
+}
+
+#pragma mark Syncing
+
+- (BOOL)syncWithError:(NSError **)error
+{
+  [_running lock];
+  @synchronized (_tally) {
+    [_tally removeAllObjects];
+  }
+  OTSpan *span = [self.tracer startSpanNamed:@"sync" attributes:nil];
+  BOOL ok = YES;
+  for (ODataSyncRemote *remote in self.remotes) {
+    if (![self downloadFromRemote:remote error:error] || ![self uploadToRemote:remote error:error]) {
+      ok = NO;
+      break;
+    }
+  }
+  @synchronized (_tally) {
+    _lastResult = [[ODataSyncResult alloc] initWithTally:_tally];
+  }
+  if (!ok && error) [span recordError:*error];
+  [span end];
+  [_running unlock];
+  return ok;
+}
+
+- (void)syncWithTarget:(id)target action:(SEL)action
+{
+  [NSThread detachNewThreadSelector:@selector(runSyncFor:) toTarget:self withObject:@[ target, NSStringFromSelector(action) ]];
+}
+
+- (void)runSyncFor:(NSArray *)reply
+{
+  @autoreleasepool {
+    NSError *error = nil;
+    BOOL ok = [self syncWithError:&error];
+    ODataSyncResult *result = ok ? self.lastResult : nil;
+    id target = reply[0];
+    SEL action = NSSelectorFromString(reply[1]);
+    dispatch_async(dispatch_get_main_queue(), ^{
+      void (*send)(id, SEL, id, id) = (void (*)(id, SEL, id, id))objc_msgSend;
+      send(target, action, result, ok ? nil : error);
+    });
+  }
+}
+
+- (BOOL)downloadFromRemote:(ODataSyncRemote *)remote error:(NSError **)error
+{
+  // What the device changed and has not sent, known first.
+  return [[[ODSUploader alloc] initWithEngine:self remote:remote] collect:error] &&
+         [[[ODSDownloader alloc] initWithEngine:self remote:remote] download:error];
+}
+
+- (BOOL)uploadToRemote:(ODataSyncRemote *)remote error:(NSError **)error
+{
+  return [[[ODSUploader alloc] initWithEngine:self remote:remote] upload:error];
+}
+
+- (BOOL)reconcileWithRemote:(ODataSyncRemote *)remote error:(NSError **)error
+{
+  return [[[ODSUploader alloc] initWithEngine:self remote:remote] collect:error] &&
+         [[[ODSDownloader alloc] initWithEngine:self remote:remote] reconcile:error];
+}
+
+#pragma mark Issues
+
+- (NSArray<ODataSyncIssue *> *)issues
+{
+  NSManagedObjectContext *context = [self contextWritingAs:ODataSyncBookkeepingAuthor];
+  NSMutableArray *issues = [NSMutableArray array];
+  [context performBlockAndWait:^{
+    NSFetchRequest *fetch = [NSFetchRequest fetchRequestWithEntityName:ODSOutboxEntity];
+    fetch.predicate = [NSPredicate predicateWithFormat:@"setAside == YES"];
+    fetch.sortDescriptors = @[ [NSSortDescriptor sortDescriptorWithKey:@"sequence" ascending:YES] ];
+    for (NSManagedObject *entry in [context executeFetchRequest:fetch error:NULL]) {
+      NSEntityDescription *entity = self.coordinator.managedObjectModel.entitiesByName[[entry valueForKey:@"entityType"]];
+      NSDictionary *key = ODSUnarchive([entry valueForKey:@"key"]);
+      NSManagedObject *object = entity && key ? [self.codec objectOfEntity:entity key:key inContext:context] : nil;
+      [issues addObject:[[ODataSyncIssue alloc] initWithEntry:entry objectID:object.objectID]];
+    }
+  }];
+  return issues;
+}
+
+- (void)changeIssue:(ODataSyncIssue *)issue discarding:(BOOL)discard
+{
+  NSManagedObjectContext *context = [self contextWritingAs:ODataSyncBookkeepingAuthor];
+  [context performBlockAndWait:^{
+    NSManagedObject *entry = [context existingObjectWithID:issue.entryID error:NULL];
+    if (!entry) return;
+    if (discard) {
+      [context deleteObject:entry];
+    } else {
+      [entry setValue:@NO forKey:@"setAside"];
+      [entry setValue:@0 forKey:@"attempts"];
+    }
+    [context save:NULL];
+  }];
+}
+
+- (void)retryIssue:(ODataSyncIssue *)issue
+{
+  [self changeIssue:issue discarding:NO];
+}
+
+- (void)discardIssue:(ODataSyncIssue *)issue
+{
+  [self changeIssue:issue discarding:YES];
+}
+
+@end

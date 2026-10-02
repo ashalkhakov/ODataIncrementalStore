@@ -14,6 +14,7 @@ service's schema.
 | `ODataService` | The server: OData 4.01 (and 4.0) over any Core Data store. `ois-serve` runs it behind a reverse proxy. |
 | `ODataKit` | What both share: the model mapping, CSDL, values, the URL and `$filter` grammar, `$filter` and `$orderby` as Core Data predicates and sort descriptors, `$batch`. |
 | `HTTPServerKit` | The HTTP server the service runs in, for any API beside it: a pipeline of stages, a router, sign-in (trusted proxy, JWT, token introspection), metrics, JSON logs, readiness, draining. Errors outside OData are `application/problem+json`. |
+| `ODataSync` | An offline store: the app works against one local Core Data store; entities the service owns come down by delta links, entities the app collects go up by upsert, and entities both edit are reconciled by a conflict policy ([offline sync](docs/offline-sync.md)). |
 | `OTelKit` | OpenTelemetry tracing, Foundation only: one trace from an app's fetch through its request to the service's planning and store requests, sent over OTLP to a collector ([observability](docs/observability.md)). |
 
 ![The Workbench](Examples/Workbench/Workbench.png)
@@ -219,6 +220,7 @@ flowchart LR
 |---|---|
 | `Source/ODataKit/` | The shared core |
 | `Source/ODataIncrementalStore/` | The client store, its HTTP client, model builder, streams |
+| `Source/ODataSync/` | Offline sync: the engine, the downloader and uploader, the outbox |
 | `Source/OTelKit/` | Tracing: spans, sampling, the OTLP exporter |
 | `Source/HTTPServerKit/` | The HTTP server: the listener (vendored GCDWebServer), pipeline, router, sign-in, logs and metrics, the application |
 | `Source/ODataService/` | The service, its handlers, `$metadata` writer, predicate builder, `$batch`, timelines; `ODataServer.h`, the service as an HTTPServerKit module |
@@ -231,7 +233,7 @@ flowchart LR
 ## Documentation
 
 - [Building](docs/building.md): toolchains, GNUstep, Xcode, tests
-- [Client guide](docs/client.md) · [Server guide and design](docs/server-design.md) · [Observability](docs/observability.md)
+- [Client guide](docs/client.md) · [Server guide and design](docs/server-design.md) · [Observability](docs/observability.md) · [Offline sync](docs/offline-sync.md)
 - [Query plans](docs/query-plan.md) · [Write plans](docs/write-plan.md): how the service plans reads and writes
 - [How it works](docs/how-it-works.md): the mapping, query translation, what runs where
 - [Client conformance](docs/odata-conformance.md): OData v4, item by item

@@ -17,7 +17,8 @@ include $(GCDWebServer_DIR)/GCDWebServer.make
 INCLUDE_DIRS = -I../Source/ODataKit/include -I../Source/ODataIncrementalStore/include -I../Source/ODataService/include \
 	-I../Source/HTTPServerKit/include -I../Source/ODataKit/include/ODataKit \
 	-I../Source/ODataIncrementalStore/include/ODataIncrementalStore -I../Source/ODataService/include/ODataService \
-	-I../Source/HTTPServerKit/include/HTTPServerKit -I../Source/OTelKit/include -I../Source/OTelKit/include/OTelKit
+	-I../Source/HTTPServerKit/include/HTTPServerKit -I../Source/OTelKit/include -I../Source/OTelKit/include/OTelKit \
+	-I../Source/ODataSync/include -I../Source/ODataSync/include/ODataSync
 
 ifneq ($(GNUSTEP_MAKEFILES),)
 
@@ -28,7 +29,7 @@ OBJC = clang
 
 FLAGS = -fobjc-arc -fblocks -fobjc-runtime=gnustep-2.0 \
 	-fconstant-string-class=NSConstantString -fobjc-exceptions -Wall -Wno-unused-parameter
-TOOL_LIBS_ALL = -lODataService -lHTTPServerKit -lOTelKit -lODataKit -lCoreData -ldispatch -lz
+TOOL_LIBS_ALL = -lODataSync -lODataIncrementalStore -lODataService -lHTTPServerKit -lOTelKit -lODataKit -lCoreData -ldispatch -lz
 
 TOOL_NAME = ois-serve ois-serve-check catalog-server
 ois-serve_OBJC_FILES = ois-serve.m

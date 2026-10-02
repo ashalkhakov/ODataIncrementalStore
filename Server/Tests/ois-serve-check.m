@@ -13,6 +13,7 @@
 #import <ODataService/ODataServer.h>
 #import <ODataKit/ODataBatch.h>
 #import <ODataKit/ODataError.h>
+#import <ODataSync/ODataSync.h>
 #include <arpa/inet.h>
 #include <netinet/in.h>
 #include <sys/socket.h>
@@ -639,6 +640,105 @@ static NSString *OISBase64URL(id json)
   return [text stringByReplacingOccurrencesOfString:@"=" withString:@""];
 }
 
+#pragma mark Offline sync
+
+static NSAttributeDescription *OISSyncAttribute(NSString *name, NSAttributeType type, BOOL key)
+{
+  NSAttributeDescription *attribute = [[NSAttributeDescription alloc] init];
+  attribute.name = name;
+  attribute.attributeType = type;
+  attribute.optional = YES;
+  attribute.preservesValueInHistoryOnDeletion = YES;
+  if (key) attribute.userInfo = @{ @"OData.key": @"YES" };
+  return attribute;
+}
+
+// Assets (down) and Inspections (up, each of an asset), as docs/offline-sync.md has them.
+static NSManagedObjectModel *OISSyncModel(void)
+{
+  NSEntityDescription *asset = [[NSEntityDescription alloc] init];
+  asset.name = @"Asset";
+  asset.managedObjectClassName = @"NSManagedObject";
+  asset.userInfo = @{ @"OData.entitySet": @"Assets", ODataSyncDirectionKey: @"down" };
+  NSEntityDescription *inspection = [[NSEntityDescription alloc] init];
+  inspection.name = @"Inspection";
+  inspection.managedObjectClassName = @"NSManagedObject";
+  inspection.userInfo = @{ @"OData.entitySet": @"Inspections", ODataSyncDirectionKey: @"up" };
+  NSRelationshipDescription *ofAsset = [[NSRelationshipDescription alloc] init];
+  ofAsset.name = @"asset";
+  ofAsset.destinationEntity = asset;
+  ofAsset.maxCount = 1;
+  ofAsset.deleteRule = NSNullifyDeleteRule;
+  NSRelationshipDescription *inspections = [[NSRelationshipDescription alloc] init];
+  inspections.name = @"inspections";
+  inspections.destinationEntity = inspection;
+  inspections.maxCount = 0;
+  inspections.deleteRule = NSNullifyDeleteRule;
+  ofAsset.inverseRelationship = inspections;
+  inspections.inverseRelationship = ofAsset;
+  asset.properties = @[ OISSyncAttribute(@"id", NSInteger32AttributeType, YES), OISSyncAttribute(@"name", NSStringAttributeType, NO), inspections ];
+  inspection.properties = @[ OISSyncAttribute(@"id", NSStringAttributeType, YES), OISSyncAttribute(@"note", NSStringAttributeType, NO), ofAsset ];
+  NSManagedObjectModel *model = [[NSManagedObjectModel alloc] init];
+  model.entities = @[ asset, inspection ];
+  return model;
+}
+
+static NSPersistentStoreCoordinator *OISSyncStore(NSManagedObjectModel *model, NSError **error)
+{
+  NSPersistentStoreCoordinator *coordinator = [[NSPersistentStoreCoordinator alloc] initWithManagedObjectModel:model];
+  NSString *path = [NSTemporaryDirectory() stringByAppendingPathComponent:[[NSProcessInfo processInfo] globallyUniqueString]];
+  if (![coordinator addPersistentStoreWithType:NSSQLiteStoreType configuration:nil URL:[NSURL fileURLWithPath:path]
+                                       options:@{ NSPersistentHistoryTrackingKey: @YES } error:error]) return nil;
+  return coordinator;
+}
+
+// A port nothing listens on now.
+static NSUInteger OISFreePort(void)
+{
+  int fd = socket(AF_INET, SOCK_STREAM, 0);
+  struct sockaddr_in address;
+  memset(&address, 0, sizeof(address));
+  address.sin_family = AF_INET;
+  address.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+  socklen_t length = sizeof(address);
+  NSUInteger free = 0;
+  if (bind(fd, (struct sockaddr *)&address, sizeof(address)) == 0 && getsockname(fd, (struct sockaddr *)&address, &length) == 0) {
+    free = ntohs(address.sin_port);
+  }
+  close(fd);
+  return free;
+}
+
+static NSArray *OISSyncValues(NSPersistentStoreCoordinator *coordinator, NSString *entity, NSString *key)
+{
+  NSManagedObjectContext *context = [[NSManagedObjectContext alloc] initWithConcurrencyType:NSPrivateQueueConcurrencyType];
+  context.persistentStoreCoordinator = coordinator;
+  __block NSArray *values = nil;
+  [context performBlockAndWait:^{
+    NSFetchRequest *fetch = [NSFetchRequest fetchRequestWithEntityName:entity];
+    fetch.sortDescriptors = @[ [NSSortDescriptor sortDescriptorWithKey:@"id" ascending:YES] ];
+    values = [[context executeFetchRequest:fetch error:NULL] valueForKey:key];
+  }];
+  return values ?: @[];
+}
+
+static void OISSyncWrite(NSPersistentStoreCoordinator *coordinator, void (^work)(NSManagedObjectContext *context))
+{
+  NSManagedObjectContext *context = [[NSManagedObjectContext alloc] initWithConcurrencyType:NSPrivateQueueConcurrencyType];
+  context.persistentStoreCoordinator = coordinator;
+  [context performBlockAndWait:^{
+    work(context);
+    [context save:NULL];
+  }];
+}
+
+static NSManagedObject *OISSyncObject(NSManagedObjectContext *context, NSString *entity, id identifier)
+{
+  NSFetchRequest *fetch = [NSFetchRequest fetchRequestWithEntityName:entity];
+  fetch.predicate = [NSPredicate predicateWithFormat:@"id == %@", identifier];
+  return [[context executeFetchRequest:fetch error:NULL] firstObject];
+}
+
 int main(int argc, const char *argv[])
 {
   @autoreleasepool {
@@ -1232,6 +1332,58 @@ int main(int argc, const char *argv[])
       BOOL prepared = [untraced prepare:&failure];
       NSString *warned = [[foreign.warnings filteredArrayUsingPredicate:[NSPredicate predicateWithFormat:@"SELF BEGINSWITH 'not tracing'"]] firstObject];
       check(prepared && warned && !untraced.tracerProvider, @"foreign-otel-variables", warned ?: failure.localizedDescription ?: @"no warning");
+    }
+    // Offline sync over HTTP (ODataSync): a device's store, with history,
+    // and a service's, as FreeCoreData keeps them on GNUstep.
+    {
+      NSError *failure = nil;
+      NSPersistentStoreCoordinator *served = OISSyncStore(OISSyncModel(), &failure);
+      NSManagedObjectModel *deviceModel = OISSyncModel();
+      [ODataSyncEngine addBookkeepingToModel:deviceModel configuration:nil];
+      NSPersistentStoreCoordinator *device = served ? OISSyncStore(deviceModel, &failure) : nil;
+      OISSyncWrite(served, ^(NSManagedObjectContext *context) {
+        for (NSArray *a in @[ @[ @1, @"Pump" ], @[ @2, @"Valve" ] ]) {
+          NSManagedObject *asset = [NSEntityDescription insertNewObjectForEntityForName:@"Asset" inManagedObjectContext:context];
+          [asset setValue:a[0] forKey:@"id"];
+          [asset setValue:a[1] forKey:@"name"];
+        }
+      });
+      // The service's links are absolute: its root has the port it listens on.
+      NSUInteger syncPort = OISFreePort();
+      NSString *root = [NSString stringWithFormat:@"http://127.0.0.1:%lu/sync/", (unsigned long)syncPort];
+      ODataService *syncService = served ? [[ODataService alloc] initWithPersistentStoreCoordinator:served serviceRoot:[NSURL URLWithString:root]] : nil;
+      HSServer *syncServer = syncService ? [[HSServer alloc] initWithService:syncService] : nil;
+      if (device && [syncServer startOnPort:syncPort error:&failure]) {
+        ODataSyncEngine *engine = [[ODataSyncEngine alloc] initWithCoordinator:device];
+        [engine addRemote:[ODataSyncRemote remoteWithServiceRoot:[NSURL URLWithString:root]]];
+        BOOL first = [engine syncWithError:&failure];
+        NSArray *assets = OISSyncValues(device, @"Asset", @"name");
+        NSString *identifier = [NSUUID UUID].UUIDString;
+        OISSyncWrite(device, ^(NSManagedObjectContext *context) {
+          NSManagedObject *inspection = [NSEntityDescription insertNewObjectForEntityForName:@"Inspection" inManagedObjectContext:context];
+          [inspection setValue:identifier forKey:@"id"];
+          [inspection setValue:@"Leaks" forKey:@"note"];
+          [inspection setValue:OISSyncObject(context, @"Asset", @1) forKey:@"asset"];
+        });
+        OISSyncWrite(served, ^(NSManagedObjectContext *context) {
+          [OISSyncObject(context, @"Asset", @2) setValue:@"Valve (new)" forKey:@"name"];
+        });
+        BOOL second = first && [engine syncWithError:&failure];
+        NSArray *uploaded = OISSyncValues(served, @"Inspection", @"note");
+        NSArray *renamed = OISSyncValues(device, @"Asset", @"name");
+        OISSyncWrite(device, ^(NSManagedObjectContext *context) {
+          [context deleteObject:OISSyncObject(context, @"Inspection", identifier)];
+        });
+        BOOL third = second && [engine syncWithError:&failure];
+        NSArray *deleted = OISSyncValues(served, @"Inspection", @"note");
+        check(first && second && third && [assets isEqual:@[ @"Pump", @"Valve" ]] && [uploaded isEqual:@[ @"Leaks" ]] &&
+              [renamed isEqual:@[ @"Pump", @"Valve (new)" ]] && deleted.count == 0, @"offline-sync",
+              [NSString stringWithFormat:@"%@ | down %@, up %@, renamed %@, deleted %@ (%@)", failure.localizedDescription ?: @"", assets, uploaded,
+                                         renamed, deleted, engine.lastResult]);
+        [syncServer stop];
+      } else {
+        check(NO, @"offline-sync", failure.localizedDescription ?: @"no store");
+      }
     }
     printf("%s: %d failure(s)\n", failures ? "FAILED" : "OK", failures);
   }

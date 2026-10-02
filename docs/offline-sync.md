@@ -1,7 +1,11 @@
 # Offline sync: design
 
-**Status: proposed.** Nothing here is built yet except where it says
-*exists*. The server's part (section 9) comes first.
+**Status: the service's part (section 9) and the library's first phase
+(section 10, 1 and 2) exist**: `Source/ODataSync` (`ODataSyncEngine`),
+with down, up and both entities, the outbox and set-aside changes, key
+reconciliation, and the RemoteWins and LocalWins policies. Three-way
+merges, last writer wins, custom resolvers and peers are still to come;
+where the text below describes them, it is the plan.
 
 An app that works offline keeps its data in a Core Data store on the device
 and syncs it with an OData service when it can: entities the service owns
@@ -351,16 +355,35 @@ On the device:
 
 ```objc
 NSManagedObjectModel *model = ...;                 // annotated: ODataSync.direction, keys
-[ODataSyncEngine addBookkeepingToModel:model];
+[ODataSyncEngine addBookkeepingToModel:model configuration:nil];
 // the store: SQLite, with NSPersistentHistoryTrackingKey
 ODataSyncEngine *sync = [[ODataSyncEngine alloc] initWithCoordinator:coordinator];
 ODataSyncRemote *service = [ODataSyncRemote remoteWithServiceRoot:url];
-service.credentialProvider = auth;                 // ODataCredentialProviding
+service.configuration.credentialProvider = auth;   // ODataCredentialProviding
+service.filters = @{ @"Asset": @"Region eq 'North'" };
 [sync addRemote:service];
-sync.resolver = [ODataSyncMergeFields resolverFallingBackTo:[ODataSyncRemoteWins resolver]];
-sync.delegate = self;                              // progress, quarantine, conflicts deferred
-[sync syncWithTarget:self action:@selector(syncDidFinish:)];   // or on a schedule, when online
+sync.conflictPolicy = ODataSyncRemoteWins;         // or ODataSyncLocalWins
+sync.delegate = self;                              // changes set aside, local edits of down entities
+[sync syncWithTarget:self action:@selector(syncDidFinish:error:)];   // or -syncWithError: off the main thread
 ```
+
+What exists, and how it goes (`ODataSyncEngine.h`):
+
+- A sync, per remote: the store's history after the remote's token
+  folded into the outbox (so what the device has not sent is known), then
+  each down and both set read (whole the first time, by its delta link
+  after, whole again after a 410 or a change of filter, with what the
+  remote no longer has swept), then the outbox sent.
+- The outbox goes as JSON `$batch` requests that stand or fall alone
+  (`odata.continue-on-error`), one at a time where a service takes no
+  JSON batch; upserts parents first, deletions children first.
+- Refused changes are set aside (`-issues`, the delegate), sent again
+  when the object changes or the app retries them, or discarded.
+- `-reconcileWithRemote:error:` reads each set's keys again (4.1).
+- Each sync is a trace (OTelKit): `sync`, `download <Entity>`, `upload batch`.
+- A both entity keeps, per object, the ETag of the version both last
+  agreed on (`ODSShadow`), for If-Match; its values, for merges, come
+  with the merge policies.
 
 On the service (ODataKit's server): the store keeps persistent history
 (delta links), and the entity sets the devices write allow upsert
@@ -409,6 +432,8 @@ What ODataService needs, and what it has:
 2. ODataSync: model annotations, bookkeeping entities, the downloader
    (with key reconciliation, 4.1), the uploader with the outbox and quarantine, RemoteWins and LocalWins;
    tracing (each sync a trace: a span per remote, per set, per batch).
+   *Done* (Tests/ODataSyncTests.m against an ODataService in the process;
+   Server/Tests/ois-serve-check.m over HTTP, on both platforms).
 3. Conflicts: shadows, MergeFields, LastWriterWins with hybrid logical
    clocks, custom resolvers.
 4. Peers: the peer server, relaying, peer vectors; discovery and trust left

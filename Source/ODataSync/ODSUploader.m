@@ -1,0 +1,492 @@
+// Copyright (C) 2026 OIS contributors
+// SPDX-License-Identifier: LGPL-2.1-or-later
+//
+// Up (docs/offline-sync.md, 5): the local store's history, after the token
+// the remote's state keeps, into the outbox (an entry per object, changes
+// folded together), saved with the new token; then the outbox to the
+// remote, a $batch at a time, each change an upsert or a DELETE that
+// stands or falls alone.
+
+#import "ODSInternal.h"
+#import <ODataKit/ODataBatch.h>
+#import <ODataKit/ODataError.h>
+#import <ODataKit/ODataTransport.h>
+
+// How many times a both object's change meets a newer version in one sync
+// before it waits for the next.
+static const NSInteger ODSConflictRounds = 3;
+
+@implementation ODSUploader {
+  ODataSyncEngine *_engine;
+  ODataSyncRemote *_remote;
+  ODSCodec *_codec;
+  ODataClient *_client;
+  NSArray<NSEntityDescription *> *_entities;
+  BOOL _batchUnsupported;
+}
+
+- (instancetype)initWithEngine:(ODataSyncEngine *)engine remote:(ODataSyncRemote *)remote
+{
+  self = [super init];
+  if (!self) return nil;
+  _engine = engine;
+  _remote = remote;
+  _codec = engine.codec;
+  _client = [engine clientOf:remote];
+  _entities = [_codec rootEntitiesGoing:[NSSet setWithObjects:@(ODataSyncDirectionUp), @(ODataSyncDirectionBoth), nil]];
+  return self;
+}
+
+#pragma mark History into the outbox
+
+- (int64_t)nextSequenceIn:(NSManagedObjectContext *)context
+{
+  NSFetchRequest *fetch = [NSFetchRequest fetchRequestWithEntityName:ODSOutboxEntity];
+  fetch.sortDescriptors = @[ [NSSortDescriptor sortDescriptorWithKey:@"sequence" ascending:NO] ];
+  fetch.fetchLimit = 1;
+  NSManagedObject *last = [[context executeFetchRequest:fetch error:NULL] firstObject];
+  return [[last valueForKey:@"sequence"] longLongValue] + 1;
+}
+
+// The synced properties a change names (Core Data names); nil for none.
+- (NSSet<NSString *> *)syncedNamesOf:(NSArray<NSPropertyDescription *> *)properties entity:(NSEntityDescription *)entity
+{
+  NSMutableSet *names = [NSMutableSet set];
+  NSSet *attributes = [NSSet setWithArray:[[_codec attributesOf:entity] valueForKey:@"name"]];
+  NSSet *toOnes = [NSSet setWithArray:[[_codec toOnesOf:entity] valueForKey:@"name"]];
+  for (NSPropertyDescription *property in properties) {
+    if ([attributes containsObject:property.name] || [toOnes containsObject:property.name]) [names addObject:property.name];
+  }
+  return names.count ? names : nil;
+}
+
+- (void)fold:(ODataSyncOperation)operation properties:(NSSet<NSString *> *)properties entity:(NSEntityDescription *)root
+         key:(NSDictionary *)key context:(NSManagedObjectContext *)context sequence:(int64_t *)sequence
+{
+  NSString *keyText = [_codec keyTextOf:key entity:root];
+  NSManagedObject *entry = [_engine entryOf:root.name keyText:keyText remote:_remote inContext:context];
+  if (!entry) {
+    entry = [NSEntityDescription insertNewObjectForEntityForName:ODSOutboxEntity inManagedObjectContext:context];
+    [entry setValue:_remote.identifier forKey:@"remote"];
+    [entry setValue:root.name forKey:@"entityType"];
+    [entry setValue:ODSArchive(key) forKey:@"key"];
+    [entry setValue:keyText forKey:@"keyText"];
+    [entry setValue:@(operation) forKey:@"operation"];
+    [entry setValue:ODSArchive(properties.allObjects) forKey:@"properties"];
+    [entry setValue:@((*sequence)++) forKey:@"sequence"];
+    return;
+  }
+  // Changed again: it is sent again, whatever was refused before.
+  [entry setValue:@NO forKey:@"setAside"];
+  ODataSyncOperation pending = [[entry valueForKey:@"operation"] integerValue];
+  BOOL sent = [[entry valueForKey:@"attempts"] integerValue] > 0;
+  if (operation == ODataSyncOperationDelete) {
+    // Made and gone before the remote heard of it: nothing to send.
+    if (pending == ODataSyncOperationInsert && !sent) {
+      [context deleteObject:entry];
+      return;
+    }
+    [entry setValue:@(ODataSyncOperationDelete) forKey:@"operation"];
+    [entry setValue:nil forKey:@"properties"];
+    return;
+  }
+  if (pending == ODataSyncOperationDelete || operation == ODataSyncOperationInsert) {
+    // Made again (the same key): the whole object.
+    [entry setValue:@(ODataSyncOperationInsert) forKey:@"operation"];
+    [entry setValue:nil forKey:@"properties"];
+    return;
+  }
+  if (pending == ODataSyncOperationInsert) return;  // the whole object goes anyway
+  NSArray *before = ODSUnarchive([entry valueForKey:@"properties"]);
+  if (!before) return;  // all of it already
+  [entry setValue:ODSArchive([[NSSet setWithArray:before] setByAddingObjectsFromSet:properties].allObjects) forKey:@"properties"];
+}
+
+- (BOOL)fillOutbox:(NSManagedObjectContext *)context error:(NSError **)error
+{
+  NSManagedObject *state = [_engine stateOf:_remote inContext:context];
+  NSData *archived = [state valueForKey:@"historyToken"];
+  NSPersistentHistoryToken *token = archived ? [NSKeyedUnarchiver unarchivedObjectOfClass:[NSPersistentHistoryToken class] fromData:archived error:NULL] : nil;
+  NSPersistentHistoryChangeRequest *request = [NSPersistentHistoryChangeRequest fetchHistoryAfterToken:token];
+  request.resultType = NSPersistentHistoryResultTypeTransactionsAndChanges;
+  NSPersistentHistoryResult *result = (NSPersistentHistoryResult *)[context executeRequest:request error:error];
+  if (!result) return NO;
+  int64_t sequence = [self nextSequenceIn:context];
+  NSPersistentHistoryToken *last = token;
+  NSSet *bookkeeping = [NSSet setWithObjects:ODSRemoteStateEntity, ODSOutboxEntity, ODSShadowEntity, nil];
+  // Made and gone within what is read now: its deletion is nothing to send.
+  NSMutableSet<NSManagedObjectID *> *fleeting = [NSMutableSet set];
+  for (NSPersistentHistoryTransaction *transaction in result.result) {
+    last = transaction.token ?: last;
+    // What the engine wrote (from a remote, or its own state) is not sent.
+    if ([transaction.author hasPrefix:@"ODataSync."]) continue;
+    for (NSPersistentHistoryChange *change in transaction.changes) {
+      NSEntityDescription *entity = change.changedObjectID.entity;
+      if ([bookkeeping containsObject:entity.name]) continue;
+      ODataSyncDirection direction = [_codec directionOfEntity:entity];
+      if (direction == ODataSyncDirectionDown) {
+        [_engine ignoredLocalChangeTo:change.changedObjectID];
+        continue;
+      }
+      if (direction == ODataSyncDirectionNone) continue;
+      NSEntityDescription *root = [_codec rootOf:entity];
+      if (change.changeType == NSPersistentHistoryChangeTypeDelete) {
+        if ([fleeting containsObject:change.changedObjectID]) continue;
+        NSDictionary *key = [_codec keyFromValues:change.tombstone ?: @{} entity:root];
+        // Its key was not kept on deletion (preservesValueInHistoryOnDeletion): it cannot be named.
+        if (!key) continue;
+        [self fold:ODataSyncOperationDelete properties:nil entity:root key:key context:context sequence:&sequence];
+        continue;
+      }
+      // Gone since: its deletion comes later in history.
+      NSManagedObject *object = [context existingObjectWithID:change.changedObjectID error:NULL];
+      if (!object) {
+        if (change.changeType == NSPersistentHistoryChangeTypeInsert) [fleeting addObject:change.changedObjectID];
+        continue;
+      }
+      NSDictionary *key = [_codec keyOfObject:object];
+      if (key.count != [_codec.mapper keyAttributesForEntity:root].count) continue;
+      if (change.changeType == NSPersistentHistoryChangeTypeInsert) {
+        [self fold:ODataSyncOperationInsert properties:nil entity:root key:key context:context sequence:&sequence];
+      } else {
+        NSSet *names = [self syncedNamesOf:change.updatedProperties.allObjects entity:entity];
+        // A change of nothing synced (an empty set: unknown, so all).
+        if (!names && change.updatedProperties.count) continue;
+        [self fold:ODataSyncOperationUpdate properties:names entity:root key:key context:context sequence:&sequence];
+      }
+    }
+  }
+  if (last) [state setValue:[NSKeyedArchiver archivedDataWithRootObject:last requiringSecureCoding:YES error:NULL] forKey:@"historyToken"];
+  return [context save:error];
+}
+
+#pragma mark Requests
+
+- (NSArray<NSManagedObject *> *)pendingIn:(NSManagedObjectContext *)context
+{
+  NSFetchRequest *fetch = [NSFetchRequest fetchRequestWithEntityName:ODSOutboxEntity];
+  fetch.predicate = [NSPredicate predicateWithFormat:@"remote == %@ AND setAside != YES", _remote.identifier];
+  NSArray *entries = [context executeFetchRequest:fetch error:NULL];
+  // Upserts parents first, deletions children first; in order within.
+  NSMutableDictionary *place = [NSMutableDictionary dictionary];
+  for (NSUInteger i = 0; i < _entities.count; i++) place[_entities[i].name] = @(i);
+  return [entries sortedArrayUsingComparator:^NSComparisonResult(NSManagedObject *a, NSManagedObject *b) {
+    BOOL deleteA = [[a valueForKey:@"operation"] integerValue] == ODataSyncOperationDelete;
+    BOOL deleteB = [[b valueForKey:@"operation"] integerValue] == ODataSyncOperationDelete;
+    if (deleteA != deleteB) return deleteA ? NSOrderedDescending : NSOrderedAscending;
+    NSInteger pa = [place[[a valueForKey:@"entityType"]] integerValue], pb = [place[[b valueForKey:@"entityType"]] integerValue];
+    if (pa != pb) return (deleteA ? pa < pb : pa > pb) ? NSOrderedDescending : NSOrderedAscending;
+    return [[a valueForKey:@"sequence"] compare:[b valueForKey:@"sequence"]];
+  }];
+}
+
+// The request an entry is sent as: {method, url, headers, body}; nil when
+// it has become nothing (an object made and gone before it was sent).
+- (NSDictionary *)requestOf:(NSManagedObject *)entry context:(NSManagedObjectContext *)context
+{
+  NSEntityDescription *root = _codec.model.entitiesByName[[entry valueForKey:@"entityType"]];
+  NSDictionary *key = ODSUnarchive([entry valueForKey:@"key"]);
+  if (!root || !key) {
+    [context deleteObject:entry];
+    return nil;
+  }
+  ODataSyncOperation operation = [[entry valueForKey:@"operation"] integerValue];
+  BOOL both = [_codec directionOfEntity:root] == ODataSyncDirectionBoth;
+  NSString *etag = both ? [[_engine shadowOf:root.name keyText:[entry valueForKey:@"keyText"] remote:_remote inContext:context make:NO]
+                              valueForKey:@"etag"] : nil;
+  NSManagedObject *object = operation == ODataSyncOperationDelete ? nil : [_codec objectOfEntity:root key:key inContext:context];
+  if (operation != ODataSyncOperationDelete && !object) {
+    if (operation == ODataSyncOperationInsert && [[entry valueForKey:@"attempts"] integerValue] == 0) {
+      [context deleteObject:entry];
+      return nil;
+    }
+    operation = ODataSyncOperationDelete;
+    [entry setValue:@(operation) forKey:@"operation"];
+  }
+  NSMutableDictionary *headers = [NSMutableDictionary dictionary];
+  NSMutableDictionary *request = [NSMutableDictionary dictionaryWithObject:[_codec pathOfEntity:root key:key] forKey:@"url"];
+  if (operation == ODataSyncOperationDelete) {
+    request[@"method"] = @"DELETE";
+    if (both) headers[@"If-Match"] = etag ?: @"*";
+  } else {
+    NSArray *names = ODSUnarchive([entry valueForKey:@"properties"]);
+    NSSet *properties = operation == ODataSyncOperationInsert || !names ? nil : [NSSet setWithArray:names];
+    request[@"method"] = @"PATCH";
+    request[@"body"] = [_codec JSONOfObject:object properties:properties];
+    headers[@"Content-Type"] = @"application/json";
+    headers[@"Prefer"] = @"return=minimal";
+    if (both && operation == ODataSyncOperationInsert && !etag) headers[@"If-None-Match"] = @"*";
+    else if (both) headers[@"If-Match"] = etag ?: @"*";
+  }
+  request[@"headers"] = headers;
+  return request;
+}
+
+static NSString *ODSMessageOf(NSData *body, NSInteger status)
+{
+  id json = body.length ? [NSJSONSerialization JSONObjectWithData:body options:0 error:NULL] : nil;
+  id message = [json isKindOfClass:[NSDictionary class]] ? json[@"error"][@"message"] : nil;
+  return [message isKindOfClass:[NSString class]] ? message : [NSString stringWithFormat:@"The service answered %ld", (long)status];
+}
+
+static NSString *ODSHeader(NSDictionary *headers, NSString *name)
+{
+  for (NSString *key in headers) {
+    if ([key caseInsensitiveCompare:name] == NSOrderedSame) return headers[key];
+  }
+  return nil;
+}
+
+// One request alone; its status (0: no answer), headers and body.
+- (NSInteger)sendAlone:(NSDictionary *)request headers:(NSDictionary **)headers body:(NSData **)body error:(NSError **)error
+{
+  NSMutableURLRequest *http = [NSMutableURLRequest requestWithURL:[_engine URLOf:request[@"url"] remote:_remote]];
+  http.HTTPMethod = request[@"method"];
+  [http setValue:@"application/json" forHTTPHeaderField:@"Accept"];
+  NSDictionary *given = request[@"headers"];
+  for (NSString *name in given) [http setValue:given[name] forHTTPHeaderField:name];
+  if (request[@"body"]) http.HTTPBody = [NSJSONSerialization dataWithJSONObject:request[@"body"] options:0 error:NULL];
+  NSError *failure = nil;
+  ODataHTTPResponse *response = [_client sendRequest:http error:&failure];
+  if (response) {
+    *headers = response.headers ?: @{};
+    *body = response.data;
+    return response.status ?: 200;
+  }
+  NSInteger status = failure.code > ODataIncrementalStoreErrorHTTP && failure.code < ODataIncrementalStoreErrorHTTP + 600
+      ? failure.code - ODataIncrementalStoreErrorHTTP : 0;
+  *headers = @{};
+  NSString *message = failure.localizedDescription ?: @"";
+  *body = [NSJSONSerialization dataWithJSONObject:@{ @"error": @{ @"message": message } } options:0 error:NULL];
+  if (!status && error) *error = failure;
+  return status;
+}
+
+// The requests as one $batch, each standing or falling alone: by id, each
+// answer's status, headers and body. nil and *status for the batch's own
+// failure (0: no answer).
+- (NSDictionary<NSString *, ODataBatchPart *> *)sendBatch:(NSArray<NSDictionary *> *)requests status:(NSInteger *)status error:(NSError **)error
+{
+  NSMutableArray *items = [NSMutableArray array];
+  for (NSUInteger i = 0; i < requests.count; i++) {
+    NSMutableDictionary *item = [requests[i] mutableCopy];
+    item[@"id"] = [NSString stringWithFormat:@"%lu", (unsigned long)i + 1];
+    [items addObject:item];
+  }
+  NSMutableURLRequest *http = [NSMutableURLRequest requestWithURL:[_engine URLOf:@"$batch" remote:_remote]];
+  http.HTTPMethod = @"POST";
+  [http setValue:@"application/json" forHTTPHeaderField:@"Content-Type"];
+  [http setValue:@"application/json" forHTTPHeaderField:@"Accept"];
+  [http setValue:@"odata.continue-on-error" forHTTPHeaderField:@"Prefer"];
+  http.HTTPBody = [NSJSONSerialization dataWithJSONObject:@{ @"requests": items } options:0 error:NULL];
+  NSError *failure = nil;
+  ODataHTTPResponse *response = [_client sendRequest:http error:&failure];
+  *status = response ? 200 : (failure.code > ODataIncrementalStoreErrorHTTP && failure.code < ODataIncrementalStoreErrorHTTP + 600
+                                  ? failure.code - ODataIncrementalStoreErrorHTTP : 0);
+  if (!response) {
+    if (error) *error = failure;
+    return nil;
+  }
+  NSArray<ODataBatchPart *> *parts = ODataJSONBatchParts(response.data);
+  if (!parts) {
+    *status = 400;
+    return nil;
+  }
+  NSMutableDictionary *byID = [NSMutableDictionary dictionary];
+  for (ODataBatchPart *part in parts) if (part.contentID) byID[part.contentID] = part;
+  return byID;
+}
+
+#pragma mark Answers
+
+- (void)setAside:(NSManagedObject *)entry status:(NSInteger)status message:(NSString *)message context:(NSManagedObjectContext *)context
+{
+  [entry setValue:@YES forKey:@"setAside"];
+  [entry setValue:@(status) forKey:@"status"];
+  [entry setValue:message forKey:@"message"];
+  NSEntityDescription *root = _codec.model.entitiesByName[[entry valueForKey:@"entityType"]];
+  NSDictionary *key = ODSUnarchive([entry valueForKey:@"key"]);
+  NSManagedObject *object = root && key ? [_codec objectOfEntity:root key:key inContext:context] : nil;
+  [_engine setAside:[[ODataSyncIssue alloc] initWithEntry:entry objectID:object.objectID]];
+}
+
+// A both object's newer version at the remote, met by its If-Match.
+- (BOOL)resolveConflictOf:(NSManagedObject *)entry context:(NSManagedObjectContext *)context error:(NSError **)error
+{
+  [_engine count:@"conflicts" by:1];
+  NSEntityDescription *root = _codec.model.entitiesByName[[entry valueForKey:@"entityType"]];
+  NSDictionary *key = ODSUnarchive([entry valueForKey:@"key"]);
+  NSString *keyText = [entry valueForKey:@"keyText"];
+  ODSDownloader *down = [[ODSDownloader alloc] initWithEngine:_engine remote:_remote];
+  if (_engine.conflictPolicy == ODataSyncRemoteWins) {
+    // The remote's version, here; the device's change dropped.
+    NSError *failure = nil;
+    NSString *etag = [down refreshObjectOfEntity:root key:key context:context error:&failure];
+    if (!etag && failure) {
+      if (error) *error = failure;
+      return NO;
+    }
+    NSManagedObject *shadow = [_engine shadowOf:root.name keyText:keyText remote:_remote inContext:context make:etag != nil];
+    if (etag) [shadow setValue:etag forKey:@"etag"]; else if (shadow) [context deleteObject:shadow];
+    [context deleteObject:entry];
+    return YES;
+  }
+  // The device's: sent again over the remote's version, whatever it is now.
+  NSString *path = [[_codec pathOfEntity:root key:key] stringByAppendingFormat:@"?$select=%@", [_codec selectOfKeyOfEntity:root]];
+  NSMutableURLRequest *http = [NSMutableURLRequest requestWithURL:[_engine URLOf:path remote:_remote]];
+  [http setValue:@"application/json" forHTTPHeaderField:@"Accept"];
+  NSError *failure = nil;
+  ODataHTTPResponse *response = [_client sendRequest:http error:&failure];
+  NSManagedObject *shadow = [_engine shadowOf:root.name keyText:keyText remote:_remote inContext:context make:YES];
+  if (!response) {
+    if (failure.code != ODataIncrementalStoreErrorHTTP + 404) {
+      if (error) *error = failure;
+      return NO;
+    }
+    // Deleted there: made again, whole.
+    [context deleteObject:shadow];
+    [entry setValue:@(ODataSyncOperationInsert) forKey:@"operation"];
+    [entry setValue:nil forKey:@"properties"];
+    return YES;
+  }
+  NSString *etag = ODSHeader(response.headers, @"ETag");
+  if (!etag) {
+    id json = [response JSONWithError:NULL];
+    etag = [json isKindOfClass:[NSDictionary class]] ? json[@"@odata.etag"] : nil;
+  }
+  [shadow setValue:etag forKey:@"etag"];
+  return YES;
+}
+
+// Each entry by its answer. NO when the rest should wait for the next sync
+// (a remote that is down, or refuses who is asking: the error).
+- (BOOL)take:(NSInteger)status headers:(NSDictionary *)headers body:(NSData *)body of:(NSManagedObject *)entry
+     context:(NSManagedObjectContext *)context stop:(BOOL *)stop error:(NSError **)error
+{
+  ODataSyncOperation operation = [[entry valueForKey:@"operation"] integerValue];
+  NSString *entityName = [entry valueForKey:@"entityType"];
+  NSString *keyText = [entry valueForKey:@"keyText"];
+  BOOL both = [_codec directionOfEntity:_codec.model.entitiesByName[entityName]] == ODataSyncDirectionBoth;
+  [entry setValue:@([[entry valueForKey:@"attempts"] integerValue] + 1) forKey:@"attempts"];
+  if ((status >= 200 && status < 300) || (status == 404 && operation == ODataSyncOperationDelete)) {
+    if (both) {
+      NSManagedObject *shadow = [_engine shadowOf:entityName keyText:keyText remote:_remote inContext:context make:operation != ODataSyncOperationDelete];
+      if (operation == ODataSyncOperationDelete) {
+        if (shadow) [context deleteObject:shadow];
+      } else {
+        [shadow setValue:ODSHeader(headers, @"ETag") forKey:@"etag"];
+      }
+    }
+    [context deleteObject:entry];
+    [_engine count:@"uploaded" by:1];
+    return YES;
+  }
+  if (status == 412 && both) {
+    if ([[entry valueForKey:@"attempts"] integerValue] > ODSConflictRounds) {
+      *stop = YES;
+      return YES;
+    }
+    return [self resolveConflictOf:entry context:context error:error];
+  }
+  if (status == 401) {
+    if (error) *error = ODSError(401, ODSMessageOf(body, status));
+    *stop = YES;
+    return NO;
+  }
+  if (status == 0 || status == 408 || status == 429 || status >= 500) {
+    // Not now: again at the next sync.
+    *stop = YES;
+    return YES;
+  }
+  [self setAside:entry status:status message:ODSMessageOf(body, status) context:context];
+  return YES;
+}
+
+- (BOOL)sendIn:(NSManagedObjectContext *)context error:(NSError **)error
+{
+  NSUInteger size = MAX(_remote.batchSize, 1u);
+  for (;;) {
+    NSMutableArray *entries = [NSMutableArray array];
+    NSMutableArray *requests = [NSMutableArray array];
+    for (NSManagedObject *entry in [self pendingIn:context]) {
+      NSDictionary *request = [self requestOf:entry context:context];
+      if (!request) continue;
+      [entries addObject:entry];
+      [requests addObject:request];
+      if (requests.count == size) break;
+    }
+    if (!requests.count) return [context save:error];
+    OTSpan *span = [_engine.tracer startSpanNamed:@"upload batch" attributes:@{ @"odatasync.changes": @(requests.count) }];
+    NSInteger batchStatus = 0;
+    NSError *failure = nil;
+    NSDictionary<NSString *, ODataBatchPart *> *parts = _batchUnsupported ? nil : [self sendBatch:requests status:&batchStatus error:&failure];
+    if (!parts && (_batchUnsupported || batchStatus == 400 || batchStatus == 404 || batchStatus == 405 || batchStatus == 415 || batchStatus == 501)) {
+      // No JSON $batch there: one at a time.
+      _batchUnsupported = YES;
+      failure = nil;
+    } else if (!parts) {
+      [span end];
+      [context save:NULL];
+      if (error) *error = batchStatus == 401 ? ODSError(401, failure.localizedDescription ?: @"Not signed in") : failure;
+      return NO;
+    }
+    BOOL stop = NO;
+    for (NSUInteger i = 0; i < entries.count && !stop; i++) {
+      NSInteger status;
+      NSDictionary *headers;
+      NSData *body;
+      if (parts) {
+        ODataBatchPart *part = parts[[NSString stringWithFormat:@"%lu", (unsigned long)i + 1]];
+        status = part ? part.status : 0;
+        headers = part.headers ?: @{};
+        body = part.body;
+      } else {
+        status = [self sendAlone:requests[i] headers:&headers body:&body error:&failure];
+        if (!status) {
+          [span end];
+          [context save:NULL];
+          if (error) *error = failure;
+          return NO;
+        }
+      }
+      if (![self take:status headers:headers body:body of:entries[i] context:context stop:&stop error:error]) {
+        [span end];
+        [context save:NULL];
+        return NO;
+      }
+    }
+    [span end];
+    if (![context save:error]) return NO;
+    if (stop) return YES;
+  }
+}
+
+- (BOOL)collect:(NSError **)error
+{
+  NSManagedObjectContext *context = [_engine contextWritingAs:ODataSyncBookkeepingAuthor];
+  __block BOOL ok = NO;
+  __block NSError *failure = nil;
+  [context performBlockAndWait:^{
+    NSError *e = nil;
+    ok = [self fillOutbox:context error:&e];
+    failure = e;
+  }];
+  if (!ok && error) *error = failure;
+  return ok;
+}
+
+- (BOOL)upload:(NSError **)error
+{
+  NSManagedObjectContext *context = [_engine contextWritingAs:ODataSyncBookkeepingAuthor];
+  __block BOOL ok = NO;
+  __block NSError *failure = nil;
+  [context performBlockAndWait:^{
+    NSError *e = nil;
+    ok = [self fillOutbox:context error:&e] && [self sendIn:context error:&e];
+    failure = e;
+  }];
+  if (!ok && error) *error = failure;
+  return ok;
+}
+
+@end

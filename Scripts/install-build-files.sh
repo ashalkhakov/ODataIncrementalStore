@@ -85,7 +85,8 @@ EOF
 #   myserver_OBJCFLAGS += \$(ODATAKIT_OBJCFLAGS)
 #   myserver_TOOL_LIBS += \$(ODATASERVICE_LIBS)
 #
-# ODATAKIT_*, ODATAINCREMENTALSTORE_* (the client) and ODATASERVICE_* (the
+# ODATAKIT_*, ODATAINCREMENTALSTORE_* (the client), ODATASYNC_* (an offline
+# store kept in sync with a service) and ODATASERVICE_* (the
 # service, on its own or on the network with HTTPServerKit: ODataServer.h,
 # and httpserverkit.make).
 ODATAKIT_VERSION = $VERSION
@@ -96,6 +97,8 @@ ODATAINCREMENTALSTORE_INCLUDE_DIRS = \$(ODATAKIT_INCLUDE_DIRS) -I$HEADERS_DIR/OT
 ODATAINCREMENTALSTORE_LIBS = -lODataIncrementalStore \$(OTELKIT_LIBS) \$(ODATAKIT_LIBS)
 ODATASERVICE_INCLUDE_DIRS = \$(ODATAKIT_INCLUDE_DIRS) -I$HEADERS_DIR/HTTPServerKit -I$HEADERS_DIR/ODataService
 ODATASERVICE_LIBS = -lODataService \$(HTTPSERVERKIT_LIBS) \$(ODATAKIT_LIBS)
+ODATASYNC_INCLUDE_DIRS = \$(ODATAINCREMENTALSTORE_INCLUDE_DIRS) -I$HEADERS_DIR/ODataSync
+ODATASYNC_LIBS = -lODataSync \$(ODATAINCREMENTALSTORE_LIBS)
 EOF
     pc otelkit "" "OpenTelemetry tracing for Objective-C: spans, sampling, OTLP export" \
        "-I\${includedir} -I\${includedir}/OTelKit $objc_flags $gnustep_flags" \
@@ -107,13 +110,15 @@ EOF
        "-L\${libdir} -lODataKit -lCoreData -ldispatch $GNUSTEP_BASE_LIBS"
     pc odataincrementalstore "odatakit otelkit" "A Core Data store over an OData service" \
        "-I\${includedir}/ODataIncrementalStore" "-L\${libdir} -lODataIncrementalStore"
+    pc odatasync "odataincrementalstore" "An offline Core Data store kept in sync with an OData service" \
+       "-I\${includedir}/ODataSync" "-L\${libdir} -lODataSync"
     pc odataservice "odatakit httpserverkit" "A Core Data store served over OData, on its own or as an HTTPServerKit application's API" \
        "-I\${includedir}/ODataService" "-L\${libdir} -lODataService"
     ;;
   uninstall:libraries)
     rm -f "$fragments/otelkit.make" "$fragments/httpserverkit.make" "$fragments/odatakit.make" "$pkgconfig/otelkit.pc" \
       "$pkgconfig/httpserverkit.pc" "$pkgconfig/odatakit.pc" \
-      "$pkgconfig/odataincrementalstore.pc" "$pkgconfig/odataservice.pc"
+      "$pkgconfig/odataincrementalstore.pc" "$pkgconfig/odataservice.pc" "$pkgconfig/odatasync.pc"
     ;;
   *)
     echo "usage: install-build-files.sh install|uninstall libraries" >&2
