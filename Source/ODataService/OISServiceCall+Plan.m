@@ -328,7 +328,8 @@ static void OISAddFilters(NSArray<ODataApplyTransformation *> *transformations, 
     // A tracked read's pages carry the token it began at: 20~token.
     NSRange tilde = [skip rangeOfString:@"~"];
     if (tilde.location != NSNotFound) {
-      self.trackingToken = [skip substringFromIndex:NSMaxRange(tilde)];
+      self.trackingToken = [self tokenCheckingScope:[skip substringFromIndex:NSMaxRange(tilde)]];
+      if (!self.trackingToken) return nil;
       skip = [skip substringToIndex:tilde.location];
     }
     NSScanner *scanner = [NSScanner scannerWithString:skip];

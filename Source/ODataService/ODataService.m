@@ -512,6 +512,11 @@ static NSArray *OISFetch(NSManagedObjectContext *context, NSFetchRequest *fetchR
   return nil;
 }
 
+- (NSString *)scopeVersionForRequest:(ODataRequest *)request
+{
+  return nil;
+}
+
 - (NSArray *)objectsForFetchRequest:(NSFetchRequest *)fetchRequest request:(ODataRequest *)request reply:(ODataReply *)reply
 {
   NSError *error = nil;
@@ -3909,14 +3914,41 @@ static id OISSparseAtPath(NSArray<NSString *> *path, NSArray<NSNumber *> *collec
 - (NSString *)nextLinkWithToken:(NSUInteger)token
 {
   NSString *skip = [NSString stringWithFormat:@"%lu", (unsigned long)token];
-  if (self.trackingToken) skip = [skip stringByAppendingFormat:@"~%@", self.trackingToken];
+  if (self.trackingToken) skip = [skip stringByAppendingFormat:@"~%@", [self scopedToken:self.trackingToken]];
   return [self linkReplacing:@"$skiptoken" with:skip];
 }
 
 // This request's delta link: its options, and where its changes begin.
 - (NSString *)deltaLink
 {
-  return [self linkReplacing:@"$deltatoken" with:self.trackingToken];
+  return [self linkReplacing:@"$deltatoken" with:[self scopedToken:self.trackingToken]];
+}
+
+// The caller's scope version (the handler's), as a link carries it after
+// the handler's token: token*version. A history token is Base64URL, which
+// has no *.
+- (NSString *)scopeOfLinks
+{
+  NSString *version = [self.handler scopeVersionForRequest:self.request];
+  return version.length ? ODataBase64URLString([version dataUsingEncoding:NSUTF8StringEncoding]) : nil;
+}
+
+- (NSString *)scopedToken:(NSString *)token
+{
+  NSString *scope = [self scopeOfLinks];
+  return scope ? [token stringByAppendingFormat:@"*%@", scope] : token;
+}
+
+- (NSString *)tokenCheckingScope:(NSString *)link
+{
+  NSRange star = [link rangeOfString:@"*" options:NSBackwardsSearch];
+  NSString *given = star.location == NSNotFound ? nil : [link substringFromIndex:NSMaxRange(star)];
+  NSString *now = [self scopeOfLinks];
+  if (!(given == now || [given isEqualToString:now])) {
+    [self fail:410 message:@"What this set shows you has changed since that link; read it again"];
+    return nil;
+  }
+  return star.location == NSNotFound ? link : [link substringToIndex:star.location];
 }
 
 // This request again, with this option (and neither $skiptoken nor
@@ -4144,6 +4176,9 @@ static id OISSparseAtPath(NSArray<NSString *> *path, NSArray<NSNumber *> *collec
     [self fail:410 message:@"The changes of this set are not tracked; read it again"];
     return;
   }
+  NSString *token = [self tokenCheckingScope:self.deltaToken];
+  if (!token) return;
+  self.deltaToken = token;
   [self runPlan:[self planDelta] then:@selector(didRunDelta)];
 }
 
@@ -4155,10 +4190,62 @@ static id OISSparseAtPath(NSArray<NSString *> *path, NSArray<NSNumber *> *collec
 // What changed since a delta token, as the handler says: the changed
 // objects, the deleted ones' paths, and the token a delta link goes on
 // from. NO once answered, with the error.
+// Whether an expression reads only what a deleted row's tombstone kept
+// (values): constants, and key paths that begin with a kept attribute.
+static BOOL OISReadsOnlyKept(NSExpression *expression, NSDictionary *values)
+{
+  switch (expression.expressionType) {
+    case NSConstantValueExpressionType:
+      return YES;
+    case NSKeyPathExpressionType: {
+      NSString *first = [expression.keyPath componentsSeparatedByString:@"."].firstObject;
+      return first.length && values[first] != nil;
+    }
+    case NSAggregateExpressionType:
+      for (id member in expression.collection) {
+        if (![member isKindOfClass:[NSExpression class]] || !OISReadsOnlyKept(member, values)) return NO;
+      }
+      return YES;
+    case NSFunctionExpressionType:
+      for (NSExpression *argument in expression.arguments) {
+        if (!OISReadsOnlyKept(argument, values)) return NO;
+      }
+      return expression.operand.expressionType == NSConstantValueExpressionType || OISReadsOnlyKept(expression.operand, values);
+    default:
+      return NO;
+  }
+}
+
+static BOOL OISPredicateReadsOnlyKept(NSPredicate *predicate, NSDictionary *values)
+{
+  if ([predicate isKindOfClass:[NSCompoundPredicate class]]) {
+    for (NSPredicate *sub in [(NSCompoundPredicate *)predicate subpredicates]) {
+      if (!OISPredicateReadsOnlyKept(sub, values)) return NO;
+    }
+    return YES;
+  }
+  if ([predicate isKindOfClass:[NSComparisonPredicate class]]) {
+    NSComparisonPredicate *comparison = (NSComparisonPredicate *)predicate;
+    return comparison.comparisonPredicateModifier == NSDirectPredicateModifier &&
+           comparison.predicateOperatorType != NSCustomSelectorPredicateOperatorType &&
+           OISReadsOnlyKept(comparison.leftExpression, values) && OISReadsOnlyKept(comparison.rightExpression, values);
+  }
+  NSString *format = predicate.predicateFormat;
+  return [format isEqualToString:@"TRUEPREDICATE"] || [format isEqualToString:@"FALSEPREDICATE"];
+}
+
 - (BOOL)takeChanges:(ODataChanges *)changes
 {
   NSMutableArray *paths = [NSMutableArray array];
+  // A deletion is the business of those who could see the row: by what its
+  // tombstone kept, when the predicate reads nothing else; else everyone's.
+  NSPredicate *visible = [self.handler predicateForVisibleObjectsInRequest:self.request];
   for (NSDictionary *deleted in changes.deleted) {
+    NSDictionary *values = deleted[@"values"];
+    if (visible && [values isKindOfClass:[NSDictionary class]] && OISPredicateReadsOnlyKept(visible, values) &&
+        ![visible evaluateWithObject:values]) {
+      continue;
+    }
     NSString *path = [self canonicalPathOfValues:deleted[@"values"] entity:deleted[@"entity"]];
     if (!path) {
       [self fail:410 message:@"A deleted entity's key was not kept; read the set again"];

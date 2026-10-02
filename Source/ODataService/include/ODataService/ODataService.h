@@ -297,6 +297,15 @@ FOUNDATION_EXPORT NSString * const ODataUserInfoETag;  // @"OData.etag"
 // (ODataServiceError), one it can no longer answer for a 410: the caller
 // reads the set again. The default: the persistent history since it.
 - (nullable ODataChanges *)changesSince:(NSString *)token request:(ODataRequest *)request reply:(ODataReply *)reply;
+// The version of what the caller may see (-predicateForVisibleObjectsInRequest:),
+// for what changes it other than the rows themselves changing: the
+// principal's role, region or teams. A short opaque string (a counter the
+// application moves when a membership changes, or a digest of the claims
+// that decide it), which delta links carry; one followed with another
+// version is answered 410, and the client reads the set again (or
+// reconciles its keys: docs/offline-sync.md, 4.1). nil, the default: delta
+// links do not depend on it.
+- (nullable NSString *)scopeVersionForRequest:(ODataRequest *)request;
 
 // Whether the set's entity type is open (OpenType in $metadata): its
 // entities may have dynamic properties, properties the model does not
@@ -376,7 +385,11 @@ FOUNDATION_EXPORT NSString * const ODataUserInfoETag;  // @"OData.etag"
                                                 error:(NSError **)error;
 
 // The rows the caller may see at all, however they are reached: fetched,
-// by key, through navigation or $expand. nil: every row.
+// by key, through navigation or $expand. nil: every row. A deletion is
+// reported in a delta (Prefer: odata.track-changes) to a caller this lets
+// see the deleted row, evaluated on what its tombstone kept: so keep the
+// attributes it reads (preservesValueInHistoryOnDeletion), or every caller
+// is told of every deletion, as when it reads anything not kept.
 - (nullable NSPredicate *)predicateForVisibleObjectsInRequest:(ODataRequest *)request;
 
 // The rows of a request, already filtered, sorted and paged, with

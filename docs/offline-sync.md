@@ -146,6 +146,61 @@ the downloader keep the row and report it). A `both` object with an
 outbox entry is not overwritten: the incoming version is a conflict
 (section 6).
 
+### 4.1 When what a user may see changes
+
+A set's rows are often scoped to the user (the handler's
+`predicateForVisibleObjectsInRequest:`: their region, their team, rows
+assigned to them). A delta link reports what changed among the rows, by
+persistent history; what a user may see can change otherwise:
+
+| # | What happened | What the user's delta says today | Right? |
+|---|---|---|---|
+| A | a visible row edited, still in scope and filter | the row | yes |
+| B | a visible row edited out of the request's `$filter` | removed | yes |
+| C | a row edited out of the user's scope (reassigned) | nothing | no: the device keeps it |
+| D | a row deleted | removed, to every user | yes for those who had it; it tells the others the key of a row they never saw |
+| E | a row the user never sees edited | nothing | yes |
+| F | the user's own scope changed (role, region, team), no row did | nothing | no: rows left out stay, rows let in never come |
+| G | a row let in by a change elsewhere (joining a team) | nothing | no: missing rows |
+
+The service cannot tell C from E: whether the row was in this user's
+scope when the link was made needs its values then, and history keeps
+which properties changed, not what they were. Reporting every changed
+row the user cannot see would send everyone the keys of everyone else's
+changes. F and G leave nothing in history at all.
+
+So:
+
+1. **Key reconciliation** (the library; covers C, F, G). Now and then the
+   downloader reads only the keys of a scoped set, with the app's filter
+   (`GET Set?$select=<key>&$filter=...`, paged), deletes the local rows
+   the service did not name, and reads the ones it lacks by key. When: on
+   sign-in or a change of user, after a 410, when the service says the
+   scope changed (2), and on a schedule the app sets (daily, say). It
+   costs one read of keys per scoped set: for ten thousand rows, a few
+   hundred kilobytes before gzip.
+2. **A scope version in delta links** (the service; F and G at the next
+   sync). The handler may say what version of the caller's scope a
+   request has (`-scopeVersionForRequest:`: one made of the principal's
+   claims that decide it, or a counter the application moves when a
+   membership changes). Delta links carry it, and one followed with
+   another answers 410: the client reconciles (1). Nothing changes for a
+   handler that says none.
+3. **Deletions checked against what they kept** (the service; D's leak).
+   The attributes the visibility predicate reads are kept in history on
+   deletion (`preservesValueInHistoryOnDeletion`, as the key must be
+   already), and a deletion is reported only to a caller the predicate,
+   evaluated on those values, lets see it. A predicate that reads
+   anything not kept (a relationship, a property not preserved) reports
+   it to every caller, as now.
+4. **Reassignments** (the service, if ever: C at the next sync rather than
+   the next reconciliation). A handler names the attributes that decide
+   scope; a changed row whose history shows one of them changed, and that
+   the caller cannot see now, is reported removed to the caller. It still
+   tells every caller the key of a reassigned row (fewer than every
+   change, but some), so it would be a handler's choice. Not planned
+   until an app needs reassignments faster than reconciliation gives them.
+
 ## 5. Up
 
 ### 5.1 From history to the outbox
@@ -333,9 +388,9 @@ What ODataService needs, and what it has:
    odata.continue-on-error`).
 4. **ETags and If-Match** on update and delete: *exist*, with 412.
 5. **Delta links** from persistent history, with `$filter`: *exist*;
-   `Capabilities.ChangeTracking` in `$metadata`: *exists*. To check: a row
-   that leaves a user's scope (`predicateForVisibleObjectsInRequest`)
-   is reported removed to that user.
+   `Capabilities.ChangeTracking` in `$metadata`: *exists*. Scope changes:
+   section 4.1; the service's part is the scope version (4.1, 2) and
+   deletions checked against what they kept (4.1, 3).
 6. **History retention**: how long the store keeps history before delta
    links answer 410. *To be settled*: a setting for how far back history
    is kept (pruned by date), and 410 for links older than that (*exists*:
@@ -348,9 +403,10 @@ What ODataService needs, and what it has:
 ## 10. Order of work
 
 1. The service: upsert (9.1, 9.2), its `$metadata`, tests (*done*); the
-   row-scope delta check (9.5); history retention (9.6).
-2. ODataSync: model annotations, bookkeeping entities, the downloader, the
-   uploader with the outbox and quarantine, RemoteWins and LocalWins;
+   scope version and deletions checked against what they kept (4.1);
+   history retention (9.6).
+2. ODataSync: model annotations, bookkeeping entities, the downloader
+   (with key reconciliation, 4.1), the uploader with the outbox and quarantine, RemoteWins and LocalWins;
    tracing (each sync a trace: a span per remote, per set, per batch).
 3. Conflicts: shadows, MergeFields, LastWriterWins with hybrid logical
    clocks, custom resolvers.

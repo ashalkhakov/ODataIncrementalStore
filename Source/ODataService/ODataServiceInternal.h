@@ -333,6 +333,10 @@ FOUNDATION_EXPORT void OISLog(HSLogLevel level, NSURLRequest *_Nullable request,
 - (nullable OISHierarchy *)describedHierarchyOf:(NSArray<NSString *> *)setPath qualifier:(NSString *)qualifier
                                           fetch:(NSFetchRequest * _Nullable * _Nullable)fetchp handler:(ODataEntitySetHandler * _Nullable * _Nullable)handlerp;
 - (BOOL)takeChanges:(ODataChanges *)changes;
+// A token as links carry it, with the caller's scope version; and back,
+// nil (answered 410) when the version is not the caller's now.
+- (NSString *)scopedToken:(NSString *)token;
+- (nullable NSString *)tokenCheckingScope:(NSString *)link;
 - (NSDictionary *)removedEntry:(NSString *)path reason:(NSString *)reason;
 // For writes.
 - (nullable NSDictionary *)bodyJSON;

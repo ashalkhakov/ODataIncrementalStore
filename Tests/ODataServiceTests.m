@@ -456,6 +456,29 @@
 }
 @end
 
+// What a caller may see has a version, as X-Scope says: their delta links
+// hold only while it does.
+@interface OISScopeVersionedProducts : ODataEntitySetHandler
+@end
+
+@implementation OISScopeVersionedProducts
+- (NSString *)scopeVersionForRequest:(ODataRequest *)request
+{
+  return [request valueForHeader:@"X-Scope"];
+}
+@end
+
+// Visible by a relationship: nothing a deleted row's tombstone keeps.
+@interface OISBeveragesOnly : ODataEntitySetHandler
+@end
+
+@implementation OISBeveragesOnly
+- (NSPredicate *)predicateForVisibleObjectsInRequest:(ODataRequest *)request
+{
+  return [NSPredicate predicateWithFormat:@"category.name == 'Beverages'"];
+}
+@end
+
 // Everyone is someone: X-Scopes (or the bearer token itself) is what they
 // may do, as a token's scope claim has it.
 @interface OISScopeAuthenticator : NSObject <HSAuthenticator>
@@ -6347,6 +6370,73 @@ static NSDate *OISDay(NSString *day)
   XCTAssertNil(read.headers[@"Preference-Applied"]);
   XCTAssertNil(read.json[@"@odata.deltaLink"]);
   XCTAssertEqual([self get:@"Products?$top=2&$deltatoken=0"].status, 410);
+}
+
+// A delta link holds while the caller's scope version does: another is a
+// 410, and the client reads the set again (docs/offline-sync.md, 4.1).
+- (void)testDeltaLinksHoldWhileTheScopeDoes
+{
+  [self serveTrackedCatalog];
+  [_service setHandler:[[OISScopeVersionedProducts alloc] initWithEntity:_coordinator.managedObjectModel.entitiesByName[@"Product"]] forEntitySet:@"Products"];
+  NSDictionary *v1 = @{ @"Prefer": @"odata.track-changes", @"X-Scope": @"team-7:v1" };
+  OISServiceResponse *read = [self send:@"GET" path:@"Products" headers:v1 body:nil];
+  NSString *link = read.json[@"@odata.deltaLink"];
+  XCTAssertTrue([link containsString:@"*"], @"the scope's version in the link: %@", link);
+  XCTAssertFalse([link containsString:@"team-7"], @"opaque in it: %@", link);
+
+  OISServiceResponse *same = [self send:@"GET" path:[self pathOfLink:link] headers:@{ @"X-Scope": @"team-7:v1" } body:nil];
+  XCTAssertEqual(same.status, 200, @"%@", same.text);
+  link = same.json[@"@odata.deltaLink"];
+  OISServiceResponse *moved = [self send:@"GET" path:[self pathOfLink:link] headers:@{ @"X-Scope": @"team-7:v2" } body:nil];
+  XCTAssertEqual(moved.status, 410, @"%@", moved.text);
+  XCTAssertEqual(([self send:@"GET" path:[self pathOfLink:link] headers:nil body:nil].status), 410, @"no version now is another");
+
+  // Pages too: a scope that moves between them.
+  _service.maxPageSize = 2;
+  read = [self send:@"GET" path:@"Products" headers:v1 body:nil];
+  NSString *next = read.json[@"@odata.nextLink"];
+  XCTAssertEqual(([self send:@"GET" path:[self pathOfLink:next] headers:@{ @"X-Scope": @"team-7:v2" } body:nil].status), 410);
+  XCTAssertEqual(([self send:@"GET" path:[self pathOfLink:next] headers:@{ @"X-Scope": @"team-7:v1" } body:nil].status), 200);
+
+  // A handler that has no scope version writes links as before.
+  [_service setHandler:[[ODataEntitySetHandler alloc] initWithEntity:_coordinator.managedObjectModel.entitiesByName[@"Product"]] forEntitySet:@"Products"];
+  _service.maxPageSize = 0;
+  link = [self send:@"GET" path:@"Products" headers:@{ @"Prefer": @"odata.track-changes" } body:nil].json[@"@odata.deltaLink"];
+  XCTAssertFalse([link containsString:@"*"], @"%@", link);
+}
+
+- (NSArray *)idsOf:(NSArray *)entries
+{
+  NSMutableArray *ids = [NSMutableArray array];
+  for (NSDictionary *entry in entries) [ids addObject:entry[@"@odata.id"] ?: [NSNull null]];
+  return ids;
+}
+
+// A deletion is reported to those who could see the row, by what its
+// tombstone kept; when the visibility reads anything else, to everyone.
+- (void)testDeletionsGoToThoseWhoCouldSeeThem
+{
+  [self serveTrackedCatalog];
+  [_service setHandler:[[OISScopedProducts alloc] initWithEntity:_coordinator.managedObjectModel.entitiesByName[@"Product"]] forEntitySet:@"Products"];
+  NSString *link = [self send:@"GET" path:@"Products" headers:@{ @"Prefer": @"odata.track-changes" } body:nil].json[@"@odata.deltaLink"];
+  NSManagedObjectContext *context = [self serviceContext];
+  NSError *error = nil;
+  [context deleteObject:[self productWithID:3 in:context]];   // seen: not discontinued
+  [context deleteObject:[self productWithID:5 in:context]];   // discontinued: never seen
+  XCTAssertTrue([context save:&error], @"%@", error);
+  OISServiceResponse *delta = [self get:[self pathOfLink:link]];
+  XCTAssertEqual(delta.status, 200, @"%@", delta.text);
+  XCTAssertEqualObjects([self idsOf:delta.json[@"value"]], @[ @"Products(3)" ], @"%@", delta.text);
+
+  // Visible by a relationship, which no tombstone keeps: every deletion.
+  [self serveTrackedCatalog];
+  [_service setHandler:[[OISBeveragesOnly alloc] initWithEntity:_coordinator.managedObjectModel.entitiesByName[@"Product"]] forEntitySet:@"Products"];
+  link = [self send:@"GET" path:@"Products" headers:@{ @"Prefer": @"odata.track-changes" } body:nil].json[@"@odata.deltaLink"];
+  context = [self serviceContext];
+  [context deleteObject:[self productWithID:5 in:context]];   // a condiment
+  XCTAssertTrue([context save:&error], @"%@", error);
+  delta = [self get:[self pathOfLink:link]];
+  XCTAssertEqualObjects([self idsOf:delta.json[@"value"]], @[ @"Products(5)" ], @"%@", delta.text);
 }
 
 // A tracked read in pages: each next link carries where the changes
