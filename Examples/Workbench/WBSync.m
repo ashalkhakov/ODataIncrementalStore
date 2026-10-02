@@ -530,7 +530,8 @@ static NSString *WBDirectionRules(NSString *entity)
 
 - (BOOL)entityIsEditable
 {
-  NSString *direction = _deviceStore.managedObjectModel.entitiesByName[[self entityName]].userInfo[ODataSyncDirectionKey];
+  NSEntityDescription *entity = _deviceStore.managedObjectModel.entitiesByName[[self entityName]];
+  NSString *direction = entity.userInfo[ODataSyncDirectionKey];
   return [direction isEqualToString:@"both"] || [direction isEqualToString:@"up"];
 }
 
@@ -548,7 +549,8 @@ static NSString *WBDirectionRules(NSString *entity)
     if (entity.attributesByName[name] && ![columns containsObject:name]) [columns addObject:name];
   }
   for (NSString *name in [entity.relationshipsByName.allKeys sortedArrayUsingSelector:@selector(compare:)]) {
-    if (!entity.relationshipsByName[name].isToMany) [columns addObject:name];
+    NSRelationshipDescription *relationship = entity.relationshipsByName[name];
+    if (!relationship.isToMany) [columns addObject:name];
   }
   _columns = columns;
   _rulesField.stringValue = WBDirectionRules([self entityName]);
