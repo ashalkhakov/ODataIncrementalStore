@@ -33,6 +33,7 @@
 		6270C07562A972961ADC2583 /* HSAuthentication.h in Headers */ = {isa = PBXBuildFile; fileRef = 7C2593171E5BB1259D299902 /* HSAuthentication.h */; settings = {ATTRIBUTES = (Public, ); }; };
 		6373E91BA0B97D969CD73F1F /* ODataServer.m in Sources */ = {isa = PBXBuildFile; fileRef = 991CEE198BEEBA950F336123 /* ODataServer.m */; };
 		6EBF6FE468FC027530125EBF /* ODSDownloader.m in Sources */ = {isa = PBXBuildFile; fileRef = 5D66B73A18CEB0FE9C5EDAE3 /* ODSDownloader.m */; };
+		71288709D030B2EBEE8EDF34 /* ODSConflicts.m in Sources */ = {isa = PBXBuildFile; fileRef = BA5819110AA399F8C83CB80F /* ODSConflicts.m */; };
 		726895136BBAB46B93CC98FE /* GCDWebServerResponse.m in Sources */ = {isa = PBXBuildFile; fileRef = 89CA8A3FE5574AE1DB0B1E03 /* GCDWebServerResponse.m */; };
 		75586D17ECE999E45A206026 /* HTTPServerKit.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = A21CEFC6F685318B7798AD60 /* HTTPServerKit.framework */; };
 		75BC07BE66565A6DA54974DD /* GCDWebServerStreamedResponse.m in Sources */ = {isa = PBXBuildFile; fileRef = F6731542A6E54D2FA643D32C /* GCDWebServerStreamedResponse.m */; };
@@ -409,6 +410,7 @@
 		BA2EB602AA25995D34810903 /* ODataOperationCatalog.m */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.objc; path = ODataOperationCatalog.m; sourceTree = "<group>"; };
 		BA496A27A63D29266C0986D0 /* ODataTransport.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = ODataTransport.h; sourceTree = "<group>"; };
 		BA4C05565AE3BD461E4984E5 /* ODataTimeline.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = ODataTimeline.h; sourceTree = "<group>"; };
+		BA5819110AA399F8C83CB80F /* ODSConflicts.m */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.c.objc; path = ODSConflicts.m; sourceTree = "<group>"; };
 		BA597D03DBD0122F56C4C6B7 /* ODataSync.h */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.c.h; path = ODataSync.h; sourceTree = "<group>"; };
 		BA6CD829A19DB17DC392EA5D /* ODataSnapshotTransport.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = ODataSnapshotTransport.h; sourceTree = "<group>"; };
 		BA934D5DCEE0B9BFF6B72C76 /* README.md */ = {isa = PBXFileReference; lastKnownFileType = net.daringfireball.markdown; path = README.md; sourceTree = "<group>"; };
@@ -658,6 +660,7 @@
 				352CD91F61203D00660470F7 /* ODSInternal.h */,
 				B285E96A8B502F68434F1C5F /* ODSUploader.m */,
 				7F2EE2B8A7FDBB64F6F77389 /* ODataSyncEngine.m */,
+				BA5819110AA399F8C83CB80F /* ODSConflicts.m */,
 			);
 			name = ODataSync;
 			path = ODataSync;
@@ -1410,6 +1413,7 @@
 				6EBF6FE468FC027530125EBF /* ODSDownloader.m in Sources */,
 				F3E2BDFD348BA164A4959BB8 /* ODSUploader.m in Sources */,
 				41DF3AB2B7D4889F3C69BE72 /* ODataSyncEngine.m in Sources */,
+				71288709D030B2EBEE8EDF34 /* ODSConflicts.m in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};

@@ -218,6 +218,7 @@ ODataService_CFLAGS += -fblocks
 
 ODataSync_NEEDS_GUI = no
 ODataSync_OBJC_FILES = \
+	Source/ODataSync/ODSConflicts.m \
 	Source/ODataSync/ODSDownloader.m \
 	Source/ODataSync/ODSUploader.m \
 	Source/ODataSync/ODataSyncEngine.m

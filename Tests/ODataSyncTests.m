@@ -24,6 +24,21 @@
 }
 @end
 
+// Both titles, joined; or set aside, when told to.
+@interface OSTJoiningResolver : NSObject <ODataSyncResolving>
+@property (nonatomic) BOOL defers;
+@property (atomic, strong) ODataSyncConflict *last;
+@end
+
+@implementation OSTJoiningResolver
+- (ODataSyncResolution *)resolveConflict:(ODataSyncConflict *)conflict
+{
+  self.last = conflict;
+  if (self.defers) return [ODataSyncResolution defer];
+  return [ODataSyncResolution mergedValues:@{ @"title": [NSString stringWithFormat:@"%@ / %@", conflict.local[@"title"], conflict.remote[@"title"]] }];
+}
+@end
+
 @interface OSTDelegate : NSObject <ODataSyncDelegate>
 @property (atomic, strong) NSMutableArray *setAside;
 @property (atomic, strong) NSMutableArray *ignored;
@@ -72,7 +87,7 @@ static NSManagedObjectModel *OSTModel(void)
   NSEntityDescription *task = [[NSEntityDescription alloc] init];
   task.name = @"Task";
   task.managedObjectClassName = @"NSManagedObject";
-  task.userInfo = @{ @"OData.entitySet": @"Tasks", ODataSyncDirectionKey: @"both" };
+  task.userInfo = @{ @"OData.entitySet": @"Tasks", ODataSyncDirectionKey: @"both", ODataSyncModifiedKey: @"modified" };
 
   NSRelationshipDescription *ofAsset = [[NSRelationshipDescription alloc] init];
   ofAsset.name = @"asset";
@@ -94,7 +109,7 @@ static NSManagedObjectModel *OSTModel(void)
   inspection.properties = @[ OSTAttribute(@"id", NSStringAttributeType, YES), OSTAttribute(@"note", NSStringAttributeType, NO),
                              OSTAttribute(@"score", NSInteger32AttributeType, NO), ofAsset ];
   task.properties = @[ OSTAttribute(@"id", NSStringAttributeType, YES), OSTAttribute(@"title", NSStringAttributeType, NO),
-                       OSTAttribute(@"done", NSBooleanAttributeType, NO) ];
+                       OSTAttribute(@"done", NSBooleanAttributeType, NO), OSTAttribute(@"modified", NSStringAttributeType, NO) ];
   NSManagedObjectModel *model = [[NSManagedObjectModel alloc] init];
   model.entities = @[ asset, inspection, task ];
   return model;
@@ -420,7 +435,7 @@ static NSManagedObjectModel *OSTModel(void)
 
 - (void)testConflictTheDeviceWins
 {
-  _engine.conflictPolicy = ODataSyncLocalWins;
+  _engine.conflictPolicy = ODataSyncPolicyLocalWins;
   NSString *task = [self makeTask:@"Check pump"];
   [self sync];
   [self retitle:task to:@"Server's" in:_server];
@@ -429,6 +444,147 @@ static NSManagedObjectModel *OSTModel(void)
   XCTAssertGreaterThan(_engine.lastResult.conflicts, 0u);
   XCTAssertEqualObjects([self values:@"title" of:@"Task" in:_server], (@[ @"Device's" ]));
   XCTAssertEqualObjects([self values:@"title" of:@"Task" in:_device], (@[ @"Device's" ]));
+}
+
+#pragma mark Conflicts
+
+- (void)set:(NSDictionary *)values onTask:(NSString *)identifier in:(NSPersistentStoreCoordinator *)coordinator
+{
+  [self in:coordinator do:^(NSManagedObjectContext *context) {
+    NSManagedObject *task = [self object:@"Task" id:identifier in:context];
+    for (NSString *name in values) [task setValue:values[name] forKey:name];
+  }];
+}
+
+- (void)testMergeFields
+{
+  _engine.resolver = [[ODataSyncMergeFields alloc] init];
+  NSString *task = [self makeTask:@"Check pump"];
+  [self sync];
+  [self set:@{ @"title": @"Check pump today" } onTask:task in:_server];
+  [self set:@{ @"done": @YES } onTask:task in:_device];
+  [self sync];
+  XCTAssertEqual(_engine.lastResult.conflicts, 1u);
+  for (NSPersistentStoreCoordinator *side in @[ _server, _device ]) {
+    XCTAssertEqualObjects([self values:@"title" of:@"Task" in:side], (@[ @"Check pump today" ]), @"the server's title");
+    XCTAssertEqualObjects([self values:@"done" of:@"Task" in:side], (@[ @YES ]), @"the device's done");
+  }
+
+  // Both changed the title: the fallback (the remote) decides that one.
+  [self set:@{ @"title": @"Server's" } onTask:task in:_server];
+  [self set:@{ @"title": @"Device's", @"done": @NO } onTask:task in:_device];
+  [self sync];
+  for (NSPersistentStoreCoordinator *side in @[ _server, _device ]) {
+    XCTAssertEqualObjects([self values:@"title" of:@"Task" in:side], (@[ @"Server's" ]));
+    XCTAssertEqualObjects([self values:@"done" of:@"Task" in:side], (@[ @NO ]), @"what only the device changed still goes");
+  }
+}
+
+- (void)testLastWriterWins
+{
+  [_engine setResolver:[[ODataSyncLastWriterWins alloc] init] forEntityName:@"Task"];
+  NSString *task = [self makeTask:@"Check pump"];
+  XCTAssertNotNil([self values:@"modified" of:@"Task" in:_device].firstObject, @"stamped when saved");
+  [self sync];
+
+  // The device changes it, then the service, later.
+  [self set:@{ @"title": @"Device's" } onTask:task in:_device];
+  NSString *later = [NSString stringWithFormat:@"%016lld.0000.server00", (long long)([[NSDate date] timeIntervalSince1970] * 1000) + 60000];
+  [self set:@{ @"title": @"Server's, later", @"modified": later } onTask:task in:_server];
+  [self sync];
+  XCTAssertEqualObjects([self values:@"title" of:@"Task" in:_device], (@[ @"Server's, later" ]));
+
+  // The service, with a stamp from before; then the device: the device's stands.
+  [self set:@{ @"title": @"Server's, earlier", @"modified": @"0000000000000001.0000.server00" } onTask:task in:_server];
+  [self set:@{ @"title": @"Device's, after" } onTask:task in:_device];
+  [self sync];
+  XCTAssertEqualObjects([self values:@"title" of:@"Task" in:_server], (@[ @"Device's, after" ]));
+  XCTAssertEqualObjects([self values:@"title" of:@"Task" in:_device], (@[ @"Device's, after" ]));
+  NSString *stamp = [self values:@"modified" of:@"Task" in:_device].firstObject;
+  XCTAssertEqual([stamp compare:later], NSOrderedDescending, @"the clock went past what it saw: %@ after %@", stamp, later);
+}
+
+- (void)testCustomResolverAndTheConflictItSees
+{
+  OSTJoiningResolver *joining = [[OSTJoiningResolver alloc] init];
+  [_engine setResolver:joining forEntityName:@"Task"];
+  NSString *task = [self makeTask:@"Check pump"];
+  [self sync];
+  [self set:@{ @"title": @"Server's" } onTask:task in:_server];
+  [self set:@{ @"title": @"Device's" } onTask:task in:_device];
+  [self sync];
+  ODataSyncConflict *conflict = joining.last;
+  XCTAssertEqualObjects(conflict.base[@"title"], @"Check pump", @"the version both had");
+  XCTAssertEqualObjects(conflict.localChanges, ([NSSet setWithObjects:@"title", @"modified", nil]));
+  XCTAssertEqualObjects(conflict.remoteChanges, [NSSet setWithObject:@"title"]);
+  for (NSPersistentStoreCoordinator *side in @[ _server, _device ]) {
+    XCTAssertEqualObjects([self values:@"title" of:@"Task" in:side], (@[ @"Device's / Server's" ]));
+  }
+}
+
+- (void)testDeferredConflictsAreIssues
+{
+  OSTJoiningResolver *deferring = [[OSTJoiningResolver alloc] init];
+  deferring.defers = YES;
+  [_engine setResolver:deferring forEntityName:@"Task"];
+  NSString *task = [self makeTask:@"Check pump"];
+  [self sync];
+  [self set:@{ @"title": @"Server's" } onTask:task in:_server];
+  [self set:@{ @"title": @"Device's" } onTask:task in:_device];
+  [self sync];
+  NSArray<ODataSyncIssue *> *issues = [_engine issues];
+  XCTAssertEqual(issues.count, 1u);
+  XCTAssertEqual(issues.firstObject.status, 409);
+  XCTAssertEqualObjects([self values:@"title" of:@"Task" in:_device], (@[ @"Device's" ]), @"left as it was, for the user");
+
+  // Retried: the device's goes over the server's.
+  [_engine retryIssue:issues.firstObject];
+  [self sync];
+  XCTAssertEqualObjects([self values:@"title" of:@"Task" in:_server], (@[ @"Device's" ]));
+
+  // Again, and given up: the server's comes back.
+  [self set:@{ @"title": @"Server's again" } onTask:task in:_server];
+  [self set:@{ @"title": @"Device's again" } onTask:task in:_device];
+  [self sync];
+  [_engine discardIssue:[_engine issues].firstObject];
+  [self sync];
+  XCTAssertEqualObjects([self values:@"title" of:@"Task" in:_device], (@[ @"Server's again" ]));
+  XCTAssertEqual([_engine issues].count, 0u);
+}
+
+- (void)testEditedHereDeletedThere
+{
+  NSString *task = [self makeTask:@"Check pump"];
+  [self sync];
+  [self atServer:^(NSManagedObjectContext *context) {
+    [context deleteObject:[self object:@"Task" id:task in:context]];
+  }];
+  [self set:@{ @"title": @"Still needed" } onTask:task in:_device];
+  [self sync];
+  XCTAssertEqual([self values:@"id" of:@"Task" in:_device].count, 0u, @"the remote wins: gone here too");
+
+  NSString *other = [self makeTask:@"Check valve"];
+  [self sync];
+  _engine.conflictPolicy = ODataSyncPolicyLocalWins;
+  [self atServer:^(NSManagedObjectContext *context) {
+    [context deleteObject:[self object:@"Task" id:other in:context]];
+  }];
+  [self set:@{ @"title": @"Still needed" } onTask:other in:_device];
+  [self sync];
+  XCTAssertEqualObjects([self values:@"title" of:@"Task" in:_server], (@[ @"Still needed" ]), @"the device wins: made again there");
+}
+
+- (void)testAConflictMetOnUpload
+{
+  // Changed there after this side last read: met by the PATCH's If-Match (412).
+  NSString *task = [self makeTask:@"Check pump"];
+  [self sync];
+  [self set:@{ @"title": @"Server's" } onTask:task in:_server];
+  [self set:@{ @"title": @"Device's" } onTask:task in:_device];
+  NSError *error = nil;
+  XCTAssertTrue([_engine uploadToRemote:_remote error:&error], @"%@", error);
+  XCTAssertEqualObjects([self values:@"title" of:@"Task" in:_server], (@[ @"Server's" ]));
+  XCTAssertEqualObjects([self values:@"title" of:@"Task" in:_device], (@[ @"Server's" ]), @"the remote wins");
 }
 
 @end

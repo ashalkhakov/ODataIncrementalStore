@@ -21,8 +21,17 @@
 //                        by upsert, so sending it again is harmless.
 //                        both: either changes it; a change made on both
 //                        sides since they last agreed is a conflict,
-//                        settled by conflictPolicy.
+//                        settled by a resolver (below).
 //                        Absent: local only.
+//   ODataSync.conflicts  of a both entity: remote (the default), local,
+//                        lastWriter or merge; a resolver set in code
+//                        (-setResolver:forEntityName:) comes first.
+//   ODataSync.modified   the String attribute last writer wins orders by:
+//                        the engine stamps it, on every save of the
+//                        object's changes but its own, with a hybrid
+//                        logical clock (wall time, a counter, this store),
+//                        which the service keeps like any attribute. A
+//                        change made at the service should stamp it too.
 //
 // Keys and entity sets are the mapper's (OData.key, OData.entitySet). Keep
 // an up or both entity's key attributes in history on deletion
@@ -38,6 +47,8 @@
 NS_ASSUME_NONNULL_BEGIN
 
 FOUNDATION_EXPORT NSString * const ODataSyncDirectionKey;    // @"ODataSync.direction"
+FOUNDATION_EXPORT NSString * const ODataSyncConflictsKey;    // @"ODataSync.conflicts"
+FOUNDATION_EXPORT NSString * const ODataSyncModifiedKey;     // @"ODataSync.modified"
 FOUNDATION_EXPORT NSString * const ODataSyncErrorDomain;
 // The transaction author of what the engine writes: what came down from a
 // remote (ODataSyncDownAuthorPrefix and the remote's identifier), and its
@@ -55,8 +66,8 @@ typedef NS_ENUM(NSInteger, ODataSyncDirection) {
 // A both entity's object changed on the device and at the service since
 // they last agreed: whose version stands.
 typedef NS_ENUM(NSInteger, ODataSyncConflictPolicy) {
-  ODataSyncRemoteWins = 0,  // the service's: the device's change is dropped
-  ODataSyncLocalWins,       // the device's: sent again over the service's
+  ODataSyncPolicyRemoteWins = 0,  // the service's: the device's change is dropped
+  ODataSyncPolicyLocalWins,       // the device's: sent again over the service's
 };
 
 // A service to sync with.
@@ -84,7 +95,74 @@ typedef NS_ENUM(NSInteger, ODataSyncOperation) {
   ODataSyncOperationInsert = 1,
   ODataSyncOperationUpdate,
   ODataSyncOperationDelete,
+  ODataSyncOperationRefresh,  // the remote's version read again (a conflict discarded)
 };
+
+// A both object changed here and at the remote since the version both last
+// agreed on. Values by Core Data property name: an attribute's value, a
+// to-one's related key (by its attributes' names), NSNull for none.
+@interface ODataSyncConflict : NSObject
+@property (nonatomic, readonly) NSEntityDescription *entity;
+@property (nonatomic, readonly, copy) NSDictionary<NSString *, id> *key;
+// The version both last agreed on; nil when not known (an object made on
+// both sides, or before the engine kept versions).
+@property (nonatomic, readonly, copy, nullable) NSDictionary<NSString *, id> *base;
+// This side's, and the remote's; nil when deleted there.
+@property (nonatomic, readonly, copy, nullable) NSDictionary<NSString *, id> *local;
+@property (nonatomic, readonly, copy, nullable) NSDictionary<NSString *, id> *remote;
+// What each side changed since the base (every property when there is none).
+@property (nonatomic, readonly, copy) NSSet<NSString *> *localChanges;
+@property (nonatomic, readonly, copy) NSSet<NSString *> *remoteChanges;
+@end
+
+typedef NS_ENUM(NSInteger, ODataSyncResolutionKind) {
+  ODataSyncTakeRemote,  // the remote's version here; this side's change dropped
+  ODataSyncKeepLocal,   // this side's version sent over the remote's
+  ODataSyncMerge,       // these values here, and sent
+  ODataSyncDefer,       // set aside for the user (an issue, status 409)
+};
+
+@interface ODataSyncResolution : NSObject
++ (instancetype)takeRemote;
++ (instancetype)keepLocal;
+// The values to have (by property name, as a conflict has them); the
+// properties not named keep this side's.
++ (instancetype)mergedValues:(NSDictionary<NSString *, id> *)values;
++ (instancetype)defer;
+@property (nonatomic, readonly) ODataSyncResolutionKind kind;
+@property (nonatomic, readonly, copy, nullable) NSDictionary<NSString *, id> *values;
+@end
+
+// How conflicts are settled: given one, the resolution. On the engine's
+// thread, during a sync.
+@protocol ODataSyncResolving <NSObject>
+- (ODataSyncResolution *)resolveConflict:(ODataSyncConflict *)conflict;
+@end
+
+// The remote's version stands.
+@interface ODataSyncRemoteWins : NSObject <ODataSyncResolving>
+@end
+
+// This side's version stands.
+@interface ODataSyncLocalWins : NSObject <ODataSyncResolving>
+@end
+
+// The version changed last stands, by the ODataSync.modified stamps (a
+// hybrid logical clock's, which order changes across devices whatever
+// their clocks say); a tie, or a side without one, goes to the remote.
+@interface ODataSyncLastWriterWins : NSObject <ODataSyncResolving>
+@end
+
+// Three-way, property by property: what only one side changed is taken
+// from it; what both changed to different values, the fallback decides
+// (as it would the whole object). A delete on either side, or no base, is
+// the fallback's.
+@interface ODataSyncMergeFields : NSObject <ODataSyncResolving>
+- (instancetype)initWithFallback:(id<ODataSyncResolving>)fallback NS_DESIGNATED_INITIALIZER;
+// Falling back to RemoteWins.
+- (instancetype)init;
+@property (nonatomic, readonly) id<ODataSyncResolving> fallback;
+@end
 
 // A change the service refused (400, 403, 409, 422...): it stays in the
 // outbox, set aside, until the app retries or discards it.
@@ -131,7 +209,13 @@ typedef NS_ENUM(NSInteger, ODataSyncOperation) {
 @property (nonatomic, readonly) NSPersistentStoreCoordinator *coordinator;
 @property (nonatomic, readonly, copy) NSArray<ODataSyncRemote *> *remotes;
 - (void)addRemote:(ODataSyncRemote *)remote;
+// How a both entity's conflicts are settled, when neither code nor its
+// ODataSync.conflicts says: the resolver, else the policy.
 @property (nonatomic) ODataSyncConflictPolicy conflictPolicy;
+@property (nonatomic, strong, nullable) id<ODataSyncResolving> resolver;
+- (void)setResolver:(nullable id<ODataSyncResolving>)resolver forEntityName:(NSString *)entityName;
+// This store's replica ID: in its metadata, made the first time.
+@property (nonatomic, readonly, copy) NSString *replicaID;
 @property (nonatomic, weak, nullable) id<ODataSyncDelegate> delegate;
 
 // Each remote in turn: what changed there brought down, then what changed
@@ -159,7 +243,8 @@ typedef NS_ENUM(NSInteger, ODataSyncOperation) {
 // Sent again at the next sync (after the app put the object right; a new
 // change to the object does this too).
 - (void)retryIssue:(ODataSyncIssue *)issue;
-// Forgotten: never sent. The object stays as it is locally.
+// Forgotten: never sent. The object stays as it is locally; a conflict's
+// object is read again from the remote at the next sync.
 - (void)discardIssue:(ODataSyncIssue *)issue;
 
 @end

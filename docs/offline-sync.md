@@ -1,11 +1,12 @@
 # Offline sync: design
 
-**Status: the service's part (section 9) and the library's first phase
-(section 10, 1 and 2) exist**: `Source/ODataSync` (`ODataSyncEngine`),
-with down, up and both entities, the outbox and set-aside changes, key
-reconciliation, and the RemoteWins and LocalWins policies. Three-way
-merges, last writer wins, custom resolvers and peers are still to come;
-where the text below describes them, it is the plan.
+**Status: the service's part (section 9) and the library's phases 1–3
+(section 10) exist**: `Source/ODataSync` (`ODataSyncEngine`), with down,
+up and both entities, the outbox and set-aside changes, key
+reconciliation, and conflicts (shadows with values, RemoteWins,
+LocalWins, LastWriterWins on a hybrid logical clock, MergeFields, custom
+resolvers). Peers are still to come; where the text below describes
+them, it is the plan.
 
 An app that works offline keeps its data in a Core Data store on the device
 and syncs it with an OData service when it can: entities the service owns
@@ -255,7 +256,7 @@ crash or by a peer that relayed it, ends as the first did.
 A refused entry stays in the outbox, marked, with the service's error (an
 OData error, its target and details): the app shows it, and the user
 fixes the record (the next change clears the mark and it is sent again)
-or discards it (`-[ODataSyncEngine discardEntry:]`, which also reverts
+or discards it (`-[ODataSyncEngine discardIssue:]`, which also reverts
 the local object to its shadow, or deletes it when it never reached the
 service).
 
@@ -305,7 +306,34 @@ Rules that come with the library, per entity (`ODataSync.conflicts` in
 
 Deletes: an edit against a delete goes by the rule's notion of winner
 (RemoteWins: deleted; LocalWins: re-created by the upsert); MergeFields
-treats a delete as changing every property.
+hands a delete to its fallback; LastWriterWins lets the edit stand (a
+delete carries no stamp of its own).
+
+As built:
+
+- `userInfo` names a rule with `ODataSync.conflicts`: `remote`, `local`,
+  `lastwriter` or `merge`. Which applies, most specific first: a resolver
+  set in code for the entity (`-setResolver:forEntityName:`, looked up
+  through superentities), the `userInfo` rule, `engine.resolver`, then
+  `engine.conflictPolicy`.
+- `ODataSync.modified` names a string attribute. Every save not made by
+  the engine stamps it with the replica's hybrid logical clock,
+  `<milliseconds, 16 digits>.<counter, 4 digits>.<replica, 8>`, so
+  stamps compare as strings; the clock moves past every stamp the engine
+  reads from a remote. The replica's identifier is kept in the store's
+  metadata (`-replicaID`).
+- The shadow keeps the agreed version's JSON, so base, local and remote
+  are compared in the service's names and values, and the conflict's
+  dictionaries carry the model's attribute names.
+- Keep local and merged both agree on the remote's version first (its
+  ETag in the shadow), then the entry sends only what still differs from
+  it; nothing, when the two already match.
+- Defer sets the entry aside as an issue with status 409. Retrying it
+  sends the local version over the remote's; discarding it turns it into
+  a refresh, which reads the remote's version into the object at the next
+  sync.
+- A conflict met on upload (412) is settled at once: a GET of the row, the
+  resolver, and the changed entry sent again, up to three rounds a sync.
 
 ## 7. Peers
 
@@ -362,7 +390,7 @@ ODataSyncRemote *service = [ODataSyncRemote remoteWithServiceRoot:url];
 service.configuration.credentialProvider = auth;   // ODataCredentialProviding
 service.filters = @{ @"Asset": @"Region eq 'North'" };
 [sync addRemote:service];
-sync.conflictPolicy = ODataSyncRemoteWins;         // or ODataSyncLocalWins
+sync.resolver = [[ODataSyncMergeFields alloc] init];   // or per entity: -setResolver:forEntityName:, userInfo ODataSync.conflicts
 sync.delegate = self;                              // changes set aside, local edits of down entities
 [sync syncWithTarget:self action:@selector(syncDidFinish:error:)];   // or -syncWithError: off the main thread
 ```
@@ -381,9 +409,9 @@ What exists, and how it goes (`ODataSyncEngine.h`):
   when the object changes or the app retries them, or discarded.
 - `-reconcileWithRemote:error:` reads each set's keys again (4.1).
 - Each sync is a trace (OTelKit): `sync`, `download <Entity>`, `upload batch`.
-- A both entity keeps, per object, the ETag of the version both last
-  agreed on (`ODSShadow`), for If-Match; its values, for merges, come
-  with the merge policies.
+- A both entity keeps, per object, the version both last agreed on
+  (`ODSShadow`: its ETag, for If-Match, and its values, for merges);
+  conflicts go to the resolver (section 6).
 
 On the service (ODataKit's server): the store keeps persistent history
 (delta links), and the entity sets the devices write allow upsert
@@ -435,7 +463,7 @@ What ODataService needs, and what it has:
    *Done* (Tests/ODataSyncTests.m against an ODataService in the process;
    Server/Tests/ois-serve-check.m over HTTP, on both platforms).
 3. Conflicts: shadows, MergeFields, LastWriterWins with hybrid logical
-   clocks, custom resolvers.
+   clocks, custom resolvers. *Done* (Tests/ODataSyncTests.m).
 4. Peers: the peer server, relaying, peer vectors; discovery and trust left
    to the app.
 5. The Workbench: a sync pane (an offline store over the built-in service,

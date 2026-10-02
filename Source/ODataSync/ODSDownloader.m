@@ -120,20 +120,24 @@ static const NSInteger ODSGone = 410;
   return object;
 }
 
-// Whether the remote's version of a both object is applied: not when the
-// device changed it too and its own wins (the conflict policy); the
-// shadow's ETag is the remote's either way.
-- (BOOL)takesRemoteVersionOf:(NSEntityDescription *)entity key:(NSDictionary *)key etag:(NSString *)etag
-                     context:(NSManagedObjectContext *)context
+// A both object's row (nil: removed) when the device changed it too: a
+// conflict, settled; YES when it was (and so is not applied here).
+- (BOOL)settled:(NSDictionary *)row entity:(NSEntityDescription *)entity key:(NSDictionary *)key etag:(NSString *)etag
+        context:(NSManagedObjectContext *)context
 {
-  if ([_codec directionOfEntity:entity] != ODataSyncDirectionBoth) return YES;
+  if ([_codec directionOfEntity:entity] != ODataSyncDirectionBoth) return NO;
   NSString *keyText = [_codec keyTextOf:key entity:entity];
-  if (etag) [[_engine shadowOf:entity.name keyText:keyText remote:_remote inContext:context make:YES] setValue:etag forKey:@"etag"];
   NSManagedObject *entry = [_engine entryOf:entity.name keyText:keyText remote:_remote inContext:context];
-  if (!entry) return YES;
-  [_engine count:@"conflicts" by:1];
-  if (_engine.conflictPolicy == ODataSyncLocalWins) return NO;
-  [context deleteObject:entry];
+  if (entry && [[entry valueForKey:@"operation"] integerValue] == ODataSyncOperationRefresh) {
+    // A conflict given up: this is the version it waited for.
+    [context deleteObject:entry];
+    entry = nil;
+  }
+  if (!entry) {
+    [_engine agreeOn:row etag:etag of:entity keyText:keyText remote:_remote context:context];
+    return NO;
+  }
+  [_engine settleConflictOf:entity key:key entry:entry remoteRow:row etag:etag remote:_remote context:context];
   return YES;
 }
 
@@ -149,7 +153,9 @@ static const NSInteger ODSGone = 410;
     if (!key) continue;
     [seen addObject:[_codec keyTextOf:key entity:entity]];
     NSString *etag = [row[@"@odata.etag"] isKindOfClass:[NSString class]] ? row[@"@odata.etag"] : nil;
-    if (![self takesRemoteVersionOf:entity key:key etag:etag context:context]) continue;
+    NSAttributeDescription *stamp = [_codec modifiedAttributeOf:entity];
+    if (stamp) [_engine witness:row[[_codec.mapper propertyForAttribute:stamp]]];
+    if ([self settled:row entity:entity key:key etag:etag context:context]) continue;
     NSManagedObject *object = [self objectFor:row entity:entity context:context created:NULL];
     if (object) [pairs addObject:@[ object, row ]];
   }
@@ -159,8 +165,9 @@ static const NSInteger ODSGone = 410;
 
 - (void)removeObjectOfEntity:(NSEntityDescription *)entity key:(NSDictionary *)key context:(NSManagedObjectContext *)context
 {
+  if ([self settled:nil entity:entity key:key etag:nil context:context]) return;
   NSManagedObject *object = [_codec objectOfEntity:entity key:key inContext:context];
-  if (!object || ![self takesRemoteVersionOf:entity key:key etag:nil context:context]) return;
+  if (!object) return;
   [context deleteObject:object];
   [_engine count:@"removed" by:1];
 }
@@ -334,28 +341,41 @@ static const NSInteger ODSGone = 410;
 
 #pragma mark One object
 
-- (NSString *)refreshObjectOfEntity:(NSEntityDescription *)entity key:(NSDictionary *)key context:(NSManagedObjectContext *)context
-                              error:(NSError **)error
+- (NSDictionary *)rowOfEntity:(NSEntityDescription *)entity key:(NSDictionary *)key status:(NSInteger *)status error:(NSError **)error
 {
   NSString *path = [_codec pathOfEntity:entity key:key];
   NSString *expansion = [_codec expandOfEntity:[_codec rootOf:entity]];
   if (expansion) path = [path stringByAppendingFormat:@"?$expand=%@", expansion];
+  return [self JSONAt:[_engine URLOf:path remote:_remote] prefer:nil status:status error:error];
+}
+
+- (BOOL)refreshObjectOfEntity:(NSEntityDescription *)entity key:(NSDictionary *)key context:(NSManagedObjectContext *)context
+                        error:(NSError **)error
+{
+  NSEntityDescription *root = [_codec rootOf:entity];
   NSInteger status = 0;
   NSError *failure = nil;
-  NSDictionary *row = [self JSONAt:[_engine URLOf:path remote:_remote] prefer:nil status:&status error:&failure];
-  NSManagedObject *object = [_codec objectOfEntity:entity key:key inContext:context];
+  NSDictionary *row = [self rowOfEntity:root key:key status:&status error:&failure];
+  NSManagedObject *object = [_codec objectOfEntity:root key:key inContext:context];
+  NSString *keyText = [_codec keyTextOf:key entity:root];
   if (!row) {
-    if (status == 404 && object) {
+    if (status != 404) {
+      if (error) *error = failure;
+      return NO;
+    }
+    if (object) {
       [context deleteObject:object];
       [_engine count:@"removed" by:1];
     }
-    if (status != 404 && error) *error = failure;
-    return nil;
+    [_engine agreeOn:nil etag:nil of:root keyText:keyText remote:_remote context:context];
+    return YES;
   }
-  if (!object) object = [self objectFor:row entity:[_codec rootOf:entity] context:context created:NULL];
+  if (!object) object = [self objectFor:row entity:root context:context created:NULL];
   [_codec applyJSON:row toObject:object];
   [_engine count:@"downloaded" by:1];
-  return [row[@"@odata.etag"] isKindOfClass:[NSString class]] ? row[@"@odata.etag"] : nil;
+  NSString *etag = [row[@"@odata.etag"] isKindOfClass:[NSString class]] ? row[@"@odata.etag"] : nil;
+  [_engine agreeOn:row etag:etag of:root keyText:keyText remote:_remote context:context];
+  return YES;
 }
 
 @end

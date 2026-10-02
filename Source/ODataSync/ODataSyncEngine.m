@@ -362,6 +362,97 @@ static BOOL ODSSame(id a, id b)
   return json;
 }
 
+- (NSDictionary *)valuesOfObject:(NSManagedObject *)object
+{
+  NSMutableDictionary *values = [NSMutableDictionary dictionary];
+  for (NSAttributeDescription *attribute in [self attributesOf:object.entity]) {
+    values[attribute.name] = [object valueForKey:attribute.name] ?: [NSNull null];
+  }
+  for (NSRelationshipDescription *toOne in [self toOnesOf:object.entity]) {
+    NSManagedObject *related = [object valueForKey:toOne.name];
+    values[toOne.name] = related ? [self keyOfObject:related] : [NSNull null];
+  }
+  return values;
+}
+
+- (NSDictionary *)valuesFromJSON:(NSDictionary *)json entity:(NSEntityDescription *)entity
+{
+  NSMutableDictionary *values = [NSMutableDictionary dictionary];
+  for (NSAttributeDescription *attribute in [self attributesOf:entity]) {
+    id raw = json[[self.mapper propertyForAttribute:attribute]];
+    if (!raw) continue;
+    id value = raw == [NSNull null] ? nil : [self.mapper.values coreDataValueForJSON:raw attribute:attribute];
+    values[attribute.name] = value ?: [NSNull null];
+  }
+  for (NSRelationshipDescription *toOne in [self toOnesOf:entity]) {
+    id raw = json[[self.mapper propertyForRelationship:toOne]];
+    if (!raw) continue;
+    NSDictionary *key = [raw isKindOfClass:[NSDictionary class]] ? [self keyFromJSON:raw entity:toOne.destinationEntity] : nil;
+    values[toOne.name] = key ?: [NSNull null];
+  }
+  return values;
+}
+
+- (void)applyValues:(NSDictionary *)values toObject:(NSManagedObject *)object
+{
+  for (NSAttributeDescription *attribute in [self attributesOf:object.entity]) {
+    id value = values[attribute.name];
+    if (!value) continue;
+    if (value == [NSNull null]) value = nil;
+    if (!ODSSame([object valueForKey:attribute.name], value)) [object setValue:value forKey:attribute.name];
+  }
+  for (NSRelationshipDescription *toOne in [self toOnesOf:object.entity]) {
+    id key = values[toOne.name];
+    if (!key) continue;
+    NSManagedObject *related = [key isKindOfClass:[NSDictionary class]]
+        ? [self objectOfEntity:toOne.destinationEntity key:key inContext:object.managedObjectContext] : nil;
+    if ([object valueForKey:toOne.name] != related) [object setValue:related forKey:toOne.name];
+  }
+}
+
+- (NSDictionary *)rowOfObject:(NSManagedObject *)object
+{
+  ODataValueCoder *coder = self.mapper.values;
+  NSMutableDictionary *row = [NSMutableDictionary dictionary];
+  for (NSAttributeDescription *attribute in [self attributesOf:object.entity]) {
+    id value = [object valueForKey:attribute.name];
+    row[[self.mapper propertyForAttribute:attribute]] = value ? [coder JSONForCoreDataValue:value attribute:attribute] : [NSNull null];
+  }
+  for (NSRelationshipDescription *toOne in [self toOnesOf:object.entity]) {
+    NSManagedObject *related = [object valueForKey:toOne.name];
+    NSMutableDictionary *key = related ? [NSMutableDictionary dictionary] : nil;
+    for (NSAttributeDescription *attribute in related ? [self keyAttributesOf:related.entity] : @[]) {
+      key[[self.mapper propertyForAttribute:attribute]] = [coder JSONForCoreDataValue:[related valueForKey:attribute.name] attribute:attribute];
+    }
+    row[[self.mapper propertyForRelationship:toOne]] = key ?: [NSNull null];
+  }
+  return row;
+}
+
+NSSet<NSString *> *ODSChangedNames(NSDictionary *before, NSDictionary *after)
+{
+  NSMutableSet *names = [NSMutableSet setWithArray:before.allKeys ?: @[]];
+  [names addObjectsFromArray:after.allKeys ?: @[]];
+  NSMutableSet *changed = [NSMutableSet set];
+  for (NSString *name in names) {
+    id a = before[name] ?: [NSNull null], b = after[name] ?: [NSNull null];
+    if (!ODSSame(a, b)) [changed addObject:name];
+  }
+  return changed;
+}
+
+- (NSAttributeDescription *)modifiedAttributeOf:(NSEntityDescription *)entity
+{
+  for (NSEntityDescription *e = entity; e; e = e.superentity) {
+    NSString *name = e.userInfo[ODataSyncModifiedKey];
+    if (name) {
+      NSAttributeDescription *attribute = entity.attributesByName[name];
+      return attribute.attributeType == NSStringAttributeType ? attribute : nil;
+    }
+  }
+  return nil;
+}
+
 - (NSString *)expandOfEntity:(NSEntityDescription *)entity
 {
   NSMutableArray *items = [NSMutableArray array];
@@ -425,6 +516,11 @@ static NSEntityDescription *ODSEntity(NSString *name, NSArray<NSAttributeDescrip
   NSMutableArray<ODataSyncRemote *> *_remotes;
   NSLock *_running;
   NSMutableDictionary<NSString *, NSNumber *> *_tally;
+  NSMutableDictionary<NSString *, id<ODataSyncResolving>> *_resolvers;
+  NSString *_replicaID;
+  // The hybrid logical clock: the latest wall time (ms) and its counter.
+  int64_t _clockTime;
+  int32_t _clockCounter;
 }
 
 + (void)addBookkeepingToModel:(NSManagedObjectModel *)model configuration:(NSString *)configuration
@@ -440,7 +536,8 @@ static NSEntityDescription *ODSEntity(NSString *name, NSArray<NSAttributeDescrip
                                   ODSAttribute(@"status", NSInteger32AttributeType), ODSAttribute(@"message", NSStringAttributeType),
                                   ODSAttribute(@"setAside", NSBooleanAttributeType) ]),
     ODSEntity(ODSShadowEntity, @[ ODSAttribute(@"remote", NSStringAttributeType), ODSAttribute(@"entityType", NSStringAttributeType),
-                                  ODSAttribute(@"keyText", NSStringAttributeType), ODSAttribute(@"etag", NSStringAttributeType) ]),
+                                  ODSAttribute(@"keyText", NSStringAttributeType), ODSAttribute(@"etag", NSStringAttributeType),
+                                  ODSAttribute(@"values", NSBinaryDataAttributeType) ]),
   ];
   model.entities = [model.entities arrayByAddingObjectsFromArray:added];
   if (configuration) {
@@ -459,7 +556,98 @@ static NSEntityDescription *ODSEntity(NSString *name, NSArray<NSAttributeDescrip
   _running = [[NSLock alloc] init];
   _tally = [NSMutableDictionary dictionary];
   _tracer = [OTTracer tracerNamed:@"ODataSync" version:nil];
+  _resolvers = [NSMutableDictionary dictionary];
+  // Last writer wins: every save but the engine's stamps what it changed.
+  [[NSNotificationCenter defaultCenter] addObserver:self selector:@selector(contextWillSave:)
+                                               name:NSManagedObjectContextWillSaveNotification object:nil];
   return self;
+}
+
+- (void)dealloc
+{
+  [[NSNotificationCenter defaultCenter] removeObserver:self];
+}
+
+#pragma mark Conflicts
+
+- (id<ODataSyncResolving>)resolverForEntityName:(NSString *)entityName
+{
+  @synchronized (_resolvers) {
+    return _resolvers[entityName];
+  }
+}
+
+- (void)setResolver:(id<ODataSyncResolving>)resolver forEntityName:(NSString *)entityName
+{
+  @synchronized (_resolvers) {
+    _resolvers[entityName] = resolver;
+  }
+}
+
+- (NSString *)replicaID
+{
+  @synchronized (self) {
+    if (_replicaID) return _replicaID;
+    NSPersistentStore *store = self.coordinator.persistentStores.firstObject;
+    NSDictionary *metadata = store ? [self.coordinator metadataForPersistentStore:store] : nil;
+    _replicaID = metadata[@"ODataSync.replica"];
+    if (!_replicaID) {
+      _replicaID = [NSUUID UUID].UUIDString.lowercaseString;
+      if (store) {
+        NSMutableDictionary *changed = [metadata mutableCopy] ?: [NSMutableDictionary dictionary];
+        changed[@"ODataSync.replica"] = _replicaID;
+        [self.coordinator setMetadata:changed forPersistentStore:store];
+      }
+    }
+    return _replicaID;
+  }
+}
+
+// 0001701234567890.0003.ab12cd34: ordered as text, as the clock orders.
+- (NSString *)tick
+{
+  NSString *replica = [[self replicaID] substringToIndex:8];
+  @synchronized (self) {
+    int64_t now = (int64_t)([[NSDate date] timeIntervalSince1970] * 1000);
+    if (now > _clockTime) {
+      _clockTime = now;
+      _clockCounter = 0;
+    } else {
+      _clockCounter++;
+    }
+    return [NSString stringWithFormat:@"%016lld.%04d.%@", (long long)_clockTime, _clockCounter, replica];
+  }
+}
+
+- (void)witness:(NSString *)stamp
+{
+  if (![stamp isKindOfClass:[NSString class]]) return;
+  NSArray *parts = [stamp componentsSeparatedByString:@"."];
+  if (parts.count < 2) return;
+  int64_t time = [parts[0] longLongValue];
+  int32_t counter = [parts[1] intValue];
+  @synchronized (self) {
+    if (time > _clockTime || (time == _clockTime && counter > _clockCounter)) {
+      _clockTime = time;
+      _clockCounter = counter;
+    }
+  }
+}
+
+- (void)contextWillSave:(NSNotification *)notification
+{
+  NSManagedObjectContext *context = notification.object;
+  if (context.persistentStoreCoordinator != self.coordinator) return;
+  if ([context respondsToSelector:@selector(transactionAuthor)] && [context.transactionAuthor hasPrefix:@"ODataSync."]) return;
+  NSMutableSet *changed = [NSMutableSet setWithSet:context.insertedObjects];
+  [changed unionSet:context.updatedObjects];
+  for (NSManagedObject *object in changed) {
+    NSAttributeDescription *stamp = [self.codec modifiedAttributeOf:object.entity];
+    if (!stamp) continue;
+    NSDictionary *changes = object.changedValues;
+    if (!object.isInserted && (!changes.count || (changes.count == 1 && changes[stamp.name]))) continue;
+    [object setValue:[self tick] forKey:stamp.name];
+  }
 }
 
 - (NSArray<ODataSyncRemote *> *)remotes
@@ -656,7 +844,11 @@ static NSEntityDescription *ODSEntity(NSString *name, NSArray<NSAttributeDescrip
   [context performBlockAndWait:^{
     NSManagedObject *entry = [context existingObjectWithID:issue.entryID error:NULL];
     if (!entry) return;
-    if (discard) {
+    if (discard && [[entry valueForKey:@"status"] integerValue] == 409) {
+      // A conflict given up: the remote's version, read again at the next sync.
+      [entry setValue:@(ODataSyncOperationRefresh) forKey:@"operation"];
+      [entry setValue:@NO forKey:@"setAside"];
+    } else if (discard) {
       [context deleteObject:entry];
     } else {
       [entry setValue:@NO forKey:@"setAside"];

@@ -191,6 +191,7 @@ static const NSInteger ODSConflictRounds = 3;
     return nil;
   }
   ODataSyncOperation operation = [[entry valueForKey:@"operation"] integerValue];
+  if (operation == ODataSyncOperationRefresh) return nil;  // read, not sent (-refreshIn:)
   BOOL both = [_codec directionOfEntity:root] == ODataSyncDirectionBoth;
   NSString *etag = both ? [[_engine shadowOf:root.name keyText:[entry valueForKey:@"keyText"] remote:_remote inContext:context make:NO]
                               valueForKey:@"etag"] : nil;
@@ -310,51 +311,37 @@ static NSString *ODSHeader(NSDictionary *headers, NSString *name)
   [_engine setAside:[[ODataSyncIssue alloc] initWithEntry:entry objectID:object.objectID]];
 }
 
-// A both object's newer version at the remote, met by its If-Match.
+// A both object's newer version at the remote, met by its If-Match: read,
+// and settled as a conflict.
 - (BOOL)resolveConflictOf:(NSManagedObject *)entry context:(NSManagedObjectContext *)context error:(NSError **)error
 {
-  [_engine count:@"conflicts" by:1];
   NSEntityDescription *root = _codec.model.entitiesByName[[entry valueForKey:@"entityType"]];
   NSDictionary *key = ODSUnarchive([entry valueForKey:@"key"]);
-  NSString *keyText = [entry valueForKey:@"keyText"];
   ODSDownloader *down = [[ODSDownloader alloc] initWithEngine:_engine remote:_remote];
-  if (_engine.conflictPolicy == ODataSyncRemoteWins) {
-    // The remote's version, here; the device's change dropped.
-    NSError *failure = nil;
-    NSString *etag = [down refreshObjectOfEntity:root key:key context:context error:&failure];
-    if (!etag && failure) {
-      if (error) *error = failure;
-      return NO;
-    }
-    NSManagedObject *shadow = [_engine shadowOf:root.name keyText:keyText remote:_remote inContext:context make:etag != nil];
-    if (etag) [shadow setValue:etag forKey:@"etag"]; else if (shadow) [context deleteObject:shadow];
-    [context deleteObject:entry];
-    return YES;
-  }
-  // The device's: sent again over the remote's version, whatever it is now.
-  NSString *path = [[_codec pathOfEntity:root key:key] stringByAppendingFormat:@"?$select=%@", [_codec selectOfKeyOfEntity:root]];
-  NSMutableURLRequest *http = [NSMutableURLRequest requestWithURL:[_engine URLOf:path remote:_remote]];
-  [http setValue:@"application/json" forHTTPHeaderField:@"Accept"];
+  NSInteger status = 0;
   NSError *failure = nil;
-  ODataHTTPResponse *response = [_client sendRequest:http error:&failure];
-  NSManagedObject *shadow = [_engine shadowOf:root.name keyText:keyText remote:_remote inContext:context make:YES];
-  if (!response) {
-    if (failure.code != ODataIncrementalStoreErrorHTTP + 404) {
-      if (error) *error = failure;
-      return NO;
-    }
-    // Deleted there: made again, whole.
-    [context deleteObject:shadow];
-    [entry setValue:@(ODataSyncOperationInsert) forKey:@"operation"];
-    [entry setValue:nil forKey:@"properties"];
-    return YES;
+  NSDictionary *row = [down rowOfEntity:root key:key status:&status error:&failure];
+  if (!row && status != 404) {
+    if (error) *error = failure;
+    return NO;
   }
-  NSString *etag = ODSHeader(response.headers, @"ETag");
-  if (!etag) {
-    id json = [response JSONWithError:NULL];
-    etag = [json isKindOfClass:[NSDictionary class]] ? json[@"@odata.etag"] : nil;
+  NSString *etag = [row[@"@odata.etag"] isKindOfClass:[NSString class]] ? row[@"@odata.etag"] : nil;
+  [_engine settleConflictOf:root key:key entry:entry remoteRow:row etag:etag remote:_remote context:context];
+  return YES;
+}
+
+// Conflicts given up: the remote's version read again, and taken.
+- (BOOL)refreshIn:(NSManagedObjectContext *)context error:(NSError **)error
+{
+  NSFetchRequest *fetch = [NSFetchRequest fetchRequestWithEntityName:ODSOutboxEntity];
+  fetch.predicate = [NSPredicate predicateWithFormat:@"remote == %@ AND operation == %d", _remote.identifier, (int)ODataSyncOperationRefresh];
+  ODSDownloader *down = [[ODSDownloader alloc] initWithEngine:_engine remote:_remote];
+  for (NSManagedObject *entry in [context executeFetchRequest:fetch error:NULL]) {
+    NSEntityDescription *root = _codec.model.entitiesByName[[entry valueForKey:@"entityType"]];
+    NSDictionary *key = ODSUnarchive([entry valueForKey:@"key"]);
+    if (root && key && ![down refreshObjectOfEntity:root key:key context:context error:error]) return NO;
+    [context deleteObject:entry];
   }
-  [shadow setValue:etag forKey:@"etag"];
   return YES;
 }
 
@@ -370,12 +357,12 @@ static NSString *ODSHeader(NSDictionary *headers, NSString *name)
   [entry setValue:@([[entry valueForKey:@"attempts"] integerValue] + 1) forKey:@"attempts"];
   if ((status >= 200 && status < 300) || (status == 404 && operation == ODataSyncOperationDelete)) {
     if (both) {
-      NSManagedObject *shadow = [_engine shadowOf:entityName keyText:keyText remote:_remote inContext:context make:operation != ODataSyncOperationDelete];
-      if (operation == ODataSyncOperationDelete) {
-        if (shadow) [context deleteObject:shadow];
-      } else {
-        [shadow setValue:ODSHeader(headers, @"ETag") forKey:@"etag"];
-      }
+      // What both have now: the device's version.
+      NSEntityDescription *root = _codec.model.entitiesByName[entityName];
+      NSManagedObject *object = operation == ODataSyncOperationDelete ? nil
+          : [_codec objectOfEntity:root key:ODSUnarchive([entry valueForKey:@"key"]) inContext:context];
+      [_engine agreeOn:object ? [_codec rowOfObject:object] : nil etag:ODSHeader(headers, @"ETag") of:root keyText:keyText
+                remote:_remote context:context];
     }
     [context deleteObject:entry];
     [_engine count:@"uploaded" by:1];
@@ -404,6 +391,7 @@ static NSString *ODSHeader(NSDictionary *headers, NSString *name)
 
 - (BOOL)sendIn:(NSManagedObjectContext *)context error:(NSError **)error
 {
+  if (![self refreshIn:context error:error]) return NO;
   NSUInteger size = MAX(_remote.batchSize, 1u);
   for (;;) {
     NSMutableArray *entries = [NSMutableArray array];
