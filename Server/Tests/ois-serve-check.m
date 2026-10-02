@@ -653,7 +653,7 @@ static NSAttributeDescription *OISSyncAttribute(NSString *name, NSAttributeType 
   return attribute;
 }
 
-// Assets (down) and Inspections (up, each of an asset), as docs/offline-sync.md has them.
+// Assets (down), Inspections (up, each of an asset) and Tasks (both), as docs/offline-sync.md has them.
 static NSManagedObjectModel *OISSyncModel(void)
 {
   NSEntityDescription *asset = [[NSEntityDescription alloc] init];
@@ -678,8 +678,14 @@ static NSManagedObjectModel *OISSyncModel(void)
   inspections.inverseRelationship = ofAsset;
   asset.properties = @[ OISSyncAttribute(@"id", NSInteger32AttributeType, YES), OISSyncAttribute(@"name", NSStringAttributeType, NO), inspections ];
   inspection.properties = @[ OISSyncAttribute(@"id", NSStringAttributeType, YES), OISSyncAttribute(@"note", NSStringAttributeType, NO), ofAsset ];
+  NSEntityDescription *task = [[NSEntityDescription alloc] init];
+  task.name = @"Task";
+  task.managedObjectClassName = @"NSManagedObject";
+  task.userInfo = @{ @"OData.entitySet": @"Tasks", ODataSyncDirectionKey: @"both", ODataSyncModifiedKey: @"modified" };
+  task.properties = @[ OISSyncAttribute(@"id", NSStringAttributeType, YES), OISSyncAttribute(@"title", NSStringAttributeType, NO),
+                       OISSyncAttribute(@"done", NSBooleanAttributeType, NO), OISSyncAttribute(@"modified", NSStringAttributeType, NO) ];
   NSManagedObjectModel *model = [[NSManagedObjectModel alloc] init];
-  model.entities = @[ asset, inspection ];
+  model.entities = @[ asset, inspection, task ];
   return model;
 }
 
@@ -1380,6 +1386,74 @@ int main(int argc, const char *argv[])
               [renamed isEqual:@[ @"Pump", @"Valve (new)" ]] && deleted.count == 0, @"offline-sync",
               [NSString stringWithFormat:@"%@ | down %@, up %@, renamed %@, deleted %@ (%@)", failure.localizedDescription ?: @"", assets, uploaded,
                                          renamed, deleted, engine.lastResult]);
+        // Conflicts on a both entity: the device's saves stamped by its clock
+        // (FreeCoreData's will-save notification), a three-way merge on
+        // download, and a 412 on upload settled by the later stamp.
+        failure = nil;
+        [engine setResolver:[[ODataSyncMergeFields alloc] initWithFallback:[[ODataSyncLastWriterWins alloc] init]] forEntityName:@"Task"];
+        NSString *task = [NSUUID UUID].UUIDString;
+        OISSyncWrite(device, ^(NSManagedObjectContext *context) {
+          NSManagedObject *made = [NSEntityDescription insertNewObjectForEntityForName:@"Task" inManagedObjectContext:context];
+          [made setValue:task forKey:@"id"];
+          [made setValue:@"Check pump" forKey:@"title"];
+          [made setValue:@NO forKey:@"done"];
+        });
+        NSString *stamp = OISSyncValues(device, @"Task", @"modified").firstObject;
+        BOOL made = [engine syncWithError:&failure];
+        OISSyncWrite(served, ^(NSManagedObjectContext *context) {
+          [OISSyncObject(context, @"Task", task) setValue:@"Check pump today" forKey:@"title"];
+        });
+        OISSyncWrite(device, ^(NSManagedObjectContext *context) {
+          [OISSyncObject(context, @"Task", task) setValue:@YES forKey:@"done"];
+        });
+        BOOL merged = made && [engine syncWithError:&failure];
+        NSArray *mergedHere = @[ OISSyncValues(device, @"Task", @"title"), OISSyncValues(device, @"Task", @"done") ];
+        NSArray *mergedThere = @[ OISSyncValues(served, @"Task", @"title"), OISSyncValues(served, @"Task", @"done") ];
+        OISSyncWrite(served, ^(NSManagedObjectContext *context) {
+          NSManagedObject *there = OISSyncObject(context, @"Task", task);
+          [there setValue:@"Service's, earlier" forKey:@"title"];
+          [there setValue:@"0000000000000001.0000.service0" forKey:@"modified"];
+        });
+        OISSyncWrite(device, ^(NSManagedObjectContext *context) {
+          [OISSyncObject(context, @"Task", task) setValue:@"Device's, later" forKey:@"title"];
+        });
+        BOOL later = merged && [engine uploadToRemote:engine.remotes.firstObject error:&failure];
+        NSArray *titles = @[ OISSyncValues(device, @"Task", @"title"), OISSyncValues(served, @"Task", @"title") ];
+        NSArray *expected = @[ @[ @"Check pump today" ], @[ @YES ] ];
+        NSArray *latest = @[ @"Device's, later" ];
+        check(made && merged && later && [stamp hasSuffix:[engine.replicaID substringToIndex:8]] && [mergedHere isEqual:expected] &&
+              [mergedThere isEqual:expected] && [titles isEqual:@[ latest, latest ]], @"offline-sync-conflicts",
+              [NSString stringWithFormat:@"%@ | stamp %@, merged %@ / %@, later %@ (%@)", failure.localizedDescription ?: @"", stamp, mergedHere,
+                                         mergedThere, titles, engine.lastResult]);
+        // Peers over HTTP: a device without the service serves its store
+        // (ODataSyncPeerServer); this one syncs with it, and passes its
+        // inspection on to the service, and this one's task to it.
+        failure = nil;
+        NSManagedObjectModel *basementModel = OISSyncModel();
+        [ODataSyncEngine addBookkeepingToModel:basementModel configuration:nil];
+        NSPersistentStoreCoordinator *basement = OISSyncStore(basementModel, &failure);
+        ODataSyncEngine *offline = basement ? [[ODataSyncEngine alloc] initWithCoordinator:basement] : nil;
+        ODataSyncPeerServer *peers = offline ? [[ODataSyncPeerServer alloc] initWithEngine:offline host:@"127.0.0.1" port:OISFreePort()] : nil;
+        NSString *carried = [NSUUID UUID].UUIDString;
+        if (basement) {
+          OISSyncWrite(basement, ^(NSManagedObjectContext *context) {
+            NSManagedObject *inspection = [NSEntityDescription insertNewObjectForEntityForName:@"Inspection" inManagedObjectContext:context];
+            [inspection setValue:carried forKey:@"id"];
+            [inspection setValue:@"From the basement" forKey:@"note"];
+          });
+        }
+        BOOL listening = [peers start:&failure];
+        if (listening) [engine addRemote:[ODataSyncRemote peerWithServiceRoot:peers.serviceRoot]];
+        // The service, then the peer; the service again with what the peer gave.
+        BOOL relayed = listening && [engine syncWithError:&failure] && [engine syncWithError:&failure];
+        NSArray *notes = OISSyncValues(device, @"Inspection", @"note");
+        NSArray *atService = OISSyncValues(served, @"Inspection", @"note");
+        NSArray *atPeer = basement ? OISSyncValues(basement, @"Task", @"title") : @[];
+        check(relayed && [notes containsObject:@"From the basement"] && [atService isEqual:@[ @"From the basement" ]] &&
+              [atPeer isEqual:latest], @"offline-sync-peers",
+              [NSString stringWithFormat:@"%@ | here %@, at the service %@, task at the peer %@ (%@)", failure.localizedDescription ?: @"", notes,
+                                         atService, atPeer, engine.lastResult]);
+        [peers stop];
         [syncServer stop];
       } else {
         check(NO, @"offline-sync", failure.localizedDescription ?: @"no store");

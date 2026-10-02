@@ -36,6 +36,11 @@
 // Keys and entity sets are the mapper's (OData.key, OData.entitySet). Keep
 // an up or both entity's key attributes in history on deletion
 // (preservesValueInHistoryOnDeletion): a deletion is sent by its key.
+//
+// Devices sync with each other too: one serves its store
+// (ODataSyncPeerServer.h), another adds it as a peer remote. What came
+// from one remote is passed on to the others (a peer's work to the
+// service, the service's to a peer), but not back to where it came from.
 
 #pragma once
 #import <Foundation/Foundation.h>
@@ -52,9 +57,13 @@ FOUNDATION_EXPORT NSString * const ODataSyncModifiedKey;     // @"ODataSync.modi
 FOUNDATION_EXPORT NSString * const ODataSyncErrorDomain;
 // The transaction author of what the engine writes: what came down from a
 // remote (ODataSyncDownAuthorPrefix and the remote's identifier), and its
-// own bookkeeping. What they write is never sent up.
+// own bookkeeping. What came from a remote is not sent back to it, and is
+// passed on to others only to or from a peer; bookkeeping is never sent.
 FOUNDATION_EXPORT NSString * const ODataSyncDownAuthorPrefix;  // @"ODataSync.down."
 FOUNDATION_EXPORT NSString * const ODataSyncBookkeepingAuthor; // @"ODataSync.bookkeeping"
+// The request header a device names its replica in, to a peer: what the
+// peer is sent is written as coming from that replica.
+FOUNDATION_EXPORT NSString * const ODataSyncReplicaHeader;     // @"ODataSync-Replica"
 
 typedef NS_ENUM(NSInteger, ODataSyncDirection) {
   ODataSyncDirectionNone = 0,
@@ -70,13 +79,21 @@ typedef NS_ENUM(NSInteger, ODataSyncConflictPolicy) {
   ODataSyncPolicyLocalWins,       // the device's: sent again over the service's
 };
 
-// A service to sync with.
+// A service to sync with, or a peer: another device's store, served by
+// its ODataSyncPeerServer.
 @interface ODataSyncRemote : NSObject
 + (instancetype)remoteWithServiceRoot:(NSURL *)serviceRoot;
+// A peer, at the service root its peer server gives (which ends in its
+// replica ID). A peer is no authority: from it come new objects of down
+// entities and changes of up and both entities, never deletions; up
+// entities go both ways with it, conflicts and all.
++ (instancetype)peerWithServiceRoot:(NSURL *)serviceRoot;
 - (instancetype)initWithServiceRoot:(NSURL *)serviceRoot NS_DESIGNATED_INITIALIZER;
 - (instancetype)init NS_UNAVAILABLE;
 @property (nonatomic, readonly, copy) NSURL *serviceRoot;
-// What its state is kept under. Default: the service root.
+@property (nonatomic, readonly, getter=isPeer) BOOL peer;
+// What its state is kept under, and what came from it is written as.
+// Default: the service root; a peer's replica ID.
 @property (nonatomic, copy) NSString *identifier;
 // Credentials, headers, timeouts, as ODataIncrementalStore takes them.
 @property (nonatomic, strong) ODataConfiguration *configuration;

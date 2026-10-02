@@ -73,8 +73,8 @@ libHTTPServerKit.so: $(HOST_SRCS:.m=.o) $(GCDWebServer_OBJS) libOTelKit.so
 libODataService.so: $(SERVICE_SRCS:.m=.o) libODataKit.so libHTTPServerKit.so
 	$(CC) -shared -o $@ $(SERVICE_SRCS:.m=.o) -L. -lHTTPServerKit -lOTelKit -lODataKit $(GNUSTEP_LIBS)
 
-libODataSync.so: $(SYNC_SRCS:.m=.o) libODataIncrementalStore.so libOTelKit.so libODataKit.so
-	$(CC) -shared -o $@ $(SYNC_SRCS:.m=.o) -L. -lODataIncrementalStore -lOTelKit -lODataKit $(GNUSTEP_LIBS)
+libODataSync.so: $(SYNC_SRCS:.m=.o) libODataService.so libODataIncrementalStore.so libOTelKit.so libODataKit.so
+	$(CC) -shared -o $@ $(SYNC_SRCS:.m=.o) -L. -lODataService -lHTTPServerKit -lODataIncrementalStore -lOTelKit -lODataKit $(GNUSTEP_LIBS)
 
 $(SRC_DIR)/ODataSync/%.o: $(SRC_DIR)/ODataSync/%.m
 	$(CC) $(OBJCFLAGS) -I$(SRC_DIR)/ODataSync -c $< -o $@

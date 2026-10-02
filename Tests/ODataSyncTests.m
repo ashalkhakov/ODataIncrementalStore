@@ -126,6 +126,7 @@ static NSManagedObjectModel *OSTModel(void)
   ODataSyncEngine *_engine;
   ODataSyncRemote *_remote;
   OSTDelegate *_delegate;
+  NSMutableArray<ODataSyncPeerServer *> *_peerServers;
 }
 
 - (NSPersistentStoreCoordinator *)coordinatorWithModel:(NSManagedObjectModel *)model
@@ -142,6 +143,7 @@ static NSManagedObjectModel *OSTModel(void)
 - (void)setUp
 {
   _files = [NSMutableArray array];
+  _peerServers = [NSMutableArray array];
   _server = [self coordinatorWithModel:OSTModel()];
   [self atServer:^(NSManagedObjectContext *context) {
     for (NSArray *a in @[ @[ @1, @"Pump", @"North" ], @[ @2, @"Valve", @"North" ], @[ @3, @"Boiler", @"South" ] ]) {
@@ -574,6 +576,19 @@ static NSManagedObjectModel *OSTModel(void)
   XCTAssertEqualObjects([self values:@"title" of:@"Task" in:_server], (@[ @"Still needed" ]), @"the device wins: made again there");
 }
 
+- (void)testTheAgreedVersionReadAgainIsNoConflict
+{
+  // The delta link was made before this device's upload made the task: the
+  // next read gives the task back, as agreed; the change made since stands.
+  NSString *task = [self makeTask:@"Check pump"];
+  [self sync];
+  [self retitle:task to:@"Check pump today" in:_device];
+  [self sync];
+  XCTAssertEqual(_engine.lastResult.conflicts, 0u, @"%@", _engine.lastResult);
+  XCTAssertEqualObjects([self values:@"title" of:@"Task" in:_server], (@[ @"Check pump today" ]));
+  XCTAssertEqualObjects([self values:@"title" of:@"Task" in:_device], (@[ @"Check pump today" ]));
+}
+
 - (void)testAConflictMetOnUpload
 {
   // Changed there after this side last read: met by the PATCH's If-Match (412).
@@ -585,6 +600,179 @@ static NSManagedObjectModel *OSTModel(void)
   XCTAssertTrue([_engine uploadToRemote:_remote error:&error], @"%@", error);
   XCTAssertEqualObjects([self values:@"title" of:@"Task" in:_server], (@[ @"Server's" ]));
   XCTAssertEqualObjects([self values:@"title" of:@"Task" in:_device], (@[ @"Server's" ]), @"the remote wins");
+}
+
+#pragma mark Peers
+
+// Another device: its store and engine, with the service as a remote when asked.
+- (ODataSyncEngine *)deviceWithService:(BOOL)service store:(NSPersistentStoreCoordinator **)store
+{
+  NSManagedObjectModel *model = OSTModel();
+  [ODataSyncEngine addBookkeepingToModel:model configuration:nil];
+  *store = [self coordinatorWithModel:model];
+  ODataSyncEngine *engine = [[ODataSyncEngine alloc] initWithCoordinator:*store];
+  if (service) {
+    ODataSyncRemote *remote = [ODataSyncRemote remoteWithServiceRoot:[NSURL URLWithString:@"http://example.test/odata/"]];
+    remote.transport = _service;
+    [engine addRemote:remote];
+  }
+  return engine;
+}
+
+// The engine's store as a peer of the other's, in the process.
+- (ODataSyncRemote *)peerOf:(ODataSyncEngine *)engine
+{
+  ODataSyncPeerServer *server = [[ODataSyncPeerServer alloc] initWithEngine:engine host:@"peer.test" port:8642];
+  [_peerServers addObject:server];
+  ODataSyncRemote *peer = [ODataSyncRemote peerWithServiceRoot:server.serviceRoot];
+  peer.transport = server.service;
+  return peer;
+}
+
+- (void)sync:(ODataSyncEngine *)engine
+{
+  NSError *error = nil;
+  XCTAssertTrue([engine syncWithError:&error], @"%@", error);
+}
+
+- (void)testAPeerCarriesInspectionsToTheService
+{
+  // The basement: a device that cannot reach the service.
+  NSPersistentStoreCoordinator *basement = nil;
+  ODataSyncEngine *offline = [self deviceWithService:NO store:&basement];
+  ODataSyncRemote *peer = [self peerOf:offline];
+  XCTAssertTrue(peer.peer);
+  XCTAssertEqualObjects(peer.identifier, offline.replicaID, @"a peer's root names its replica");
+  // This device reaches both: the peer first, then the service.
+  NSPersistentStoreCoordinator *carrying = nil;
+  ODataSyncEngine *carrier = [self deviceWithService:NO store:&carrying];
+  _device = carrying;
+  [carrier addRemote:peer];
+  ODataSyncRemote *service = [ODataSyncRemote remoteWithServiceRoot:[NSURL URLWithString:@"http://example.test/odata/"]];
+  service.transport = _service;
+  [carrier addRemote:service];
+
+  NSString *identifier = [NSUUID UUID].UUIDString;
+  [self in:basement do:^(NSManagedObjectContext *context) {
+    NSManagedObject *inspection = [NSEntityDescription insertNewObjectForEntityForName:@"Inspection" inManagedObjectContext:context];
+    [inspection setValue:identifier forKey:@"id"];
+    [inspection setValue:@"Leaks" forKey:@"note"];
+  }];
+  [self sync:carrier];
+  XCTAssertEqualObjects([self values:@"note" of:@"Inspection" in:_device], (@[ @"Leaks" ]), @"from the peer");
+  XCTAssertEqualObjects([self values:@"note" of:@"Inspection" in:_server], (@[ @"Leaks" ]), @"passed on to the service");
+  XCTAssertEqualObjects([self values:@"name" of:@"Asset" in:_device], (@[ @"Pump", @"Valve", @"Boiler" ]));
+  [self sync:carrier];
+  XCTAssertEqual(carrier.lastResult.uploaded, 0u, @"nothing sent back, nor again: %@", carrier.lastResult);
+  XCTAssertEqual(carrier.lastResult.downloaded, 0u, @"%@", carrier.lastResult);
+
+  // A change made there later comes the same way.
+  [self in:basement do:^(NSManagedObjectContext *context) {
+    [[self object:@"Inspection" id:identifier in:context] setValue:@"Leaks badly" forKey:@"note"];
+  }];
+  [self sync:carrier];
+  XCTAssertEqualObjects([self values:@"note" of:@"Inspection" in:_server], (@[ @"Leaks badly" ]));
+}
+
+- (void)testTheServicesDataAndAPeersEditTravelOnce
+{
+  // This device reaches the service; the other only this one.
+  NSString *task = [self makeTask:@"Check pump"];
+  [self sync];
+  NSPersistentStoreCoordinator *other = nil;
+  ODataSyncEngine *offline = [self deviceWithService:NO store:&other];
+  [offline addRemote:[self peerOf:_engine]];
+  [self sync:offline];
+  XCTAssertEqualObjects([self values:@"name" of:@"Asset" in:other], (@[ @"Pump", @"Valve", @"Boiler" ]), @"the service's, from the peer");
+  XCTAssertEqualObjects([self values:@"title" of:@"Task" in:other], (@[ @"Check pump" ]));
+
+  [self retitle:task to:@"Check pump today" in:other];
+  [self sync:offline];
+  XCTAssertEqualObjects([self values:@"title" of:@"Task" in:_device], (@[ @"Check pump today" ]), @"sent to the peer");
+  [self sync];
+  XCTAssertEqualObjects([self values:@"title" of:@"Task" in:_server], (@[ @"Check pump today" ]), @"passed on to the service");
+
+  // Nothing goes round again.
+  [self sync:offline];
+  XCTAssertEqual(offline.lastResult.uploaded + offline.lastResult.downloaded, 0u, @"%@", offline.lastResult);
+  [self sync];
+  XCTAssertEqual(_engine.lastResult.uploaded + _engine.lastResult.downloaded, 0u, @"%@", _engine.lastResult);
+
+  // The service's change reaches the other through this device.
+  [self retitle:task to:@"Check pump (service)" in:_server];
+  [self sync];
+  [self sync:offline];
+  XCTAssertEqualObjects([self values:@"title" of:@"Task" in:other], (@[ @"Check pump (service)" ]));
+  [self sync];
+  XCTAssertEqual(_engine.lastResult.uploaded, 0u, @"not sent back to the service: %@", _engine.lastResult);
+}
+
+- (void)testDeletionsGoOnlyFromWhereTheyWereMade
+{
+  NSString *task = [self makeTask:@"Check pump"];
+  [self sync];
+  NSPersistentStoreCoordinator *other = nil;
+  ODataSyncEngine *offline = [self deviceWithService:NO store:&other];
+  [offline addRemote:[self peerOf:_engine]];
+  [self sync:offline];
+
+  // The service's deletion is this device's to know; the peer's copy stays
+  // until it hears from the service itself.
+  [self atServer:^(NSManagedObjectContext *context) {
+    [context deleteObject:[self object:@"Asset" id:@2 in:context]];
+  }];
+  [self sync];
+  XCTAssertEqualObjects([self values:@"name" of:@"Asset" in:_device], (@[ @"Pump", @"Boiler" ]));
+  [self sync:offline];
+  XCTAssertEqualObjects([self values:@"name" of:@"Asset" in:other], (@[ @"Pump", @"Valve", @"Boiler" ]), @"a peer deletes nothing");
+
+  // The other's own deletion goes to the peer, which does not pass it on;
+  // the other sends it to the service when it can.
+  [self in:other do:^(NSManagedObjectContext *context) {
+    [context deleteObject:[self object:@"Task" id:task in:context]];
+  }];
+  [self sync:offline];
+  XCTAssertEqual([self values:@"title" of:@"Task" in:_device].count, 0u, @"deleted at the peer");
+  [self sync];
+  XCTAssertEqualObjects([self values:@"title" of:@"Task" in:_server], (@[ @"Check pump" ]), @"not passed on");
+}
+
+- (void)testLastWriterWinsAcrossPeers
+{
+  NSString *task = [self makeTask:@"Check pump"];
+  [self sync];
+  NSPersistentStoreCoordinator *other = nil;
+  ODataSyncEngine *offline = [self deviceWithService:NO store:&other];
+  [offline addRemote:[self peerOf:_engine]];
+  [offline setResolver:[[ODataSyncLastWriterWins alloc] init] forEntityName:@"Task"];
+  [_engine setResolver:[[ODataSyncLastWriterWins alloc] init] forEntityName:@"Task"];
+  [self sync:offline];
+
+  [self retitle:task to:@"This device's" in:_device];
+  [NSThread sleepForTimeInterval:0.01];
+  [self retitle:task to:@"The other's, later" in:other];
+  NSString *stamp = [self values:@"modified" of:@"Task" in:other].firstObject;
+  [self sync:offline];
+  XCTAssertGreaterThan(offline.lastResult.conflicts, 0u, @"%@", offline.lastResult);
+  XCTAssertEqualObjects([self values:@"title" of:@"Task" in:other], (@[ @"The other's, later" ]));
+  XCTAssertEqualObjects([self values:@"title" of:@"Task" in:_device], (@[ @"The other's, later" ]));
+  XCTAssertEqualObjects([self values:@"modified" of:@"Task" in:_device].firstObject, stamp, @"its stamp kept by the peer");
+  [self sync];
+  XCTAssertEqualObjects([self values:@"title" of:@"Task" in:_server], (@[ @"The other's, later" ]), @"and passed on");
+}
+
+- (void)testAPeerServesTheSyncedSetsOnly
+{
+  ODataSyncPeerServer *server = [[ODataSyncPeerServer alloc] initWithEngine:_engine host:@"peer.test" port:8642];
+  NSString *metadata = [server.service metadataXMLForVersion:@"4.01"];
+  XCTAssertTrue([metadata containsString:@"Name=\"Tasks\""], @"%@", metadata);
+  XCTAssertTrue([metadata containsString:@"Name=\"Assets\""]);
+  XCTAssertFalse([metadata containsString:@"ODSOutboxEntry"], @"bookkeeping is not served");
+  XCTAssertFalse([metadata containsString:@"ODSShadow"]);
+  NSString *path = [NSString stringWithFormat:@"/sync/%@/", _engine.replicaID];
+  XCTAssertTrue([server.serviceRoot.absoluteString hasSuffix:path]);
+  XCTAssertFalse([server.service handlerForEntitySet:@"Assets"].allowsInsert, @"down sets are read only");
+  XCTAssertTrue([server.service handlerForEntitySet:@"Inspections"].allowsUpsert);
 }
 
 @end

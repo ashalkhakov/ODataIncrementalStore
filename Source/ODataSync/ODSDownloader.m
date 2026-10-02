@@ -4,7 +4,9 @@
 // Down (docs/offline-sync.md, 4): each down and both set read whole the
 // first time, with change tracking, and by its delta link after; applied
 // by key, in a context writing as the remote's down author, and saved with
-// the new delta link.
+// the new delta link. A peer is no authority (docs/offline-sync.md, 7): its
+// removals and the rows it lacks delete nothing here, and its rows of a
+// down entity only add what is missing.
 
 #import "ODSInternal.h"
 #import <ODataKit/ODataError.h>
@@ -38,7 +40,7 @@ static const NSInteger ODSGone = 410;
 
 - (NSArray<NSEntityDescription *> *)entities
 {
-  return [_codec rootEntitiesGoing:[NSSet setWithObjects:@(ODataSyncDirectionDown), @(ODataSyncDirectionBoth), nil]];
+  return [_codec rootEntitiesGoing:[NSSet setWithObjects:@(ODataSyncDirectionDown), @(ODataSyncDirectionBoth), nil] toward:_remote];
 }
 
 #pragma mark Requests
@@ -49,6 +51,8 @@ static const NSInteger ODSGone = 410;
   NSMutableURLRequest *request = [NSMutableURLRequest requestWithURL:url];
   [request setValue:@"application/json" forHTTPHeaderField:@"Accept"];
   if (prefer) [request setValue:prefer forHTTPHeaderField:@"Prefer"];
+  NSDictionary *headers = [_engine headersFor:_remote];
+  for (NSString *name in headers) [request setValue:headers[name] forHTTPHeaderField:name];
   NSError *failure = nil;
   ODataHTTPResponse *response = [_client sendRequest:request error:&failure];
   if (status) *status = 0;
@@ -125,7 +129,7 @@ static const NSInteger ODSGone = 410;
 - (BOOL)settled:(NSDictionary *)row entity:(NSEntityDescription *)entity key:(NSDictionary *)key etag:(NSString *)etag
         context:(NSManagedObjectContext *)context
 {
-  if ([_codec directionOfEntity:entity] != ODataSyncDirectionBoth) return NO;
+  if ([_codec directionOfEntity:entity toward:_remote] != ODataSyncDirectionBoth) return NO;
   NSString *keyText = [_codec keyTextOf:key entity:entity];
   NSManagedObject *entry = [_engine entryOf:entity.name keyText:keyText remote:_remote inContext:context];
   if (entry && [[entry valueForKey:@"operation"] integerValue] == ODataSyncOperationRefresh) {
@@ -147,6 +151,7 @@ static const NSInteger ODSGone = 410;
              seen:(NSMutableSet<NSString *> *)seen
 {
   NSMutableArray *pairs = [NSMutableArray array];
+  BOOL onlyMissing = _remote.peer && [_codec directionOfEntity:entity] == ODataSyncDirectionDown;
   for (NSDictionary *row in rows) {
     if (![row isKindOfClass:[NSDictionary class]]) continue;
     NSDictionary *key = [_codec keyFromJSON:row entity:entity];
@@ -156,15 +161,24 @@ static const NSInteger ODSGone = 410;
     NSAttributeDescription *stamp = [_codec modifiedAttributeOf:entity];
     if (stamp) [_engine witness:row[[_codec.mapper propertyForAttribute:stamp]]];
     if ([self settled:row entity:entity key:key etag:etag context:context]) continue;
-    NSManagedObject *object = [self objectFor:row entity:entity context:context created:NULL];
+    BOOL created = NO;
+    NSManagedObject *object = [self objectFor:row entity:entity context:context created:&created];
+    if (onlyMissing && !created) continue;
     if (object) [pairs addObject:@[ object, row ]];
   }
-  for (NSArray *pair in pairs) [_codec applyJSON:pair[1] toObject:pair[0]];
-  [_engine count:@"downloaded" by:pairs.count];
+  NSUInteger changed = 0;
+  for (NSArray *pair in pairs) {
+    NSManagedObject *object = pair[0];
+    [_codec applyJSON:pair[1] toObject:object];
+    // A row as it is here already (a delta's echo, a peer's copy) is no download.
+    if (object.isInserted || object.changedValues.count) changed++;
+  }
+  [_engine count:@"downloaded" by:changed];
 }
 
 - (void)removeObjectOfEntity:(NSEntityDescription *)entity key:(NSDictionary *)key context:(NSManagedObjectContext *)context
 {
+  if (_remote.peer) return;
   if ([self settled:nil entity:entity key:key etag:nil context:context]) return;
   NSManagedObject *object = [_codec objectOfEntity:entity key:key inContext:context];
   if (!object) return;
@@ -173,9 +187,10 @@ static const NSInteger ODSGone = 410;
 }
 
 // Local objects of the set the remote did not name, deleted (but not one
-// made here and not sent yet).
+// made here and not sent yet). Not a peer's.
 - (void)sweep:(NSEntityDescription *)entity keeping:(NSSet<NSString *> *)seen context:(NSManagedObjectContext *)context
 {
+  if (_remote.peer) return;
   NSFetchRequest *fetch = [NSFetchRequest fetchRequestWithEntityName:entity.name];
   fetch.includesSubentities = YES;
   for (NSManagedObject *object in [context executeFetchRequest:fetch error:NULL]) {
@@ -363,7 +378,7 @@ static const NSInteger ODSGone = 410;
       if (error) *error = failure;
       return NO;
     }
-    if (object) {
+    if (object && !_remote.peer) {
       [context deleteObject:object];
       [_engine count:@"removed" by:1];
     }

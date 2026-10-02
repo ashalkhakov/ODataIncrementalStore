@@ -215,6 +215,12 @@ NSString * const ODataSyncModifiedKey = @"ODataSync.modified";
     [context deleteObject:entry];
     return;
   }
+  // Only this side changed it (the remote's is the version agreed on, read
+  // again): no conflict; the change goes as it is, over that version.
+  if (base && remoteValues && !ODSChangedNames(base, remoteValues).count) {
+    [self agreeOn:row etag:etag of:root keyText:keyText remote:remote context:context];
+    return;
+  }
   NSArray *all = [[[codec attributesOf:root] valueForKey:@"name"] arrayByAddingObjectsFromArray:[[codec toOnesOf:root] valueForKey:@"name"]];
   NSSet *everything = [NSSet setWithArray:all];
   NSSet *localChanges = base && local ? ODSChangedNames(base, local) : everything;

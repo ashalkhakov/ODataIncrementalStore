@@ -9,6 +9,7 @@ NSString * const ODataSyncDirectionKey = @"ODataSync.direction";
 NSString * const ODataSyncErrorDomain = @"org.gnu.ois.ODataSync";
 NSString * const ODataSyncDownAuthorPrefix = @"ODataSync.down.";
 NSString * const ODataSyncBookkeepingAuthor = @"ODataSync.bookkeeping";
+NSString * const ODataSyncReplicaHeader = @"ODataSync-Replica";
 
 NSString * const ODSRemoteStateEntity = @"ODSRemoteState";
 NSString * const ODSOutboxEntity = @"ODSOutboxEntry";
@@ -42,6 +43,15 @@ id ODSUnarchive(NSData *data)
   return [[self alloc] initWithServiceRoot:serviceRoot];
 }
 
++ (instancetype)peerWithServiceRoot:(NSURL *)serviceRoot
+{
+  ODataSyncRemote *remote = [[self alloc] initWithServiceRoot:serviceRoot];
+  remote->_peer = YES;
+  NSString *replica = serviceRoot.path.lastPathComponent;
+  if (replica.length) remote.identifier = replica;
+  return remote;
+}
+
 - (instancetype)initWithServiceRoot:(NSURL *)serviceRoot
 {
   self = [super init];
@@ -56,7 +66,7 @@ id ODSUnarchive(NSData *data)
 
 - (NSString *)description
 {
-  return [NSString stringWithFormat:@"<ODataSyncRemote %@>", _identifier];
+  return [NSString stringWithFormat:@"<ODataSyncRemote %@%@>", _peer ? @"peer " : @"", _identifier];
 }
 
 @end
@@ -145,13 +155,19 @@ id ODSUnarchive(NSData *data)
   return ODataSyncDirectionNone;
 }
 
-- (NSArray<NSEntityDescription *> *)rootEntitiesGoing:(NSSet<NSNumber *> *)directions
+- (ODataSyncDirection)directionOfEntity:(NSEntityDescription *)entity toward:(ODataSyncRemote *)remote
+{
+  ODataSyncDirection direction = [self directionOfEntity:entity];
+  return remote.peer && direction == ODataSyncDirectionUp ? ODataSyncDirectionBoth : direction;
+}
+
+- (NSArray<NSEntityDescription *> *)rootEntitiesGoing:(NSSet<NSNumber *> *)directions toward:(ODataSyncRemote *)remote
 {
   NSMutableArray *roots = [NSMutableArray array];
   for (NSEntityDescription *entity in [self.model.entities sortedArrayUsingComparator:^NSComparisonResult(NSEntityDescription *a, NSEntityDescription *b) {
          return [a.name compare:b.name];
        }]) {
-    if (entity.superentity || ![directions containsObject:@([self directionOfEntity:entity])]) continue;
+    if (entity.superentity || ![directions containsObject:@([self directionOfEntity:entity toward:remote])]) continue;
     if (![self.mapper keyAttributesForEntity:entity].count) continue;
     [roots addObject:entity];
   }
@@ -696,6 +712,19 @@ static NSEntityDescription *ODSEntity(NSString *name, NSArray<NSAttributeDescrip
   ODataClient *client = [[ODataClient alloc] initWithConfiguration:configuration];
   client.transport = remote.transport;
   return client;
+}
+
+- (NSDictionary<NSString *, NSString *> *)headersFor:(ODataSyncRemote *)remote
+{
+  return remote.peer ? @{ ODataSyncReplicaHeader: self.replicaID } : @{};
+}
+
+- (ODataSyncRemote *)remoteWithIdentifier:(NSString *)identifier
+{
+  for (ODataSyncRemote *remote in self.remotes) {
+    if ([remote.identifier isEqualToString:identifier]) return remote;
+  }
+  return nil;
 }
 
 - (NSManagedObjectContext *)contextWritingAs:(NSString *)author

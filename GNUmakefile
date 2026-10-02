@@ -221,17 +221,19 @@ ODataSync_OBJC_FILES = \
 	Source/ODataSync/ODSConflicts.m \
 	Source/ODataSync/ODSDownloader.m \
 	Source/ODataSync/ODSUploader.m \
-	Source/ODataSync/ODataSyncEngine.m
+	Source/ODataSync/ODataSyncEngine.m \
+	Source/ODataSync/ODataSyncPeerServer.m
 
 ODataSync_HEADER_FILES = \
 	ODataSync.h \
-	ODataSyncEngine.h
+	ODataSyncEngine.h \
+	ODataSyncPeerServer.h
 
 ODataSync_HEADER_FILES_DIR = Source/ODataSync/include/ODataSync
 ODataSync_HEADER_FILES_INSTALL_DIR = ODataSync
 ODataSync_INCLUDE_DIRS = $(OIS_INCLUDE_DIRS) -ISource/ODataSync
 ODataSync_LIB_DIRS = -L./obj
-ODataSync_LIBRARIES_DEPEND_UPON += -lODataIncrementalStore -lOTelKit -lODataKit -lCoreData -ldispatch
+ODataSync_LIBRARIES_DEPEND_UPON += -lODataService -lHTTPServerKit -lODataIncrementalStore -lOTelKit -lODataKit -lCoreData -ldispatch
 ODataSync_OBJCFLAGS += $(OIS_OBJCFLAGS)
 ODataSync_CFLAGS += -fblocks
 
@@ -241,11 +243,12 @@ include $(GNUSTEP_MAKEFILES)/library.make
 
 # make -j builds the libraries side by side: the client and the service
 # link against libODataKit, so it is built first; the service against
-# libHTTPServerKit too, and the client and the server against libOTelKit.
+# libHTTPServerKit too, and the client and the server against libOTelKit;
+# ODataSync against the client and the service (its peer server).
 ODataIncrementalStore.all.library.variables ODataService.all.library.variables: ODataKit.all.library.variables
 ODataService.all.library.variables: HTTPServerKit.all.library.variables
 HTTPServerKit.all.library.variables ODataIncrementalStore.all.library.variables: OTelKit.all.library.variables
-ODataSync.all.library.variables: ODataIncrementalStore.all.library.variables
+ODataSync.all.library.variables: ODataIncrementalStore.all.library.variables ODataService.all.library.variables
 
 ODATAKIT_SCRIPTS = Scripts
 # What an application builds against the installed libraries with: a

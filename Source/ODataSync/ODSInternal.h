@@ -29,10 +29,12 @@ FOUNDATION_EXPORT id _Nullable ODSUnarchive(NSData *_Nullable data);
 @property (nonatomic, readonly) NSManagedObjectModel *model;
 @property (nonatomic, readonly) ODataPropertyMapper *mapper;
 - (ODataSyncDirection)directionOfEntity:(NSEntityDescription *)entity;
+// The way it goes with this remote: with a peer, up is both.
+- (ODataSyncDirection)directionOfEntity:(NSEntityDescription *)entity toward:(nullable ODataSyncRemote *)remote;
 - (NSEntityDescription *)rootOf:(NSEntityDescription *)entity;
-// Root entities going these ways, parents before children (an entity
-// before those whose to-ones point to it).
-- (NSArray<NSEntityDescription *> *)rootEntitiesGoing:(NSSet<NSNumber *> *)directions;
+// Root entities going these ways (with the remote), parents before
+// children (an entity before those whose to-ones point to it).
+- (NSArray<NSEntityDescription *> *)rootEntitiesGoing:(NSSet<NSNumber *> *)directions toward:(nullable ODataSyncRemote *)remote;
 // The synced attributes (served, not computed, no dynamic bag) and to-one
 // relationships to synced entities.
 - (NSArray<NSAttributeDescription *> *)attributesOf:(NSEntityDescription *)entity;
@@ -86,6 +88,10 @@ FOUNDATION_EXPORT NSSet<NSString *> *ODSChangedNames(NSDictionary *_Nullable bef
 @property (nonatomic, readonly) OTTracer *tracer;
 // A client of the remote: its configuration, at 4.01, its transport.
 - (ODataClient *)clientOf:(ODataSyncRemote *)remote;
+// The headers every request to the remote has: to a peer, this replica.
+- (NSDictionary<NSString *, NSString *> *)headersFor:(ODataSyncRemote *)remote;
+// The remote added with this identifier.
+- (nullable ODataSyncRemote *)remoteWithIdentifier:(NSString *)identifier;
 // A new private context on the coordinator, writing as this author.
 - (NSManagedObjectContext *)contextWritingAs:(NSString *)author;
 // The remote's state object (made when there is none), in this context.

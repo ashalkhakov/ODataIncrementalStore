@@ -33,7 +33,7 @@ static const NSInteger ODSConflictRounds = 3;
   _remote = remote;
   _codec = engine.codec;
   _client = [engine clientOf:remote];
-  _entities = [_codec rootEntitiesGoing:[NSSet setWithObjects:@(ODataSyncDirectionUp), @(ODataSyncDirectionBoth), nil]];
+  _entities = [_codec rootEntitiesGoing:[NSSet setWithObjects:@(ODataSyncDirectionUp), @(ODataSyncDirectionBoth), nil] toward:_remote];
   return self;
 }
 
@@ -118,19 +118,32 @@ static const NSInteger ODSConflictRounds = 3;
   NSMutableSet<NSManagedObjectID *> *fleeting = [NSMutableSet set];
   for (NSPersistentHistoryTransaction *transaction in result.result) {
     last = transaction.token ?: last;
-    // What the engine wrote (from a remote, or its own state) is not sent.
-    if ([transaction.author hasPrefix:@"ODataSync."]) continue;
+    BOOL relayed = NO;
+    if ([transaction.author hasPrefix:@"ODataSync."]) {
+      // What came from this remote is not sent back, nor the engine's own
+      // state; what came from another is passed on when either is a peer.
+      if (![transaction.author hasPrefix:ODataSyncDownAuthorPrefix]) continue;
+      NSString *source = [transaction.author substringFromIndex:ODataSyncDownAuthorPrefix.length];
+      if ([source isEqualToString:_remote.identifier]) continue;
+      ODataSyncRemote *from = [_engine remoteWithIdentifier:source];
+      // One that is not among the remotes sent it to this device's peer server: a peer.
+      if (!_remote.peer && from && !from.peer) continue;
+      relayed = YES;
+    }
     for (NSPersistentHistoryChange *change in transaction.changes) {
       NSEntityDescription *entity = change.changedObjectID.entity;
       if ([bookkeeping containsObject:entity.name]) continue;
       ODataSyncDirection direction = [_codec directionOfEntity:entity];
       if (direction == ODataSyncDirectionDown) {
-        [_engine ignoredLocalChangeTo:change.changedObjectID];
+        if (!relayed) [_engine ignoredLocalChangeTo:change.changedObjectID];
         continue;
       }
       if (direction == ODataSyncDirectionNone) continue;
       NSEntityDescription *root = [_codec rootOf:entity];
       if (change.changeType == NSPersistentHistoryChangeTypeDelete) {
+        // A deletion goes only from where it was made: one that came from
+        // a remote may be its scope, not the object's end.
+        if (relayed) continue;
         if ([fleeting containsObject:change.changedObjectID]) continue;
         NSDictionary *key = [_codec keyFromValues:change.tombstone ?: @{} entity:root];
         // Its key was not kept on deletion (preservesValueInHistoryOnDeletion): it cannot be named.
@@ -192,9 +205,9 @@ static const NSInteger ODSConflictRounds = 3;
   }
   ODataSyncOperation operation = [[entry valueForKey:@"operation"] integerValue];
   if (operation == ODataSyncOperationRefresh) return nil;  // read, not sent (-refreshIn:)
-  BOOL both = [_codec directionOfEntity:root] == ODataSyncDirectionBoth;
-  NSString *etag = both ? [[_engine shadowOf:root.name keyText:[entry valueForKey:@"keyText"] remote:_remote inContext:context make:NO]
-                              valueForKey:@"etag"] : nil;
+  BOOL both = [_codec directionOfEntity:root toward:_remote] == ODataSyncDirectionBoth;
+  NSManagedObject *shadow = both ? [_engine shadowOf:root.name keyText:[entry valueForKey:@"keyText"] remote:_remote inContext:context make:NO] : nil;
+  NSString *etag = [shadow valueForKey:@"etag"];
   NSManagedObject *object = operation == ODataSyncOperationDelete ? nil : [_codec objectOfEntity:root key:key inContext:context];
   if (operation != ODataSyncOperationDelete && !object) {
     if (operation == ODataSyncOperationInsert && [[entry valueForKey:@"attempts"] integerValue] == 0) {
@@ -204,7 +217,21 @@ static const NSInteger ODSConflictRounds = 3;
     operation = ODataSyncOperationDelete;
     [entry setValue:@(operation) forKey:@"operation"];
   }
-  NSMutableDictionary *headers = [NSMutableDictionary dictionary];
+  NSData *kept = [shadow valueForKey:@"values"];
+  id agreed = object && kept.length ? [NSJSONSerialization JSONObjectWithData:kept options:0 error:NULL] : nil;
+  if ([agreed isKindOfClass:[NSDictionary class]]) {
+    // What the remote has already (passed on there by another way, or come
+    // from it): not sent again.
+    NSSet *differ = ODSChangedNames([_codec valuesOfObject:object], [_codec valuesFromJSON:agreed entity:root]);
+    if (!differ.count) {
+      [context deleteObject:entry];
+      return nil;
+    }
+    operation = ODataSyncOperationUpdate;
+    [entry setValue:@(operation) forKey:@"operation"];
+    [entry setValue:ODSArchive(differ.allObjects) forKey:@"properties"];
+  }
+  NSMutableDictionary *headers = [[_engine headersFor:_remote] mutableCopy];
   NSMutableDictionary *request = [NSMutableDictionary dictionaryWithObject:[_codec pathOfEntity:root key:key] forKey:@"url"];
   if (operation == ODataSyncOperationDelete) {
     request[@"method"] = @"DELETE";
@@ -279,6 +306,8 @@ static NSString *ODSHeader(NSDictionary *headers, NSString *name)
   [http setValue:@"application/json" forHTTPHeaderField:@"Content-Type"];
   [http setValue:@"application/json" forHTTPHeaderField:@"Accept"];
   [http setValue:@"odata.continue-on-error" forHTTPHeaderField:@"Prefer"];
+  NSDictionary *headers = [_engine headersFor:_remote];
+  for (NSString *name in headers) [http setValue:headers[name] forHTTPHeaderField:name];
   http.HTTPBody = [NSJSONSerialization dataWithJSONObject:@{ @"requests": items } options:0 error:NULL];
   NSError *failure = nil;
   ODataHTTPResponse *response = [_client sendRequest:http error:&failure];
@@ -325,6 +354,14 @@ static NSString *ODSHeader(NSDictionary *headers, NSString *name)
     if (error) *error = failure;
     return NO;
   }
+  if (!row && _remote.peer) {
+    // A peer without it: no deletion (a peer deletes nothing), but an object
+    // it is yet to have.
+    [_engine agreeOn:nil etag:nil of:root keyText:[entry valueForKey:@"keyText"] remote:_remote context:context];
+    [entry setValue:@(ODataSyncOperationInsert) forKey:@"operation"];
+    [entry setValue:nil forKey:@"properties"];
+    return YES;
+  }
   NSString *etag = [row[@"@odata.etag"] isKindOfClass:[NSString class]] ? row[@"@odata.etag"] : nil;
   [_engine settleConflictOf:root key:key entry:entry remoteRow:row etag:etag remote:_remote context:context];
   return YES;
@@ -353,7 +390,7 @@ static NSString *ODSHeader(NSDictionary *headers, NSString *name)
   ODataSyncOperation operation = [[entry valueForKey:@"operation"] integerValue];
   NSString *entityName = [entry valueForKey:@"entityType"];
   NSString *keyText = [entry valueForKey:@"keyText"];
-  BOOL both = [_codec directionOfEntity:_codec.model.entitiesByName[entityName]] == ODataSyncDirectionBoth;
+  BOOL both = [_codec directionOfEntity:_codec.model.entitiesByName[entityName] toward:_remote] == ODataSyncDirectionBoth;
   [entry setValue:@([[entry valueForKey:@"attempts"] integerValue] + 1) forKey:@"attempts"];
   if ((status >= 200 && status < 300) || (status == 404 && operation == ODataSyncOperationDelete)) {
     if (both) {
@@ -465,7 +502,9 @@ static NSString *ODSHeader(NSDictionary *headers, NSString *name)
 
 - (BOOL)upload:(NSError **)error
 {
-  NSManagedObjectContext *context = [_engine contextWritingAs:ODataSyncBookkeepingAuthor];
+  // A conflict's outcome is the remote's, written as coming from it (and
+  // so passed on to the others).
+  NSManagedObjectContext *context = [_engine contextWritingAs:[ODataSyncDownAuthorPrefix stringByAppendingString:_remote.identifier]];
   __block BOOL ok = NO;
   __block NSError *failure = nil;
   [context performBlockAndWait:^{

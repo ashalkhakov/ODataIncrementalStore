@@ -1,12 +1,12 @@
 # Offline sync: design
 
-**Status: the service's part (section 9) and the library's phases 1–3
-(section 10) exist**: `Source/ODataSync` (`ODataSyncEngine`), with down,
-up and both entities, the outbox and set-aside changes, key
-reconciliation, and conflicts (shadows with values, RemoteWins,
-LocalWins, LastWriterWins on a hybrid logical clock, MergeFields, custom
-resolvers). Peers are still to come; where the text below describes
-them, it is the plan.
+**Status: the service's part (section 9) and the library's phases 1–4
+(section 10) exist**: `Source/ODataSync` (`ODataSyncEngine`,
+`ODataSyncPeerServer`), with down, up and both entities, the outbox and
+set-aside changes, key reconciliation, conflicts (shadows with values,
+RemoteWins, LocalWins, LastWriterWins on a hybrid logical clock,
+MergeFields, custom resolvers), and peers (a peer server, relaying).
+The Workbench pane (phase 5) is still to come.
 
 An app that works offline keeps its data in a Core Data store on the device
 and syncs it with an OData service when it can: entities the service owns
@@ -338,44 +338,66 @@ As built:
 ## 7. Peers
 
 Devices sync with each other the same way they sync with the service: a
-device that offers its data runs an **ODataSyncPeerServer**, which is
-HTTPServerKit with an ODataService over the local store (both exist), on
-the local network; another device adds it as a remote. So a phone that
-spent the day in a basement hands its inspections to one with a signal,
-which sends them on.
+device that offers its data runs an **ODataSyncPeerServer** (an
+ODataService over its store, on HTTPServerKit), on the local network;
+another device adds it as a remote, `+[ODataSyncRemote
+peerWithServiceRoot:]`. So a phone that spent the day in a basement hands
+its inspections to one with a signal, which sends them on.
 
-What that needs beyond a single service:
+```objc
+// The device that offers its store:
+ODataSyncPeerServer *peers = [[ODataSyncPeerServer alloc] initWithEngine:sync host:@"192.168.1.20" port:8642];
+peers.service.authenticator = ...;               // who may sync
+[peers start:&error];                            // advertise peers.serviceRoot
+// A device that syncs with it:
+[sync addRemote:[ODataSyncRemote peerWithServiceRoot:advertisedURL]];
+```
+
+How it goes:
 
 - **Who changed what**: each store has a replica ID (a UUID in its
-  metadata), and each history transaction an author naming where the
-  change came from (`ODataSync.down.<remote>`, the app's own, or a peer's
-  replica). A change that came from a remote is not sent back to it.
-- **Relaying**: a device keeps changes that came from a peer in its
-  outbox for the service too (an entry lists the remotes that still need
-  it). Because `up` entities are sent by upsert and are the same record
-  everywhere (UUID keys), the service gets each change once in effect,
-  whoever brings it.
-- **Ordering**: last-writer-wins between devices uses a hybrid logical
-  clock per change (a wall time and a counter, bumped past any time
-  seen from a peer), so a device with a wrong clock cannot win forever.
-- **Peer vectors**: per peer, the last history token of theirs this device
-  has (their delta link, in effect). A peer's delta links come from its
-  own ODataService, which keeps them from its store's persistent history,
-  as the service does.
-- **Deletes**: kept as tombstones in history (keys preserved on deletion:
-  `preservesValueInHistoryOnDeletion`, which ODataService's delta links
-  already require) for as long as peers may still ask.
-- **`down` entities between peers**: a peer may serve them too (read-only),
-  so a device that missed the service gets them from one that did; the
-  service's version still wins when the device reaches it.
-- **Out of scope here**: discovery (Bonjour, Multipeer Connectivity) and
-  how peers trust each other (a token the service issued to each, checked
-  by the peer server's authenticator); the engine takes a remote's URL and
-  credentials, however found.
-
-Peers come after the service sync works (section 10), but the state above
-(replica ID, authors, per-remote tokens, clocks) is part of the first
-version, so they need no migration.
+  metadata). A peer server's root is `http://<host>:<port>/sync/<replica
+  ID>/`, and a peer remote's identifier is that replica ID. What the
+  engine downloads from a remote is written by author
+  `ODataSync.down.<identifier>`; what a device sends to a peer server
+  names its replica (`ODataSync-Replica` header) and is written there by
+  author `ODataSync.down.<its replica>`. So every change in a store says
+  where it came from, whichever way it travelled.
+- **Relaying**: a change is never sent back to where it came from. It is
+  passed on to the other remotes when the source or the destination is a
+  peer (a peer's work to the service, the service's data to a peer);
+  between two services nothing is passed on. Up entities are sent by
+  upsert and have UUID keys, so the service gets each change once in
+  effect, whoever brings it.
+- **Nothing goes round**: an incoming row is applied only where it
+  differs (an equal value is no change, so no history), and a change for
+  a remote is dropped when it equals the version that remote last agreed
+  to (its shadow). A change that went A → B → service → A stops at A.
+- **A peer is no authority**: with a peer, up entities are treated as
+  both (shadows, If-Match, conflicts and resolvers); from a peer come new
+  objects of down entities (never changes over what the service gave) and
+  changes of up and both entities. Its removals, and the rows it does not
+  have, delete nothing here: a peer's set may be scoped or filtered
+  differently, and a removal the service made reaches each device from the
+  service. A peer that lacks an object this device sends gets it whole.
+- **Deletions go only from where they were made**: a device's own
+  deletion is sent to every remote, peers included; a deletion that came
+  from a remote is not passed on (it may be that remote's scope, not the
+  object's end).
+- **Ordering**: last writer wins compares the `ODataSync.modified`
+  stamps of a hybrid logical clock. A peer server keeps the stamps it is
+  sent (its writes are the engine's, not the app's, so they are not
+  stamped again) and moves its own clock past them, like a download.
+- **Peer vectors**: per peer, the delta links of its sets (in the remote's
+  state, as for the service); a peer's ODataService makes them from its
+  store's persistent history. A new peer reads everything once.
+- **What a peer serves**: the synced entities only (not the engine's
+  bookkeeping, nor local-only entities: `ODataService.hiddenEntityNames`);
+  down sets read-only.
+- **Out of scope here**: discovery (Bonjour, Multipeer Connectivity, a QR
+  code) and how peers trust each other (a token the service issued to
+  each, checked by the peer server's authenticator); the engine takes a
+  remote's URL and credentials, however found.
 
 ## 8. Integrating
 
@@ -412,6 +434,10 @@ What exists, and how it goes (`ODataSyncEngine.h`):
 - A both entity keeps, per object, the version both last agreed on
   (`ODSShadow`: its ETag, for If-Match, and its values, for merges);
   conflicts go to the resolver (section 6).
+- Peers (section 7): `ODataSyncPeerServer.h` serves the store;
+  `+[ODataSyncRemote peerWithServiceRoot:]` syncs with one. Remotes sync
+  in the order they were added, so a device that adds its peers before the
+  service passes their work on in the same sync.
 
 On the service (ODataKit's server): the store keeps persistent history
 (delta links), and the entity sets the devices write allow upsert
@@ -465,7 +491,8 @@ What ODataService needs, and what it has:
 3. Conflicts: shadows, MergeFields, LastWriterWins with hybrid logical
    clocks, custom resolvers. *Done* (Tests/ODataSyncTests.m).
 4. Peers: the peer server, relaying, peer vectors; discovery and trust left
-   to the app.
+   to the app. *Done* (Tests/ODataSyncTests.m in the process;
+   Server/Tests/ois-serve-check.m over HTTP, on both platforms).
 5. The Workbench: a sync pane (an offline store over the built-in service,
    the outbox, conflicts), as the self-test's ground.
 

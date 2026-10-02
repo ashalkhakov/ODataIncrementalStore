@@ -5382,6 +5382,18 @@ static NSNumber *OISScalarReturnValue(NSInvocation *invocation, char type)
 // nil when there is no configuration. What does not hold is a problem.
 - (NSSet *)servedEntityNamesWithProblems:(NSMutableArray *)problems
 {
+  NSSet *names = [self configuredEntityNamesWithProblems:problems];
+  if (!self.hiddenEntityNames.count) return names;
+  NSMutableSet *shown = [NSMutableSet set];
+  for (NSEntityDescription *entity in self.model.entities) {
+    if (!entity.superentity && (!names || [names containsObject:entity.name])) [shown addObject:entity.name];
+  }
+  [shown minusSet:self.hiddenEntityNames];
+  return shown;
+}
+
+- (NSSet *)configuredEntityNamesWithProblems:(NSMutableArray *)problems
+{
   NSString *name = self.configurationName;
   if (!name) return nil;
   NSArray *listed = [self.model entitiesForConfiguration:name];
