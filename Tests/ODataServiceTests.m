@@ -1283,6 +1283,99 @@
 
 #pragma mark Writing
 
+// Upsert (Part 1 section 11.4.4): PATCH or PUT to a key that names no
+// entity creates it, with the URL's key; sent again, it updates it.
+- (void)testUpsert
+{
+  NSDictionary *coffee = @{ @"ProductName": @"Ipoh Coffee", @"UnitPrice": @46, @"Category@odata.bind": @"Categories(1)" };
+  OISServiceResponse *created = [self send:@"PATCH" path:@"Products(500)" headers:nil body:coffee];
+  XCTAssertEqual(created.status, 201, @"%@", created.text);
+  XCTAssertEqualObjects(created.json[@"ProductID"], @500, @"the URL's key");
+  XCTAssertEqualObjects([created header:@"Location"], @"http://example.test/odata/Products(500)");
+  XCTAssertEqualObjects([self get:@"Products(500)/Category"].json[@"CategoryName"], @"Beverages", @"bound as an insert binds");
+
+  // Again, the same: an update now, with the same outcome.
+  OISServiceResponse *again = [self send:@"PATCH" path:@"Products(500)" headers:nil body:coffee];
+  XCTAssertEqual(again.status, 204, @"%@", again.text);
+  XCTAssertEqualObjects([self get:@"Products/$count"].text, @"6", @"one product, not two");
+  XCTAssertEqualObjects([self get:@"Products(500)"].json[@"UnitPrice"], @46);
+
+  OISServiceResponse *put = [self send:@"PUT" path:@"Products(501)" headers:@{ @"Prefer": @"return=minimal" }
+                                  body:@{ @"ProductName": @"Chartreuse verte", @"UnitPrice": @18 }];
+  XCTAssertEqual(put.status, 204, @"%@", put.text);
+  XCTAssertEqualObjects([put header:@"OData-EntityId"], @"http://example.test/odata/Products(501)");
+  XCTAssertEqualObjects([self get:@"Products(501)"].json[@"ProductName"], @"Chartreuse verte");
+
+  // The body may repeat the key, not contradict it.
+  XCTAssertEqual(([self send:@"PATCH" path:@"Products(502)" headers:nil body:@{ @"ProductID": @502, @"ProductName": @"Same" }].status), 201);
+  OISServiceResponse *other = [self send:@"PATCH" path:@"Products(503)" headers:nil body:@{ @"ProductID": @504, @"ProductName": @"Other" }];
+  XCTAssertEqual(other.status, 400, @"%@", other.text);
+  XCTAssertEqual([self get:@"Products(503)"].status, 404);
+  XCTAssertEqual([self get:@"Products(504)"].status, 404);
+}
+
+- (void)testUpsertPreconditions
+{
+  // If-Match: there must be an entity to match.
+  OISServiceResponse *match = [self send:@"PATCH" path:@"Products(600)" headers:@{ @"If-Match": @"*" } body:@{ @"ProductName": @"X" }];
+  XCTAssertEqual(match.status, 412, @"%@", match.text);
+  XCTAssertEqual([self get:@"Products(600)"].status, 404);
+
+  // If-None-Match: * only creates.
+  OISServiceResponse *fresh = [self send:@"PATCH" path:@"Products(600)" headers:@{ @"If-None-Match": @"*" } body:@{ @"ProductName": @"X" }];
+  XCTAssertEqual(fresh.status, 201, @"%@", fresh.text);
+  OISServiceResponse *exists = [self send:@"PATCH" path:@"Products(600)" headers:@{ @"If-None-Match": @"*" } body:@{ @"ProductName": @"Y" }];
+  XCTAssertEqual(exists.status, 412, @"%@", exists.text);
+  XCTAssertEqualObjects([self get:@"Products(600)"].json[@"ProductName"], @"X", @"left as it was");
+  // An ETag list: refused in that version, taken in another.
+  NSString *etag = [[self get:@"Products(600)"] header:@"ETag"];
+  XCTAssertEqual(([self send:@"PATCH" path:@"Products(600)" headers:@{ @"If-None-Match": etag } body:@{ @"ProductName": @"Z" }].status), 412);
+  XCTAssertEqual(([self send:@"PATCH" path:@"Products(600)" headers:@{ @"If-None-Match": @"W/\"other\"" } body:@{ @"ProductName": @"Z" }].status), 204);
+}
+
+- (void)testUpsertWhereItDoesNotApply
+{
+  // A set that does not take it, or no inserts at all: 404 as before.
+  ODataEntitySetHandler *products = [[ODataEntitySetHandler alloc] initWithEntity:OISCatalogEntity(@"Product")];
+  products.allowsUpsert = NO;
+  [_service setHandler:products forEntitySet:@"Products"];
+  XCTAssertEqual(([self send:@"PATCH" path:@"Products(700)" headers:nil body:@{ @"ProductName": @"X" }].status), 404);
+  NSString *metadata = [self get:@"$metadata"].text;
+  NSRange productsAt = [metadata rangeOfString:@"<EntitySet Name=\"Products\""];
+  NSRange categoriesAt = [metadata rangeOfString:@"<EntitySet Name=\"Categories\""];
+  XCTAssertTrue(productsAt.location != NSNotFound && categoriesAt.location != NSNotFound);
+  NSRange productsEnd = [metadata rangeOfString:@"</EntitySet>" options:0 range:NSMakeRange(productsAt.location, metadata.length - productsAt.location)];
+  NSString *productsSet = [metadata substringWithRange:NSMakeRange(productsAt.location, productsEnd.location - productsAt.location)];
+  XCTAssertTrue([productsSet rangeOfString:@"Upsertable"].location == NSNotFound, @"%@", productsSet);
+  NSRange categoriesEnd = [metadata rangeOfString:@"</EntitySet>" options:0 range:NSMakeRange(categoriesAt.location, metadata.length - categoriesAt.location)];
+  NSString *categoriesSet = [metadata substringWithRange:NSMakeRange(categoriesAt.location, categoriesEnd.location - categoriesAt.location)];
+  XCTAssertTrue([categoriesSet rangeOfString:@"Upsertable"].location != NSNotFound, @"a set that takes it says so: %@", categoriesSet);
+
+  // Not through a navigation property, and not before the path's end.
+  XCTAssertEqual(([self send:@"PATCH" path:@"Categories(1)/Products(999)" headers:nil body:@{ @"ProductName": @"X" }].status), 404);
+  XCTAssertEqual(([self send:@"PATCH" path:@"Categories(77)/CategoryName" headers:nil body:@{ @"value": @"X" }].status), 404);
+  XCTAssertEqual([self get:@"Categories(77)"].status, 404);
+}
+
+- (void)testUpsertInBatchAndWithScopes
+{
+  OISServiceResponse *batch = [self send:@"POST" path:@"$batch" headers:nil body:@{ @"requests": @[
+    @{ @"method": @"PATCH", @"url": @"Products(800)", @"id": @"1", @"body": @{ @"ProductName": @"Batch one" } },
+    @{ @"method": @"PATCH", @"url": @"Products(800)", @"id": @"2", @"body": @{ @"ProductName": @"Batch one, again" } } ] }];
+  XCTAssertEqual(batch.status, 200, @"%@", batch.text);
+  NSArray *statuses = [batch.json[@"responses"] valueForKey:@"status"];
+  XCTAssertEqualObjects(statuses, (@[ @201, @204 ]), @"%@", batch.text);
+  XCTAssertEqualObjects([self get:@"Products(800)"].json[@"ProductName"], @"Batch one, again");
+
+  // Creating is an insert: its scopes.
+  ODataEntitySetHandler *products = [[ODataEntitySetHandler alloc] initWithEntity:OISCatalogEntity(@"Product")];
+  products.insertScopes = [NSSet setWithObject:@"Products.Add"];
+  [_service setHandler:products forEntitySet:@"Products"];
+  _service.authenticator = [[OISScopeAuthenticator alloc] init];
+  XCTAssertEqual(([self send:@"PATCH" path:@"Products(801)" headers:@{ @"X-Scopes": @"Products.Read" } body:@{ @"ProductName": @"X" }].status), 403);
+  XCTAssertEqual(([self send:@"PATCH" path:@"Products(801)" headers:@{ @"X-Scopes": @"Products.Add" } body:@{ @"ProductName": @"X" }].status), 201);
+}
+
 - (void)testCreateUpdateDelete
 {
   OISServiceResponse *created = [self send:@"POST" path:@"Products" headers:nil body:@{
@@ -7226,7 +7319,8 @@ static NSExpressionDescription *OISAggregateOf(NSString *function, NSString *key
   XCTAssertTrue([allowed rangeOfString:@"InsertRestrictions"].location == NSNotFound, @"everything allowed");
   ODataSchema *all = [ODataSchema schemaWithData:[allowed dataUsingEncoding:NSUTF8StringEncoding] error:NULL];
   XCTAssertEqualObjects([all annotation:@"Capabilities.UpdateRestrictions" forTarget:@"Default.Container/Products"],
-                        (@{ @"FilterSegmentSupported": @YES, @"TypecastSegmentSupported": @YES, @"DeltaUpdateSupported": @YES }));
+                        (@{ @"FilterSegmentSupported": @YES, @"TypecastSegmentSupported": @YES, @"DeltaUpdateSupported": @YES,
+                            @"Upsertable": @YES }));
   XCTAssertEqualObjects([all annotation:@"Capabilities.DeleteRestrictions" forTarget:@"Default.Container/Products"],
                         (@{ @"FilterSegmentSupported": @YES, @"TypecastSegmentSupported": @YES }));
   ODataEntitySetHandler *locations = [[ODataEntitySetHandler alloc] initWithEntity:OISCatalogEntity(@"Location")];

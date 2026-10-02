@@ -1544,6 +1544,15 @@ links it for `ODataServer.h`, and the client links neither. `Server/` has
    `@odata.bind`, `Prefer: return`. The client round trip passes. Also:
    - a single property (`PUT`/`PATCH` `{"value": …}`, `PUT` its `$value`,
      `DELETE` it to null);
+   - upsert (Part 1 section 11.4.4): `PATCH` or `PUT` to a key of a set
+     that names no entity creates it, through the handler's insert, with
+     the URL's key (a body may repeat it, not contradict it: `400`), and
+     answers `201` (`204` with `return=minimal`); `If-Match` there is
+     `412`, `If-None-Match: *` makes it create only (`412` when the entity
+     exists). Sending the same again ends the same way, which is what a
+     client that makes its own keys relies on (docs/offline-sync.md). A
+     handler turns it off (`allowsUpsert`); `$metadata` says it
+     (`UpdateRestrictions/Upsertable`). Not through a navigation property;
    - references: `PUT` and `DELETE` a to-one `$ref`, `POST` to a to-many
      one and `DELETE` from it by `$id` or by key, which is how the client
      changes relationships;

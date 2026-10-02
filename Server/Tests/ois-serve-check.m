@@ -725,6 +725,13 @@ int main(int argc, const char *argv[])
     OISReply *deleted = OISSend(@"DELETE", @"/odata/Products(4)", nil, nil);
     check(deleted.status == 204 && OISSend(@"GET", @"/odata/Products(4)", nil, nil).status == 404, @"delete", [NSString stringWithFormat:@"%ld", (long)deleted.status]);
 
+    // Upsert: PATCH to a key that names nothing creates; sent again, updates.
+    OISReply *upserted = OISSend(@"PATCH", @"/odata/Products(90)", nil, @{ @"ProductName": @"Upserted", @"UnitPrice": @7 });
+    OISReply *upsertedAgain = OISSend(@"PATCH", @"/odata/Products(90)", nil, @{ @"ProductName": @"Upserted", @"UnitPrice": @7 });
+    OISReply *upsertedRead = OISSend(@"GET", @"/odata/Products(90)", nil, nil);
+    check(upserted.status == 201 && upsertedAgain.status == 204 && [upsertedRead.json[@"ProductName"] isEqual:@"Upserted"], @"upsert",
+          [NSString stringWithFormat:@"%ld then %ld: %@", (long)upserted.status, (long)upsertedAgain.status, upsertedRead.text]);
+
     // A $batch with a change set, over the socket: two new categories, the
     // second one's product bound to the first by its Content-ID.
     NSString *batch = @"--b\r\nContent-Type: multipart/mixed; boundary=cs\r\n\r\n"

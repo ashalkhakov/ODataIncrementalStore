@@ -209,6 +209,16 @@ FOUNDATION_EXPORT NSString * const ODataUserInfoETag;  // @"OData.etag"
 @property (nonatomic) BOOL allowsInsert;
 @property (nonatomic) BOOL allowsUpdate;
 @property (nonatomic) BOOL allowsDelete;
+// Upsert (Part 1 section 11.4.4): a PATCH or PUT to a key of the set that
+// names no entity creates it, through -insertObjectWithValues:, with the
+// key from the URL (which the body need not repeat, and must not
+// contradict), and is answered 201 (204 with return=minimal); with
+// If-Match it is 412 instead, there being nothing to match. With
+// If-None-Match: * a PATCH or PUT only creates: 412 when the entity is
+// there. What a client that makes its own keys (UUIDs) sends again and
+// again with the same outcome. Default YES; needs allowsInsert, and is
+// said in $metadata (UpdateRestrictions/Upsertable) when allowsUpdate too.
+@property (nonatomic) BOOL allowsUpsert;
 // The permissions the set's methods need, as OAuth scopes the caller's
 // principal has (HSPrincipal's scopes): any one of a set's is enough;
 // nil or empty, the default, none is needed. Read is every read that

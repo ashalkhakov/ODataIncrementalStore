@@ -325,6 +325,7 @@ static NSArray *OISFetch(NSManagedObjectContext *context, NSFetchRequest *fetchR
   _nonSortableProperties = [NSSet set];
   _allowsUpdate = YES;
   _allowsDelete = YES;
+  _allowsUpsert = YES;
   _tracksChanges = YES;
   return self;
 }
@@ -1730,6 +1731,7 @@ static NSUInteger OISExpandDepth(ODataQueryOptions *options)
 {
   NSDictionary *key = [self keyFromParts:parts entity:self.entity];
   if (!key) return;
+  self.lookedUpKey = key;
   ODataReply *reply = [self replyWithAction:@selector(didFindObject:)];
   NSManagedObject *object = [self.handler objectWithKey:key request:self.request reply:reply];
   [reply returned:object];
@@ -1747,6 +1749,7 @@ static NSUInteger OISExpandDepth(ODataQueryOptions *options)
     if (![members containsObject:object]) object = nil;
   }
   if (!object) {
+    if ([self upsertsMissingEntity]) return;
     [self fail:404 message:[NSString stringWithFormat:@"%@ has no such entity", self.request.path.segments[self.index > 0 ? self.index - 1 : 0].name]];
     return;
   }
@@ -1759,6 +1762,26 @@ static NSUInteger OISExpandDepth(ODataQueryOptions *options)
   self.navigation = nil;
   self.index++;
   [self walk];
+}
+
+// PATCH or PUT to an entity set's key that names no entity: an upsert
+// creates it (ODataEntitySetHandler's allowsUpsert). Not through a
+// navigation property, and only as the path's last segment.
+- (BOOL)upsertsMissingEntity
+{
+  NSString *method = self.request.method;
+  if (![method isEqualToString:@"PATCH"] && ![method isEqualToString:@"PUT"]) return NO;
+  if (self.parent || self.index + 1 != self.request.path.segments.count) return NO;
+  if (!self.handler.allowsInsert || !self.handler.allowsUpsert || !self.lookedUpKey) return NO;
+  if ([self ifMatchHeader]) {
+    [self fail:412 message:@"There is no such entity to match"];
+    return YES;
+  }
+  self.index++;
+  if (![self negotiateFormat]) return YES;
+  self.request.entity = self.entity;
+  [self insertWithKey:self.lookedUpKey];
+  return YES;
 }
 
 #pragma mark Dispatch
@@ -5149,6 +5172,7 @@ static NSNumber *OISScalarReturnValue(NSInvocation *invocation, char type)
       if (!handler.allowsInsert) [refused addObject:@"Insert"];
       if (!handler.allowsUpdate) [refused addObject:@"Update"];
       if (!handler.allowsDelete) [refused addObject:@"Delete"];
+      if (!handler.allowsUpsert || !handler.allowsInsert || !handler.allowsUpdate) [refused addObject:@"Upsert"];
       if (handler.isOpenType) {
         [open addObject:OISRootEntity(handler.entity).name];
         [signature appendFormat:@";%@ open", set];

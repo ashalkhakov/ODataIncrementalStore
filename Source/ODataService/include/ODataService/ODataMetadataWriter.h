@@ -60,8 +60,9 @@ FOUNDATION_EXPORT NSString * const ODataUserInfoContentType;  // @"OData.content
 // (Core.OptimisticConcurrency). Set by the service.
 @property (nonatomic, copy, nullable) NSDictionary<NSString *, NSAttributeDescription *> *concurrencyAttributes;
 
-// What each entity set does not allow, by set name: any of Insert, Update
-// and Delete, written as Org.OData.Capabilities.V1 restrictions.
+// What each entity set does not allow, by set name: any of Insert, Update,
+// Delete and Upsert, written as Org.OData.Capabilities.V1 restrictions
+// (Upsertable in UpdateRestrictions unless Upsert is among them).
 @property (nonatomic, copy, nullable) NSDictionary<NSString *, NSSet<NSString *> *> *restrictions;
 
 // The scopes each entity set's methods need, by set name, by Read, Insert,

@@ -612,6 +612,7 @@ static void OISAddChildren(NSXMLElement *parent, NSArray<NSXMLElement *> *childr
         record[@"FilterSegmentSupported"] = @YES;
         record[@"TypecastSegmentSupported"] = @YES;
         if ([restriction isEqualToString:@"Update"]) record[@"DeltaUpdateSupported"] = @YES;
+        if ([restriction isEqualToString:@"Update"] && ![self.restrictions[setName] containsObject:@"Upsert"]) record[@"Upsertable"] = @YES;
       }
       if (record.count) annotations[[NSString stringWithFormat:@"Org.OData.Capabilities.V1.%@Restrictions", restriction]] = record;
     }

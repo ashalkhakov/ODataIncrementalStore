@@ -223,6 +223,9 @@ typedef NS_ENUM(NSInteger, OISTargetKind) {
 @property (nonatomic, copy, nullable) NSArray *writeAnswers;
 // An operation's parameters, with Lookups for its entities until read.
 @property (nonatomic, copy, nullable) NSArray *operationValuesPlanned;
+// The key the path's last entity was looked up by (Core Data attribute
+// names): an upsert's, when it names none.
+@property (nonatomic, copy, nullable) NSDictionary *lookedUpKey;
 // NO in a change set: its requests share a context, saved once they have
 // all succeeded.
 @property (nonatomic) BOOL saves;
@@ -399,6 +402,10 @@ typedef NS_ENUM(NSInteger, OISStoreAsk) { OISAskObjects, OISAskCount, OISAskGrou
 // Writes (OISServiceCall+Write.m): planned, then run as plans are.
 @interface OISServiceCall (Write)
 - (void)insert;
+// The same with the key an upsert's URL gives: the body may repeat it, not
+// contradict it.
+- (void)insertWithKey:(nullable NSDictionary *)key;
+- (nullable NSString *)ifMatchHeader;
 - (void)insertMedia:(NSEntityDescription *)entity media:(NSAttributeDescription *)media;
 - (void)updateReplacing:(BOOL)replace;
 - (void)remove;
