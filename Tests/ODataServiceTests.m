@@ -6439,6 +6439,43 @@ static NSDate *OISDay(NSString *day)
   XCTAssertEqualObjects([self idsOf:delta.json[@"value"]], @[ @"Products(5)" ], @"%@", delta.text);
 }
 
+// History kept only so long: a delta link from before what is kept is a
+// 410, and the client reads the set again; one given after is good.
+- (void)testHistoryRetention
+{
+  [self serveTrackedCatalog];
+  NSDictionary *track = @{ @"Prefer": @"odata.track-changes" };
+  NSString *old = [self send:@"GET" path:@"Products" headers:track body:nil].json[@"@odata.deltaLink"];
+  NSManagedObjectContext *context = [self serviceContext];
+  NSError *error = nil;
+  [[self productWithID:1 in:context] setValue:@"Chai (new)" forKey:@"name"];
+  XCTAssertTrue([context save:&error], @"%@", error);
+  XCTAssertTrue([_service pruneHistoryBeforeDate:[NSDate dateWithTimeIntervalSinceNow:1] error:&error], @"%@", error);
+  OISServiceResponse *expired = [self get:[self pathOfLink:old]];
+  XCTAssertEqual(expired.status, 410, @"%@", expired.text);
+
+  NSString *fresh = [self send:@"GET" path:@"Products" headers:track body:nil].json[@"@odata.deltaLink"];
+  [[self productWithID:2 in:context] setValue:@"Chang (new)" forKey:@"name"];
+  XCTAssertTrue([context save:&error], @"%@", error);
+  OISServiceResponse *delta = [self get:[self pathOfLink:fresh]];
+  XCTAssertEqual(delta.status, 200, @"%@", delta.text);
+  XCTAssertEqualObjects([delta.json[@"value"] valueForKey:@"ProductName"], @[ @"Chang (new)" ], @"%@", delta.text);
+
+  // By itself, as requests come: what is older than the retention goes.
+  NSString *before = delta.json[@"@odata.deltaLink"];
+  [[self productWithID:3 in:context] setValue:@"Aniseed Syrup (new)" forKey:@"name"];
+  XCTAssertTrue([context save:&error], @"%@", error);
+  [NSThread sleepForTimeInterval:1.2];
+  _service.historyRetention = 1;
+  [self get:@"Products/$count"];   // prunes, in the background
+  NSInteger status = 0;
+  for (int i = 0; i < 50 && status != 410; i++) {
+    [NSThread sleepForTimeInterval:0.05];
+    status = [self get:[self pathOfLink:before]].status;
+  }
+  XCTAssertEqual(status, 410, @"history older than a second was pruned");
+}
+
 // A tracked read in pages: each next link carries where the changes
 // begin, so one made to a page already read still comes in the delta.
 - (void)testDeltaLinkAfterPages

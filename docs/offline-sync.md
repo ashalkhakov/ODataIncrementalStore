@@ -392,9 +392,10 @@ What ODataService needs, and what it has:
    section 4.1; the service's part is the scope version (4.1, 2) and
    deletions checked against what they kept (4.1, 3).
 6. **History retention**: how long the store keeps history before delta
-   links answer 410. *To be settled*: a setting for how far back history
-   is kept (pruned by date), and 410 for links older than that (*exists*:
-   the client side handles 410 already).
+   links answer 410: `historyRetention` (`HistoryRetention` for
+   `ois-serve`), pruned by date in the background as requests come, and
+   410 for links from before it. *Exists*; the client side handles 410
+   already. A device offline longer than that reads its sets again.
 7. **Key uniqueness**: an upsert must find the one entity a key names; the
    store's key attribute is indexed and unique (a uniqueness constraint in
    the model). *Recommended in the docs; checked by the service at start,
@@ -404,7 +405,7 @@ What ODataService needs, and what it has:
 
 1. The service: upsert (9.1, 9.2), its `$metadata`, tests (*done*); the
    scope version and deletions checked against what they kept (4.1);
-   history retention (9.6).
+   history retention (9.6). *Done.*
 2. ODataSync: model annotations, bookkeeping entities, the downloader
    (with key reconciliation, 4.1), the uploader with the outbox and quarantine, RemoteWins and LocalWins;
    tracing (each sync a trace: a span per remote, per set, per batch).

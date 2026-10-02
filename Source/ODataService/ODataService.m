@@ -4967,6 +4967,8 @@ static NSNumber *OISScalarReturnValue(NSInvocation *invocation, char type)
   // Asynchronous requests, by status monitor.
   NSMutableDictionary<NSString *, OISAsyncJob *> *_jobs;
   NSLock *_jobsLock;
+  // When history was last pruned (historyRetention).
+  NSDate *_historyPruned;
 }
 
 - (instancetype)initWithPersistentStoreCoordinator:(NSPersistentStoreCoordinator *)coordinator serviceRoot:(NSURL *)serviceRoot
@@ -5420,8 +5422,46 @@ static NSNumber *OISScalarReturnValue(NSInvocation *invocation, char type)
   [self startExchange:exchange principal:principal given:YES];
 }
 
+#pragma mark History
+
+- (BOOL)pruneHistoryBeforeDate:(NSDate *)date error:(NSError **)error
+{
+  NSManagedObjectContext *context = [[NSManagedObjectContext alloc] initWithConcurrencyType:NSPrivateQueueConcurrencyType];
+  context.persistentStoreCoordinator = self.coordinator;
+  __block BOOL pruned = NO;
+  __block NSError *failure = nil;
+  [context performBlockAndWait:^{
+    NSError *e = nil;
+    pruned = [context executeRequest:[NSPersistentHistoryChangeRequest deleteHistoryBeforeDate:date] error:&e] != nil;
+    failure = e;
+  }];
+  if (error) *error = failure;
+  return pruned;
+}
+
+// Pruned as requests come, no more often than a tenth of the retention
+// (between a minute and an hour), off the request's way.
+- (void)pruneHistoryIfDue
+{
+  NSTimeInterval retention = self.historyRetention;
+  if (retention <= 0) return;
+  NSTimeInterval every = MIN(MAX(retention / 10, 60), 3600);
+  @synchronized (self) {
+    if (_historyPruned && -[_historyPruned timeIntervalSinceNow] < every) return;
+    _historyPruned = [NSDate date];
+  }
+  NSDate *before = [NSDate dateWithTimeIntervalSinceNow:-retention];
+  dispatch_async(dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_BACKGROUND, 0), ^{
+    NSError *error = nil;
+    if (![self pruneHistoryBeforeDate:before error:&error]) {
+      HSLogMessage(HSLogLevelWarn, @"ODataService", nil, @"persistent history was not pruned: %@", error.localizedDescription);
+    }
+  });
+}
+
 - (void)startExchange:(ODataExchange *)exchange principal:(HSPrincipal *)principal given:(BOOL)given
 {
+  [self pruneHistoryIfDue];
   if (self.maxURLLength && exchange.request.URL.absoluteString.length > self.maxURLLength) {
     NSDictionary *error = @{ @"error": @{ @"code": @"414", @"message": [NSString stringWithFormat:@"The URL is longer than the service takes (%lu characters)",
                                                                                                    (unsigned long)self.maxURLLength] } };

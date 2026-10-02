@@ -949,7 +949,10 @@ first, with the next delta link:
 - entities changed so that the request no longer matches them, visible to
   the caller, removed with reason `changed`;
 - entities deleted, removed with reason `deleted`, named by the key their
-  tombstone kept; one added and deleted since is not mentioned.
+  tombstone kept, to a caller the handler's visibility predicate,
+  evaluated on what the tombstone kept, lets see them (to every caller
+  when it reads anything not kept); one added and deleted since is not
+  mentioned.
 
 A removal is `@odata.removed` with `@odata.id` in 4.01 and a
 `$deletedEntity` in 4.0. A relationship change is a change of the objects
@@ -966,8 +969,19 @@ Deletion" in the model editor), and its handler's `tracksChanges` is left
 the preference is not applied, and a `$deltatoken` is `410 Gone`, as is
 one whose history has been purged, or a deletion whose key was not kept:
 the client reads the set again. A token the service did not write is
-`400`. A deleted entity's key is given whether or not the caller could
-see it, since only the key is left to judge by.
+`400`.
+
+What a caller may see can change other than by rows changing (their role,
+region, team): a handler that says a version of it
+(`-scopeVersionForRequest:`) has it carried in its links, and a link
+followed with another version is `410` (docs/offline-sync.md, 4.1).
+
+History is kept for `historyRetention` (`HistoryRetention` for
+`ois-serve`), when set: what is older is deleted in the background as
+requests come (at most every tenth of it, between a minute and an hour;
+`-pruneHistoryBeforeDate:error:` does it at once), and a delta link from
+before it is `410`. A link stays good that long after it was given;
+without it the service deletes no history, which then grows.
 
 ### Streams
 

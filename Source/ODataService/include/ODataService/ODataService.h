@@ -477,6 +477,16 @@ FOUNDATION_EXPORT NSString * const ODataUserInfoETag;  // @"OData.etag"
 // At most this many asynchronous requests at a time, answered or not; more
 // are answered as though they had not asked. Default: 1000.
 @property (nonatomic) NSUInteger maxAsyncRequests;
+// How long the store's persistent history is kept, in seconds: what is
+// older is deleted, in the background, as requests come (at most every
+// tenth of this, between a minute and an hour), and a delta link from
+// before it is answered 410, so its client reads the set again. A delta
+// link stays good this long after it was given. 0, the default: the
+// service deletes none (history grows until something else prunes it).
+@property (nonatomic) NSTimeInterval historyRetention;
+// The store's persistent history before date deleted, now, as
+// historyRetention does by itself.
+- (BOOL)pruneHistoryBeforeDate:(NSDate *)date error:(NSError **)error;
 
 // Limits on what one request may ask of the service, so that no request,
 // careless or hostile, takes more than its share. Each is answered with an
