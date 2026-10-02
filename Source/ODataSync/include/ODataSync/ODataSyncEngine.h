@@ -192,18 +192,27 @@ typedef NS_ENUM(NSInteger, ODataSyncResolutionKind) {
 @property (nonatomic, readonly) id<ODataSyncResolving> fallback;
 @end
 
-// A change the service refused (400, 403, 409, 422...): it stays in the
-// outbox, set aside, until the app retries or discards it.
-@interface ODataSyncIssue : NSObject
+// A change waiting for a remote to take it (-pendingChanges).
+@interface ODataSyncChange : NSObject
 @property (nonatomic, readonly, copy) NSString *remoteIdentifier;
 @property (nonatomic, readonly, copy) NSString *entityName;
 @property (nonatomic, readonly, copy) NSDictionary<NSString *, id> *key;   // by Core Data attribute name
 @property (nonatomic, readonly) ODataSyncOperation operation;
+// The properties an update sends; nil: all of them (an insert).
+@property (nonatomic, readonly, copy, nullable) NSArray<NSString *> *properties;
+// How many times it was sent (none taken yet).
+@property (nonatomic, readonly) NSInteger attempts;
+// The object, while it exists.
+@property (nonatomic, readonly, strong, nullable) NSManagedObjectID *objectID;
+@end
+
+// A change the service refused (400, 403, 409, 422...), or a conflict
+// deferred (409): it stays in the outbox, set aside, until the app retries
+// or discards it.
+@interface ODataSyncIssue : ODataSyncChange
 @property (nonatomic, readonly) NSInteger status;
 // The service's own words: its OData error's message.
 @property (nonatomic, readonly, copy) NSString *message;
-// The object, while it exists.
-@property (nonatomic, readonly, strong, nullable) NSManagedObjectID *objectID;
 @end
 
 // What one sync did, for the app to say.
@@ -273,6 +282,10 @@ typedef NS_ENUM(NSInteger, ODataSyncResolutionKind) {
 
 // The changes set aside, oldest first.
 - (NSArray<ODataSyncIssue *> *)issues;
+// Every change not yet taken, for every remote, oldest first: what the
+// app changed since (read from the store's history), and what waits from
+// before; those set aside are issues. For a "3 changes to send".
+- (NSArray<ODataSyncChange *> *)pendingChanges;
 // Sent again at the next sync (after the app put the object right; a new
 // change to the object does this too).
 - (void)retryIssue:(ODataSyncIssue *)issue;

@@ -76,7 +76,7 @@ id ODSUnarchive(NSData *data)
 
 #pragma mark - Issues, results
 
-@implementation ODataSyncIssue
+@implementation ODataSyncChange
 
 - (instancetype)initWithEntry:(NSManagedObject *)entry objectID:(NSManagedObjectID *)objectID
 {
@@ -87,15 +87,33 @@ id ODSUnarchive(NSData *data)
   _entityName = [entry valueForKey:@"entityType"] ?: @"";
   _key = ODSUnarchive([entry valueForKey:@"key"]) ?: @{};
   _operation = [[entry valueForKey:@"operation"] integerValue];
-  _status = [[entry valueForKey:@"status"] integerValue];
-  _message = [entry valueForKey:@"message"] ?: @"";
+  _properties = ODSUnarchive([entry valueForKey:@"properties"]);
+  _attempts = [[entry valueForKey:@"attempts"] integerValue];
   _objectID = objectID;
   return self;
 }
 
 - (NSString *)description
 {
-  return [NSString stringWithFormat:@"<ODataSyncIssue %@ %@ %ld: %@>", _entityName, _key, (long)_status, _message];
+  return [NSString stringWithFormat:@"<ODataSyncChange %@ %@ %ld>", _entityName, _key, (long)_operation];
+}
+
+@end
+
+@implementation ODataSyncIssue
+
+- (instancetype)initWithEntry:(NSManagedObject *)entry objectID:(NSManagedObjectID *)objectID
+{
+  self = [super initWithEntry:entry objectID:objectID];
+  if (!self) return nil;
+  _status = [[entry valueForKey:@"status"] integerValue];
+  _message = [entry valueForKey:@"message"] ?: @"";
+  return self;
+}
+
+- (NSString *)description
+{
+  return [NSString stringWithFormat:@"<ODataSyncIssue %@ %@ %ld: %@>", self.entityName, self.key, (long)_status, _message];
 }
 
 @end
@@ -940,6 +958,30 @@ static NSEntityDescription *ODSEntity(NSString *name, NSArray<NSAttributeDescrip
 }
 
 #pragma mark Issues
+
+- (NSArray<ODataSyncChange *> *)pendingChanges
+{
+  // Not while a sync runs (it collects too, and the main thread should not
+  // wait for it): what is in the outbox then.
+  if ([_running tryLock]) {
+    for (ODataSyncRemote *remote in self.remotes) [[[ODSUploader alloc] initWithEngine:self remote:remote] collect:NULL];
+    [_running unlock];
+  }
+  NSManagedObjectContext *context = [self contextWritingAs:ODataSyncBookkeepingAuthor];
+  NSMutableArray *changes = [NSMutableArray array];
+  [context performBlockAndWait:^{
+    NSFetchRequest *fetch = [NSFetchRequest fetchRequestWithEntityName:ODSOutboxEntity];
+    fetch.sortDescriptors = @[ [NSSortDescriptor sortDescriptorWithKey:@"sequence" ascending:YES] ];
+    for (NSManagedObject *entry in [context executeFetchRequest:fetch error:NULL]) {
+      NSEntityDescription *entity = self.coordinator.managedObjectModel.entitiesByName[[entry valueForKey:@"entityType"]];
+      NSDictionary *key = ODSUnarchive([entry valueForKey:@"key"]);
+      NSManagedObject *object = entity && key ? [self.codec objectOfEntity:entity key:key inContext:context] : nil;
+      Class kind = [[entry valueForKey:@"setAside"] boolValue] ? [ODataSyncIssue class] : [ODataSyncChange class];
+      [changes addObject:[[kind alloc] initWithEntry:entry objectID:object.objectID]];
+    }
+  }];
+  return changes;
+}
 
 - (NSArray<ODataSyncIssue *> *)issues
 {

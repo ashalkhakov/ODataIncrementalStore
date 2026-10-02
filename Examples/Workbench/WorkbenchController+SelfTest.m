@@ -693,6 +693,94 @@ static void WBCheck(BOOL ok, NSString *what, NSString *detail)
   [self.logTable deselectAll:nil];
 }
 
+// The built-in service's product, as the service has it.
+- (id)serviceValue:(NSString *)attribute ofProduct:(NSNumber *)productID
+{
+  NSManagedObjectContext *context = [[NSManagedObjectContext alloc] initWithConcurrencyType:NSPrivateQueueConcurrencyType];
+  context.persistentStoreCoordinator = self.connection.engine.service.coordinator;
+  __block id value = nil;
+  [context performBlockAndWait:^{
+    NSFetchRequest *fetch = [NSFetchRequest fetchRequestWithEntityName:@"Product"];
+    fetch.predicate = [NSPredicate predicateWithFormat:@"id == %@", productID];
+    value = [[[context executeFetchRequest:fetch error:NULL] firstObject] valueForKey:attribute];
+  }];
+  return value;
+}
+
+// Sync > Show Device: an offline device beside the built-in service, driven
+// as a person would: read, edited, in conflict, offline.
+- (void)checkSync
+{
+  [self showSync:nil];
+  WBSyncWindow *device = self.syncWindow;
+  NSError *error = nil;
+  BOOL synced = [device syncAndWait:&error];
+  NSUInteger products = device.objects.count;
+  WBCheck(device.window.isVisible && synced && products > 0 && device.changes.count == 0, @"sync: the device reads the service's data",
+          [NSString stringWithFormat:@"%lu products; %@", (unsigned long)products, error.localizedDescription ?: device.statusField.stringValue]);
+  [self shoot:@"Sync" window:device.window];
+
+  // An edit on the device waits, then goes.
+  NSNumber *first = [device.objects.firstObject valueForKey:@"id"];
+  NSUInteger nameColumn = [[device.dataTable.tableColumns valueForKey:@"identifier"] indexOfObject:@"name"];
+  [device tableView:device.dataTable setObjectValue:@"Chai (device)" forTableColumn:device.dataTable.tableColumns[nameColumn] row:0];
+  ODataSyncChange *waiting = device.changes.firstObject;
+  BOOL queued = device.changes.count == 1 && waiting.operation == ODataSyncOperationUpdate && [waiting.properties containsObject:@"name"];
+  synced = [device syncAndWait:&error];
+  WBCheck(queued && synced && [[self serviceValue:@"name" ofProduct:first] isEqual:@"Chai (device)"] && device.changes.count == 0,
+          @"sync: an edit on the device waits, then reaches the service", [NSString stringWithFormat:@"%@ %@", waiting, error ?: @""]);
+
+  // Both change the product: merged, the device's name and the service's price.
+  [device setRule:WBSyncRuleMergeFields];
+  [device.dataTable selectRowIndexes:[NSIndexSet indexSetWithIndex:0] byExtendingSelection:NO];
+  [device changeAtTheService:nil];
+  NSDecimalNumber *price = [self serviceValue:@"unitPrice" ofProduct:first];
+  [device setValue:@"Chai (merged)" ofAttribute:@"name" row:0];
+  synced = [device syncAndWait:&error];
+  WBSyncConflict *met = device.conflicts.firstObject;
+  BOOL merged = [[self serviceValue:@"name" ofProduct:first] isEqual:@"Chai (merged)"] &&
+                [[device valueOfAttribute:@"unitPrice" entity:@"Product" key:first] isEqual:price] && met.outcome == ODataSyncMerge;
+  WBCheck(synced && merged && device.changes.count == 0, @"sync: a conflict merged, each side's change kept",
+          [NSString stringWithFormat:@"%@ (%@ at the service)", met.conflict, price]);
+  [device.conflictTable selectRowIndexes:[NSIndexSet indexSetWithIndex:0] byExtendingSelection:NO];
+  [self shoot:@"Sync conflict" window:device.window];
+
+  // Set aside to decide: an issue; discarded, the service's version is read.
+  [device setRule:WBSyncRuleSetAside];
+  [device changeAtTheService:nil];
+  price = [self serviceValue:@"unitPrice" ofProduct:first];
+  [device setValue:@"99" ofAttribute:@"unitPrice" row:0];
+  synced = [device syncAndWait:&error];
+  ODataSyncChange *aside = device.changes.firstObject;
+  BOOL issue = [aside isKindOfClass:[ODataSyncIssue class]] && ((ODataSyncIssue *)aside).status == 409;
+  [device.changesTable selectRowIndexes:[NSIndexSet indexSetWithIndex:0] byExtendingSelection:NO];
+  [device discardIssue:nil];
+  synced = synced && [device syncAndWait:&error];
+  WBCheck(issue && synced && device.changes.count == 0 && [[device valueOfAttribute:@"unitPrice" entity:@"Product" key:first] isEqual:price],
+          @"sync: a conflict set aside, discarded, the service's version read", [NSString stringWithFormat:@"%@", aside]);
+
+  // Offline: edits wait; back online, they go.
+  [device setRule:WBSyncRuleRemoteWins];
+  device.offline = YES;
+  [device setValue:@"Chai (offline)" ofAttribute:@"name" row:0];
+  BOOL failed = ![device syncAndWait:&error];
+  NSUInteger held = device.changes.count;
+  device.offline = NO;
+  synced = [device syncAndWait:&error];
+  WBCheck(failed && held == 1 && synced && [[self serviceValue:@"name" ofProduct:first] isEqual:@"Chai (offline)"],
+          @"sync: offline, an edit waits; online again, it goes", [NSString stringWithFormat:@"%lu held; %@", (unsigned long)held, error ?: @""]);
+
+  // Its exchanges in the wire log; its syncs in Traces.
+  [[NSRunLoop currentRunLoop] runMode:NSDefaultRunLoopMode beforeDate:[NSDate dateWithTimeIntervalSinceNow:0.3]];
+  BOOL logged = NO;
+  for (WorkbenchLogEntry *entry in self.log) logged = logged || [entry.URL rangeOfString:@"deltatoken"].location != NSNotFound;
+  BOOL traced = NO;
+  for (WBTrace *trace in self.traceRecorder.traces) traced = traced || [trace.root.name isEqualToString:@"sync"];
+  WBCheck(logged && traced, @"sync: its exchanges in the wire log, its syncs in Traces",
+          [NSString stringWithFormat:@"%@%@", logged ? @"" : @"no delta link in the log; ", traced ? @"" : @"no sync trace"]);
+  [device.window orderOut:nil];
+}
+
 - (void)runSelfTest
 {
   NSArray *names = @[ @"Built-in", @"Northwind", @"TripPin" ];
@@ -737,6 +825,7 @@ static void WBCheck(BOOL ok, NSString *what, NSString *detail)
       [self checkSearchAndGrouping];
       [self checkBuiltInFeatures];
       [self checkBuiltInOpenType];
+      [self checkSync];
     }
     if (service != WBServiceBuiltIn) WBCheck(![self.explainButton isEnabled], @"explain: only at the built-in service", nil);
     if (service != WBServiceTripPin) continue;

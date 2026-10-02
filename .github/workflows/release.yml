@@ -55,7 +55,7 @@ jobs:
             MARKETING_VERSION="${APP_VERSION%%-*}" CURRENT_PROJECT_VERSION="$GITHUB_RUN_NUMBER" build
           app="$RUNNER_TEMP/Release/Build/Products/Release/Workbench.app"
           echo "APP=$app" >> "$GITHUB_ENV"
-          for fw in ODataKit ODataIncrementalStore ODataService; do
+          for fw in ODataKit ODataIncrementalStore ODataService ODataSync; do
             test -d "$app/Contents/Frameworks/$fw.framework" \
               || { echo "::error::Workbench.app does not embed $fw.framework"; exit 1; }
           done
@@ -122,7 +122,7 @@ jobs:
           # whose signature seals theirs. --deep would do it in one call, but
           # Apple deprecates it and it is the usual reason notarization
           # rejects a nested framework.
-          for fw in ODataKit ODataIncrementalStore ODataService; do
+          for fw in ODataKit ODataIncrementalStore ODataService ODataSync; do
             codesign --force --timestamp --options runtime \
                      --sign "$IDENTITY" "$APP/Contents/Frameworks/$fw.framework"
           done

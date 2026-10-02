@@ -1,12 +1,13 @@
 # Offline sync: design
 
-**Status: the service's part (section 9) and the library's phases 1–4
+**Status: the service's part (section 9) and the library's phases 1–5
 (section 10) exist**: `Source/ODataSync` (`ODataSyncEngine`,
 `ODataSyncPeerServer`), with down, up and both entities, the outbox and
 set-aside changes, key reconciliation, conflicts (shadows with values,
 RemoteWins, LocalWins, LastWriterWins on a hybrid logical clock,
-MergeFields, custom resolvers), and peers (a peer server, relaying).
-The Workbench pane (phase 5) is still to come.
+MergeFields, custom resolvers), and peers (a peer server, relaying); and
+the Workbench's Sync window (an offline device beside its built-in
+service).
 
 An app that works offline keeps its data in a Core Data store on the device
 and syncs it with an OData service when it can: entities the service owns
@@ -544,6 +545,9 @@ What exists, and how it goes (`ODataSyncEngine.h`):
 - The outbox goes as JSON `$batch` requests that stand or fall alone
   (`odata.continue-on-error`), one at a time where a service takes no
   JSON batch; upserts parents first, deletions children first.
+- What waits to be sent: `-pendingChanges` (each an `ODataSyncChange`:
+  its entity, key, operation, properties, attempts; an `ODataSyncIssue`
+  when set aside), for a "3 changes to send".
 - Refused changes are set aside (`-issues`, the delegate), sent again
   when the object changes or the app retries them, or discarded.
 - `-reconcileWithRemote:error:` reads each set's keys again (4.1).
@@ -614,7 +618,9 @@ What ODataService needs, and what it has:
    to the app. *Done* (Tests/ODataSyncTests.m in the process;
    Server/Tests/ois-serve-check.m over HTTP, on both platforms).
 5. The Workbench: a sync pane (an offline store over the built-in service,
-   the outbox, conflicts), as the self-test's ground.
+   the outbox, conflicts), as the self-test's ground. *Done*
+   (`Examples/Workbench/WBSync.m`, Sync > Show Device; `checkSync` in its
+   self-test).
 
 ## 11. Open questions
 

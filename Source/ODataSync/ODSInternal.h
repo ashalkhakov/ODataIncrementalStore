@@ -150,7 +150,7 @@ FOUNDATION_EXPORT NSSet<NSString *> *ODSChangedNames(NSDictionary *_Nullable bef
                   localChanges:(NSSet *)localChanges remoteChanges:(NSSet *)remoteChanges withPeer:(BOOL)withPeer;
 @end
 
-@interface ODataSyncIssue ()
+@interface ODataSyncChange ()
 - (instancetype)initWithEntry:(NSManagedObject *)entry objectID:(nullable NSManagedObjectID *)objectID;
 @property (nonatomic, readonly, strong) NSManagedObjectID *entryID;
 @end

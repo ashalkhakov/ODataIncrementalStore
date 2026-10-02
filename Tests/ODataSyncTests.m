@@ -315,6 +315,23 @@ static NSManagedObjectModel *OSTModel(void)
 
 #pragma mark Up
 
+- (void)testWhatWaitsToBeSent
+{
+  [_service setHandler:[[OSTPickyInspections alloc] initWithEntity:_server.managedObjectModel.entitiesByName[@"Inspection"]] forEntitySet:@"Inspections"];
+  NSString *good = [self inspect:@"good" asset:nil];
+  NSString *bad = [self inspect:@"bad" asset:nil];
+  NSArray<ODataSyncChange *> *waiting = [_engine pendingChanges];
+  XCTAssertEqual(waiting.count, 2u, @"what the app changed, read from history: %@", waiting);
+  XCTAssertEqualObjects([NSSet setWithArray:[waiting valueForKeyPath:@"key.id"]], ([NSSet setWithObjects:good, bad, nil]));
+  XCTAssertEqual(waiting.firstObject.operation, ODataSyncOperationInsert);
+  XCTAssertNotNil(waiting.firstObject.objectID);
+  [self sync];
+  waiting = [_engine pendingChanges];
+  XCTAssertEqual(waiting.count, 1u, @"the refused one stays: %@", waiting);
+  XCTAssertTrue([waiting.firstObject isKindOfClass:[ODataSyncIssue class]], @"set aside");
+  XCTAssertEqual(waiting.firstObject.attempts, 1);
+}
+
 - (void)testUploadByUpsert
 {
   [self sync];
