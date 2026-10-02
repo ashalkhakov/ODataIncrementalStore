@@ -75,6 +75,10 @@ FOUNDATION_EXPORT id _Nullable ODSUnarchive(NSData *_Nullable data);
 FOUNDATION_EXPORT NSSet<NSString *> *ODSChangedNames(NSDictionary *_Nullable before, NSDictionary *_Nullable after);
 // The String attribute last writer wins orders by (ODataSync.modified).
 - (nullable NSAttributeDescription *)modifiedAttributeOf:(NSEntityDescription *)entity;
+// The service's version counter (an integer attribute that OData.etag
+// names, which the service increments on each update): which of two
+// copies is newer.
+- (nullable NSAttributeDescription *)versionAttributeOf:(NSEntityDescription *)entity;
 // $expand of the to-ones' keys, for reading an entity's rows: nil for none.
 - (nullable NSString *)expandOfEntity:(NSEntityDescription *)entity;
 // $select of the key, for reading only keys.

@@ -83,16 +83,14 @@ static BOOL ODSIsReplica(NSString *text)
   NSString *root = [NSString stringWithFormat:@"http://%@:%lu/sync/%@/", host, (unsigned long)port, engine.replicaID];
   _serviceRoot = [NSURL URLWithString:root];
   _service = [[ODataService alloc] initWithPersistentStoreCoordinator:engine.coordinator serviceRoot:_serviceRoot];
-  // The synced roots only: not the bookkeeping, nor what is the app's alone.
-  NSMutableSet *hidden = [NSMutableSet set];
+  // The synced entities only (the configuration +addBookkeepingToModel:
+  // made): not the bookkeeping, nor what is the app's alone.
+  _service.configurationName = ODataSyncPeerConfiguration;
   ODSCodec *codec = engine.codec;
   for (NSEntityDescription *entity in engine.coordinator.managedObjectModel.entities) {
     if (entity.superentity) continue;
     ODataSyncDirection direction = [codec directionOfEntity:entity];
-    if (direction == ODataSyncDirectionNone) {
-      [hidden addObject:entity.name];
-      continue;
-    }
+    if (direction == ODataSyncDirectionNone) continue;
     ODSPeerSetHandler *handler = [[ODSPeerSetHandler alloc] initWithEntity:entity];
     handler.engine = engine;
     // The service's alone: a peer reads them.
@@ -103,7 +101,6 @@ static BOOL ODSIsReplica(NSString *text)
     handler.allowsUpsert = writes;
     [_service setHandler:handler forEntitySet:[_service.mapper entitySetForEntity:entity]];
   }
-  _service.hiddenEntityNames = hidden;
   return self;
 }
 

@@ -3,6 +3,7 @@
 
 #import "ODSInternal.h"
 #import <ODataKit/ODataExpression.h>
+#import <ODataService/ODataService.h>
 #import <objc/message.h>
 
 NSString * const ODataSyncDirectionKey = @"ODataSync.direction";
@@ -10,6 +11,7 @@ NSString * const ODataSyncErrorDomain = @"org.gnu.ois.ODataSync";
 NSString * const ODataSyncDownAuthorPrefix = @"ODataSync.down.";
 NSString * const ODataSyncBookkeepingAuthor = @"ODataSync.bookkeeping";
 NSString * const ODataSyncReplicaHeader = @"ODataSync-Replica";
+NSString * const ODataSyncPeerConfiguration = @"ODataSync.peer";
 
 NSString * const ODSRemoteStateEntity = @"ODSRemoteState";
 NSString * const ODSOutboxEntity = @"ODSOutboxEntry";
@@ -457,6 +459,23 @@ NSSet<NSString *> *ODSChangedNames(NSDictionary *before, NSDictionary *after)
   return changed;
 }
 
+- (NSAttributeDescription *)versionAttributeOf:(NSEntityDescription *)entity
+{
+  for (NSAttributeDescription *attribute in entity.attributesByName.allValues) {
+    id flag = attribute.userInfo[ODataUserInfoETag];
+    if (!([flag isEqual:@"YES"] || [flag isEqual:@YES])) continue;
+    switch (attribute.attributeType) {
+      case NSInteger16AttributeType:
+      case NSInteger32AttributeType:
+      case NSInteger64AttributeType:
+        return attribute;
+      default:
+        return nil;
+    }
+  }
+  return nil;
+}
+
 - (NSAttributeDescription *)modifiedAttributeOf:(NSEntityDescription *)entity
 {
   for (NSEntityDescription *e = entity; e; e = e.superentity) {
@@ -550,12 +569,19 @@ static NSEntityDescription *ODSEntity(NSString *name, NSArray<NSAttributeDescrip
                                   ODSAttribute(@"operation", NSInteger16AttributeType), ODSAttribute(@"properties", NSBinaryDataAttributeType),
                                   ODSAttribute(@"sequence", NSInteger64AttributeType), ODSAttribute(@"attempts", NSInteger32AttributeType),
                                   ODSAttribute(@"status", NSInteger32AttributeType), ODSAttribute(@"message", NSStringAttributeType),
-                                  ODSAttribute(@"setAside", NSBooleanAttributeType) ]),
+                                  ODSAttribute(@"setAside", NSBooleanAttributeType), ODSAttribute(@"relayed", NSBooleanAttributeType) ]),
     ODSEntity(ODSShadowEntity, @[ ODSAttribute(@"remote", NSStringAttributeType), ODSAttribute(@"entityType", NSStringAttributeType),
                                   ODSAttribute(@"keyText", NSStringAttributeType), ODSAttribute(@"etag", NSStringAttributeType),
                                   ODSAttribute(@"values", NSBinaryDataAttributeType) ]),
   ];
+  // What a peer server serves: the synced entities, with their sub-entities.
+  NSMutableArray *synced = [NSMutableArray array];
+  ODSCodec *codec = [[ODSCodec alloc] initWithModel:model];
+  for (NSEntityDescription *entity in model.entities) {
+    if ([codec directionOfEntity:entity] != ODataSyncDirectionNone) [synced addObject:entity];
+  }
   model.entities = [model.entities arrayByAddingObjectsFromArray:added];
+  [model setEntities:synced forConfiguration:ODataSyncPeerConfiguration];
   if (configuration) {
     NSArray *entities = [model entitiesForConfiguration:configuration] ?: @[];
     [model setEntities:[entities arrayByAddingObjectsFromArray:added] forConfiguration:configuration];

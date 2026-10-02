@@ -104,8 +104,11 @@ static NSManagedObjectModel *OSTModel(void)
   ofAsset.inverseRelationship = inspections;
   inspections.inverseRelationship = ofAsset;
 
+  // The service's version counter: an ordered ETag.
+  NSAttributeDescription *version = OSTAttribute(@"version", NSInteger64AttributeType, NO);
+  version.userInfo = @{ @"OData.etag": @"YES" };
   asset.properties = @[ OSTAttribute(@"id", NSInteger32AttributeType, YES), OSTAttribute(@"name", NSStringAttributeType, NO),
-                        OSTAttribute(@"region", NSStringAttributeType, NO), inspections ];
+                        OSTAttribute(@"region", NSStringAttributeType, NO), version, inspections ];
   inspection.properties = @[ OSTAttribute(@"id", NSStringAttributeType, YES), OSTAttribute(@"note", NSStringAttributeType, NO),
                              OSTAttribute(@"score", NSInteger32AttributeType, NO), ofAsset ];
   task.properties = @[ OSTAttribute(@"id", NSStringAttributeType, YES), OSTAttribute(@"title", NSStringAttributeType, NO),
@@ -151,6 +154,7 @@ static NSManagedObjectModel *OSTModel(void)
       [asset setValue:a[0] forKey:@"id"];
       [asset setValue:a[1] forKey:@"name"];
       [asset setValue:a[2] forKey:@"region"];
+      [asset setValue:@1 forKey:@"version"];
     }
   }];
   _service = [[ODataService alloc] initWithPersistentStoreCoordinator:_server serviceRoot:[NSURL URLWithString:@"http://example.test/odata/"]];
@@ -707,7 +711,7 @@ static NSManagedObjectModel *OSTModel(void)
   XCTAssertEqual(_engine.lastResult.uploaded, 0u, @"not sent back to the service: %@", _engine.lastResult);
 }
 
-- (void)testDeletionsGoOnlyFromWhereTheyWereMade
+- (void)testWhichDeletionsArePassedOn
 {
   NSString *task = [self makeTask:@"Check pump"];
   [self sync];
@@ -726,15 +730,14 @@ static NSManagedObjectModel *OSTModel(void)
   [self sync:offline];
   XCTAssertEqualObjects([self values:@"name" of:@"Asset" in:other], (@[ @"Pump", @"Valve", @"Boiler" ]), @"a peer deletes nothing");
 
-  // The other's own deletion goes to the peer, which does not pass it on;
-  // the other sends it to the service when it can.
+  // The other's own deletion goes to the peer, which passes it on.
   [self in:other do:^(NSManagedObjectContext *context) {
     [context deleteObject:[self object:@"Task" id:task in:context]];
   }];
   [self sync:offline];
   XCTAssertEqual([self values:@"title" of:@"Task" in:_device].count, 0u, @"deleted at the peer");
   [self sync];
-  XCTAssertEqualObjects([self values:@"title" of:@"Task" in:_server], (@[ @"Check pump" ]), @"not passed on");
+  XCTAssertEqual([self values:@"title" of:@"Task" in:_server].count, 0u, @"passed on");
 }
 
 - (void)testLastWriterWinsAcrossPeers
@@ -773,6 +776,93 @@ static NSManagedObjectModel *OSTModel(void)
   XCTAssertTrue([server.serviceRoot.absoluteString hasSuffix:path]);
   XCTAssertFalse([server.service handlerForEntitySet:@"Assets"].allowsInsert, @"down sets are read only");
   XCTAssertTrue([server.service handlerForEntitySet:@"Inspections"].allowsUpsert);
+}
+
+// A device that only reaches a peer: it syncs with that peer's server.
+- (void)testAPeersDeletionIsPassedOn
+{
+  NSPersistentStoreCoordinator *basement = nil;
+  ODataSyncEngine *offline = [self deviceWithService:NO store:&basement];
+  [offline addRemote:[self peerOf:_engine]];
+  NSString *identifier = [NSUUID UUID].UUIDString;
+  [self in:basement do:^(NSManagedObjectContext *context) {
+    NSManagedObject *inspection = [NSEntityDescription insertNewObjectForEntityForName:@"Inspection" inManagedObjectContext:context];
+    [inspection setValue:identifier forKey:@"id"];
+    [inspection setValue:@"Leaks" forKey:@"note"];
+  }];
+  [self sync:offline];
+  [self sync];
+  XCTAssertEqualObjects([self values:@"note" of:@"Inspection" in:_server], (@[ @"Leaks" ]));
+
+  // Deleted where it was made; this device passes the deletion on.
+  [self in:basement do:^(NSManagedObjectContext *context) {
+    [context deleteObject:[self object:@"Inspection" id:identifier in:context]];
+  }];
+  [self sync:offline];
+  XCTAssertEqual([self values:@"note" of:@"Inspection" in:_device].count, 0u);
+  [self sync];
+  XCTAssertEqual([self values:@"note" of:@"Inspection" in:_server].count, 0u, @"passed on to the service");
+}
+
+- (void)testARelayedChangeDoesNotBringBackWhatTheServiceDeleted
+{
+  NSPersistentStoreCoordinator *basement = nil;
+  ODataSyncEngine *offline = [self deviceWithService:NO store:&basement];
+  [offline addRemote:[self peerOf:_engine]];
+  NSString *identifier = [NSUUID UUID].UUIDString;
+  [self in:basement do:^(NSManagedObjectContext *context) {
+    NSManagedObject *inspection = [NSEntityDescription insertNewObjectForEntityForName:@"Inspection" inManagedObjectContext:context];
+    [inspection setValue:identifier forKey:@"id"];
+    [inspection setValue:@"Leaks" forKey:@"note"];
+  }];
+  [self sync:offline];
+  [self sync];
+  [self atServer:^(NSManagedObjectContext *context) {
+    [context deleteObject:[self object:@"Inspection" id:identifier in:context]];
+  }];
+  // An edit made before the other device heard of the deletion, passed on later.
+  [self in:basement do:^(NSManagedObjectContext *context) {
+    [[self object:@"Inspection" id:identifier in:context] setValue:@"Leaks badly" forKey:@"note"];
+  }];
+  [self sync:offline];
+  [self sync];
+  XCTAssertEqual([self values:@"note" of:@"Inspection" in:_server].count, 0u, @"not made again by the upsert");
+  XCTAssertEqual([self values:@"note" of:@"Inspection" in:_device].count, 0u, @"the service's deletion stands here");
+  XCTAssertGreaterThan(_engine.lastResult.conflicts, 0u, @"%@", _engine.lastResult);
+}
+
+- (void)testANewerVersionOfTheServicesDataFromAPeer
+{
+  // This device read the service once; the other later.
+  [self sync];
+  [self atServer:^(NSManagedObjectContext *context) {
+    NSManagedObject *pump = [self object:@"Asset" id:@1 in:context];
+    [pump setValue:@"Pump (new)" forKey:@"name"];
+    [pump setValue:@2 forKey:@"version"];
+  }];
+  NSPersistentStoreCoordinator *other = nil;
+  ODataSyncEngine *later = [self deviceWithService:YES store:&other];
+  [self sync:later];
+  XCTAssertEqualObjects([self values:@"name" of:@"Asset" in:other], (@[ @"Pump (new)", @"Valve", @"Boiler" ]));
+
+  // From the peer: the newer version replaces this device's older one.
+  ODataSyncRemote *peer = [self peerOf:later];
+  NSError *error = nil;
+  XCTAssertTrue([_engine downloadFromRemote:peer error:&error], @"%@", error);
+  XCTAssertEqualObjects([self values:@"name" of:@"Asset" in:_device], (@[ @"Pump (new)", @"Valve", @"Boiler" ]));
+
+  // And an older version from a peer replaces nothing.
+  [self atServer:^(NSManagedObjectContext *context) {
+    NSManagedObject *pump = [self object:@"Asset" id:@1 in:context];
+    [pump setValue:@"Pump (newest)" forKey:@"name"];
+    [pump setValue:@3 forKey:@"version"];
+  }];
+  [self sync];
+  XCTAssertEqualObjects([self values:@"name" of:@"Asset" in:_device].firstObject, @"Pump (newest)");
+  ODataSyncRemote *stale = [self peerOf:later];
+  stale.identifier = @"another";  // read whole again, as a new peer
+  XCTAssertTrue([_engine downloadFromRemote:stale error:&error], @"%@", error);
+  XCTAssertEqualObjects([self values:@"name" of:@"Asset" in:_device].firstObject, @"Pump (newest)", @"the peer's is older");
 }
 
 @end

@@ -374,16 +374,35 @@ How it goes:
   a remote is dropped when it equals the version that remote last agreed
   to (its shadow). A change that went A → B → service → A stops at A.
 - **A peer is no authority**: with a peer, up entities are treated as
-  both (shadows, If-Match, conflicts and resolvers); from a peer come new
-  objects of down entities (never changes over what the service gave) and
-  changes of up and both entities. Its removals, and the rows it does not
-  have, delete nothing here: a peer's set may be scoped or filtered
-  differently, and a removal the service made reaches each device from the
-  service. A peer that lacks an object this device sends gets it whole.
-- **Deletions go only from where they were made**: a device's own
-  deletion is sent to every remote, peers included; a deletion that came
-  from a remote is not passed on (it may be that remote's scope, not the
-  object's end).
+  both (shadows, If-Match, conflicts and resolvers); from a peer come
+  changes of up and both entities, and of down entities only what is
+  missing here, or newer by the service's version counter (below). What a
+  peer reads deletes nothing here (neither its removals nor the rows it
+  lacks): a peer's set may be scoped or filtered differently, and no
+  peer's view is complete. A peer that lacks an object this device sends
+  gets it whole.
+- **The service's version, through a peer**: a down entity with a version
+  attribute (an integer that `OData.etag` names, which ODataService
+  increments on each update it makes, and which the server app's own
+  writes must increment too) has ordered ETags. Its copy from a peer
+  replaces this device's when its version is higher: it is the service's,
+  only newer. Without one, a peer only fills in what is missing (ETags of
+  hashed values cannot be ordered). Peers cannot change it: down sets are
+  read only on a peer server.
+- **Which deletions travel**: a device's own deletion is sent to every
+  remote, peers included. One that a peer sent here is passed on to the
+  other remotes: an engine sends a peer only deletions made on its device
+  (or passed on so), and a peer's reads delete nothing, so it is a real
+  one. One that came down from a service is not passed on: it may be the
+  service's scope, not the object's end (a device out of scope keeps no
+  copy; each device learns that from the service).
+- **Relayed changes are checked**: an up entity's change that came from
+  elsewhere is sent to the service as a both entity's (If-Match of the
+  version it agreed to, `*` when none; If-None-Match for a new one), not
+  by a plain upsert. A stale copy, or an edit of what the service has
+  since deleted, meets a 412 and goes to the resolver, instead of
+  overwriting a newer version or making a deleted object again. A change
+  made on this device is sent by upsert as before: its own work.
 - **Ordering**: last writer wins compares the `ODataSync.modified`
   stamps of a hybrid logical clock. A peer server keeps the stamps it is
   sent (its writes are the engine's, not the app's, so they are not
@@ -391,13 +410,48 @@ How it goes:
 - **Peer vectors**: per peer, the delta links of its sets (in the remote's
   state, as for the service); a peer's ODataService makes them from its
   store's persistent history. A new peer reads everything once.
-- **What a peer serves**: the synced entities only (not the engine's
-  bookkeeping, nor local-only entities: `ODataService.hiddenEntityNames`);
-  down sets read-only.
+- **What a peer serves**: the synced entities only, not the engine's
+  bookkeeping nor local-only entities: `+addBookkeepingToModel:` adds a
+  model configuration listing them (`ODataSyncPeerConfiguration`, which no
+  store need use), and the peer server serves that configuration. Down
+  sets are read only.
+- **Remotes in turn**: a sync goes through the remotes in the order they
+  were added. That decides how soon a change travels (a peer added before
+  the service has its work passed on in the same sync), not what the
+  stores end up with: the checks above catch a copy that comes late.
+- **Compared with others**: Ensembles (Core Data sync over a shared
+  file store, or Multipeer Connectivity) has every device publish only its
+  own change logs, and every device read every other's; peers forward the
+  raw log files, so no one re-authors another's change, and a deletion
+  spreads with its author's log. Ordering is by a vector clock and a
+  global count, so arrival order does not matter; a delete beats a
+  concurrent update; all devices are equal, with no read-only data.
+  Couchbase Lite keeps "deleted" (a tombstone, replicated) apart from "no
+  longer visible to you" (purged locally, never replicated), which is the
+  distinction behind which deletions travel here; its server is the
+  authority through access control, as the service is here.
 - **Out of scope here**: discovery (Bonjour, Multipeer Connectivity, a QR
   code) and how peers trust each other (a token the service issued to
   each, checked by the peer server's authenticator); the engine takes a
   remote's URL and credentials, however found.
+
+### 7.1 Known issue: an insert passed on late makes a deleted object again
+
+A device makes an object and gives it to a peer; the service gets it
+(from either), and later deletes it. If the peer passes the *insert* on
+to the service only after that (it had not synced since), the insert goes
+with `If-None-Match: *`, finds nothing, and the object is made again. An
+update passed on late is caught (`If-Match` finds nothing: a 412, and the
+resolver), but an insert cannot tell "deleted" from "never there".
+Ensembles has the same hole: an insert of the same global ID brings an
+object back.
+
+Closing it needs the service to remember deleted keys: a set that keeps
+its tombstones (persistent history already does, for delta links, as long
+as history is retained) could answer an upsert of a deleted key with 409
+or 410 instead of making it, and the engine would take that as the
+object's end. Until then, an app that deletes at the service what devices
+collected should expect the odd one back, and can delete it again.
 
 ## 8. Integrating
 

@@ -64,6 +64,9 @@ FOUNDATION_EXPORT NSString * const ODataSyncBookkeepingAuthor; // @"ODataSync.bo
 // The request header a device names its replica in, to a peer: what the
 // peer is sent is written as coming from that replica.
 FOUNDATION_EXPORT NSString * const ODataSyncReplicaHeader;     // @"ODataSync-Replica"
+// The model configuration +addBookkeepingToModel:configuration: adds for
+// a peer server: the synced entities (no store need use it).
+FOUNDATION_EXPORT NSString * const ODataSyncPeerConfiguration; // @"ODataSync.peer"
 
 typedef NS_ENUM(NSInteger, ODataSyncDirection) {
   ODataSyncDirectionNone = 0,
@@ -84,9 +87,11 @@ typedef NS_ENUM(NSInteger, ODataSyncConflictPolicy) {
 @interface ODataSyncRemote : NSObject
 + (instancetype)remoteWithServiceRoot:(NSURL *)serviceRoot;
 // A peer, at the service root its peer server gives (which ends in its
-// replica ID). A peer is no authority: from it come new objects of down
-// entities and changes of up and both entities, never deletions; up
-// entities go both ways with it, conflicts and all.
+// replica ID). A peer is no authority: what it reads deletes nothing
+// here; from it come changes of up and both entities, and of down
+// entities what is missing here or newer by their version counter (an
+// OData.etag integer). Up entities go both ways with it, conflicts and
+// all. Deletions it sends are passed on.
 + (instancetype)peerWithServiceRoot:(NSURL *)serviceRoot;
 - (instancetype)initWithServiceRoot:(NSURL *)serviceRoot NS_DESIGNATED_INITIALIZER;
 - (instancetype)init NS_UNAVAILABLE;
@@ -216,7 +221,8 @@ typedef NS_ENUM(NSInteger, ODataSyncResolutionKind) {
 
 // The engine's own entities, added to the model before a coordinator uses
 // it, in the configuration the synced entities' store has (nil: the
-// default one).
+// default one); and ODataSyncPeerConfiguration, listing the synced
+// entities, which a peer server serves.
 + (void)addBookkeepingToModel:(NSManagedObjectModel *)model configuration:(nullable NSString *)configuration;
 
 // The coordinator's store (the one with the synced entities) must keep

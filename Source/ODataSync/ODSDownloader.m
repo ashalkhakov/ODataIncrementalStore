@@ -6,7 +6,8 @@
 // by key, in a context writing as the remote's down author, and saved with
 // the new delta link. A peer is no authority (docs/offline-sync.md, 7): its
 // removals and the rows it lacks delete nothing here, and its rows of a
-// down entity only add what is missing.
+// down entity only add what is missing, or replace an older version (by
+// the service's version counter, where the entity has one).
 
 #import "ODSInternal.h"
 #import <ODataKit/ODataError.h>
@@ -152,6 +153,8 @@ static const NSInteger ODSGone = 410;
 {
   NSMutableArray *pairs = [NSMutableArray array];
   BOOL onlyMissing = _remote.peer && [_codec directionOfEntity:entity] == ODataSyncDirectionDown;
+  NSAttributeDescription *version = onlyMissing ? [_codec versionAttributeOf:entity] : nil;
+  NSString *versionProperty = version ? [_codec.mapper propertyForAttribute:version] : nil;
   for (NSDictionary *row in rows) {
     if (![row isKindOfClass:[NSDictionary class]]) continue;
     NSDictionary *key = [_codec keyFromJSON:row entity:entity];
@@ -163,7 +166,12 @@ static const NSInteger ODSGone = 410;
     if ([self settled:row entity:entity key:key etag:etag context:context]) continue;
     BOOL created = NO;
     NSManagedObject *object = [self objectFor:row entity:entity context:context created:&created];
-    if (onlyMissing && !created) continue;
+    if (onlyMissing && !created) {
+      // The service's version, newer than this one: as good as from the service.
+      id theirs = versionProperty ? row[versionProperty] : nil;
+      id ours = [object valueForKey:version.name];
+      if (![theirs respondsToSelector:@selector(longLongValue)] || (ours && [theirs longLongValue] <= [ours longLongValue])) continue;
+    }
     if (object) [pairs addObject:@[ object, row ]];
   }
   NSUInteger changed = 0;

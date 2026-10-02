@@ -559,10 +559,6 @@ FOUNDATION_EXPORT NSString * const ODataUserInfoETag;  // @"OData.etag"
 // without all its sub-entities, or that the model has not, is among
 // metadataProblems. Set it before the first request.
 @property (nonatomic, copy, nullable) NSString *configurationName;
-// Root entities not served, as if the configuration left them out (with
-// their sub-entities): an app's own bookkeeping, say. Set it before the
-// first request.
-@property (nonatomic, copy, nullable) NSSet<NSString *> *hiddenEntityNames;
 // The object whose methods are the service's unbound operations; see
 // ODataFunctions. Set it before the first request.
 @property (nonatomic, strong, nullable) id serviceOperations;
