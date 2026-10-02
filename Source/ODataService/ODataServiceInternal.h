@@ -36,6 +36,10 @@ typedef NS_ENUM(NSInteger, OISAccess) { OISAccessRead, OISAccessInsert, OISAcces
 - (void)returned:(nullable id)value;
 @end
 
+@interface ODataReply ()
+@property (nonatomic, readwrite, strong, nullable) OTSpan *span;
+@end
+
 @interface ODataService ()
 - (void)rememberAnswer:(NSInteger)status headers:(NSDictionary *)headers body:(NSData *)body
                 forKey:(NSString *)key signature:(nullable NSString *)signature;
@@ -241,6 +245,7 @@ typedef NS_ENUM(NSInteger, OISTargetKind) {
 @property (nonatomic, strong, nullable) OTSpan *span;
 @property (nonatomic, strong, nullable) OTSpan *executeSpan;
 @property (nonatomic, strong, nullable) OTSpan *storeSpan;
+@property (nonatomic, strong, nullable) OTSpan *callSpan;
 @property (nonatomic, copy, nullable) NSString *storeOperation;
 @property (nonatomic, copy, nullable) NSString *storeEntity;
 @property (nonatomic) uint64_t phaseStarted;
@@ -257,6 +262,12 @@ typedef NS_ENUM(NSInteger, OISTargetKind) {
 // span, current on this thread while it asks; ended by its answer.
 - (void)beginStoreRequest:(NSString *)operation entity:(nullable NSString *)entity handler:(nullable ODataEntitySetHandler *)handler;
 - (void)endStoreRequest:(nullable id)result error:(nullable NSError *)error;
+// An operation's own code called: a span ("call Name"), current on this
+// thread while it runs, so what it does -- the store, an engine of its
+// own that traces -- goes under it; ended by its reply, and for an action
+// once its changes are saved (the save's span under it too).
+- (void)beginOperationCall:(OISServedOperation *)operation target:(id)target;
+- (void)endOperationCall:(nullable NSError *)error;
 // The response made: what is under way ended, the call's span with it.
 - (void)traceRespondedWithStatus:(NSInteger)status;
 @end

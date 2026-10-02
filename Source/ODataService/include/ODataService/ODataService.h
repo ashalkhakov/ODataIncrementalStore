@@ -35,7 +35,7 @@
 
 NS_ASSUME_NONNULL_BEGIN
 
-@class ODataService, ODataRequest, HSPrincipal, HSMetrics, OTTracer;
+@class ODataService, ODataRequest, HSPrincipal, HSMetrics, OTTracer, OTSpan;
 @protocol HSAuthenticator;
 
 // userInfo on an Integer attribute: the entity's version, sent as its ETag
@@ -64,6 +64,19 @@ FOUNDATION_EXPORT NSString * const ODataUserInfoETag;  // @"OData.etag"
 // The request being answered: its context, its headers, and for an
 // operation bound to a collection, the collection.
 @property (nonatomic, readonly, weak, nullable) ODataRequest *request;
+// The span of what was asked: an operation's call ("call Name"), a store
+// request ("fetch Product"). Current on the thread while the method runs;
+// work it defers to another thread makes it current there itself, so what
+// that work traces goes under the request too:
+//
+//   [reply defer];
+//   [self.engine startProcess:... then:^{
+//     [reply.span becomeCurrent];
+//     ... what traces ...
+//     [reply.span resignCurrent];
+//     [reply finishWithResult:outcome];
+//   }];
+@property (nonatomic, readonly, strong, nullable) OTSpan *span;
 @end
 
 // Operations. Objective-C has no annotations, so a protocol declares them:
@@ -471,8 +484,10 @@ FOUNDATION_EXPORT NSString * const ODataUserInfoETag;  // @"OData.etag"
 // made, the plan's tree an attribute), then "execute", with a span for
 // each request of a handler or the store ("fetch Product", "count Order",
 // "write Order") and each save, current on its thread while the store
-// works, so a store that traces puts its spans under it. Recorded when the
-// shared OTTracerProvider is. Default: ODataService's tracer.
+// works, so a store that traces puts its spans under it; and each call of
+// an action or function ("call Name"), current while its method runs, so
+// the spans of what it does go under it too. Recorded when the shared
+// OTTracerProvider is. Default: ODataService's tracer.
 @property (nonatomic, strong) OTTracer *tracer;
 // Where the same is counted and timed, when set (ODataServiceModule sets
 // the application's): odata_plan_duration_seconds and

@@ -249,6 +249,85 @@
 
 @end
 
+// What is current while an operation runs: its call's span. An engine of
+// the application's own traces under it, now or (with reply.span) later on
+// another thread.
+@protocol OISTracedFunctions <ODataFunctions>
+- (NSString *)currentSpan:(ODataReply *)reply;
+- (NSString *)engineStep:(ODataReply *)reply;
+- (NSString *)later:(ODataReply *)reply;
+- (NSString *)never:(ODataReply *)reply;
+@end
+
+@protocol OISTracedActions <ODataActions>
+- (NSString *)stepForProduct:(OISServedProduct *)product reply:(ODataReply *)reply;
+@end
+
+@interface OISTracedOperations : NSObject <OISTracedFunctions, OISTracedActions>
+@end
+
+@implementation OISTracedOperations
+
++ (NSDictionary *)ODataOperationTypes
+{
+  return @{ @"stepForProduct:reply:.product": @"Default.Product" };
+}
+
+- (NSString *)currentSpan:(ODataReply *)reply
+{
+  OTSpan *span = [OTSpan currentSpan];
+  return span ? [NSString stringWithFormat:@"%@ %@", span.name, span.context.spanID] : @"";
+}
+
+- (NSString *)engineStep:(ODataReply *)reply
+{
+  [[[OTTracer tracerNamed:@"Engine" version:nil] startSpanNamed:@"engine step" attributes:nil] end];
+  return @"stepped";
+}
+
+- (NSString *)later:(ODataReply *)reply
+{
+  [reply defer];
+  OTSpan *call = reply.span;
+  dispatch_after(dispatch_time(DISPATCH_TIME_NOW, 30 * NSEC_PER_MSEC), dispatch_get_global_queue(0, 0), ^{
+    [call becomeCurrent];
+    [[[OTTracer tracerNamed:@"Engine" version:nil] startSpanNamed:@"later step" attributes:nil] end];
+    [call resignCurrent];
+    [reply finishWithResult:@"later"];
+  });
+  return nil;
+}
+
+- (NSString *)never:(ODataReply *)reply
+{
+  [reply defer];
+  return nil;
+}
+
+- (NSString *)stepForProduct:(OISServedProduct *)product reply:(ODataReply *)reply
+{
+  [[[OTTracer tracerNamed:@"Engine" version:nil] startSpanNamed:@"product step" attributes:nil] end];
+  // A change, which the service saves for it.
+  NSString *name = [product valueForKey:@"name"];
+  [product setValue:[name stringByAppendingString:@" (stepped)"] forKey:@"name"];
+  return name;
+}
+
+@end
+
+// Samples only a trace that an engine step begins: one that is not under
+// the request, which should never happen.
+@interface OISEngineOnlySampler : NSObject <OTSampler>
+@end
+
+@implementation OISEngineOnlySampler
+- (BOOL)shouldSampleTraceID:(NSString *)traceID parent:(OTSpanContext *)parent name:(NSString *)name kind:(OTSpanKind)kind
+{
+  if (parent) return parent.sampled;
+  return [name hasSuffix:@" step"];
+}
+@end
+
 @protocol OISCatalogFunctions <ODataFunctions>
 - (int32_t)countProductsCheaperThanPrice:(double)price reply:(ODataReply *)reply;
 - (NSString *)echoWithText:(NSString *)text times:(int32_t)times reply:(ODataReply *)reply;
@@ -1401,6 +1480,123 @@
   }
   XCTAssertEqualObjects(service.context.traceState, @"vendor=abc,other=1", @"tracestate, sent as it came");
   XCTAssertEqualObjects(storeFetch.attributes[@"db.response.returned_rows"], @(rows.count));
+}
+
+// An operation's code runs under a span of its own, current on its thread:
+// what it does, an engine's or a store's spans, goes under the request.
+- (void)testAnOperationIsCalledUnderASpanOfItsOwn
+{
+  OTInMemoryExporter *memory = [[OTInMemoryExporter alloc] init];
+  OTTracerProvider.sharedProvider = [[OTTracerProvider alloc] initWithResource:@{} sampler:[[OTRatioSampler alloc] initWithRatio:1]
+                                                                    processor:[[OTSimpleSpanProcessor alloc] initWithExporter:memory]];
+  _service.serviceOperations = [[OISTracedOperations alloc] init];
+  OISServiceResponse *r = [self get:@"CurrentSpan()"];
+  OTTracerProvider.sharedProvider = nil;
+  XCTAssertEqual(r.status, 200, @"%@", r.text);
+
+  OTSpan *call = nil, *execute = nil, *service = nil;
+  for (OTSpan *span in memory.spans) {
+    if ([span.name isEqualToString:@"call CurrentSpan"]) call = span;
+    if ([span.name isEqualToString:@"execute"]) execute = span;
+    if ([span.name hasPrefix:@"ODataService GET"]) service = span;
+  }
+  XCTAssertNotNil(call, @"%@", memory.spans);
+  XCTAssertTrue(call.ended);
+  // Nothing to read first: under the request's span, no execution.
+  XCTAssertNil(execute, @"%@", memory.spans);
+  XCTAssertEqualObjects(call.parentSpanID, service.context.spanID, @"%@", memory.spans);
+  XCTAssertEqualObjects(call.attributes[@"code.function"], @"currentSpan:");
+  XCTAssertEqualObjects(call.attributes[@"code.namespace"], @"OISTracedOperations");
+  XCTAssertEqualObjects(r.json[@"value"], ([NSString stringWithFormat:@"call CurrentSpan %@", call.context.spanID]),
+                        @"current while the operation ran");
+  XCTAssertNil([OTSpan currentSpan], @"and no longer once it has");
+}
+
+- (NSArray<OTSpan *> *)spansOf:(NSString *)method path:(NSString *)path body:(id)body sampler:(id<OTSampler>)sampler
+                         status:(NSInteger *)status
+{
+  OTInMemoryExporter *memory = [[OTInMemoryExporter alloc] init];
+  OTTracerProvider.sharedProvider = [[OTTracerProvider alloc] initWithResource:@{} sampler:sampler
+                                                                    processor:[[OTSimpleSpanProcessor alloc] initWithExporter:memory]];
+  _service.serviceOperations = [[OISTracedOperations alloc] init];
+  OISServiceResponse *r = [self send:method path:path headers:nil body:body];
+  OTTracerProvider.sharedProvider = nil;
+  if (status) {
+    *status = r.status;
+  } else {
+    XCTAssertTrue(r.status < 300, @"%@ %@: %ld %@", method, path, (long)r.status, r.text);
+  }
+  return memory.spans;
+}
+
+static OTSpan *OISSpanNamed(NSArray<OTSpan *> *spans, NSString *name)
+{
+  for (OTSpan *span in spans) {
+    if ([span.name isEqualToString:name]) return span;
+  }
+  return nil;
+}
+
+// What an operation traces is under its call; and an unsampled request's
+// operation records nothing, rather than traces of its own.
+- (void)testWhatAnOperationTracesFollowsTheRequest
+{
+  NSArray *spans = [self spansOf:@"GET" path:@"EngineStep()" body:nil sampler:[[OTRatioSampler alloc] initWithRatio:1] status:NULL];
+  OTSpan *call = OISSpanNamed(spans, @"call EngineStep"), *step = OISSpanNamed(spans, @"engine step");
+  XCTAssertNotNil(step, @"%@", spans);
+  XCTAssertEqualObjects(step.parentSpanID, call.context.spanID);
+  XCTAssertEqualObjects(step.context.traceID, call.context.traceID);
+
+  spans = [self spansOf:@"GET" path:@"EngineStep()" body:nil sampler:[[OISEngineOnlySampler alloc] init] status:NULL];
+  XCTAssertEqual(spans.count, 0u, @"the request was not sampled, so neither is its engine's step: %@", spans);
+}
+
+// A deferred operation: its span ends with its reply, and the work it does
+// later, elsewhere, goes under it by reply.span.
+- (void)testADeferredOperationEndsWithItsReply
+{
+  NSArray *spans = [self spansOf:@"GET" path:@"Later()" body:nil sampler:[[OTRatioSampler alloc] initWithRatio:1] status:NULL];
+  OTSpan *call = OISSpanNamed(spans, @"call Later"), *step = OISSpanNamed(spans, @"later step");
+  XCTAssertNotNil(step, @"%@", spans);
+  XCTAssertEqualObjects(step.parentSpanID, call.context.spanID, @"made current where the work was done");
+  XCTAssertTrue(call.endTime >= step.endTime, @"ended by the reply, not when the method returned");
+  XCTAssertTrue((call.endTime - call.startTime) >= 25 * NSEC_PER_MSEC);
+}
+
+// Answered with the call still open (here, a reply that never came): the
+// call failed too.
+- (void)testAnOperationAnsweredForItIsMarkedFailed
+{
+  _service.replyTimeout = 0.2;
+  NSInteger status = 0;
+  NSArray *spans = [self spansOf:@"GET" path:@"Never()" body:nil sampler:[[OTRatioSampler alloc] initWithRatio:1] status:&status];
+  OTSpan *call = OISSpanNamed(spans, @"call Never");
+  XCTAssertEqual(status, 504);
+  XCTAssertNotNil(call, @"%@", spans);
+  XCTAssertTrue(call.ended);
+  XCTAssertEqual(call.status, OTStatusError);
+}
+
+// An entity parameter is read first, by a plan: the call goes under its
+// execution, with the read.
+- (void)testAnOperationWithEntityParametersIsCalledUnderItsExecution
+{
+  NSArray *spans = [self spansOf:@"POST" path:@"StepForProduct" body:@{ @"Product": @{ @"@odata.id": @"Products(1)" } }
+                         sampler:[[OTRatioSampler alloc] initWithRatio:1] status:NULL];
+  OTSpan *execute = OISSpanNamed(spans, @"execute"), *call = OISSpanNamed(spans, @"call StepForProduct");
+  OTSpan *step = OISSpanNamed(spans, @"product step");
+  XCTAssertNotNil(execute, @"%@", spans);
+  XCTAssertEqualObjects(call.parentSpanID, execute.context.spanID, @"%@", spans);
+  XCTAssertEqualObjects(step.parentSpanID, call.context.spanID);
+  // The action's changes saved as part of its call.
+  OTSpan *save = nil;
+  for (OTSpan *span in spans) {
+    if ([span.name hasPrefix:@"save"]) save = span;
+  }
+  XCTAssertNotNil(save, @"%@", spans);
+  XCTAssertEqualObjects(save.parentSpanID, call.context.spanID, @"%@", spans);
+  XCTAssertTrue(call.endTime >= save.endTime, @"the call ends once its changes are saved");
+  XCTAssertEqualObjects(save.attributes[@"odata.updated"], @1);
 }
 
 - (void)testNoTraceIsMadeUpForTheService
