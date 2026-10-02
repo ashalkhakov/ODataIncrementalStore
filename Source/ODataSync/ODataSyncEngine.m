@@ -495,6 +495,30 @@ NSSet<NSString *> *ODSChangedNames(NSDictionary *before, NSDictionary *after)
   return nil;
 }
 
+- (NSAttributeDescription *)versionsAttributeOf:(NSEntityDescription *)entity
+{
+  for (NSEntityDescription *e = entity; e; e = e.superentity) {
+    NSString *name = e.userInfo[ODataSyncVersionsKey];
+    if (name) {
+      NSAttributeDescription *attribute = entity.attributesByName[name];
+      return attribute.attributeType == NSStringAttributeType ? attribute : nil;
+    }
+  }
+  return nil;
+}
+
+- (NSDictionary *)versionsOfObject:(NSManagedObject *)object
+{
+  NSAttributeDescription *attribute = object ? [self versionsAttributeOf:object.entity] : nil;
+  return attribute ? ODSVersionsFromText([object valueForKey:attribute.name]) : @{};
+}
+
+- (NSDictionary *)versionsOfRow:(NSDictionary *)row entity:(NSEntityDescription *)entity
+{
+  NSAttributeDescription *attribute = row ? [self versionsAttributeOf:entity] : nil;
+  return attribute ? ODSVersionsFromText(row[[self.mapper propertyForAttribute:attribute]]) : @{};
+}
+
 - (NSAttributeDescription *)modifiedAttributeOf:(NSEntityDescription *)entity
 {
   for (NSEntityDescription *e = entity; e; e = e.superentity) {
@@ -577,6 +601,12 @@ static NSEntityDescription *ODSEntity(NSString *name, NSArray<NSAttributeDescrip
   int32_t _clockCounter;
 }
 
+NSEntityDescription *ODSTombstoneEntityDescription(void)
+{
+  return ODSEntity(ODSTombstoneEntity, @[ ODSAttribute(@"entityType", NSStringAttributeType), ODSAttribute(@"keyText", NSStringAttributeType),
+                                         ODSAttribute(@"deleted", NSDateAttributeType), ODSAttribute(@"versions", NSStringAttributeType) ]);
+}
+
 + (void)addBookkeepingToModel:(NSManagedObjectModel *)model configuration:(NSString *)configuration
 {
   if (model.entitiesByName[ODSRemoteStateEntity]) return;
@@ -592,8 +622,7 @@ static NSEntityDescription *ODSEntity(NSString *name, NSArray<NSAttributeDescrip
     ODSEntity(ODSShadowEntity, @[ ODSAttribute(@"remote", NSStringAttributeType), ODSAttribute(@"entityType", NSStringAttributeType),
                                   ODSAttribute(@"keyText", NSStringAttributeType), ODSAttribute(@"etag", NSStringAttributeType),
                                   ODSAttribute(@"values", NSBinaryDataAttributeType) ]),
-    ODSEntity(ODSTombstoneEntity, @[ ODSAttribute(@"entityType", NSStringAttributeType), ODSAttribute(@"keyText", NSStringAttributeType),
-                                     ODSAttribute(@"deleted", NSDateAttributeType) ]),
+    ODSTombstoneEntityDescription(),
   ];
   // What a peer server serves: the synced entities, with their sub-entities.
   NSMutableArray *synced = [NSMutableArray array];
@@ -621,7 +650,10 @@ static NSEntityDescription *ODSEntity(NSString *name, NSArray<NSAttributeDescrip
   _tracer = [OTTracer tracerNamed:@"ODataSync" version:nil];
   _resolvers = [NSMutableDictionary dictionary];
   _tombstoneRetention = 30 * 24 * 3600;
-  NSArray *identifiers = [[coordinator.managedObjectModel.versionIdentifiers.allObjects valueForKey:@"description"]
+  // Its version identifiers (Xcode's Core Data Model Identifier), the
+  // empty one left out: none, no version.
+  NSArray *identifiers = [[[coordinator.managedObjectModel.versionIdentifiers.allObjects valueForKey:@"description"]
+                             filteredArrayUsingPredicate:[NSPredicate predicateWithFormat:@"length > 0"]]
                              sortedArrayUsingSelector:@selector(compare:)];
   _modelVersion = identifiers.count ? [identifiers componentsJoinedByString:@","] : nil;
   // Last writer wins: every save but the engine's stamps what it changed.
@@ -708,6 +740,19 @@ static NSEntityDescription *ODSEntity(NSString *name, NSArray<NSAttributeDescrip
   return fetch;
 }
 
+- (NSDictionary *)deletedVersionsOf:(NSString *)entityName keyText:(NSString *)keyText inContext:(NSManagedObjectContext *)context
+{
+  NSManagedObject *tombstone = [[context executeFetchRequest:[self tombstonesOf:entityName keyText:keyText] error:NULL] firstObject];
+  return ODSVersionsFromText([tombstone valueForKey:@"versions"]);
+}
+
+- (void)forgetDeletionOf:(NSString *)entityName keyText:(NSString *)keyText inContext:(NSManagedObjectContext *)context
+{
+  for (NSManagedObject *tombstone in [context executeFetchRequest:[self tombstonesOf:entityName keyText:keyText] error:NULL]) {
+    [context deleteObject:tombstone];
+  }
+}
+
 - (BOOL)isDeleted:(NSString *)entityName keyText:(NSString *)keyText inContext:(NSManagedObjectContext *)context
 {
   return [context countForFetchRequest:[self tombstonesOf:entityName keyText:keyText] error:NULL] > 0;
@@ -717,7 +762,7 @@ static NSEntityDescription *ODSEntity(NSString *name, NSArray<NSAttributeDescrip
 // object, its key is kept, so that a peer that has not heard yet cannot
 // bring it back (an insert passed on late, round and round). An object made
 // here again, or by a service (the authority), is not deleted any more.
-- (void)noteDeletionsIn:(NSManagedObjectContext *)context author:(NSString *)author
+- (void)noteDeletionsIn:(NSManagedObjectContext *)context author:(NSString *)author count:(int64_t (^)(void))count
 {
   ODSCodec *codec = self.codec;
   BOOL authority = ![author hasPrefix:@"ODataSync."];
@@ -734,6 +779,13 @@ static NSEntityDescription *ODSEntity(NSString *name, NSArray<NSAttributeDescrip
     [tombstone setValue:root.name forKey:@"entityType"];
     [tombstone setValue:keyText forKey:@"keyText"];
     [tombstone setValue:[NSDate date] forKey:@"deleted"];
+    // The deleted version, and the deletion a change of its own when this
+    // side made it; a client's deletion with the history it sent.
+    NSDictionary *versions = [self.codec versionsOfObject:object];
+    NSString *sent = ODSSentDeletions(context)[[root.name stringByAppendingFormat:@" %@", keyText]];
+    if (sent) versions = ODSMergeVersions(versions, ODSVersionsFromText(sent));
+    if (count && [codec versionsAttributeOf:object.entity]) versions = ODSMergeVersions(versions, @{ self.shortReplica: @(count()) });
+    if (versions.count) [tombstone setValue:ODSTextOfVersions(versions) forKey:@"versions"];
   }
   if (!authority) return;
   for (NSManagedObject *object in context.insertedObjects) {
@@ -765,16 +817,33 @@ static NSEntityDescription *ODSEntity(NSString *name, NSArray<NSAttributeDescrip
   NSManagedObjectContext *context = notification.object;
   if (context.persistentStoreCoordinator != self.coordinator) return;
   NSString *author = [context respondsToSelector:@selector(transactionAuthor)] ? context.transactionAuthor : nil;
-  if (context.deletedObjects.count || context.insertedObjects.count) [self noteDeletionsIn:context author:author];
-  if ([author hasPrefix:@"ODataSync."]) return;
+  BOOL local = ![author hasPrefix:@"ODataSync."];
+  // A save of the app's is one change of this replica's: one count for all
+  // it changes, taken when first needed.
+  __block int64_t counted = 0;
+  int64_t (^count)(void) = ^int64_t {
+    if (!counted) counted = [self nextCount];
+    return counted;
+  };
+  if (context.deletedObjects.count || context.insertedObjects.count) [self noteDeletionsIn:context author:author count:local ? count : nil];
+  if (!local) return;
   NSMutableSet *changed = [NSMutableSet setWithSet:context.insertedObjects];
   [changed unionSet:context.updatedObjects];
   for (NSManagedObject *object in changed) {
     NSAttributeDescription *stamp = [self.codec modifiedAttributeOf:object.entity];
-    if (!stamp) continue;
-    NSDictionary *changes = object.changedValues;
-    if (!object.isInserted && (!changes.count || (changes.count == 1 && changes[stamp.name]))) continue;
-    [object setValue:[self tick] forKey:stamp.name];
+    NSAttributeDescription *versions = [self.codec versionsAttributeOf:object.entity];
+    if (!stamp && !versions) continue;
+    NSMutableDictionary *changes = [object.changedValues mutableCopy];
+    // A stamp the save set itself (a server app's, an import's) stands.
+    BOOL stamped = stamp && changes[stamp.name] != nil && [object valueForKey:stamp.name] != nil;
+    if (stamp) [changes removeObjectForKey:stamp.name];
+    if (versions) [changes removeObjectForKey:versions.name];
+    if (!object.isInserted && !changes.count) continue;
+    if (stamp && !stamped) [object setValue:[self tick] forKey:stamp.name];
+    if (versions) {
+      NSDictionary *seen = ODSMergeVersions([self.codec versionsOfObject:object], @{ self.shortReplica: @(count()) });
+      [object setValue:ODSTextOfVersions(seen) forKey:versions.name];
+    }
   }
 }
 
@@ -824,6 +893,30 @@ static NSEntityDescription *ODSEntity(NSString *name, NSArray<NSAttributeDescrip
   ODataClient *client = [[ODataClient alloc] initWithConfiguration:configuration];
   client.transport = remote.transport;
   return client;
+}
+
+- (NSString *)shortReplica
+{
+  return self.isService ? ODSServiceReplica : ODSShortReplica(self.replicaID);
+}
+
+- (instancetype)initServiceWithCoordinator:(NSPersistentStoreCoordinator *)coordinator
+{
+  self = [self initWithCoordinator:coordinator];
+  if (self) _service = YES;
+  return self;
+}
+
+- (int64_t)nextCount
+{
+  @synchronized (self) {
+    NSPersistentStore *store = self.coordinator.persistentStores.firstObject;
+    NSMutableDictionary *metadata = [[self.coordinator metadataForPersistentStore:store] mutableCopy] ?: [NSMutableDictionary dictionary];
+    int64_t count = [metadata[@"ODataSync.count"] longLongValue] + 1;
+    metadata[@"ODataSync.count"] = @(count);
+    if (store) [self.coordinator setMetadata:metadata forPersistentStore:store];
+    return count;
+  }
 }
 
 - (NSDictionary<NSString *, NSString *> *)headersFor:(ODataSyncRemote *)remote

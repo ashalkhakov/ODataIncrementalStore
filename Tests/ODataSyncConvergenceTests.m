@@ -34,7 +34,7 @@ static NSEntityDescription *OSCEntity(NSString *name, NSString *set, NSString *d
 
 // Assets (down, with the service's version counter), Inspections (up) and
 // Tasks (both), each up or both one stamped for last writer wins.
-static NSManagedObjectModel *OSCModel(void)
+static NSManagedObjectModel *OSCModel(BOOL versions)
 {
   NSDictionary *key = @{ @"OData.key": @"YES" };
   NSEntityDescription *asset = OSCEntity(@"Asset", @"Assets", @"down", @[
@@ -46,6 +46,15 @@ static NSManagedObjectModel *OSCModel(void)
   NSEntityDescription *task = OSCEntity(@"Task", @"Tasks", @"both", @[
     OSCAttribute(@"id", NSStringAttributeType, key), OSCAttribute(@"title", NSStringAttributeType, nil),
     OSCAttribute(@"done", NSBooleanAttributeType, nil), OSCAttribute(@"modified", NSStringAttributeType, nil) ]);
+  if (versions) {
+    // What each version has seen (docs/offline-sync.md, 12).
+    for (NSEntityDescription *entity in @[ inspection, task ]) {
+      entity.properties = [entity.properties arrayByAddingObject:OSCAttribute(@"versions", NSStringAttributeType, nil)];
+      NSMutableDictionary *info = [entity.userInfo mutableCopy];
+      info[ODataSyncVersionsKey] = @"versions";
+      entity.userInfo = info;
+    }
+  }
   NSManagedObjectModel *model = [[NSManagedObjectModel alloc] init];
   model.entities = @[ asset, inspection, task ];
   return model;
@@ -71,6 +80,8 @@ static NSManagedObjectModel *OSCModel(void)
   NSPersistentStoreCoordinator *_server;
   ODataService *_service;
   uint64_t _random;
+  BOOL _versions;
+  ODataSyncService *_sync;
   long long _serviceTime;
   int _serviceCounter;
 }
@@ -104,8 +115,12 @@ static NSManagedObjectModel *OSCModel(void)
 
 - (void)makeService
 {
-  _server = [self storeWithModel:OSCModel()];
+  NSManagedObjectModel *model = OSCModel(_versions);
+  if (_versions) [ODataSyncService addBookkeepingToModel:model configuration:nil];
+  _server = [self storeWithModel:model];
   _service = [[ODataService alloc] initWithPersistentStoreCoordinator:_server serviceRoot:[NSURL URLWithString:@"http://example.test/odata/"]];
+  // The service compares histories, and keeps deletions.
+  _sync = _versions ? [[ODataSyncService alloc] initWithService:_service] : nil;
   _serviceTime = 0;
   _serviceCounter = 0;
 }
@@ -119,7 +134,7 @@ static NSManagedObjectModel *OSCModel(void)
 
 - (OSCDevice *)deviceNumber:(NSUInteger)number
 {
-  NSManagedObjectModel *model = OSCModel();
+  NSManagedObjectModel *model = OSCModel(_versions);
   [ODataSyncEngine addBookkeepingToModel:model configuration:nil];
   OSCDevice *device = [[OSCDevice alloc] init];
   device.number = number;
@@ -318,6 +333,12 @@ static NSDictionary *OSCExpected(OSCChange local, OSCChange remote, OSCRule rule
   XCTAssertTrue([device.engine syncWithError:&error], @"%@: %@", name, error);
   ODataSyncResult *again = device.engine.lastResult;
   XCTAssertEqual(again.uploaded + again.downloaded + again.removed + again.conflicts, 0u, @"%@: settled for good: %@", name, again);
+}
+
+- (void)testEveryConflictUnderEveryRuleWithVersions
+{
+  _versions = YES;
+  [self testEveryConflictUnderEveryRule];
 }
 
 - (void)testEveryConflictUnderEveryRule
@@ -575,6 +596,13 @@ static NSDictionary *OSCExpected(OSCChange local, OSCChange remote, OSCRule rule
   if (cameBack) NSLog(@"seed %llu: %lu deleted task(s) came back (docs/offline-sync.md, 7.1)", seed, (unsigned long)cameBack);
 }
 
+// The same, each object keeping what its version has seen.
+- (void)testDevicesPeersAndTheServiceConvergeWithVersions
+{
+  _versions = YES;
+  [self testDevicesPeersAndTheServiceConverge];
+}
+
 // ODATASYNC_SEEDS=200 for a longer run; ODATASYNC_SEED=n for one seed.
 - (void)testDevicesPeersAndTheServiceConverge
 {
@@ -585,6 +613,88 @@ static NSDictionary *OSCExpected(OSCChange local, OSCChange remote, OSCRule rule
   }
   NSUInteger seeds = environment[@"ODATASYNC_SEEDS"] ? (NSUInteger)[environment[@"ODATASYNC_SEEDS"] integerValue] : 8;
   for (uint64_t seed = 1; seed <= seeds; seed++) [self runSeed:seed steps:120];
+}
+
+#pragma mark The service's part
+
+- (NSString *)makeTask:(NSString *)title in:(NSPersistentStoreCoordinator *)store
+{
+  NSString *identifier = [NSUUID UUID].UUIDString;
+  [self in:store do:^(NSManagedObjectContext *context) {
+    NSManagedObject *task = [NSEntityDescription insertNewObjectForEntityForName:@"Task" inManagedObjectContext:context];
+    [task setValue:identifier forKey:@"id"];
+    [task setValue:title forKey:@"title"];
+    [task setValue:@NO forKey:@"done"];
+  }];
+  return identifier;
+}
+
+- (void)sync:(OSCDevice *)device
+{
+  NSError *error = nil;
+  XCTAssertTrue([device.engine syncWithError:&error], @"%@", error);
+}
+
+- (void)testAnInsertPassedOnLateDoesNotBringBackWhatTheServiceDeleted
+{
+  // docs/offline-sync.md, 7.1, closed by the histories.
+  _versions = YES;
+  [self makeService];
+  OSCDevice *basement = [self deviceNumber:0];
+  OSCDevice *carrier = [self deviceNumber:1];
+  OSCDevice *late = [self deviceNumber:2];
+  [carrier.engine addRemote:[self peerRemoteOf:basement]];
+  [carrier.engine addRemote:[self serviceRemote]];
+  [late.engine addRemote:[self peerRemoteOf:basement]];
+  [late.engine addRemote:[self serviceRemote]];
+  NSString *task = [self makeTask:@"Check pump" in:basement.store];
+  [self sync:carrier];
+  XCTAssertEqual([self idsOf:@"Task" in:_server].count, 1u, @"passed on to the service");
+  [self in:_server do:^(NSManagedObjectContext *context) {
+    [context deleteObject:[self object:@"Task" id:task in:context]];
+  }];
+  // Another device that had not heard: it reads the task from the
+  // basement, and passes its insert on.
+  [self sync:late];
+  XCTAssertEqual([self idsOf:@"Task" in:_server].count, 0u, @"the late insert refused (410)");
+  XCTAssertEqual([self idsOf:@"Task" in:late.store].count, 0u, @"and the deletion taken");
+  [self sync:late];
+  XCTAssertEqual(late.engine.lastResult.uploaded + late.engine.lastResult.downloaded, 0u, @"%@", late.engine.lastResult);
+}
+
+- (void)checkAChangeMeetsTheDeletionUnder:(id<ODataSyncResolving>)rule changeStands:(BOOL)stands
+{
+  _versions = YES;
+  [self makeService];
+  OSCDevice *device = [self deviceNumber:0];
+  [device.engine addRemote:[self serviceRemote]];
+  [device.engine setResolver:rule forEntityName:@"Task"];
+  NSString *task = [self makeTask:@"Check pump" in:device.store];
+  [self sync:device];
+  // Deleted at the service; changed on the device, which did not know.
+  [self in:_server do:^(NSManagedObjectContext *context) {
+    [context deleteObject:[self object:@"Task" id:task in:context]];
+  }];
+  [self in:device.store do:^(NSManagedObjectContext *context) {
+    [[self object:@"Task" id:task in:context] setValue:@"Check pump today" forKey:@"title"];
+  }];
+  NSError *error = nil;
+  XCTAssertTrue([device.engine uploadToRemote:device.engine.remotes.firstObject error:&error], @"%@", error);
+  [self sync:device];
+  NSArray *atService = [[[self rowsOf:@"Task" keys:@[ @"title" ] in:_server] allValues] valueForKey:@"title"];
+  NSArray *onDevice = [[[self rowsOf:@"Task" keys:@[ @"title" ] in:device.store] allValues] valueForKey:@"title"];
+  NSArray *expected = stands ? @[ @"Check pump today" ] : @[];
+  XCTAssertEqualObjects(atService, expected, @"%@", NSStringFromClass([rule class]));
+  XCTAssertEqualObjects(onDevice, expected, @"%@", NSStringFromClass([rule class]));
+  [self sync:device];
+  XCTAssertEqual(device.engine.lastResult.uploaded + device.engine.lastResult.downloaded + device.engine.lastResult.conflicts, 0u, @"%@",
+                 device.engine.lastResult);
+}
+
+- (void)testAChangeMadeWithoutKnowingOfTheDeletionIsAConflict
+{
+  [self checkAChangeMeetsTheDeletionUnder:[[ODataSyncLastWriterWins alloc] init] changeStands:YES];
+  [self checkAChangeMeetsTheDeletionUnder:[[ODataSyncRemoteWins alloc] init] changeStands:NO];
 }
 
 @end

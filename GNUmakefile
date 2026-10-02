@@ -221,13 +221,16 @@ ODataSync_OBJC_FILES = \
 	Source/ODataSync/ODSConflicts.m \
 	Source/ODataSync/ODSDownloader.m \
 	Source/ODataSync/ODSUploader.m \
+	Source/ODataSync/ODSVersions.m \
 	Source/ODataSync/ODataSyncEngine.m \
-	Source/ODataSync/ODataSyncPeerServer.m
+	Source/ODataSync/ODataSyncPeerServer.m \
+	Source/ODataSync/ODataSyncService.m
 
 ODataSync_HEADER_FILES = \
 	ODataSync.h \
 	ODataSyncEngine.h \
-	ODataSyncPeerServer.h
+	ODataSyncPeerServer.h \
+	ODataSyncService.h
 
 ODataSync_HEADER_FILES_DIR = Source/ODataSync/include/ODataSync
 ODataSync_HEADER_FILES_INSTALL_DIR = ODataSync

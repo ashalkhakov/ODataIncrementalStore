@@ -244,7 +244,10 @@ static NSString * const ODSUnknownVersion = @"\"ODataSync.unknown\"";
   if ([agreed isKindOfClass:[NSDictionary class]]) {
     NSAttributeDescription *stamp = [_codec modifiedAttributeOf:root];
     id ours = stamp ? [object valueForKey:stamp.name] : nil, theirs = stamp ? agreed[[_codec.mapper propertyForAttribute:stamp]] : nil;
-    if ([ours isKindOfClass:[NSString class]] && [theirs isKindOfClass:[NSString class]] && [ours compare:theirs] == NSOrderedAscending) {
+    NSDictionary *mine = [_codec versionsOfObject:object], *seen = [_codec versionsOfRow:agreed entity:root];
+    BOOL older = mine.count && seen.count ? ODSCompareVersions(mine, seen) == ODSOrderBefore
+                                          : [ours isKindOfClass:[NSString class]] && [theirs isKindOfClass:[NSString class]] && [ours compare:theirs] == NSOrderedAscending;
+    if (older) {
       // Older than the remote's (a copy that came round late): sent, it
       // would put an older version over a newer one. The remote's is taken.
       [_codec applyJSON:agreed toObject:object];
@@ -267,6 +270,9 @@ static NSString * const ODSUnknownVersion = @"\"ODataSync.unknown\"";
   if (operation == ODataSyncOperationDelete) {
     request[@"method"] = @"DELETE";
     if (both) headers[@"If-Match"] = etag ?: @"*";
+    // The deletion's history, for the remote's tombstone.
+    NSDictionary *deleted = [_engine deletedVersionsOf:root.name keyText:[entry valueForKey:@"keyText"] inContext:context];
+    if (deleted.count) headers[ODataSyncVersionsHeader] = ODSTextOfVersions(deleted);
   } else {
     NSArray *names = ODSUnarchive([entry valueForKey:@"properties"]);
     NSSet *properties = operation == ODataSyncOperationInsert || !names ? nil : [NSSet setWithArray:names];
@@ -289,6 +295,19 @@ static NSString *ODSMessageOf(NSData *body, NSInteger status)
   id json = body.length ? [NSJSONSerialization JSONObjectWithData:body options:0 error:NULL] : nil;
   id message = [json isKindOfClass:[NSDictionary class]] ? json[@"error"][@"message"] : nil;
   return [message isKindOfClass:[NSString class]] ? message : [NSString stringWithFormat:@"The service answered %ld", (long)status];
+}
+
+// A 409's deletion history: the error detail ODataSync.deleted, whose
+// message is the tombstone's vector.
+static NSDictionary *ODSDeletedVersionsIn(NSData *body)
+{
+  id json = body.length ? [NSJSONSerialization JSONObjectWithData:body options:0 error:NULL] : nil;
+  id details = [json isKindOfClass:[NSDictionary class]] ? json[@"error"][@"details"] : nil;
+  if (![details isKindOfClass:[NSArray class]]) return nil;
+  for (NSDictionary *detail in details) {
+    if ([detail isKindOfClass:[NSDictionary class]] && [detail[@"code"] isEqual:ODSDeletedCode]) return ODSVersionsFromText(detail[@"message"]);
+  }
+  return nil;
 }
 
 static NSString *ODSHeader(NSDictionary *headers, NSString *name)
@@ -446,9 +465,18 @@ static NSString *ODSHeader(NSDictionary *headers, NSString *name)
     }
     return [self resolveConflictOf:entry context:context error:error];
   }
-  if (status == 410 && _remote.peer && operation != ODataSyncOperationDelete) {
-    // Deleted at the peer, which remembers: deleted here too (written as the
-    // peer's deletion, and so passed on).
+  NSDictionary *deletedThere = status == 409 ? ODSDeletedVersionsIn(body) : nil;
+  if (deletedThere && operation != ODataSyncOperationDelete) {
+    // Deleted there by one that did not know of this change: a conflict,
+    // delete against change, the deletion's history given.
+    NSEntityDescription *root = _codec.model.entitiesByName[entityName];
+    [_engine settleConflictOf:root key:ODSUnarchive([entry valueForKey:@"key"]) entry:entry remoteRow:nil remoteVersions:deletedThere
+                         etag:nil remote:_remote context:context];
+    return YES;
+  }
+  if (status == 410 && operation != ODataSyncOperationDelete) {
+    // Deleted there, by one that saw this version: deleted here too
+    // (written as the remote's deletion, and so passed on).
     NSEntityDescription *root = _codec.model.entitiesByName[entityName];
     NSManagedObject *object = [_codec objectOfEntity:root key:ODSUnarchive([entry valueForKey:@"key"]) inContext:context];
     if (object) {

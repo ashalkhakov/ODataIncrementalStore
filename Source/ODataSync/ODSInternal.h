@@ -17,7 +17,34 @@ NS_ASSUME_NONNULL_BEGIN
 FOUNDATION_EXPORT NSString * const ODSRemoteStateEntity;   // remote, deltaLinks, filters, historyToken
 FOUNDATION_EXPORT NSString * const ODSOutboxEntity;        // remote, entityName, key, operation, properties, ...
 FOUNDATION_EXPORT NSString * const ODSShadowEntity;        // remote, entityType, keyText, etag, values (a row's JSON)
-FOUNDATION_EXPORT NSString * const ODSTombstoneEntity;     // entityType, keyText, deleted (a date)
+FOUNDATION_EXPORT NSString * const ODSTombstoneEntity;     // entityType, keyText, deleted (a date), versions
+
+// Version vectors (ODSVersions.m): replica -> the count of its latest
+// change a version includes.
+typedef NS_ENUM(NSInteger, ODSOrder) {
+  ODSOrderSame,        // the same version
+  ODSOrderBefore,      // the first is included in the second (older)
+  ODSOrderAfter,       // the first includes the second (newer)
+  ODSOrderConcurrent,  // neither: made without knowing of each other
+};
+FOUNDATION_EXPORT NSString * const ODSServiceReplica;  // @"svc"
+// A DELETE's header that carries the deletion's vector; and the code of a
+// 409's error detail whose message is a tombstone's vector.
+FOUNDATION_EXPORT NSString * const ODataSyncVersionsHeader;  // @"ODataSync-Versions"
+FOUNDATION_EXPORT NSString * const ODSDeletedCode;           // @"ODataSync.deleted"
+// What a client's DELETEs sent in a context ("Entity keyText" -> the
+// deletion's vector), for their tombstones.
+FOUNDATION_EXPORT NSString * const ODSDeletionsKey;
+FOUNDATION_EXPORT NSDictionary<NSString *, NSString *> *_Nullable ODSSentDeletions(NSManagedObjectContext *context);
+FOUNDATION_EXPORT void ODSNoteSentDeletion(NSManagedObjectContext *context, NSString *name, NSString *versions);
+FOUNDATION_EXPORT NSEntityDescription *ODSTombstoneEntityDescription(void);
+FOUNDATION_EXPORT NSDictionary<NSString *, NSNumber *> *ODSVersionsFromText(NSString *_Nullable text);
+FOUNDATION_EXPORT NSString *ODSTextOfVersions(NSDictionary<NSString *, NSNumber *> *_Nullable versions);
+FOUNDATION_EXPORT ODSOrder ODSCompareVersions(NSDictionary<NSString *, NSNumber *> *_Nullable a, NSDictionary<NSString *, NSNumber *> *_Nullable b);
+FOUNDATION_EXPORT NSDictionary<NSString *, NSNumber *> *ODSMergeVersions(NSDictionary<NSString *, NSNumber *> *_Nullable a,
+                                                                       NSDictionary<NSString *, NSNumber *> *_Nullable b);
+// A replica ID (a UUID) as a vector names it: 8 characters.
+FOUNDATION_EXPORT NSString *ODSShortReplica(NSString *replicaID);
 
 FOUNDATION_EXPORT NSError *ODSError(NSInteger code, NSString *message);
 FOUNDATION_EXPORT NSData *ODSArchive(id _Nullable plist);
@@ -76,6 +103,12 @@ FOUNDATION_EXPORT id _Nullable ODSUnarchive(NSData *_Nullable data);
 FOUNDATION_EXPORT NSSet<NSString *> *ODSChangedNames(NSDictionary *_Nullable before, NSDictionary *_Nullable after);
 // The String attribute last writer wins orders by (ODataSync.modified).
 - (nullable NSAttributeDescription *)modifiedAttributeOf:(NSEntityDescription *)entity;
+// The attribute that keeps an object's version vector (ODataSync.versions).
+- (nullable NSAttributeDescription *)versionsAttributeOf:(NSEntityDescription *)entity;
+// An object's version vector; an empty one when it keeps none.
+- (NSDictionary<NSString *, NSNumber *> *)versionsOfObject:(nullable NSManagedObject *)object;
+// A row's (by the mapper's property name).
+- (NSDictionary<NSString *, NSNumber *> *)versionsOfRow:(nullable NSDictionary *)row entity:(NSEntityDescription *)entity;
 // The service's version counter (an integer attribute that OData.etag
 // names, which the service increments on each update): which of two
 // copies is newer.
@@ -96,6 +129,19 @@ FOUNDATION_EXPORT NSSet<NSString *> *ODSChangedNames(NSDictionary *_Nullable bef
 // Whether an object of the entity, by its key's text, was deleted here
 // (and not made again since): a peer may not bring it back.
 - (BOOL)isDeleted:(NSString *)entityName keyText:(NSString *)keyText inContext:(NSManagedObjectContext *)context;
+// The deleted version's vector (empty: none kept, or not deleted); and the
+// deletion forgotten (the object made again by one that knew of it).
+- (NSDictionary<NSString *, NSNumber *> *)deletedVersionsOf:(NSString *)entityName keyText:(NSString *)keyText
+                                                  inContext:(NSManagedObjectContext *)context;
+- (void)forgetDeletionOf:(NSString *)entityName keyText:(NSString *)keyText inContext:(NSManagedObjectContext *)context;
+// The engine of a service's store (ODataSyncService): its replica is svc.
+- (instancetype)initServiceWithCoordinator:(NSPersistentStoreCoordinator *)coordinator;
+@property (nonatomic, readonly, getter=isService) BOOL service;
+- (void)pruneTombstones;
+// This replica as vectors name it, and the count of a new change of its
+// (kept in the store's metadata).
+@property (nonatomic, readonly) NSString *shortReplica;
+- (int64_t)nextCount;
 // The headers every request to the remote has: to a peer, this replica.
 - (NSDictionary<NSString *, NSString *> *)headersFor:(ODataSyncRemote *)remote;
 // The remote added with this identifier.
@@ -132,6 +178,11 @@ FOUNDATION_EXPORT NSSet<NSString *> *ODSChangedNames(NSDictionary *_Nullable bef
 - (void)settleConflictOf:(NSEntityDescription *)root key:(NSDictionary *)key entry:(NSManagedObject *)entry
                remoteRow:(nullable NSDictionary *)row etag:(nullable NSString *)etag remote:(ODataSyncRemote *)remote
                  context:(NSManagedObjectContext *)context;
+// The same, of a remote that deleted it (row nil) and said with what
+// history (its tombstone's vector).
+- (void)settleConflictOf:(NSEntityDescription *)root key:(NSDictionary *)key entry:(NSManagedObject *)entry
+               remoteRow:(nullable NSDictionary *)row remoteVersions:(nullable NSDictionary *)deletedVersions etag:(nullable NSString *)etag
+                  remote:(ODataSyncRemote *)remote context:(NSManagedObjectContext *)context;
 // The version both agree on now: the shadow's ETag and row (nil: none, the
 // shadow gone).
 - (void)agreeOn:(nullable NSDictionary *)row etag:(nullable NSString *)etag of:(NSEntityDescription *)root keyText:(NSString *)keyText
@@ -142,6 +193,12 @@ FOUNDATION_EXPORT NSSet<NSString *> *ODSChangedNames(NSDictionary *_Nullable bef
 // not applied: agreed on as the peer's, and this side's sent to it.
 - (BOOL)keepNewerThan:(NSDictionary *)row etag:(nullable NSString *)etag of:(NSEntityDescription *)root key:(NSDictionary *)key
                remote:(ODataSyncRemote *)remote context:(NSManagedObjectContext *)context;
+// The same, when the vectors said this side's is newer.
+- (BOOL)keepNewerThan:(NSDictionary *)row etag:(nullable NSString *)etag of:(NSEntityDescription *)root key:(NSDictionary *)key
+               remote:(ODataSyncRemote *)remote context:(NSManagedObjectContext *)context versions:(BOOL)known;
+// A new outbox entry, last in line.
+- (NSManagedObject *)newEntryOf:(NSEntityDescription *)root key:(NSDictionary *)key operation:(ODataSyncOperation)operation
+                         remote:(ODataSyncRemote *)remote context:(NSManagedObjectContext *)context;
 @end
 
 @interface ODataSyncConflict ()

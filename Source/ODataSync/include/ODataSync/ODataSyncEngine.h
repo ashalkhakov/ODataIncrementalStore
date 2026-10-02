@@ -26,6 +26,13 @@
 //   ODataSync.conflicts  of a both entity: remote (the default), local,
 //                        lastWriter or merge; a resolver set in code
 //                        (-setResolver:forEntityName:) comes first.
+//   ODataSync.versions   the String attribute that keeps what the
+//                        object's version has seen: a version vector
+//                        (docs/offline-sync.md, 12), which the engine
+//                        keeps, and the service and peers store as any
+//                        property. Two versions met are then known for
+//                        the same, older, newer, or a conflict (made
+//                        without knowing of each other), not guessed.
 //   ODataSync.modified   the String attribute last writer wins orders by:
 //                        the engine stamps it, on every save of the
 //                        object's changes but its own, with a hybrid
@@ -54,6 +61,7 @@ NS_ASSUME_NONNULL_BEGIN
 FOUNDATION_EXPORT NSString * const ODataSyncDirectionKey;    // @"ODataSync.direction"
 FOUNDATION_EXPORT NSString * const ODataSyncConflictsKey;    // @"ODataSync.conflicts"
 FOUNDATION_EXPORT NSString * const ODataSyncModifiedKey;     // @"ODataSync.modified"
+FOUNDATION_EXPORT NSString * const ODataSyncVersionsKey;     // @"ODataSync.versions"
 FOUNDATION_EXPORT NSString * const ODataSyncErrorDomain;
 // The transaction author of what the engine writes: what came down from a
 // remote (ODataSyncDownAuthorPrefix and the remote's identifier), and its

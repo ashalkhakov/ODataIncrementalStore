@@ -654,7 +654,15 @@ static NSAttributeDescription *OISSyncAttribute(NSString *name, NSAttributeType 
 }
 
 // Assets (down), Inspections (up, each of an asset) and Tasks (both), as docs/offline-sync.md has them.
+static NSManagedObjectModel *OISSyncModelKeeping(BOOL versions);
+
 static NSManagedObjectModel *OISSyncModel(void)
+{
+  return OISSyncModelKeeping(NO);
+}
+
+// With versions: Tasks keep what each version has seen (a version vector).
+static NSManagedObjectModel *OISSyncModelKeeping(BOOL versions)
 {
   NSEntityDescription *asset = [[NSEntityDescription alloc] init];
   asset.name = @"Asset";
@@ -685,6 +693,12 @@ static NSManagedObjectModel *OISSyncModel(void)
   task.properties = @[ OISSyncAttribute(@"id", NSStringAttributeType, YES), OISSyncAttribute(@"title", NSStringAttributeType, NO),
                        OISSyncAttribute(@"done", NSBooleanAttributeType, NO), OISSyncAttribute(@"modified", NSStringAttributeType, NO) ];
   NSManagedObjectModel *model = [[NSManagedObjectModel alloc] init];
+  if (versions) {
+    task.properties = [task.properties arrayByAddingObject:OISSyncAttribute(@"versions", NSStringAttributeType, NO)];
+    NSMutableDictionary *info = [task.userInfo mutableCopy];
+    info[ODataSyncVersionsKey] = @"versions";
+    task.userInfo = info;
+  }
   model.entities = @[ asset, inspection, task ];
   return model;
 }
@@ -1454,6 +1468,55 @@ int main(int argc, const char *argv[])
               [NSString stringWithFormat:@"%@ | here %@, at the service %@, task at the peer %@ (%@)", failure.localizedDescription ?: @"", notes,
                                          atService, atPeer, engine.lastResult]);
         [peers stop];
+        // Version vectors over HTTP (docs/offline-sync.md, 12), the service
+        // keeping deletions (ODataSyncService): a deletion sent with its
+        // history, and a change made without knowing of one, settled by last
+        // writer wins (409, the deletion's history in the error).
+        failure = nil;
+        NSManagedObjectModel *keptModel = OISSyncModelKeeping(YES);
+        [ODataSyncService addBookkeepingToModel:keptModel configuration:nil];
+        NSPersistentStoreCoordinator *kept = OISSyncStore(keptModel, &failure);
+        NSManagedObjectModel *keepingModel = OISSyncModelKeeping(YES);
+        [ODataSyncEngine addBookkeepingToModel:keepingModel configuration:nil];
+        NSPersistentStoreCoordinator *keeping = kept ? OISSyncStore(keepingModel, &failure) : nil;
+        NSUInteger keptPort = OISFreePort();
+        NSString *keptRoot = [NSString stringWithFormat:@"http://127.0.0.1:%lu/kept/", (unsigned long)keptPort];
+        ODataService *keptService = kept ? [[ODataService alloc] initWithPersistentStoreCoordinator:kept serviceRoot:[NSURL URLWithString:keptRoot]] : nil;
+        ODataSyncService *histories = keptService ? [[ODataSyncService alloc] initWithService:keptService] : nil;
+        HSServer *keptServer = keptService ? [[HSServer alloc] initWithService:keptService] : nil;
+        BOOL keptUp = keeping && histories && [keptServer startOnPort:keptPort error:&failure];
+        ODataSyncEngine *keeper = keptUp ? [[ODataSyncEngine alloc] initWithCoordinator:keeping] : nil;
+        [keeper addRemote:[ODataSyncRemote remoteWithServiceRoot:[NSURL URLWithString:keptRoot]]];
+        [keeper setResolver:[[ODataSyncLastWriterWins alloc] init] forEntityName:@"Task"];
+        NSString *gone = [NSUUID UUID].UUIDString, *edited = [NSUUID UUID].UUIDString;
+        if (keeper) {
+          OISSyncWrite(keeping, ^(NSManagedObjectContext *context) {
+            for (NSString *identifier in @[ gone, edited ]) {
+              NSManagedObject *made = [NSEntityDescription insertNewObjectForEntityForName:@"Task" inManagedObjectContext:context];
+              [made setValue:identifier forKey:@"id"];
+              [made setValue:@"Check pump" forKey:@"title"];
+              [made setValue:@NO forKey:@"done"];
+            }
+          });
+        }
+        BOOL keptFirst = keeper && [keeper syncWithError:&failure];
+        NSString *sentVersions = OISSyncValues(kept, @"Task", @"versions").firstObject;
+        if (keptFirst) {
+          OISSyncWrite(keeping, ^(NSManagedObjectContext *context) {
+            [context deleteObject:OISSyncObject(context, @"Task", gone)];
+            [OISSyncObject(context, @"Task", edited) setValue:@"Check pump today" forKey:@"title"];
+          });
+          OISSyncWrite(kept, ^(NSManagedObjectContext *context) {
+            [context deleteObject:OISSyncObject(context, @"Task", edited)];
+          });
+        }
+        BOOL settled = keptFirst && [keeper uploadToRemote:keeper.remotes.firstObject error:&failure] && [keeper syncWithError:&failure];
+        NSArray *keptTitles = OISSyncValues(kept, @"Task", @"title");
+        NSArray *here = keeping ? OISSyncValues(keeping, @"Task", @"title") : @[];
+        check(settled && [sentVersions length] && [keptTitles isEqual:@[ @"Check pump today" ]] && [here isEqual:keptTitles], @"offline-sync-versions",
+              [NSString stringWithFormat:@"%@ | sent %@, at the service %@, here %@ (%@)", failure.localizedDescription ?: @"", sentVersions, keptTitles,
+                                         here, keeper.lastResult]);
+        [keptServer stop];
         [syncServer stop];
       } else {
         check(NO, @"offline-sync", failure.localizedDescription ?: @"no store");

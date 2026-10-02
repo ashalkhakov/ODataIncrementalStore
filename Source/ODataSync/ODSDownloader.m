@@ -138,7 +138,52 @@ static const NSInteger ODSGone = 410;
     [context deleteObject:entry];
     entry = nil;
   }
+  NSManagedObject *object = [_codec objectOfEntity:entity key:key inContext:context];
+  NSDictionary *theirs = [_codec versionsOfRow:row entity:entity];
+  // Deleted here: the row is an older copy (the deletion is to go), the
+  // object made again by one that knew of it, or a change made without
+  // knowing (a conflict), as the histories say.
+  if (!object && row && [_engine isDeleted:entity.name keyText:keyText inContext:context]) {
+    NSDictionary *deleted = [_engine deletedVersionsOf:entity.name keyText:keyText inContext:context];
+    if (deleted.count && theirs.count) {
+      ODSOrder order = ODSCompareVersions(theirs, deleted);
+      if (order == ODSOrderAfter) {
+        [_engine forgetDeletionOf:entity.name keyText:keyText inContext:context];
+        [_engine agreeOn:row etag:etag of:entity keyText:keyText remote:_remote context:context];
+        if (entry) [context deleteObject:entry];
+        return NO;
+      }
+      if (!entry) entry = [_engine newEntryOf:entity key:key operation:ODataSyncOperationDelete remote:_remote context:context];
+      if (order == ODSOrderConcurrent) {
+        [_engine settleConflictOf:entity key:key entry:entry remoteRow:row etag:etag remote:_remote context:context];
+      } else {
+        [_engine agreeOn:row etag:etag of:entity keyText:keyText remote:_remote context:context];
+      }
+      return YES;
+    }
+    // No history to tell by: a peer brings nothing back.
+    if (_remote.peer) return YES;
+  }
   if (!entry) {
+    NSDictionary *mine = [_codec versionsOfObject:object];
+    if (row && object && theirs.count && mine.count) {
+      switch (ODSCompareVersions(theirs, mine)) {
+        case ODSOrderSame:
+          [_engine agreeOn:row etag:etag of:entity keyText:keyText remote:_remote context:context];
+          return YES;
+        case ODSOrderAfter:
+          [_engine agreeOn:row etag:etag of:entity keyText:keyText remote:_remote context:context];
+          return NO;
+        case ODSOrderBefore:
+          // Older than this side's: this side's goes to it.
+          return [_engine keepNewerThan:row etag:etag of:entity key:key remote:_remote context:context versions:YES];
+        case ODSOrderConcurrent:
+          // Changed here by way of another remote, and there: a conflict.
+          entry = [_engine newEntryOf:entity key:key operation:ODataSyncOperationUpdate remote:_remote context:context];
+          [_engine settleConflictOf:entity key:key entry:entry remoteRow:row etag:etag remote:_remote context:context];
+          return YES;
+      }
+    }
     if (row && [_engine keepNewerThan:row etag:etag of:entity key:key remote:_remote context:context]) return YES;
     [_engine agreeOn:row etag:etag of:entity keyText:keyText remote:_remote context:context];
     return NO;

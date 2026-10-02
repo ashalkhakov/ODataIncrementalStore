@@ -6,6 +6,7 @@
 // that sent them.
 
 #import "ODataSyncPeerServer.h"
+#import "ODataSyncService.h"
 #import "ODSInternal.h"
 #import <ODataKit/ODataError.h>
 #import <ODataService/ODataService.h>
@@ -21,21 +22,18 @@ static BOOL ODSIsReplica(NSString *text)
   return [text rangeOfCharacterFromSet:allowed.invertedSet].location == NSNotFound;
 }
 
-@interface ODSPeerSetHandler : ODataEntitySetHandler
-@property (nonatomic, weak) ODataSyncEngine *engine;
+// A peer's write is made as coming from the replica the request names, so
+// that the engine passes it on but not back; its stamp kept, and
+// witnessed. Deletions kept and histories compared as at a service.
+@interface ODSPeerSetHandler : ODataSyncSetHandler
 @end
 
 @implementation ODSPeerSetHandler
 
-// Written as coming from the replica the request names, so that the
-// engine passes it on but not back; its stamp kept, and witnessed.
-- (void)writeAsSenderOf:(ODataRequest *)request
+- (NSString *)authorOfRequest:(ODataRequest *)request values:(NSDictionary<NSString *, id> *)values
 {
   NSString *replica = [request valueForHeader:ODataSyncReplicaHeader];
-  NSManagedObjectContext *context = request.context;
-  if (ODSIsReplica(replica) && [context respondsToSelector:@selector(setTransactionAuthor:)]) {
-    context.transactionAuthor = [ODataSyncDownAuthorPrefix stringByAppendingString:replica];
-  }
+  return ODSIsReplica(replica) ? [ODataSyncDownAuthorPrefix stringByAppendingString:replica] : [super authorOfRequest:request values:values];
 }
 
 - (void)witness:(NSManagedObject *)object
@@ -47,16 +45,6 @@ static BOOL ODSIsReplica(NSString *text)
 
 - (NSManagedObject *)insertObjectWithValues:(NSDictionary<NSString *, id> *)values request:(ODataRequest *)request reply:(ODataReply *)reply
 {
-  // Deleted here: the sender has not heard yet, and is told.
-  ODataSyncEngine *engine = self.engine;
-  ODSCodec *codec = engine.codec;
-  NSEntityDescription *root = [codec rootOf:self.entity];
-  NSString *keyText = [codec keyTextOf:[codec keyFromValues:values entity:root] entity:root];
-  if (keyText && [engine isDeleted:root.name keyText:keyText inContext:request.context]) {
-    [reply failWithError:ODataServiceError(410, @"Deleted here")];
-    return nil;
-  }
-  [self writeAsSenderOf:request];
   NSManagedObject *object = [super insertObjectWithValues:values request:request reply:reply];
   [self witness:object];
   return object;
@@ -65,16 +53,9 @@ static BOOL ODSIsReplica(NSString *text)
 - (NSManagedObject *)updateObject:(NSManagedObject *)object values:(NSDictionary<NSString *, id> *)values request:(ODataRequest *)request
                             reply:(ODataReply *)reply
 {
-  [self writeAsSenderOf:request];
   NSManagedObject *updated = [super updateObject:object values:values request:request reply:reply];
   [self witness:updated];
   return updated;
-}
-
-- (void)deleteObject:(NSManagedObject *)object request:(ODataRequest *)request reply:(ODataReply *)reply
-{
-  [self writeAsSenderOf:request];
-  [super deleteObject:object request:request reply:reply];
 }
 
 @end

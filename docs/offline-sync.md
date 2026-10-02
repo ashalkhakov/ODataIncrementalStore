@@ -466,7 +466,7 @@ How it goes:
   each, checked by the peer server's authenticator); the engine takes a
   remote's URL and credentials, however found.
 
-### 7.1 Known issue: an insert passed on late makes a deleted object again
+### 7.1 An insert passed on late makes a deleted object again (closed with version vectors)
 
 A device makes an object and gives it to a peer; the service gets it
 (from either), and later deletes it. If the peer passes the *insert* on
@@ -487,8 +487,12 @@ here, refuses an update of a deleted record but lets a new save of its ID
 make it again: this hole. What closes it is knowing the history: that
 the copy which comes is older than the deletion (section 12).
 
-Between devices it is closed: a peer server remembers deletions and
-refuses the insert (410), so only the service is left. Closing it there
+With version vectors and `ODataSyncService` on the service (section 12)
+it is closed: the service keeps the deleted version's vector, and an
+insert whose version the deletion had seen is refused (410); one made
+without knowing of it is a conflict (409), settled by the device's rule.
+Without them, between devices it is closed by the peer servers' tombstones
+(a deletion wins), and at a service it stays. Closing it there
 needs the service to remember deleted keys too: a set that keeps
 its tombstones (persistent history already does, for delta links, as long
 as history is retained) could answer an upsert of a deleted key with 409
@@ -577,7 +581,10 @@ What exists, and how it goes (`ODataSyncEngine.h`):
 
 On the service (ODataKit's server): the store keeps persistent history
 (delta links), and the entity sets the devices write allow upsert
-(section 9.1). `ois-serve` does it by settings; an `ODataServerApplication`
+(section 9.1). With version vectors (section 12), the server's model has
+`ODataSync.versions` on the synced entities too, and the server app
+installs `ODataSyncService` on its ODataService
+(`+addBookkeepingToModel:configuration:` first, for its tombstones). `ois-serve` does it by settings; an `ODataServerApplication`
 the same.
 
 ## 9. The service's part
@@ -655,7 +662,7 @@ What ODataService needs, and what it has:
   arrive whole, at the price of one refusal holding all of it.
 - Schema versions: see section 13.
 
-## 12. Causal history: what each version has seen (design)
+## 12. Causal history: what each version has seen
 
 Ensembles and the CouchDB family know, for each change, what it came
 after: Ensembles by the events each event's author had seen (a revision
@@ -736,10 +743,17 @@ kept.
   that exists: kept in reserve.
 - **The stamp stays**: the vector says whether two versions conflict;
   `ODataSync.modified` says, for last writer wins, which one wins.
-- **Order of work**: vectors on the device (attribute, counting, the
-  tombstones); meeting versions in downloads, peers and uploads; the
-  service's part; the matrix and the convergence tests on vectors, and the
-  insert hole as a test that passes.
+- **Built**: `ODSVersions.m` (the vectors), the engine (counting on save,
+  tombstones with the deleted version, a DELETE's `ODataSync-Versions`
+  header), meeting versions in downloads, uploads, 412s and conflicts
+  (`ODSDownloader.m`, `ODSUploader.m`, `ODSConflicts.m`), and the
+  service's part: `ODataSyncService.h` (`ODataSyncSetHandler`, which the
+  peer server's handler is too; a 409's error details carry a deletion's
+  vector, code `ODataSync.deleted`). An explicit stamp a save sets stands
+  (a server app's, an import's). The conflict matrix and the convergence
+  test run with vectors too (Tests/ODataSyncConvergenceTests.m, 300
+  seeds), and the insert hole is a test that passes, and fails without
+  the service's part. The Workbench's Products keep one.
 
 ## 13. Model versions
 

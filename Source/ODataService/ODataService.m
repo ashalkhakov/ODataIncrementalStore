@@ -4994,7 +4994,11 @@ static NSNumber *OISScalarReturnValue(NSInvocation *invocation, char type)
   _namespaceName = @"Default";
   _containerName = @"Container";
   _maxVersion = @"4.01";
-  NSArray *identifiers = [[_model.versionIdentifiers.allObjects valueForKey:@"description"] sortedArrayUsingSelector:@selector(compare:)];
+  // Its version identifiers (Xcode's Core Data Model Identifier), the
+  // empty one left out: none, no version.
+  NSArray *identifiers = [[[_model.versionIdentifiers.allObjects valueForKey:@"description"]
+                             filteredArrayUsingPredicate:[NSPredicate predicateWithFormat:@"length > 0"]]
+                             sortedArrayUsingSelector:@selector(compare:)];
   _modelVersion = identifiers.count ? [identifiers componentsJoinedByString:@","] : nil;
   _replyTimeout = 60;
   _tracer = [OTTracer tracerNamed:@"ODataService" version:nil];
