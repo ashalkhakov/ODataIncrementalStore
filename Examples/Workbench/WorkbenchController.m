@@ -419,6 +419,13 @@ static BOOL WorkbenchLoadNib(NSString *name, id owner)
     self.statusField.stringValue = @"Not connected.";
     return;
   }
+  // What the service has now, for the objects the context holds from
+  // before too (another client's change, the Sync window's device): each
+  // turned back into a fault, read again from what this fetch brings. An
+  // unsaved edit here is kept.
+  for (NSManagedObject *object in [_connection.context.registeredObjects copy]) {
+    if (!object.hasChanges && !object.isFault) [_connection.context refreshObject:object mergeChanges:NO];
+  }
   NSError *error = nil;
   if ([[self currentQuery] isVerbatim]) {
     // As it is written: every row at once, the columns what they have.

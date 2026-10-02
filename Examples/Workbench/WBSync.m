@@ -5,21 +5,67 @@
 #import "WorkbenchSupport.h"
 
 // The device's way to the service: the built-in engine, or nothing at all.
+// Each exchange the device has, recorded as it went.
 @interface WBSyncLine : NSObject <ODataTransport>
 @property (nonatomic, weak) WorkbenchEngine *engine;
 @property (atomic) BOOL offline;
+@property (nonatomic, copy) void (^didFinish)(WorkbenchLogEntry *entry);
 @end
 
 @implementation WBSyncLine
+- (WorkbenchLogEntry *)entryOf:(NSURLRequest *)request started:(NSDate *)started
+{
+  WorkbenchLogEntry *entry = [[WorkbenchLogEntry alloc] init];
+  entry.method = request.HTTPMethod.uppercaseString ?: @"GET";
+  entry.URL = request.URL.absoluteString ?: @"";
+  entry.requestHeaders = request.allHTTPHeaderFields;
+  entry.requestData = request.HTTPBody;
+  entry.date = started;
+  entry.storeHint = @"";
+  return entry;
+}
+
+// On the main thread, by its run loop (which a nested run loop runs too).
+- (void)report:(WorkbenchLogEntry *)entry
+{
+  if (![NSThread isMainThread]) {
+    [self performSelectorOnMainThread:_cmd withObject:entry waitUntilDone:NO];
+    return;
+  }
+  if (self.didFinish) self.didFinish(entry);
+}
+
 - (void)startExchange:(ODataExchange *)exchange
 {
   if (self.offline || !self.engine) {
     exchange.error = [NSError errorWithDomain:NSURLErrorDomain code:NSURLErrorNotConnectedToInternet
                                      userInfo:@{ NSLocalizedDescriptionKey: @"The device is offline." }];
+    WorkbenchLogEntry *entry = [self entryOf:exchange.request started:[NSDate date]];
+    entry.failure = exchange.error.localizedDescription;
+    [self report:entry];
     [exchange finish];
     return;
   }
-  [self.engine startExchange:exchange];
+  ODataExchange *inner = [[ODataExchange alloc] initWithRequest:exchange.request target:self action:@selector(innerDidFinish:)];
+  inner.context = @[ exchange, [NSDate date] ];
+  [self.engine startExchange:inner];
+}
+
+- (void)innerDidFinish:(ODataExchange *)inner
+{
+  ODataExchange *outer = inner.context[0];
+  outer.URLResponse = inner.URLResponse;
+  outer.data = inner.data;
+  outer.error = inner.error;
+  NSHTTPURLResponse *http = [inner.URLResponse isKindOfClass:[NSHTTPURLResponse class]] ? (NSHTTPURLResponse *)inner.URLResponse : nil;
+  WorkbenchLogEntry *entry = [self entryOf:inner.request started:inner.context[1]];
+  entry.status = http.statusCode;
+  entry.responseHeaders = http.allHeaderFields;
+  entry.responseData = inner.data ?: [NSData data];
+  entry.failure = inner.error.localizedDescription;
+  entry.duration = -[entry.date timeIntervalSinceNow];
+  [self report:entry];
+  [outer finish];
 }
 @end
 
@@ -140,10 +186,41 @@ static NSButton *WBSyncButton(NSString *title, NSRect frame, id target, SEL acti
   return button;
 }
 
-// The entities the device shows, in the menu's order.
+// The entities the device shows, in the menu's order, and which way each
+// goes (the device's model says so in each entity's userInfo).
 static NSArray<NSString *> *WBSyncEntities(void)
 {
   return @[ @"Product", @"Stock", @"Category", @"Supplier", @"Location" ];
+}
+
+static NSDictionary<NSString *, NSString *> *WBSyncDirections(void)
+{
+  return @{ @"Category": @"down", @"Supplier": @"down", @"Location": @"down", @"Product": @"both", @"Stock": @"both" };
+}
+
+static NSString *WBDirectionTitle(NSString *entity)
+{
+  NSString *direction = WBSyncDirections()[entity];
+  if ([direction isEqualToString:@"both"]) return [entity stringByAppendingString:@" (both ways)"];
+  if ([direction isEqualToString:@"up"]) return [entity stringByAppendingString:@" (up: the device's)"];
+  return [entity stringByAppendingString:@" (down: the service's)"];
+}
+
+// What the rules are, for the entity shown.
+static NSString *WBDirectionRules(NSString *entity)
+{
+  NSString *direction = WBSyncDirections()[entity];
+  if ([direction isEqualToString:@"both"]) {
+    return [NSString stringWithFormat:@"%@: both ways. Edit it here (a cell, New, Delete): the change waits under Waiting to be sent until "
+                                      @"Sync or Upload sends it. The service's changes come with Sync or Download. Changed on both sides: "
+                                      @"the Conflicts rule settles it.", entity];
+  }
+  if ([direction isEqualToString:@"up"]) {
+    return [NSString stringWithFormat:@"%@: up, the device's. Made and changed here, sent by Sync or Upload; the service never sends it back.",
+                                      entity];
+  }
+  return [NSString stringWithFormat:@"%@: down, the service's. It comes with Sync or Download, and is read only here (the "
+                                    @"Workbench has no up entity: Products and Stock go both ways).", entity];
 }
 
 @implementation WBSyncWindow {
@@ -165,6 +242,11 @@ static NSArray<NSString *> *WBSyncEntities(void)
   _objects = @[];
   _changes = @[];
   _conflicts = @[];
+  _requests = @[];
+  __weak WBSyncWindow *weak = self;
+  _line.didFinish = ^(WorkbenchLogEntry *entry) {
+    [weak logged:entry];
+  };
   if (![self openDevice]) return nil;
   [self makeWindow];
   [self entityChanged:nil];
@@ -194,7 +276,7 @@ static NSArray<NSString *> *WBSyncEntities(void)
 {
   NSManagedObjectModel *model = WorkbenchBuiltInModel(_engine.modelURL);
   if (!model) return NO;
-  NSDictionary *directions = @{ @"Category": @"down", @"Supplier": @"down", @"Location": @"down", @"Product": @"both", @"Stock": @"both" };
+  NSDictionary *directions = WBSyncDirections();
   for (NSString *name in directions) {
     NSEntityDescription *entity = model.entitiesByName[name];
     NSMutableDictionary *info = [entity.userInfo mutableCopy] ?: [NSMutableDictionary dictionary];
@@ -274,7 +356,7 @@ static NSArray<NSString *> *WBSyncEntities(void)
 
 - (void)makeWindow
 {
-  NSRect frame = NSMakeRect(160, 140, 1080, 700);
+  NSRect frame = NSMakeRect(160, 100, 1180, 780);
   _window = [[NSWindow alloc] initWithContentRect:frame
                                         styleMask:NSWindowStyleMaskTitled | NSWindowStyleMaskClosable | NSWindowStyleMaskResizable |
                                                   NSWindowStyleMaskMiniaturizable
@@ -313,6 +395,11 @@ static NSArray<NSString *> *WBSyncEntities(void)
   _offlineButton.action = @selector(offlineChanged:);
   _offlineButton.autoresizingMask = NSViewMinYMargin;
   [content addSubview:_offlineButton];
+  _autoSyncButton = [[NSButton alloc] initWithFrame:NSMakeRect(x + 372, top + 4, 140, 22)];
+  [_autoSyncButton setButtonType:NSSwitchButton];
+  _autoSyncButton.title = @"Sync each change";
+  _autoSyncButton.autoresizingMask = NSViewMinYMargin;
+  [content addSubview:_autoSyncButton];
   NSButton *reset = WBSyncButton(@"Reset Device", NSMakeRect(width - 122, top, 110, 28), self, @selector(resetDevice:));
   reset.autoresizingMask = NSViewMinXMargin | NSViewMinYMargin;
   [content addSubview:reset];
@@ -330,23 +417,29 @@ static NSArray<NSString *> *WBSyncEntities(void)
   NSView *left = [[NSView alloc] initWithFrame:NSMakeRect(0, 0, 560, height - 84)];
   left.autoresizingMask = NSViewWidthSizable | NSViewHeightSizable;
   CGFloat leftHeight = left.frame.size.height;
-  _entityPopup = [[NSPopUpButton alloc] initWithFrame:NSMakeRect(8, leftHeight - 30, 160, 26) pullsDown:NO];
-  [_entityPopup addItemsWithTitles:WBSyncEntities()];
+  _entityPopup = [[NSPopUpButton alloc] initWithFrame:NSMakeRect(8, leftHeight - 30, 220, 26) pullsDown:NO];
+  for (NSString *entity in WBSyncEntities()) {
+    [_entityPopup addItemWithTitle:WBDirectionTitle(entity)];
+    _entityPopup.lastItem.representedObject = entity;
+  }
   _entityPopup.target = self;
   _entityPopup.action = @selector(entityChanged:);
   _entityPopup.autoresizingMask = NSViewMinYMargin;
   [left addSubview:_entityPopup];
-  NSButton *add = WBSyncButton(@"New", NSMakeRect(176, leftHeight - 32, 64, 28), self, @selector(newObject:));
-  add.autoresizingMask = NSViewMinYMargin;
-  [left addSubview:add];
-  NSButton *remove = WBSyncButton(@"Delete", NSMakeRect(244, leftHeight - 32, 72, 28), self, @selector(deleteObject:));
-  remove.autoresizingMask = NSViewMinYMargin;
-  [left addSubview:remove];
-  NSTextField *hint = [self labelWithFrame:NSMakeRect(324, leftHeight - 28, 230, 20) text:@"Edit a cell: a change on the device."];
-  hint.autoresizingMask = NSViewMinYMargin | NSViewWidthSizable;
-  [left addSubview:hint];
-  _dataTable = [self tableWithColumns:@[] frame:NSMakeRect(0, 0, 560, leftHeight - 38)];
-  NSScrollView *data = [self scrollViewFor:_dataTable frame:NSMakeRect(0, 0, 560, leftHeight - 38)];
+  _makeButton = WBSyncButton(@"New", NSMakeRect(236, leftHeight - 32, 64, 28), self, @selector(newObject:));
+  _makeButton.autoresizingMask = NSViewMinYMargin;
+  [left addSubview:_makeButton];
+  _deleteButton = WBSyncButton(@"Delete", NSMakeRect(304, leftHeight - 32, 72, 28), self, @selector(deleteObject:));
+  _deleteButton.autoresizingMask = NSViewMinYMargin;
+  [left addSubview:_deleteButton];
+  // What the rules are, for the entity shown.
+  _rulesField = [self labelWithFrame:NSMakeRect(8, leftHeight - 84, 544, 50) text:@""];
+  [_rulesField.cell setWraps:YES];
+  _rulesField.font = [NSFont systemFontOfSize:11];
+  _rulesField.autoresizingMask = NSViewMinYMargin | NSViewWidthSizable;
+  [left addSubview:_rulesField];
+  _dataTable = [self tableWithColumns:@[] frame:NSMakeRect(0, 0, 560, leftHeight - 90)];
+  NSScrollView *data = [self scrollViewFor:_dataTable frame:NSMakeRect(0, 0, 560, leftHeight - 90)];
   [left addSubview:data];
   [across addSubview:left];
 
@@ -384,6 +477,18 @@ static NSArray<NSString *> *WBSyncEntities(void)
   [met addSubview:[self scrollViewFor:_conflictTable frame:NSMakeRect(0, 0, 520, 172)]];
   [down addSubview:met];
 
+  NSView *asked = [[NSView alloc] initWithFrame:NSMakeRect(0, 0, 520, 180)];
+  asked.autoresizingMask = NSViewWidthSizable | NSViewHeightSizable;
+  NSTextField *askedLabel = [self labelWithFrame:NSMakeRect(8, 156, 300, 20) text:@"The device's requests"];
+  askedLabel.autoresizingMask = NSViewMinYMargin;
+  [asked addSubview:askedLabel];
+  _requestTable = [self tableWithColumns:@[ WBSyncColumn(@"time", @"Time", 70), WBSyncColumn(@"method", @"Method", 60),
+                                            WBSyncColumn(@"url", @"URL", 260), WBSyncColumn(@"status", @"Status", 50),
+                                            WBSyncColumn(@"ms", @"ms", 50) ]
+                                    frame:NSMakeRect(0, 0, 520, 152)];
+  [asked addSubview:[self scrollViewFor:_requestTable frame:NSMakeRect(0, 0, 520, 152)]];
+  [down addSubview:asked];
+
   _detailView = [[NSTextView alloc] initWithFrame:NSMakeRect(0, 0, 520, 200)];
   _detailView.editable = NO;
   _detailView.richText = NO;
@@ -397,15 +502,17 @@ static NSArray<NSString *> *WBSyncEntities(void)
   _detailView.autoresizingMask = NSViewWidthSizable;
   _detailView.maxSize = NSMakeSize(FLT_MAX, FLT_MAX);
   _detailView.textContainer.widthTracksTextView = YES;
-  _detailView.string = @"A conflict's three versions: the one both last agreed on, the device's, the service's (* changed).";
+  _detailView.string = @"Select a conflict for its three versions (the one both last agreed on, the device's, the service's; * changed), "
+                       @"or a request for what went and what came back.";
   [down addSubview:[self scrollViewFor:_detailView frame:NSMakeRect(0, 0, 520, 200)]];
   [across addSubview:down];
   [content addSubview:across];
   [across adjustSubviews];
   [down adjustSubviews];
   [across setPosition:560 ofDividerAtIndex:0];
-  [down setPosition:220 ofDividerAtIndex:0];
-  [down setPosition:420 ofDividerAtIndex:1];
+  [down setPosition:180 ofDividerAtIndex:0];
+  [down setPosition:340 ofDividerAtIndex:1];
+  [down setPosition:540 ofDividerAtIndex:2];
 }
 
 - (void)show
@@ -418,7 +525,7 @@ static NSArray<NSString *> *WBSyncEntities(void)
 
 - (NSString *)entityName
 {
-  return _entityPopup.titleOfSelectedItem ?: @"Product";
+  return _entityPopup.selectedItem.representedObject ?: @"Product";
 }
 
 - (BOOL)entityIsEditable
@@ -437,23 +544,38 @@ static NSArray<NSString *> *WBSyncEntities(void)
   for (NSString *name in WBColumnNames(entity, YES)) {
     if (entity.attributesByName[name]) [columns addObject:name];
   }
-  for (NSString *name in @[ @"version", @"lastChanged" ]) {
+  for (NSString *name in @[ @"version", @"lastChanged", @"versions" ]) {
     if (entity.attributesByName[name] && ![columns containsObject:name]) [columns addObject:name];
   }
   for (NSString *name in [entity.relationshipsByName.allKeys sortedArrayUsingSelector:@selector(compare:)]) {
     if (!entity.relationshipsByName[name].isToMany) [columns addObject:name];
   }
   _columns = columns;
+  _rulesField.stringValue = WBDirectionRules([self entityName]);
+  _makeButton.enabled = [self entityIsEditable];
+  _deleteButton.enabled = [self entityIsEditable];
   while (_dataTable.tableColumns.count) [_dataTable removeTableColumn:_dataTable.tableColumns.lastObject];
   BOOL editable = [self entityIsEditable];
   for (NSString *name in columns) {
     NSAttributeDescription *attribute = entity.attributesByName[name];
-    NSTableColumn *column = WBSyncColumn(name, name, [name isEqualToString:@"lastChanged"] ? 190 : 90);
-    // The key, the version and the stamp are the engine's and the service's.
-    column.editable = editable && attribute && !WBIsKey(attribute) && ![name isEqualToString:@"version"] && ![name isEqualToString:@"lastChanged"];
+    NSTableColumn *column = WBSyncColumn(name, name, [name isEqualToString:@"lastChanged"] || [name isEqualToString:@"versions"] ? 190 : 90);
+    // The key, the version, the stamp and the history are the engine's and
+    // the service's.
+    column.editable = editable && attribute && !WBIsKey(attribute) && ![@[ @"version", @"lastChanged", @"versions" ] containsObject:name];
     [_dataTable addTableColumn:column];
   }
   [self reloadObjects];
+}
+
+- (void)logged:(WorkbenchLogEntry *)entry
+{
+  NSMutableArray *requests = [_requests mutableCopy];
+  [requests insertObject:entry atIndex:0];
+  if (requests.count > 200) [requests removeLastObject];
+  _requests = requests;
+  [_requestTable reloadData];
+  // The newest at the top, in view.
+  if (_requestTable.selectedRow < 1) [_requestTable scrollRowToVisible:0];
 }
 
 - (void)reloadObjects
@@ -616,7 +738,12 @@ static NSArray<NSString *> *WBSyncEntities(void)
     return;
   }
   [self reload];
-  _statusField.stringValue = [NSString stringWithFormat:@"%@ on the device; %lu change(s) waiting.", what, (unsigned long)_changes.count];
+  if (_autoSyncButton.state == NSOnState) {
+    [self sync:nil];
+    return;
+  }
+  _statusField.stringValue = [NSString stringWithFormat:@"%@ on the device; %lu change(s) waiting: Sync (or Upload) sends them.", what,
+                                                        (unsigned long)_changes.count];
 }
 
 - (void)setValue:(id)value ofAttribute:(NSString *)name row:(NSInteger)row
@@ -641,7 +768,8 @@ static NSArray<NSString *> *WBSyncEntities(void)
   [object setValue:@(100000 + (NSInteger)([NSUUID UUID].UUIDString.hash % 900000)) forKey:@"id"];
   if (object.entity.attributesByName[@"name"]) [object setValue:@"New on the device" forKey:@"name"];
   if (object.entity.attributesByName[@"quantity"]) [object setValue:@0 forKey:@"quantity"];
-  [self saveSaying:[NSString stringWithFormat:@"%@ %@ made", object.entity.name, [object valueForKey:@"id"]]];
+  [self saveSaying:[NSString stringWithFormat:@"%@ %@ made (a random key: the Catalog's keys are numbers; an offline app's own would be UUIDs)",
+                                             object.entity.name, [object valueForKey:@"id"]]];
 }
 
 - (IBAction)deleteObject:(id)sender
@@ -764,6 +892,7 @@ static NSArray<NSString *> *WBSyncEntities(void)
   if (table == _dataTable) return (NSInteger)_objects.count;
   if (table == _changesTable) return (NSInteger)_changes.count;
   if (table == _conflictTable) return (NSInteger)_conflicts.count;
+  if (table == _requestTable) return (NSInteger)_requests.count;
   return 0;
 }
 
@@ -795,6 +924,7 @@ static NSArray<NSString *> *WBSyncEntities(void)
     }
     return nil;
   }
+  if (table == _requestTable) return [self requestValue:identifier row:row];
   if (table == _conflictTable) {
     if ((NSUInteger)row >= _conflicts.count) return nil;
     WBSyncConflict *met = _conflicts[(NSUInteger)row];
@@ -817,6 +947,55 @@ static NSArray<NSString *> *WBSyncEntities(void)
   return nil;
 }
 
+- (NSString *)pathOf:(WorkbenchLogEntry *)entry
+{
+  NSString *root = _engine.serviceRoot.absoluteString;
+  return [entry.URL hasPrefix:root] ? [entry.URL substringFromIndex:root.length] : entry.URL;
+}
+
+- (id)requestValue:(NSString *)identifier row:(NSInteger)row
+{
+  if ((NSUInteger)row >= _requests.count) return nil;
+  WorkbenchLogEntry *entry = _requests[(NSUInteger)row];
+  if ([identifier isEqualToString:@"time"]) {
+    NSDateFormatter *format = [[NSDateFormatter alloc] init];
+    format.dateFormat = @"HH:mm:ss";
+    return [format stringFromDate:entry.date];
+  }
+  if ([identifier isEqualToString:@"method"]) return entry.method;
+  if ([identifier isEqualToString:@"url"]) return [self pathOf:entry];
+  if ([identifier isEqualToString:@"status"]) return entry.status ? @(entry.status) : @"-";
+  if ([identifier isEqualToString:@"ms"]) return entry.duration ? [NSString stringWithFormat:@"%.0f", entry.duration * 1000] : @"";
+  return nil;
+}
+
+static NSString *WBBodyText(NSData *data)
+{
+  if (!data.length) return @"";
+  id json = [NSJSONSerialization JSONObjectWithData:data options:0 error:NULL];
+  NSData *pretty = json ? [NSJSONSerialization dataWithJSONObject:json options:NSJSONWritingPrettyPrinted error:NULL] : nil;
+  return [[NSString alloc] initWithData:pretty ?: data encoding:NSUTF8StringEncoding] ?: @"(binary)";
+}
+
+- (void)showRequest:(WorkbenchLogEntry *)entry
+{
+  NSMutableString *text = [NSMutableString stringWithFormat:@"%@ %@\n", entry.method, entry.URL];
+  for (NSString *name in [entry.requestHeaders.allKeys sortedArrayUsingSelector:@selector(compare:)]) {
+    [text appendFormat:@"%@: %@\n", name, entry.requestHeaders[name]];
+  }
+  if (entry.requestData.length) [text appendFormat:@"\n%@\n", WBBodyText(entry.requestData)];
+  if (entry.failure && !entry.status) {
+    [text appendFormat:@"\nNo answer: %@\n", entry.failure];
+  } else {
+    [text appendFormat:@"\n%ld\n", (long)entry.status];
+    for (NSString *name in [entry.responseHeaders.allKeys sortedArrayUsingSelector:@selector(compare:)]) {
+      [text appendFormat:@"%@: %@\n", name, entry.responseHeaders[name]];
+    }
+    if (entry.responseData.length) [text appendFormat:@"\n%@\n", WBBodyText(entry.responseData)];
+  }
+  _detailView.string = text;
+}
+
 - (void)tableView:(NSTableView *)table setObjectValue:(id)value forTableColumn:(NSTableColumn *)column row:(NSInteger)row
 {
   if (table != _dataTable) return;
@@ -825,6 +1004,11 @@ static NSArray<NSString *> *WBSyncEntities(void)
 
 - (void)tableViewSelectionDidChange:(NSNotification *)notification
 {
+  if (notification.object == _requestTable) {
+    NSInteger selected = _requestTable.selectedRow;
+    if (selected >= 0 && (NSUInteger)selected < _requests.count) [self showRequest:_requests[(NSUInteger)selected]];
+    return;
+  }
   if (notification.object != _conflictTable) return;
   NSInteger row = _conflictTable.selectedRow;
   if (row < 0 || (NSUInteger)row >= _conflicts.count) return;

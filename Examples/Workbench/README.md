@@ -97,9 +97,14 @@ What you can do:
   (`docs/offline-sync.md`). The device is a store of its own (SQLite, with
   persistent history) of the same model: Categories, Suppliers and
   Locations come down from the service; Products and Stock both sides
-  edit, Products stamped (`LastChanged`) for last writer wins. At the
-  left, the device's objects: edit a cell, or New, or Delete, and the
-  change waits, in the list at the right, until Sync (or Upload) sends it.
+  edit, Products stamped (`LastChanged`) for last writer wins, and
+  keeping what each version has seen (`Versions`, a version vector; the
+  built-in service runs `ODataSyncService`). The entity menu says which
+  way each goes (Product (both ways), Category (down: the service's)),
+  and the line under it what that means. At the left, the device's
+  objects: edit a cell, or New, or Delete (both ways only), and the
+  change waits, in the list at the right, until Sync (or Upload) sends it;
+  with Sync each change ticked, it goes at once.
   Change at the Service raises the selected product's price there, as
   another client would: change the same product on the device, sync, and
   the conflict is settled by the rule chosen (the service's wins, the
@@ -108,8 +113,9 @@ What you can do:
   met are listed, each with the three versions (the one both last agreed
   on, the device's, the service's, what each changed marked). Offline
   makes every request fail: changes wait, and go when it is unticked.
-  Reconcile reads every set's keys again. Its exchanges are in the wire
-  log, and each sync is a trace (`sync`, `download Product`,
+  Reconcile reads every set's keys again. The device's own requests are
+  listed at the right (select one for what went and what came back);
+  they are in the wire log too, and each sync is a trace (`sync`, `download Product`,
   `upload batch`).
 - Execute. Rows are real managed objects; select one to see its attributes,
   fire its faults, or its relationships. Each prefetched relationship is a

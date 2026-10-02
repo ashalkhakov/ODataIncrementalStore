@@ -12,6 +12,7 @@
 #pragma once
 #import <ODataIncrementalStore/ODataIncrementalStore.h>
 #import <ODataService/ODataService.h>
+#import <ODataSync/ODataSyncService.h>
 
 NS_ASSUME_NONNULL_BEGIN
 

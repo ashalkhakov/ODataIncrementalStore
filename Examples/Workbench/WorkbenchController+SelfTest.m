@@ -770,6 +770,62 @@ static void WBCheck(BOOL ok, NSString *what, NSString *detail)
   WBCheck(failed && held == 1 && synced && [[self serviceValue:@"name" ofProduct:first] isEqual:@"Chai (offline)"],
           @"sync: offline, an edit waits; online again, it goes", [NSString stringWithFormat:@"%lu held; %@", (unsigned long)held, error ?: @""]);
 
+  // As a person would: the main window shows the products, the device
+  // renames one and uploads, and Execute shows it renamed.
+  [self runPreset:0];
+  NSUInteger chai = [self rowWhere:@"id" is:first];
+  NSString *before = chai != NSNotFound ? [self.results.rows[chai] valueForKey:@"name"] : nil;
+  id versionBefore = [self serviceValue:@"version" ofProduct:first];
+  [device setValue:@"Tchai" ofAttribute:@"name" row:0];
+  [device upload:nil];
+  NSDate *uploading = [NSDate dateWithTimeIntervalSinceNow:20];
+  while (device.busy && [uploading timeIntervalSinceNow] > 0) {
+    [[NSRunLoop currentRunLoop] runMode:NSDefaultRunLoopMode beforeDate:[NSDate dateWithTimeIntervalSinceNow:0.05]];
+  }
+  [self runFetch:nil];
+  chai = [self rowWhere:@"id" is:first];
+  NSString *after = chai != NSNotFound ? [self.results.rows[chai] valueForKey:@"name"] : nil;
+  WBCheck([[self serviceValue:@"name" ofProduct:first] isEqual:@"Tchai"] && [after isEqual:@"Tchai"],
+          @"sync: an upload from the device, seen in the main window", [NSString stringWithFormat:@"before %@, after %@, at the service %@, version %@ -> %@",
+                                                                       before, after, [self serviceValue:@"name" ofProduct:first],
+                                                                       versionBefore, [self serviceValue:@"version" ofProduct:first]]);
+
+  // Which way each entity goes, said; a down one read only.
+  BOOL bothSaid = [device.rulesField.stringValue rangeOfString:@"both ways"].location != NSNotFound && device.makeButton.isEnabled;
+  [device.entityPopup selectItemAtIndex:2];
+  [device entityChanged:device.entityPopup];
+  BOOL downSaid = [device.rulesField.stringValue rangeOfString:@"down, the service's"].location != NSNotFound && !device.makeButton.isEnabled &&
+                  [device.entityPopup.titleOfSelectedItem hasPrefix:@"Category (down"];
+  [device.entityPopup selectItemAtIndex:0];
+  [device entityChanged:device.entityPopup];
+  WBCheck(bothSaid && downSaid, @"sync: which way each entity goes, said on the device", device.rulesField.stringValue);
+
+  // Its own request log: what it sent, and what failed offline.
+  [[NSRunLoop currentRunLoop] runMode:NSDefaultRunLoopMode beforeDate:[NSDate dateWithTimeIntervalSinceNow:0.3]];
+  BOOL batched = NO, offlineLogged = NO;
+  for (WorkbenchLogEntry *entry in device.requests) {
+    batched = batched || [entry.URL hasSuffix:@"$batch"];
+    offlineLogged = offlineLogged || (!entry.status && [entry.failure rangeOfString:@"offline"].location != NSNotFound);
+  }
+  [device.requestTable selectRowIndexes:[NSIndexSet indexSetWithIndex:0] byExtendingSelection:NO];
+  BOOL detailed = [device.detailView.string rangeOfString:@"HTTP"].location != NSNotFound ||
+                  [device.detailView.string rangeOfString:device.requests.firstObject.method ?: @"?"].location == 0;
+  WBCheck(batched && offlineLogged && detailed, @"sync: the device's own request log",
+          [NSString stringWithFormat:@"%lu requests, %ld rows%@%@", (unsigned long)device.requests.count, (long)device.requestTable.numberOfRows,
+                                     batched ? @"" : @", no $batch",
+                                     offlineLogged ? @"" : @", no offline failure"]);
+
+  // Sync after each change: an edit goes at once.
+  device.autoSyncButton.state = NSOnState;
+  [device setValue:@"Chai (at once)" ofAttribute:@"name" row:0];
+  NSDate *deadline = [NSDate dateWithTimeIntervalSinceNow:20];
+  while (device.busy && [deadline timeIntervalSinceNow] > 0) {
+    [[NSRunLoop currentRunLoop] runMode:NSDefaultRunLoopMode beforeDate:[NSDate dateWithTimeIntervalSinceNow:0.05]];
+  }
+  device.autoSyncButton.state = NSOffState;
+  WBCheck([[self serviceValue:@"name" ofProduct:first] isEqual:@"Chai (at once)"], @"sync: after each change, at once", device.statusField.stringValue);
+  [self shoot:@"Sync requests" window:device.window];
+
   // Its exchanges in the wire log; its syncs in Traces.
   [[NSRunLoop currentRunLoop] runMode:NSDefaultRunLoopMode beforeDate:[NSDate dateWithTimeIntervalSinceNow:0.3]];
   BOOL logged = NO;

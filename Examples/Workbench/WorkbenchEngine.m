@@ -180,7 +180,13 @@ NSManagedObjectModel *WorkbenchBuiltInModel(NSURL *catalogURL)
   // last writer wins, in the Sync window): the device stamps it, and so does
   // the service's own change.
   NSAttributeDescription *lastChanged = WBAttribute(@"lastChanged", NSStringAttributeType, @"LastChanged", YES, nil);
-  product.properties = [product.properties arrayByAddingObjectsFromArray:@[ version, lastChanged ]];
+  // What each version has seen (ODataSync's version vector), which the
+  // service and the device keep alike.
+  NSAttributeDescription *versions = WBAttribute(@"versions", NSStringAttributeType, @"Versions", YES, nil);
+  product.properties = [product.properties arrayByAddingObjectsFromArray:@[ version, lastChanged, versions ]];
+  NSMutableDictionary *productInfo = [product.userInfo mutableCopy] ?: [NSMutableDictionary dictionary];
+  productInfo[@"ODataSync.versions"] = @"versions";
+  product.userInfo = productInfo;
   NSEntityDescription *budget = WBEntity(@"Budget", @"Budgets", @{ @"OData.periodStart": @"from", @"OData.periodEnd": @"to", @"OData.objectKey": @"category" }, @[
     WBAttribute(@"id", NSInteger64AttributeType, @"BudgetID", NO, @{ @"OData.key": @"YES" }),
     WBAttribute(@"category", NSStringAttributeType, @"CategoryName", NO, nil),
@@ -299,6 +305,7 @@ NSString *WorkbenchServiceStamp(NSString *previous)
 }
 
 @implementation WorkbenchEngine {
+  ODataSyncService *_sync;
   NSURL *_modelURL;
   NSMutableArray *_log;
   NSURL *_storeURL;
@@ -385,6 +392,8 @@ NSString *WorkbenchServiceStamp(NSString *previous)
   if (!model.entities.count) return NO;
   NSEntityDescription *product = model.entitiesByName[@"Product"];
   product.managedObjectClassName = NSStringFromClass([WorkbenchProduct class]);
+  // Deletions kept, for ODataSync's devices (not served: no key).
+  [ODataSyncService addBookkeepingToModel:model configuration:nil];
   NSPersistentStoreCoordinator *coordinator = [[NSPersistentStoreCoordinator alloc] initWithManagedObjectModel:model];
   NSError *error = nil;
   // SQLite, which keeps persistent history: the service's delta links.
@@ -404,6 +413,8 @@ NSString *WorkbenchServiceStamp(NSString *previous)
   service.serviceOperations = [[WorkbenchCatalogOperations alloc] init];
   // GET <root>/$explain/<path>: the Explain button's plans.
   service.explains = YES;
+  // Histories compared, deletions kept: the Sync window's devices.
+  _sync = [[ODataSyncService alloc] initWithService:service];
   for (NSString *problem in service.operationProblems) NSLog(@"Workbench: %@", problem);
   for (NSString *problem in service.metadataProblems) NSLog(@"Workbench: %@", problem);
   _service = service;

@@ -45,6 +45,15 @@ typedef NS_ENUM(NSInteger, WBSyncRule) {
 @property (nonatomic, readonly) NSPopUpButton *entityPopup;
 @property (nonatomic, readonly) NSPopUpButton *rulePopup;
 @property (nonatomic, readonly) NSButton *offlineButton;
+// On: each change on the device is followed by a sync.
+@property (nonatomic, readonly) NSButton *autoSyncButton;
+@property (nonatomic, readonly) NSButton *makeButton;
+@property (nonatomic, readonly) NSButton *deleteButton;
+// Which way the entity shown goes, and what that means.
+@property (nonatomic, readonly) NSTextField *rulesField;
+// The device's own exchanges, newest first: its request log.
+@property (nonatomic, readonly) NSTableView *requestTable;
+@property (nonatomic, readonly, copy) NSArray<WorkbenchLogEntry *> *requests;
 @property (nonatomic, readonly) NSTableView *dataTable;
 @property (nonatomic, readonly) NSTableView *changesTable;
 @property (nonatomic, readonly) NSTableView *conflictTable;
