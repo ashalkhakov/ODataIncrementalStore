@@ -17,7 +17,7 @@ NSString * const ODataSyncModifiedKey = @"ODataSync.modified";
 
 - (instancetype)initWithEntity:(NSEntityDescription *)entity key:(NSDictionary *)key base:(NSDictionary *)base
                          local:(NSDictionary *)local remote:(NSDictionary *)remote
-                  localChanges:(NSSet *)localChanges remoteChanges:(NSSet *)remoteChanges
+                  localChanges:(NSSet *)localChanges remoteChanges:(NSSet *)remoteChanges withPeer:(BOOL)withPeer
 {
   self = [super init];
   if (!self) return nil;
@@ -28,6 +28,7 @@ NSString * const ODataSyncModifiedKey = @"ODataSync.modified";
   _remote = [remote copy];
   _localChanges = [localChanges copy];
   _remoteChanges = [remoteChanges copy];
+  _withPeer = withPeer;
   return self;
 }
 
@@ -88,6 +89,14 @@ NSString * const ODataSyncModifiedKey = @"ODataSync.modified";
 }
 @end
 
+// Values as text, in the order of their names: the same on every side.
+static NSString *ODSFingerprint(NSDictionary *values)
+{
+  NSMutableString *text = [NSMutableString string];
+  for (NSString *name in [values.allKeys sortedArrayUsingSelector:@selector(compare:)]) [text appendFormat:@"%@=%@;", name, values[name]];
+  return text;
+}
+
 @implementation ODataSyncLastWriterWins
 - (ODataSyncResolution *)resolveConflict:(ODataSyncConflict *)conflict
 {
@@ -98,8 +107,12 @@ NSString * const ODataSyncModifiedKey = @"ODataSync.modified";
   // A delete has no stamp of its own: the other side's change stands.
   if (!conflict.local && conflict.remote) return [ODataSyncResolution takeRemote];
   if (!conflict.remote && conflict.local) return [ODataSyncResolution keepLocal];
-  if (![local isKindOfClass:[NSString class]] || ![remote isKindOfClass:[NSString class]]) return [ODataSyncResolution takeRemote];
-  return [local compare:remote] == NSOrderedDescending ? [ODataSyncResolution keepLocal] : [ODataSyncResolution takeRemote];
+  NSComparisonResult order = [local isKindOfClass:[NSString class]] && [remote isKindOfClass:[NSString class]] ? [local compare:remote]
+                                                                                                           : NSOrderedSame;
+  // No stamps to tell (or the same): the service's, from a service; from a
+  // peer, the same side whichever asks, by the values.
+  if (order == NSOrderedSame && conflict.withPeer) order = [ODSFingerprint(conflict.local) compare:ODSFingerprint(conflict.remote)];
+  return order == NSOrderedDescending ? [ODataSyncResolution keepLocal] : [ODataSyncResolution takeRemote];
 }
 @end
 
@@ -147,6 +160,23 @@ NSString * const ODataSyncModifiedKey = @"ODataSync.modified";
 
 @implementation ODataSyncEngine (ODSConflicts)
 
+// Between peers neither side is the authority, and each asks in turn: a
+// rule must choose the same version whichever side asks, or the two swap
+// forever. The remote's or this side's are not such; last writer wins is.
+- (id<ODataSyncResolving>)resolverFor:(NSEntityDescription *)root remote:(ODataSyncRemote *)remote
+{
+  id<ODataSyncResolving> resolver = [self resolverFor:root];
+  if (!remote.peer) return resolver;
+  BOOL (^sided)(id) = ^BOOL(id rule) {
+    return [rule isKindOfClass:[ODataSyncRemoteWins class]] || [rule isKindOfClass:[ODataSyncLocalWins class]];
+  };
+  if (sided(resolver)) return [[ODataSyncLastWriterWins alloc] init];
+  if ([resolver isKindOfClass:[ODataSyncMergeFields class]] && sided(((ODataSyncMergeFields *)resolver).fallback)) {
+    return [[ODataSyncMergeFields alloc] initWithFallback:[[ODataSyncLastWriterWins alloc] init]];
+  }
+  return resolver;
+}
+
 - (id<ODataSyncResolving>)resolverFor:(NSEntityDescription *)root
 {
   id<ODataSyncResolving> resolver = [self resolverForEntityName:root.name];
@@ -192,6 +222,32 @@ NSString * const ODataSyncModifiedKey = @"ODataSync.modified";
   [entry setValue:ODSArchive(differ.allObjects) forKey:@"properties"];
 }
 
+- (BOOL)keepNewerThan:(NSDictionary *)row etag:(NSString *)etag of:(NSEntityDescription *)root key:(NSDictionary *)key
+               remote:(ODataSyncRemote *)remote context:(NSManagedObjectContext *)context
+{
+  ODSCodec *codec = self.codec;
+  NSAttributeDescription *stamp = [codec modifiedAttributeOf:root];
+  NSManagedObject *object = stamp && remote.peer ? [codec objectOfEntity:root key:key inContext:context] : nil;
+  id ours = [object valueForKey:stamp.name], theirs = row[[codec.mapper propertyForAttribute:stamp]];
+  if (![ours isKindOfClass:[NSString class]] || ![theirs isKindOfClass:[NSString class]] || [ours compare:theirs] != NSOrderedDescending) return NO;
+  // Older than this side's: a peer a step behind (what it has came round
+  // from where this side's went). Taken, it would go round again.
+  NSString *keyText = [codec keyTextOf:key entity:root];
+  [self agreeOn:row etag:etag of:root keyText:keyText remote:remote context:context];
+  NSManagedObject *entry = [NSEntityDescription insertNewObjectForEntityForName:ODSOutboxEntity inManagedObjectContext:context];
+  NSFetchRequest *last = [NSFetchRequest fetchRequestWithEntityName:ODSOutboxEntity];
+  last.sortDescriptors = @[ [NSSortDescriptor sortDescriptorWithKey:@"sequence" ascending:NO] ];
+  last.fetchLimit = 1;
+  int64_t sequence = [[[[context executeFetchRequest:last error:NULL] firstObject] valueForKey:@"sequence"] longLongValue] + 1;
+  [entry setValue:remote.identifier forKey:@"remote"];
+  [entry setValue:root.name forKey:@"entityType"];
+  [entry setValue:ODSArchive(key) forKey:@"key"];
+  [entry setValue:keyText forKey:@"keyText"];
+  [entry setValue:@(sequence) forKey:@"sequence"];
+  [self sendWhatDiffers:object from:[codec valuesFromJSON:row entity:root] entry:entry context:context];
+  return YES;
+}
+
 - (void)settleConflictOf:(NSEntityDescription *)root key:(NSDictionary *)key entry:(NSManagedObject *)entry
                remoteRow:(NSDictionary *)row etag:(NSString *)etag remote:(ODataSyncRemote *)remote
                  context:(NSManagedObjectContext *)context
@@ -226,8 +282,9 @@ NSString * const ODataSyncModifiedKey = @"ODataSync.modified";
   NSSet *localChanges = base && local ? ODSChangedNames(base, local) : everything;
   NSSet *remoteChanges = base && remoteValues ? ODSChangedNames(base, remoteValues) : everything;
   ODataSyncConflict *conflict = [[ODataSyncConflict alloc] initWithEntity:root key:key base:base local:local remote:remoteValues
-                                                             localChanges:localChanges remoteChanges:remoteChanges];
-  ODataSyncResolution *resolution = [[self resolverFor:root] resolveConflict:conflict] ?: [ODataSyncResolution takeRemote];
+                                                             localChanges:localChanges remoteChanges:remoteChanges
+                                                                 withPeer:remote.peer];
+  ODataSyncResolution *resolution = [[self resolverFor:root remote:remote] resolveConflict:conflict] ?: [ODataSyncResolution takeRemote];
   [self count:@"conflicts" by:1];
   switch (resolution.kind) {
     case ODataSyncTakeRemote:

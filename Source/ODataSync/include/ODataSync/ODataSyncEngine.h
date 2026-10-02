@@ -135,6 +135,11 @@ typedef NS_ENUM(NSInteger, ODataSyncOperation) {
 // What each side changed since the base (every property when there is none).
 @property (nonatomic, readonly, copy) NSSet<NSString *> *localChanges;
 @property (nonatomic, readonly, copy) NSSet<NSString *> *remoteChanges;
+// The remote is a peer: no authority, and it settles the same conflict
+// the other way round when it syncs with this side. A rule must choose the
+// same version whichever side asks (the built-in ones are made so: with a
+// peer, the remote's or this side's becomes last writer wins).
+@property (nonatomic, readonly) BOOL withPeer;
 @end
 
 typedef NS_ENUM(NSInteger, ODataSyncResolutionKind) {
@@ -171,7 +176,8 @@ typedef NS_ENUM(NSInteger, ODataSyncResolutionKind) {
 
 // The version changed last stands, by the ODataSync.modified stamps (a
 // hybrid logical clock's, which order changes across devices whatever
-// their clocks say); a tie, or a side without one, goes to the remote.
+// their clocks say); a tie, or a side without one, goes to the remote, or
+// with a peer to the version whose values sort last.
 @interface ODataSyncLastWriterWins : NSObject <ODataSyncResolving>
 @end
 
@@ -237,6 +243,10 @@ typedef NS_ENUM(NSInteger, ODataSyncResolutionKind) {
 @property (nonatomic) ODataSyncConflictPolicy conflictPolicy;
 @property (nonatomic, strong, nullable) id<ODataSyncResolving> resolver;
 - (void)setResolver:(nullable id<ODataSyncResolving>)resolver forEntityName:(NSString *)entityName;
+// How long a deletion is remembered, so that a peer that has not heard of
+// it cannot bring the object back (its insert refused, 410). Default: 30
+// days; 0: for ever. A peer that comes back after longer may.
+@property (nonatomic) NSTimeInterval tombstoneRetention;
 // This store's replica ID: in its metadata, made the first time.
 @property (nonatomic, readonly, copy) NSString *replicaID;
 @property (nonatomic, weak, nullable) id<ODataSyncDelegate> delegate;

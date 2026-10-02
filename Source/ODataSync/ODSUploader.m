@@ -118,7 +118,7 @@ static const NSInteger ODSConflictRounds = 3;
   if (!result) return NO;
   int64_t sequence = [self nextSequenceIn:context];
   NSPersistentHistoryToken *last = token;
-  NSSet *bookkeeping = [NSSet setWithObjects:ODSRemoteStateEntity, ODSOutboxEntity, ODSShadowEntity, nil];
+  NSSet *bookkeeping = [NSSet setWithObjects:ODSRemoteStateEntity, ODSOutboxEntity, ODSShadowEntity, ODSTombstoneEntity, nil];
   // Made and gone within what is read now: its deletion is nothing to send.
   NSMutableSet<NSManagedObjectID *> *fleeting = [NSMutableSet set];
   for (NSPersistentHistoryTransaction *transaction in result.result) {
@@ -183,6 +183,9 @@ static const NSInteger ODSConflictRounds = 3;
 
 #pragma mark Requests
 
+// An entity tag no remote gives.
+static NSString * const ODSUnknownVersion = @"\"ODataSync.unknown\"";
+
 // Whether the entry is sent as a both entity's (If-Match, If-None-Match;
 // a 412 a conflict): a both entity, an up entity to a peer, and an up
 // entity's change that came from elsewhere, which may be stale, or
@@ -239,6 +242,15 @@ static const NSInteger ODSConflictRounds = 3;
   NSData *kept = [shadow valueForKey:@"values"];
   id agreed = object && kept.length ? [NSJSONSerialization JSONObjectWithData:kept options:0 error:NULL] : nil;
   if ([agreed isKindOfClass:[NSDictionary class]]) {
+    NSAttributeDescription *stamp = [_codec modifiedAttributeOf:root];
+    id ours = stamp ? [object valueForKey:stamp.name] : nil, theirs = stamp ? agreed[[_codec.mapper propertyForAttribute:stamp]] : nil;
+    if ([ours isKindOfClass:[NSString class]] && [theirs isKindOfClass:[NSString class]] && [ours compare:theirs] == NSOrderedAscending) {
+      // Older than the remote's (a copy that came round late): sent, it
+      // would put an older version over a newer one. The remote's is taken.
+      [_codec applyJSON:agreed toObject:object];
+      [context deleteObject:entry];
+      return nil;
+    }
     // What the remote has already (passed on there by another way, or come
     // from it): not sent again.
     NSSet *differ = ODSChangedNames([_codec valuesOfObject:object], [_codec valuesFromJSON:agreed entity:root]);
@@ -262,8 +274,11 @@ static const NSInteger ODSConflictRounds = 3;
     request[@"body"] = [_codec JSONOfObject:object properties:properties];
     headers[@"Content-Type"] = @"application/json";
     headers[@"Prefer"] = @"return=minimal";
+    // A change of a version never agreed on with this remote (one that came
+    // from elsewhere): matching nothing, it meets the remote's version (a
+    // 412, and the resolver), and so never overwrites it unseen.
     if (both && operation == ODataSyncOperationInsert && !etag) headers[@"If-None-Match"] = @"*";
-    else if (both) headers[@"If-Match"] = etag ?: @"*";
+    else if (both) headers[@"If-Match"] = etag ?: ODSUnknownVersion;
   }
   request[@"headers"] = headers;
   return request;
@@ -430,6 +445,19 @@ static NSString *ODSHeader(NSDictionary *headers, NSString *name)
       return YES;
     }
     return [self resolveConflictOf:entry context:context error:error];
+  }
+  if (status == 410 && _remote.peer && operation != ODataSyncOperationDelete) {
+    // Deleted at the peer, which remembers: deleted here too (written as the
+    // peer's deletion, and so passed on).
+    NSEntityDescription *root = _codec.model.entitiesByName[entityName];
+    NSManagedObject *object = [_codec objectOfEntity:root key:ODSUnarchive([entry valueForKey:@"key"]) inContext:context];
+    if (object) {
+      [context deleteObject:object];
+      [_engine count:@"removed" by:1];
+    }
+    [_engine agreeOn:nil etag:nil of:root keyText:keyText remote:_remote context:context];
+    [context deleteObject:entry];
+    return YES;
   }
   if (status == 401) {
     if (error) *error = ODSError(401, ODSMessageOf(body, status));

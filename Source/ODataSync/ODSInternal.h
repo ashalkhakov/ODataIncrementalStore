@@ -17,6 +17,7 @@ NS_ASSUME_NONNULL_BEGIN
 FOUNDATION_EXPORT NSString * const ODSRemoteStateEntity;   // remote, deltaLinks, filters, historyToken
 FOUNDATION_EXPORT NSString * const ODSOutboxEntity;        // remote, entityName, key, operation, properties, ...
 FOUNDATION_EXPORT NSString * const ODSShadowEntity;        // remote, entityType, keyText, etag, values (a row's JSON)
+FOUNDATION_EXPORT NSString * const ODSTombstoneEntity;     // entityType, keyText, deleted (a date)
 
 FOUNDATION_EXPORT NSError *ODSError(NSInteger code, NSString *message);
 FOUNDATION_EXPORT NSData *ODSArchive(id _Nullable plist);
@@ -92,6 +93,9 @@ FOUNDATION_EXPORT NSSet<NSString *> *ODSChangedNames(NSDictionary *_Nullable bef
 @property (nonatomic, readonly) OTTracer *tracer;
 // A client of the remote: its configuration, at 4.01, its transport.
 - (ODataClient *)clientOf:(ODataSyncRemote *)remote;
+// Whether an object of the entity, by its key's text, was deleted here
+// (and not made again since): a peer may not bring it back.
+- (BOOL)isDeleted:(NSString *)entityName keyText:(NSString *)keyText inContext:(NSManagedObjectContext *)context;
 // The headers every request to the remote has: to a peer, this replica.
 - (NSDictionary<NSString *, NSString *> *)headersFor:(ODataSyncRemote *)remote;
 // The remote added with this identifier.
@@ -132,13 +136,18 @@ FOUNDATION_EXPORT NSSet<NSString *> *ODSChangedNames(NSDictionary *_Nullable bef
 // shadow gone).
 - (void)agreeOn:(nullable NSDictionary *)row etag:(nullable NSString *)etag of:(NSEntityDescription *)root keyText:(NSString *)keyText
          remote:(ODataSyncRemote *)remote context:(NSManagedObjectContext *)context;
-- (id<ODataSyncResolving>)resolverFor:(NSEntityDescription *)root;
+- (id<ODataSyncResolving>)resolverFor:(NSEntityDescription *)root remote:(ODataSyncRemote *)remote;
+// A peer's row of an object this side has a newer version of (by the
+// stamps), with no change pending for it: YES when so, and then the row is
+// not applied: agreed on as the peer's, and this side's sent to it.
+- (BOOL)keepNewerThan:(NSDictionary *)row etag:(nullable NSString *)etag of:(NSEntityDescription *)root key:(NSDictionary *)key
+               remote:(ODataSyncRemote *)remote context:(NSManagedObjectContext *)context;
 @end
 
 @interface ODataSyncConflict ()
 - (instancetype)initWithEntity:(NSEntityDescription *)entity key:(NSDictionary *)key base:(nullable NSDictionary *)base
                          local:(nullable NSDictionary *)local remote:(nullable NSDictionary *)remote
-                  localChanges:(NSSet *)localChanges remoteChanges:(NSSet *)remoteChanges;
+                  localChanges:(NSSet *)localChanges remoteChanges:(NSSet *)remoteChanges withPeer:(BOOL)withPeer;
 @end
 
 @interface ODataSyncIssue ()

@@ -865,4 +865,100 @@ static NSManagedObjectModel *OSTModel(void)
   XCTAssertEqualObjects([self values:@"name" of:@"Asset" in:_device].firstObject, @"Pump (newest)", @"the peer's is older");
 }
 
+// Two devices, each the other's peer.
+- (NSArray<ODataSyncEngine *> *)twoPeers:(NSPersistentStoreCoordinator *__strong *)stores
+{
+  NSPersistentStoreCoordinator *first = nil, *second = nil;
+  ODataSyncEngine *a = [self deviceWithService:NO store:&first];
+  ODataSyncEngine *b = [self deviceWithService:NO store:&second];
+  [a addRemote:[self peerOf:b]];
+  [b addRemote:[self peerOf:a]];
+  stores[0] = first;
+  stores[1] = second;
+  return @[ a, b ];
+}
+
+- (NSString *)inspect:(NSString *)note in:(NSPersistentStoreCoordinator *)store
+{
+  NSString *identifier = [NSUUID UUID].UUIDString;
+  [self in:store do:^(NSManagedObjectContext *context) {
+    NSManagedObject *inspection = [NSEntityDescription insertNewObjectForEntityForName:@"Inspection" inManagedObjectContext:context];
+    [inspection setValue:identifier forKey:@"id"];
+    [inspection setValue:note forKey:@"note"];
+  }];
+  return identifier;
+}
+
+- (void)note:(NSString *)note on:(NSString *)inspection in:(NSPersistentStoreCoordinator *)store
+{
+  [self in:store do:^(NSManagedObjectContext *context) {
+    [[self object:@"Inspection" id:inspection in:context] setValue:note forKey:@"note"];
+  }];
+}
+
+- (void)testAChangeOfAVersionNeverAgreedOnDoesNotOverwriteUnseen
+{
+  // Pushed to the other, which never read it from this one: no version
+  // agreed on there; its change must meet this one's, not overwrite it.
+  NSPersistentStoreCoordinator *stores[2];
+  NSArray<ODataSyncEngine *> *peers = [self twoPeers:stores];
+  NSString *inspection = [self inspect:@"Leaks" in:stores[0]];
+  NSError *error = nil;
+  XCTAssertTrue([peers[0] uploadToRemote:peers[0].remotes.firstObject error:&error], @"%@", error);
+  [self note:@"The other's" on:inspection in:stores[1]];
+  [NSThread sleepForTimeInterval:0.01];
+  [self note:@"This one's, later" on:inspection in:stores[0]];
+  XCTAssertTrue([peers[1] uploadToRemote:peers[1].remotes.firstObject error:&error], @"%@", error);
+  XCTAssertEqualObjects([self values:@"note" of:@"Inspection" in:stores[0]], (@[ @"This one's, later" ]), @"not overwritten by an older change");
+  XCTAssertEqualObjects([self values:@"note" of:@"Inspection" in:stores[1]], (@[ @"This one's, later" ]), @"the later one taken");
+}
+
+- (void)testPeersSettleTheSameWayWhicheverAsks
+{
+  // The default (the remote wins) would have each take the other's, for
+  // ever; with a peer, the later change stands on both.
+  NSPersistentStoreCoordinator *stores[2];
+  NSArray<ODataSyncEngine *> *peers = [self twoPeers:stores];
+  NSString *inspection = [self inspect:@"Leaks" in:stores[0]];
+  [self sync:peers[0]];
+  [self sync:peers[1]];
+  [self note:@"First" on:inspection in:stores[0]];
+  [NSThread sleepForTimeInterval:0.01];
+  [self note:@"Second, later" on:inspection in:stores[1]];
+  for (int round = 0; round < 2; round++) {
+    [self sync:peers[0]];
+    [self sync:peers[1]];
+  }
+  for (int side = 0; side < 2; side++) {
+    XCTAssertEqualObjects([self values:@"note" of:@"Inspection" in:stores[side]], (@[ @"Second, later" ]));
+    [self sync:peers[side]];
+    ODataSyncResult *again = peers[side].lastResult;
+    XCTAssertEqual(again.uploaded + again.downloaded + again.conflicts, 0u, @"settled: %@", again);
+  }
+}
+
+- (void)testAPeerDoesNotBringBackWhatWasDeleted
+{
+  NSPersistentStoreCoordinator *stores[2];
+  NSArray<ODataSyncEngine *> *peers = [self twoPeers:stores];
+  NSString *inspection = [self inspect:@"Leaks" in:stores[0]];
+  [self sync:peers[0]];
+  XCTAssertEqualObjects([self values:@"note" of:@"Inspection" in:stores[1]], (@[ @"Leaks" ]));
+  // Deleted there; changed here, not knowing.
+  [self in:stores[1] do:^(NSManagedObjectContext *context) {
+    [context deleteObject:[self object:@"Inspection" id:inspection in:context]];
+  }];
+  [self note:@"Leaks badly" on:inspection in:stores[0]];
+  for (int round = 0; round < 2; round++) {
+    [self sync:peers[0]];
+    [self sync:peers[1]];
+  }
+  for (int side = 0; side < 2; side++) {
+    XCTAssertEqual([self values:@"note" of:@"Inspection" in:stores[side]].count, 0u, @"deleted on both (side %d)", side);
+    [self sync:peers[side]];
+    ODataSyncResult *again = peers[side].lastResult;
+    XCTAssertEqual(again.uploaded + again.downloaded + again.removed, 0u, @"settled: %@", again);
+  }
+}
+
 @end

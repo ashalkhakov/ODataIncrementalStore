@@ -469,7 +469,6 @@ static NSArray *OISFetch(NSManagedObjectContext *context, NSFetchRequest *fetchR
     return nil;
   }
   NSMutableOrderedSet *changed = [NSMutableOrderedSet orderedSet];
-  NSMutableSet *born = [NSMutableSet set];
   NSMutableDictionary *deleted = [NSMutableDictionary dictionary];
   NSPersistentHistoryToken *last = since;
   for (NSPersistentHistoryTransaction *transaction in result.result) {
@@ -479,7 +478,6 @@ static NSArray *OISFetch(NSManagedObjectContext *context, NSFetchRequest *fetchR
       if (![oid.entity isKindOfEntity:self.entity]) continue;
       switch (change.changeType) {
         case NSPersistentHistoryChangeTypeInsert:
-          [born addObject:oid];
           [changed addObject:oid];
           break;
         case NSPersistentHistoryChangeTypeUpdate: {
@@ -491,12 +489,12 @@ static NSArray *OISFetch(NSManagedObjectContext *context, NSFetchRequest *fetchR
           break;
         }
         case NSPersistentHistoryChangeTypeDelete:
+          // Made and gone since the link, it is still told: a client may
+          // have it all the same (one that made it after reading the
+          // link: an offline device's upload). One that never had it
+          // finds nothing to remove.
           [changed removeObject:oid];
-          if ([born containsObject:oid]) {
-            [born removeObject:oid];
-          } else {
-            deleted[oid] = change.tombstone ?: @{};
-          }
+          deleted[oid] = change.tombstone ?: @{};
           break;
       }
     }

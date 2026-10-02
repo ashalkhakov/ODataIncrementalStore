@@ -6350,8 +6350,10 @@ static NSDate *OISDay(NSString *day)
   for (NSDictionary *value in values) {
     if (value[@"@odata.removed"]) removed[value[@"@odata.id"]] = value[@"@odata.removed"][@"reason"];
   }
-  XCTAssertEqualObjects(removed, (@{ @"Products(4)": @"changed", @"Products(5)": @"deleted" }), @"%@", delta.text);
-  XCTAssertEqual(values.count, 5u, @"Fleeting came and went unmentioned: %@", delta.text);
+  // Fleeting came and went since the link, and is told as deleted all the
+  // same: a client may have it (one that made it after reading the link).
+  XCTAssertEqualObjects(removed, (@{ @"Products(4)": @"changed", @"Products(5)": @"deleted", @"Products(7)": @"deleted" }), @"%@", delta.text);
+  XCTAssertEqual(values.count, 6u, @"%@", delta.text);
 
   // Followed on, nothing more.
   link = delta.json[@"@odata.deltaLink"];

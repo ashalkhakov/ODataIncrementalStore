@@ -7,6 +7,7 @@
 	objects = {
 
 /* Begin PBXBuildFile section */
+		019F2FE4184E3D44F418F5BB /* ODataSyncConvergenceTests.m in Sources */ = {isa = PBXBuildFile; fileRef = BCAADA83AA4BE588A085AC78 /* ODataSyncConvergenceTests.m */; };
 		0764B59AB34FABA43E0C5FFC /* OTHTTP.h in Headers */ = {isa = PBXBuildFile; fileRef = E567AC5265AC911C9E45BC03 /* OTHTTP.h */; settings = {ATTRIBUTES = (Public, ); }; };
 		09EA057834C08904575041C2 /* OTTrace.h in Headers */ = {isa = PBXBuildFile; fileRef = FDCADC09FF8297C9A29BEEB5 /* OTTrace.h */; settings = {ATTRIBUTES = (Public, ); }; };
 		0A0B612C2250544325571EEB /* HSServer.h in Headers */ = {isa = PBXBuildFile; fileRef = 5BBD27471B1DF628C329E22D /* HSServer.h */; settings = {ATTRIBUTES = (Public, ); }; };
@@ -451,6 +452,7 @@
 		BC40C0C255657A288601624F /* ODataLexer.m */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.objc; path = ODataLexer.m; sourceTree = "<group>"; };
 		BC4150830A60E511EDFED020 /* ODataExpression.m */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.objc; path = ODataExpression.m; sourceTree = "<group>"; };
 		BC6FA83F81430EB8A0015BEC /* ODataQueryBuilderTests.m */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.objc; path = ODataQueryBuilderTests.m; sourceTree = "<group>"; };
+		BCAADA83AA4BE588A085AC78 /* ODataSyncConvergenceTests.m */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.c.objc; path = ODataSyncConvergenceTests.m; sourceTree = "<group>"; };
 		BCB9486BFDBD2F446E75D631 /* GCDWebServerFunctions.m */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.c.objc; path = GCDWebServerFunctions.m; sourceTree = "<group>"; };
 		BCBBD3FD3B096F870E7CB13B /* ODataExpressionTests.m */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.objc; path = ODataExpressionTests.m; sourceTree = "<group>"; };
 		BCFA68AC1F779AD086BBF30F /* ODataServiceBatch.m */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.objc; path = ODataServiceBatch.m; sourceTree = "<group>"; };
@@ -773,6 +775,7 @@
 				BE688693FD0367AEDE595F95 /* GNUmakefile */,
 				969BD550CC122D1CD9CE5062 /* OTelKitTests.m */,
 				0C40B7BC20CCC6C3A9D4B952 /* ODataSyncTests.m */,
+				BCAADA83AA4BE588A085AC78 /* ODataSyncConvergenceTests.m */,
 			);
 			path = Tests;
 			sourceTree = "<group>";
@@ -1371,6 +1374,7 @@
 				B8A3A4CB3D524EA1BCFAEB85 /* OISCatalogModel.m in Sources */,
 				8907F145DBD0B3DD648DA8C3 /* OTelKitTests.m in Sources */,
 				DD0887ED44CDA44DC9BA39C5 /* ODataSyncTests.m in Sources */,
+				019F2FE4184E3D44F418F5BB /* ODataSyncConvergenceTests.m in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};

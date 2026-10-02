@@ -139,6 +139,7 @@ static const NSInteger ODSGone = 410;
     entry = nil;
   }
   if (!entry) {
+    if (row && [_engine keepNewerThan:row etag:etag of:entity key:key remote:_remote context:context]) return YES;
     [_engine agreeOn:row etag:etag of:entity keyText:keyText remote:_remote context:context];
     return NO;
   }
@@ -164,6 +165,9 @@ static const NSInteger ODSGone = 410;
     NSAttributeDescription *stamp = [_codec modifiedAttributeOf:entity];
     if (stamp) [_engine witness:row[[_codec.mapper propertyForAttribute:stamp]]];
     if ([self settled:row entity:entity key:key etag:etag context:context]) continue;
+    // Deleted here: a peer that has not heard yet does not bring it back.
+    if (_remote.peer && ![_codec objectOfEntity:entity key:key inContext:context] &&
+        [_engine isDeleted:entity.name keyText:[_codec keyTextOf:key entity:entity] inContext:context]) continue;
     BOOL created = NO;
     NSManagedObject *object = [self objectFor:row entity:entity context:context created:&created];
     if (onlyMissing && !created) {

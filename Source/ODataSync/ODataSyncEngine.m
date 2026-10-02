@@ -16,6 +16,7 @@ NSString * const ODataSyncPeerConfiguration = @"ODataSync.peer";
 NSString * const ODSRemoteStateEntity = @"ODSRemoteState";
 NSString * const ODSOutboxEntity = @"ODSOutboxEntry";
 NSString * const ODSShadowEntity = @"ODSShadow";
+NSString * const ODSTombstoneEntity = @"ODSTombstone";
 
 NSError *ODSError(NSInteger code, NSString *message)
 {
@@ -573,6 +574,8 @@ static NSEntityDescription *ODSEntity(NSString *name, NSArray<NSAttributeDescrip
     ODSEntity(ODSShadowEntity, @[ ODSAttribute(@"remote", NSStringAttributeType), ODSAttribute(@"entityType", NSStringAttributeType),
                                   ODSAttribute(@"keyText", NSStringAttributeType), ODSAttribute(@"etag", NSStringAttributeType),
                                   ODSAttribute(@"values", NSBinaryDataAttributeType) ]),
+    ODSEntity(ODSTombstoneEntity, @[ ODSAttribute(@"entityType", NSStringAttributeType), ODSAttribute(@"keyText", NSStringAttributeType),
+                                     ODSAttribute(@"deleted", NSDateAttributeType) ]),
   ];
   // What a peer server serves: the synced entities, with their sub-entities.
   NSMutableArray *synced = [NSMutableArray array];
@@ -599,6 +602,7 @@ static NSEntityDescription *ODSEntity(NSString *name, NSArray<NSAttributeDescrip
   _tally = [NSMutableDictionary dictionary];
   _tracer = [OTTracer tracerNamed:@"ODataSync" version:nil];
   _resolvers = [NSMutableDictionary dictionary];
+  _tombstoneRetention = 30 * 24 * 3600;
   // Last writer wins: every save but the engine's stamps what it changed.
   [[NSNotificationCenter defaultCenter] addObserver:self selector:@selector(contextWillSave:)
                                                name:NSManagedObjectContextWillSaveNotification object:nil];
@@ -676,11 +680,72 @@ static NSEntityDescription *ODSEntity(NSString *name, NSArray<NSAttributeDescrip
   }
 }
 
+- (NSFetchRequest *)tombstonesOf:(NSString *)entityName keyText:(NSString *)keyText
+{
+  NSFetchRequest *fetch = [NSFetchRequest fetchRequestWithEntityName:ODSTombstoneEntity];
+  fetch.predicate = [NSPredicate predicateWithFormat:@"entityType == %@ AND keyText == %@", entityName, keyText];
+  return fetch;
+}
+
+- (BOOL)isDeleted:(NSString *)entityName keyText:(NSString *)keyText inContext:(NSManagedObjectContext *)context
+{
+  return [context countForFetchRequest:[self tombstonesOf:entityName keyText:keyText] error:NULL] > 0;
+}
+
+// Deletions remembered (docs/offline-sync.md, 7): whoever deleted a synced
+// object, its key is kept, so that a peer that has not heard yet cannot
+// bring it back (an insert passed on late, round and round). An object made
+// here again, or by a service (the authority), is not deleted any more.
+- (void)noteDeletionsIn:(NSManagedObjectContext *)context author:(NSString *)author
+{
+  ODSCodec *codec = self.codec;
+  BOOL authority = ![author hasPrefix:@"ODataSync."];
+  if ([author hasPrefix:ODataSyncDownAuthorPrefix]) {
+    ODataSyncRemote *from = [self remoteWithIdentifier:[author substringFromIndex:ODataSyncDownAuthorPrefix.length]];
+    authority = from && !from.peer;
+  }
+  for (NSManagedObject *object in context.deletedObjects) {
+    NSEntityDescription *root = [codec rootOf:object.entity];
+    if ([codec directionOfEntity:root] == ODataSyncDirectionNone) continue;
+    NSString *keyText = [codec keyTextOf:[codec keyOfObject:object] entity:root];
+    if (!keyText || [self isDeleted:root.name keyText:keyText inContext:context]) continue;
+    NSManagedObject *tombstone = [NSEntityDescription insertNewObjectForEntityForName:ODSTombstoneEntity inManagedObjectContext:context];
+    [tombstone setValue:root.name forKey:@"entityType"];
+    [tombstone setValue:keyText forKey:@"keyText"];
+    [tombstone setValue:[NSDate date] forKey:@"deleted"];
+  }
+  if (!authority) return;
+  for (NSManagedObject *object in context.insertedObjects) {
+    NSEntityDescription *root = [codec rootOf:object.entity];
+    if ([codec directionOfEntity:root] == ODataSyncDirectionNone) continue;
+    NSString *keyText = [codec keyTextOf:[codec keyOfObject:object] entity:root];
+    if (!keyText) continue;
+    for (NSManagedObject *tombstone in [context executeFetchRequest:[self tombstonesOf:root.name keyText:keyText] error:NULL]) {
+      [context deleteObject:tombstone];
+    }
+  }
+}
+
+- (void)pruneTombstones
+{
+  if (self.tombstoneRetention <= 0) return;
+  NSManagedObjectContext *context = [self contextWritingAs:ODataSyncBookkeepingAuthor];
+  NSDate *before = [NSDate dateWithTimeIntervalSinceNow:-self.tombstoneRetention];
+  [context performBlockAndWait:^{
+    NSFetchRequest *fetch = [NSFetchRequest fetchRequestWithEntityName:ODSTombstoneEntity];
+    fetch.predicate = [NSPredicate predicateWithFormat:@"deleted < %@", before];
+    for (NSManagedObject *tombstone in [context executeFetchRequest:fetch error:NULL]) [context deleteObject:tombstone];
+    if (context.hasChanges) [context save:NULL];
+  }];
+}
+
 - (void)contextWillSave:(NSNotification *)notification
 {
   NSManagedObjectContext *context = notification.object;
   if (context.persistentStoreCoordinator != self.coordinator) return;
-  if ([context respondsToSelector:@selector(transactionAuthor)] && [context.transactionAuthor hasPrefix:@"ODataSync."]) return;
+  NSString *author = [context respondsToSelector:@selector(transactionAuthor)] ? context.transactionAuthor : nil;
+  if (context.deletedObjects.count || context.insertedObjects.count) [self noteDeletionsIn:context author:author];
+  if ([author hasPrefix:@"ODataSync."]) return;
   NSMutableSet *changed = [NSMutableSet setWithSet:context.insertedObjects];
   [changed unionSet:context.updatedObjects];
   for (NSManagedObject *object in changed) {
@@ -819,6 +884,7 @@ static NSEntityDescription *ODSEntity(NSString *name, NSArray<NSAttributeDescrip
     [_tally removeAllObjects];
   }
   OTSpan *span = [self.tracer startSpanNamed:@"sync" attributes:nil];
+  [self pruneTombstones];
   BOOL ok = YES;
   for (ODataSyncRemote *remote in self.remotes) {
     if (![self downloadFromRemote:remote error:error] || ![self uploadToRemote:remote error:error]) {

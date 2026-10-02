@@ -307,7 +307,8 @@ Rules that come with the library, per entity (`ODataSync.conflicts` in
 Deletes: an edit against a delete goes by the rule's notion of winner
 (RemoteWins: deleted; LocalWins: re-created by the upsert); MergeFields
 hands a delete to its fallback; LastWriterWins lets the edit stand (a
-delete carries no stamp of its own).
+delete carries no stamp of its own). That is with the service; between
+peers a deletion is remembered and wins (section 7).
 
 As built:
 
@@ -415,6 +416,31 @@ How it goes:
   model configuration listing them (`ODataSyncPeerConfiguration`, which no
   store need use), and the peer server serves that configuration. Down
   sets are read only.
+- **Conflicts with a peer are settled the same way on both sides**: each
+  peer asks in turn, so a rule must choose the same version whichever
+  side asks, or the two swap for ever. The remote's or this side's are
+  not such: with a peer, RemoteWins and LocalWins (and MergeFields falling
+  back to either) become LastWriterWins, whose ties (or missing stamps) go
+  to the version whose values sort last. `ODataSyncConflict.withPeer` tells
+  a custom resolver, which must be as even-handed.
+- **Never an older version over a newer one**: a peer's row older (by the
+  stamps) than this side's copy is not applied; it is agreed on as the
+  peer's, and this side's is sent to it (a peer a step behind would
+  otherwise pass its old copy round again). A change older than the
+  version a remote last agreed to is not sent; the remote's is taken. A
+  change of a version never agreed on with that remote (an object that
+  came from elsewhere) goes with an `If-Match` that matches nothing, so it
+  meets the remote's version (412, the resolver) instead of overwriting it
+  unseen; a deletion goes with `*`.
+- **Deletions remembered**: each device keeps the keys of synced objects
+  deleted in its store (`ODSTombstone`), whoever deleted them. A peer
+  server refuses an insert of such a key (410 Gone), and the sender takes
+  the deletion (its copy deleted, and that passed on); a download from a
+  peer does not make such an object again. So between peers a deletion
+  wins over a change made without knowing of it, as in Ensembles, and an
+  insert and a deletion cannot chase each other round a ring of peers. An
+  object made again here, or by a service, is not deleted any more.
+  Tombstones are kept `tombstoneRetention` (30 days by default).
 - **Remotes in turn**: a sync goes through the remotes in the order they
   were added. That decides how soon a change travels (a peer added before
   the service has its work passed on in the same sync), not what the
@@ -446,12 +472,49 @@ resolver), but an insert cannot tell "deleted" from "never there".
 Ensembles has the same hole: an insert of the same global ID brings an
 object back.
 
-Closing it needs the service to remember deleted keys: a set that keeps
+Between devices it is closed: a peer server remembers deletions and
+refuses the insert (410), so only the service is left. Closing it there
+needs the service to remember deleted keys too: a set that keeps
 its tombstones (persistent history already does, for delta links, as long
 as history is retained) could answer an upsert of a deleted key with 409
 or 410 instead of making it, and the engine would take that as the
 object's end. Until then, an app that deletes at the service what devices
 collected should expect the odd one back, and can delete it again.
+
+### 7.2 How it is tested
+
+Data that syncs must end the same everywhere, and stay so; peers make the
+orders in which changes meet too many to think through. Besides tests of
+each behaviour (Tests/ODataSyncTests.m), Tests/ODataSyncConvergenceTests.m
+tests reconciliation as a whole:
+
+- **Every conflict under every rule**: a both object agreed on, then each
+  side's change (none, an edit, an edit of another property, a delete)
+  against each of the other's, under RemoteWins, LocalWins,
+  LastWriterWins (either side later) and MergeFields, met on download and
+  on upload (412). Each case checks what both sides end with against the
+  rule, that nothing is left to send, and that another sync changes
+  nothing.
+- **Convergence**: four devices (two reach the service, the others reach
+  them as peers, and some offer themselves back), and the service, making
+  changes at random (tasks, inspections, assets; made, edited, deleted)
+  and syncing in random orders, whole or half. Then every device reaches
+  the service and syncs until nothing changes. It checks that this ends
+  (within eight rounds), that every device has what the service has,
+  that nothing is left to send and no change set aside, that every
+  inspection no one deleted reached the service as last written, and
+  (under last writer wins) that each task left has its last version.
+  Odd seeds settle by last writer wins, even ones by the default. Eight
+  seeds by default; `ODATASYNC_SEEDS=1000` for a long run (about ten
+  minutes), `ODATASYNC_SEED=n` for one (stamps follow the wall clock, so a
+  seed replays the same steps, not always the same timing).
+
+What it found, and what changed for it: a delta that did not tell of an
+object made and deleted since its link (section 9, 5); a change of a
+version never agreed on overwriting a newer one (`If-Match: *`); peers
+swapping versions for ever under a one-sided rule; a peer a step behind
+passing its old copy round; and an insert and a deletion chasing each
+other round three peers (tombstones).
 
 ## 8. Integrating
 
@@ -521,7 +584,10 @@ What ODataService needs, and what it has:
 5. **Delta links** from persistent history, with `$filter`: *exist*;
    `Capabilities.ChangeTracking` in `$metadata`: *exists*. Scope changes:
    section 4.1; the service's part is the scope version (4.1, 2) and
-   deletions checked against what they kept (4.1, 3).
+   deletions checked against what they kept (4.1, 3). An object made and
+   deleted since the link is told as deleted all the same: the client may
+   have it (one that made it after reading the link, as an offline device
+   does by its upload); one that never had it finds nothing to remove.
 6. **History retention**: how long the store keeps history before delta
    links answer 410: `historyRetention` (`HistoryRetention` for
    `ois-serve`), pruned by date in the background as requests come, and

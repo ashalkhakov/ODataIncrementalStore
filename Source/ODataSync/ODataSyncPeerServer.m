@@ -7,6 +7,7 @@
 
 #import "ODataSyncPeerServer.h"
 #import "ODSInternal.h"
+#import <ODataKit/ODataError.h>
 #import <ODataService/ODataService.h>
 #import <ODataService/ODataServer.h>
 #import <HTTPServerKit/HSServer.h>
@@ -46,6 +47,15 @@ static BOOL ODSIsReplica(NSString *text)
 
 - (NSManagedObject *)insertObjectWithValues:(NSDictionary<NSString *, id> *)values request:(ODataRequest *)request reply:(ODataReply *)reply
 {
+  // Deleted here: the sender has not heard yet, and is told.
+  ODataSyncEngine *engine = self.engine;
+  ODSCodec *codec = engine.codec;
+  NSEntityDescription *root = [codec rootOf:self.entity];
+  NSString *keyText = [codec keyTextOf:[codec keyFromValues:values entity:root] entity:root];
+  if (keyText && [engine isDeleted:root.name keyText:keyText inContext:request.context]) {
+    [reply failWithError:ODataServiceError(410, @"Deleted here")];
+    return nil;
+  }
   [self writeAsSenderOf:request];
   NSManagedObject *object = [super insertObjectWithValues:values request:request reply:reply];
   [self witness:object];
