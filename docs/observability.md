@@ -103,7 +103,32 @@ An action or function is called under a span of its own, `call Name`
 when its entity parameters were read first and under the service's span
 otherwise. It is current on the thread while the method runs, so whatever
 the method does that traces -- the store, an engine of the application's
-own -- goes under the request; it ends when the operation answers.
+own -- goes under the request; it ends when the operation answers, and
+for an action once its changes are saved: the action's `save` is under
+its call (and a save that fails marks the call failed). Work a
+method defers to another thread is not under it by itself: the reply
+carries the call's span (`reply.span`; a handler's reply carries its store
+request's), which that work makes current where it runs:
+
+```objc
+- (NSString *)approveWithComment:(NSString *)comment reply:(ODataReply *)reply
+{
+  [reply defer];
+  OTSpan *call = reply.span;
+  [self.engine completeTask:self.taskID comment:comment then:^(NSError *error) {
+    [call becomeCurrent];
+    ... what traces ...
+    [call resignCurrent];
+    error ? [reply failWithError:error] : [reply finishWithResult:@"approved"];
+  }];
+  return nil;
+}
+```
+
+The call's and the store requests' spans are made whether or not the
+request is sampled: one that is not still carries its trace and that
+choice, so what runs under it is not recorded either, rather than
+beginning traces of its own.
 
 A `$batch` is one `ODataService POST $batch` span, with each of its
 requests' spans under it.

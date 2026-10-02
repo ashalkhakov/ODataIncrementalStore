@@ -110,8 +110,10 @@ BOOL OISTimedSave(ODataService *service, NSManagedObjectContext *context, OTSpan
   self.storeOperation = operation;
   self.storeEntity = entity ?: @"(none)";
   self.storeStarted = OTNow();
+  // A span whether or not it is recorded: one that is not still carries the
+  // trace and its sampling, so a store that traces goes under the request
+  // rather than beginning traces of its own.
   OTSpan *parent = self.executeSpan ?: self.span;
-  if (!parent.recording) return;
   NSMutableDictionary *attributes = [NSMutableDictionary dictionary];
   attributes[@"db.system.name"] = OISStoreSystemName(self.request.context.persistentStoreCoordinator);
   attributes[@"db.operation.name"] = operation;
@@ -152,8 +154,10 @@ BOOL OISTimedSave(ODataService *service, NSManagedObjectContext *context, OTSpan
 
 - (void)beginOperationCall:(OISServedOperation *)operation target:(id)target
 {
+  // Made and current even when it is not recorded (an unsampled request):
+  // what the operation traces then follows the request's choice, and its
+  // own calls carry the trace on, rather than beginning traces of their own.
   OTSpan *parent = self.executeSpan ?: self.span;
-  if (!parent.recording) return;
   // An instance's class, or a class itself (+class answers itself).
   Class owner = [target class];
   OTSpan *span = [self.service.tracer startSpanNamed:[@"call " stringByAppendingString:operation.name ?: @"?"]
@@ -177,6 +181,9 @@ BOOL OISTimedSave(ODataService *service, NSManagedObjectContext *context, OTSpan
 {
   [self traceExecuted];
   [self endStoreRequest:nil error:nil];
+  // Answered with the call still open (an action's save that failed, a
+  // reply that timed out): the call failed too.
+  if (status >= 400) [self.callSpan setStatus:OTStatusError message:nil];
   [self endOperationCall:nil];
   OTSpan *span = self.span;
   if (!span) return;

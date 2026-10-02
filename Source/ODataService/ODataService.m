@@ -894,6 +894,8 @@ static NSArray<NSString *> *OISApplyTransformations(void)
   ODataReply *reply = [[ODataReply alloc] initWithTarget:self action:action context:self.request.context];
   reply.request = self.request;
   reply.timeout = self.service.replyTimeout;
+  // What it answers for: the operation's call or the store request under way.
+  reply.span = self.callSpan ?: self.storeSpan;
   return reply;
 }
 
@@ -4522,9 +4524,9 @@ static NSNumber *OISScalarReturnValue(NSInvocation *invocation, char type)
       [invocation setArgument:&value atIndex:(NSInteger)i + 2];
     }
   }
+  [self beginOperationCall:operation target:target];
   ODataReply *reply = [self replyWithAction:@selector(didInvokeOperation:)];
   [invocation setArgument:&reply atIndex:(NSInteger)operation.parameters.count + 2];
-  [self beginOperationCall:operation target:target];
   [invocation invoke];
   // Current while it ran here; what it answers later is still its own.
   [self.callSpan resignCurrent];
@@ -4599,14 +4601,17 @@ static NSNumber *OISScalarReturnValue(NSInvocation *invocation, char type)
 - (void)didInvokeOperation:(ODataReply *)reply
 {
   OISServedOperation *operation = self.operation;
-  [self endOperationCall:reply.error];
   if (reply.error) {
+    [self endOperationCall:reply.error];
     [self.request.context rollback];
     [self respondError:reply.error];
     return;
   }
-  // An action may have changed things; a function has no business to.
+  // An action may have changed things (saved as part of its call: one that
+  // fails is answered with the call still open, which marks it failed); a
+  // function has no business to.
   if (operation.isAction && self.request.context.hasChanges && ![self save]) return;
+  [self endOperationCall:nil];
   if (!operation.isAction) [self.request.context rollback];
   if (!operation.isAction && operation.returns.entity) {
     [self composeOn:reply.result];
@@ -4794,7 +4799,9 @@ static NSNumber *OISScalarReturnValue(NSInvocation *invocation, char type)
   }
   if (!self.saves) return YES;
   NSError *error = nil;
-  if (OISTimedSave(self.service, self.request.context, self.executeSpan ?: self.span, self.entity.name, &error)) return YES;
+  // An action's changes are saved as part of its call, under its span.
+  OTSpan *parent = self.callSpan ?: self.executeSpan ?: self.span;
+  if (OISTimedSave(self.service, self.request.context, parent, self.entity.name, &error)) return YES;
   [self.request.context rollback];
   [self respondError:error];
   return NO;

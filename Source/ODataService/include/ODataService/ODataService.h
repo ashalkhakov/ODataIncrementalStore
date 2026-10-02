@@ -35,7 +35,7 @@
 
 NS_ASSUME_NONNULL_BEGIN
 
-@class ODataService, ODataRequest, HSPrincipal, HSMetrics, OTTracer;
+@class ODataService, ODataRequest, HSPrincipal, HSMetrics, OTTracer, OTSpan;
 @protocol HSAuthenticator;
 
 // userInfo on an Integer attribute: the entity's version, sent as its ETag
@@ -64,6 +64,19 @@ FOUNDATION_EXPORT NSString * const ODataUserInfoETag;  // @"OData.etag"
 // The request being answered: its context, its headers, and for an
 // operation bound to a collection, the collection.
 @property (nonatomic, readonly, weak, nullable) ODataRequest *request;
+// The span of what was asked: an operation's call ("call Name"), a store
+// request ("fetch Product"). Current on the thread while the method runs;
+// work it defers to another thread makes it current there itself, so what
+// that work traces goes under the request too:
+//
+//   [reply defer];
+//   [self.engine startProcess:... then:^{
+//     [reply.span becomeCurrent];
+//     ... what traces ...
+//     [reply.span resignCurrent];
+//     [reply finishWithResult:outcome];
+//   }];
+@property (nonatomic, readonly, strong, nullable) OTSpan *span;
 @end
 
 // Operations. Objective-C has no annotations, so a protocol declares them:
