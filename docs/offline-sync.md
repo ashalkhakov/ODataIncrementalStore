@@ -450,9 +450,13 @@ How it goes:
   file store, or Multipeer Connectivity) has every device publish only its
   own change logs, and every device read every other's; peers forward the
   raw log files, so no one re-authors another's change, and a deletion
-  spreads with its author's log. Ordering is by a vector clock and a
-  global count, so arrival order does not matter; a delete beats a
-  concurrent update; all devices are equal, with no read-only data.
+  spreads with its author's log. Each event records the events its
+  author had seen (a revision set, a vector clock), and a device applies
+  an event only once it has all of those (`checkIntegrationPrerequisites`);
+  new events are applied with every event concurrent with them, in order
+  (a global count, then time), so arrival order does not matter. A delete
+  beats a concurrent update; all devices are equal, with no read-only
+  data.
   Couchbase Lite keeps "deleted" (a tombstone, replicated) apart from "no
   longer visible to you" (purged locally, never replicated), which is the
   distinction behind which deletions travel here; its server is the
@@ -470,8 +474,18 @@ to the service only after that (it had not synced since), the insert goes
 with `If-None-Match: *`, finds nothing, and the object is made again. An
 update passed on late is caught (`If-Match` finds nothing: a 412, and the
 resolver), but an insert cannot tell "deleted" from "never there".
-Ensembles has the same hole: an insert of the same global ID brings an
-object back.
+
+Ensembles does not have this hole. The device that deleted the object
+had seen its insert, so its delete event depends on the insert's, and no
+device applies the delete without the insert before it: a late insert is
+never news. Only a genuinely new object made with the same global ID
+comes back. CouchDB and Couchbase Lite get the same from revision
+histories: a late copy of an old revision is an ancestor of the
+tombstone, and cannot win; only a concurrent edit (a branch of its own)
+can, since a live leaf beats a deleted one. CloudKit, as far as is known
+here, refuses an update of a deleted record but lets a new save of its ID
+make it again: this hole. What closes it is knowing the history: that
+the copy which comes is older than the deletion (section 12).
 
 Between devices it is closed: a peer server remembers deletions and
 refuses the insert (410), so only the service is left. Closing it there
@@ -479,7 +493,8 @@ needs the service to remember deleted keys too: a set that keeps
 its tombstones (persistent history already does, for delta links, as long
 as history is retained) could answer an upsert of a deleted key with 409
 or 410 instead of making it, and the engine would take that as the
-object's end. Until then, an app that deletes at the service what devices
+object's end; section 12 says how a key's history decides which inserts
+are late. Until then, an app that deletes at the service what devices
 collected should expect the odd one back, and can delete it again.
 
 ### 7.2 How it is tested
@@ -624,17 +639,132 @@ What ODataService needs, and what it has:
 
 ## 11. Open questions
 
-- Large binaries (photos): streams have their own upload
-  (`ODataStreamTransfer`); the outbox could carry a stream entry after its
-  record, retried the same way.
+- Large binaries (photos): out of scope for now. Streams have their own
+  upload (`ODataStreamTransfer`); the outbox could carry a stream entry
+  after its record, retried the same way.
 - Per-user subsets beyond row scoping: an app-given `$filter` per set is
   enough for most; a set whose filter changes (a user moves region) needs
   a re-read, which the engine can do when the filter differs from the one
   the delta link was made with.
-- Ordering across entities in one upload: dependency order covers to-ones;
-  an app that needs several objects to arrive together could ask for a
-  change set per group (all or nothing), at the price of one refusal
-  holding the group.
-- Schema versions: a device and a service on different model versions; at
-  first, the engine refuses to sync when `$metadata` and the local model
-  disagree on a synced entity (the mapper's problems).
+- Changes that must arrive together: order is kept (history's order,
+  parents first), but not all-or-nothing. A batch goes on after an error,
+  so a refused order header leaves its lines taken; a download saves set
+  by set, so a peer can hold an order's lines before its header changes;
+  relayed changes are folded by object. A history transaction sent as one
+  change set (all or nothing), by the app's choice, would make a group
+  arrive whole, at the price of one refusal holding all of it.
+- Schema versions: see section 13.
+
+## 12. Causal history: what each version has seen (design)
+
+Ensembles and the CouchDB family know, for each change, what it came
+after: Ensembles by the events each event's author had seen (a revision
+set), CouchDB by each document's revision tree. So a copy that comes late
+is known for an ancestor of what is there, and cannot win; only changes
+made without knowing of each other are a conflict. ODataSync knows less:
+a remote's version agreed on (the shadow), and the `ODataSync.modified`
+stamps, which order changes but cannot tell "older" from "made without
+knowing". The rules of section 7 (never an older version over a newer one,
+deletions remembered) stand in for that, with stamps; the insert hole at
+the service (7.1) is what they cannot close.
+
+Why not Ensembles' way, events shipped and replayed in causal order: it
+suits peers that are equal, hold everything, and all write through it.
+Here the service is an authority that refuses changes and whose own app
+writes rows; other clients (a web app, an integration) write rows and
+make no events; a user sees a subset (scoping, filters), which a shared
+log would leak or break; delta links and upserts are standard OData,
+which a log protocol would not be; and a log grows, and needs baselines
+and rebasing to stay small. So rows travel, and each row carries what
+replay would have known: what its version has seen.
+
+The plan: each synced object carries its history, not as a tree of
+versions (a git DAG) but its summary, a **version vector**: for each
+replica that changed it, the number of that replica's latest change it
+includes. Each replica numbers its own changes 1, 2, 3... across all
+objects (a save is a change, as an Ensembles event is), so `Kq3x9Zp1.4f,
+svc.2a` is a version that includes replica `Kq3x9Zp1`'s changes up to its
+151st and the service's up to its 82nd. Two
+versions compare as git commits do: one includes the other (an ancestor,
+a descendant), they are the same, or neither includes the other (made
+without knowing of each other: a conflict). The tree itself is not
+needed, since conflicts are settled when they meet and no branch is
+kept.
+
+- **Where**: a String attribute the model names (`ODataSync.versions` in
+  the entity's userInfo), stored and served like any other property, so
+  the service and the peers keep it too, and it travels with every row
+  and every upload. An object without one has the empty vector, and the
+  stamps' rules apply as now.
+- **Encoding**: a replica is 8 characters (48 random bits, base64url, from
+  its replica ID; the service is `svc`), a count is base 36, entries are
+  sorted: about 10 to 12 bytes an entry, and most objects are changed by
+  one or two replicas. Text, not binary, so that logs and the Workbench
+  show it.
+- **A change** (an app's save, or the service app's own): the object's
+  entry for the replica becomes the replica's new count (kept in the
+  store's metadata, saved with the save). Settling a conflict makes a
+  version that includes both (each count the larger); with values new to
+  both sides (merged), a change of this replica too. Two versions with
+  the same values agree on the larger counts, conflict or not.
+- **Meeting a version** (a download, a peer's row, a peer's push, a 412):
+  the incoming version included in this one is old news, not applied,
+  and this one is sent back where it is newer; one that includes this one
+  is applied, conflict or not (it saw this side's change); neither is a
+  conflict, for the resolver. Equal versions are agreed on. This replaces
+  the stamp rules of section 7 with exact ones; last writer wins stays,
+  as a rule for real conflicts.
+- **Deletions**: a tombstone keeps the deleted version's vector, raised
+  for the deletion. An insert or update of a deleted key whose version
+  the tombstone includes is late (refused: 410); one that includes the
+  tombstone's knew of the deletion and made the object again (taken);
+  neither is a conflict, delete against change, for the resolver. So
+  between peers a deletion no longer simply wins.
+- **The service**: an `ODataSyncService` the server app installs on its
+  ODataService does the same for the synced sets: compares the vector a
+  write carries with the stored one (410 for late, 412 for a conflict),
+  keeps tombstones of its own (an entity added to the server's model, as
+  `+addBookkeepingToModel:` does the device's), and raises the service's
+  count for changes the server app makes itself. That closes the insert
+  hole (7.1). A service that is not ODataKit's still stores the vector as
+  a property: devices compare as above, and the hole stays at it.
+- **Size**: a vector has an entry per replica that ever changed that
+  object, usually a few. The service, which sees everything, can drop the
+  entries older than tombstones are kept (every device has those).
+  Interval tree clocks would need no replica IDs at all, and suit devices
+  that come and go, but a new device has to split an identity off one
+  that exists: kept in reserve.
+- **The stamp stays**: the vector says whether two versions conflict;
+  `ODataSync.modified` says, for last writer wins, which one wins.
+- **Order of work**: vectors on the device (attribute, counting, the
+  tombstones); meeting versions in downloads, peers and uploads; the
+  service's part; the matrix and the convergence tests on vectors, and the
+  insert hole as a test that passes.
+
+## 13. Model versions
+
+Devices update when their users let them, so a service is often on a
+newer model than some of its devices, which go on sending what they
+changed. Ensembles keeps each event's model (its entities' hashes) and
+merges events of every version the app's model holds; an event of a newer
+one waits until the app is updated. ODataSync works by property names:
+
+- **Down**: a device ignores properties it does not know, and sets it
+  does not sync; a property it has that the service no longer sends keeps
+  its value.
+- **Up**: each request names the device's model version (`Model-Version`,
+  `ODataSyncEngine.modelVersion`, by default the model's version
+  identifiers). An ODataService whose `upgradeBody` is set is handed each
+  write from a client on another version (its body as sent, the version,
+  the entity) and answers the body as its own model takes it: a renamed
+  property under its new name, a new required one filled in. A data
+  migration, as the app does for its store, but of one request. It can
+  also refuse (a version too old): the change is set aside, not lost.
+- **After an update**: the store is migrated (Core Data's migration), and
+  the outbox with it: it holds keys and property names, not values, so
+  what waited is sent from the migrated objects, in the new model's
+  shape. When the engine sees its model version change, what remotes
+  refused is sent again (a conflict set aside stays so).
+- **Peers**: a peer server is an ODataService: an app sets its
+  `upgradeBody` too, for peers on older versions.
+

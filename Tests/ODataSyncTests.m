@@ -315,6 +315,53 @@ static NSManagedObjectModel *OSTModel(void)
 
 #pragma mark Up
 
+- (void)testAServiceReadsWhatAnOlderModelSends
+{
+  // The service is on version 2, which has every inspection scored; a
+  // device on version 1 does not know scores, and one on 0 is too old.
+  _service.modelVersion = @"2";
+  __block NSString *seen = nil;
+  __block NSString *entity = nil;
+  _service.upgradeBody = ^NSDictionary *(NSDictionary *body, NSString *version, NSEntityDescription *written, ODataRequest *request,
+                                         NSError **error) {
+    seen = version;
+    entity = written.name;
+    if ([version isEqualToString:@"0"]) {
+      *error = ODataServiceError(400, @"Update the app");
+      return nil;
+    }
+    NSMutableDictionary *upgraded = [body mutableCopy];
+    if (!upgraded[@"Score"] || upgraded[@"Score"] == [NSNull null]) upgraded[@"Score"] = @5;
+    return upgraded;
+  };
+  _engine.modelVersion = @"1";
+  NSString *inspection = [NSUUID UUID].UUIDString;
+  [self onDevice:^(NSManagedObjectContext *context) {
+    NSManagedObject *made = [NSEntityDescription insertNewObjectForEntityForName:@"Inspection" inManagedObjectContext:context];
+    [made setValue:inspection forKey:@"id"];
+    [made setValue:@"Leaks" forKey:@"note"];
+  }];
+  [self sync];
+  XCTAssertEqualObjects(seen, @"1");
+  XCTAssertEqualObjects(entity, @"Inspection");
+  XCTAssertEqualObjects([self values:@"score" of:@"Inspection" in:_server], (@[ @5 ]), @"the gap filled in");
+
+  // Too old: refused, and set aside; after the app's update, sent again.
+  _engine.modelVersion = @"0";
+  [self onDevice:^(NSManagedObjectContext *context) {
+    [[self object:@"Inspection" id:inspection in:context] setValue:@"Leaks badly" forKey:@"note"];
+  }];
+  [self sync];
+  XCTAssertEqual([_engine issues].count, 1u);
+  XCTAssertEqualObjects([self values:@"note" of:@"Inspection" in:_server], (@[ @"Leaks" ]));
+  _engine.modelVersion = @"2";
+  seen = nil;
+  [self sync];
+  XCTAssertNil(seen, @"a client on the service's version is not upgraded");
+  XCTAssertEqual([_engine issues].count, 0u, @"sent again after the update");
+  XCTAssertEqualObjects([self values:@"note" of:@"Inspection" in:_server], (@[ @"Leaks badly" ]));
+}
+
 - (void)testWhatWaitsToBeSent
 {
   [_service setHandler:[[OSTPickyInspections alloc] initWithEntity:_server.managedObjectModel.entitiesByName[@"Inspection"]] forEntitySet:@"Inspections"];

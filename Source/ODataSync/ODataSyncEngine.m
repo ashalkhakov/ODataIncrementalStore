@@ -621,6 +621,9 @@ static NSEntityDescription *ODSEntity(NSString *name, NSArray<NSAttributeDescrip
   _tracer = [OTTracer tracerNamed:@"ODataSync" version:nil];
   _resolvers = [NSMutableDictionary dictionary];
   _tombstoneRetention = 30 * 24 * 3600;
+  NSArray *identifiers = [[coordinator.managedObjectModel.versionIdentifiers.allObjects valueForKey:@"description"]
+                             sortedArrayUsingSelector:@selector(compare:)];
+  _modelVersion = identifiers.count ? [identifiers componentsJoinedByString:@","] : nil;
   // Last writer wins: every save but the engine's stamps what it changed.
   [[NSNotificationCenter defaultCenter] addObserver:self selector:@selector(contextWillSave:)
                                                name:NSManagedObjectContextWillSaveNotification object:nil];
@@ -825,7 +828,11 @@ static NSEntityDescription *ODSEntity(NSString *name, NSArray<NSAttributeDescrip
 
 - (NSDictionary<NSString *, NSString *> *)headersFor:(ODataSyncRemote *)remote
 {
-  return remote.peer ? @{ ODataSyncReplicaHeader: self.replicaID } : @{};
+  NSMutableDictionary *headers = [NSMutableDictionary dictionary];
+  if (remote.peer) headers[ODataSyncReplicaHeader] = self.replicaID;
+  // The model's version: a service on a newer one can read what this sends.
+  if (self.modelVersion) headers[ODataModelVersionHeader] = self.modelVersion;
+  return headers;
 }
 
 - (ODataSyncRemote *)remoteWithIdentifier:(NSString *)identifier
@@ -903,6 +910,7 @@ static NSEntityDescription *ODSEntity(NSString *name, NSArray<NSAttributeDescrip
   }
   OTSpan *span = [self.tracer startSpanNamed:@"sync" attributes:nil];
   [self pruneTombstones];
+  [self noticeModelVersion];
   BOOL ok = YES;
   for (ODataSyncRemote *remote in self.remotes) {
     if (![self downloadFromRemote:remote error:error] || ![self uploadToRemote:remote error:error]) {
@@ -948,7 +956,36 @@ static NSEntityDescription *ODSEntity(NSString *name, NSArray<NSAttributeDescrip
 
 - (BOOL)uploadToRemote:(ODataSyncRemote *)remote error:(NSError **)error
 {
+  [self noticeModelVersion];
   return [[[ODSUploader alloc] initWithEngine:self remote:remote] upload:error];
+}
+
+// The model's version, kept in the store's metadata: when it is not the
+// one before (the app was updated, and its store migrated), what remotes
+// refused is sent again, now in the new model's shape (a conflict set
+// aside stays so).
+- (void)noticeModelVersion
+{
+  NSString *version = self.modelVersion;
+  NSPersistentStore *store = self.coordinator.persistentStores.firstObject;
+  if (!version || !store) return;
+  NSDictionary *metadata = [self.coordinator metadataForPersistentStore:store];
+  NSString *before = metadata[@"ODataSync.model"];
+  if ([before isEqualToString:version]) return;
+  NSMutableDictionary *changed = [metadata mutableCopy] ?: [NSMutableDictionary dictionary];
+  changed[@"ODataSync.model"] = version;
+  [self.coordinator setMetadata:changed forPersistentStore:store];
+  NSManagedObjectContext *context = [self contextWritingAs:ODataSyncBookkeepingAuthor];
+  [context performBlockAndWait:^{
+    NSFetchRequest *fetch = [NSFetchRequest fetchRequestWithEntityName:ODSOutboxEntity];
+    fetch.predicate = before ? [NSPredicate predicateWithFormat:@"setAside == YES AND status != 409"] : [NSPredicate predicateWithValue:NO];
+    for (NSManagedObject *entry in [context executeFetchRequest:fetch error:NULL]) {
+      [entry setValue:@NO forKey:@"setAside"];
+      [entry setValue:@0 forKey:@"attempts"];
+    }
+    // The metadata goes with this save, or the sync's next one.
+    if (context.hasChanges) [context save:NULL];
+  }];
 }
 
 - (BOOL)reconcileWithRemote:(ODataSyncRemote *)remote error:(NSError **)error

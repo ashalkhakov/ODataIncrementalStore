@@ -19,6 +19,7 @@
 #import "OISPlan.h"
 
 NSString * const ODataUserInfoETag = @"OData.etag";
+NSString * const ODataModelVersionHeader = @"Model-Version";
 
 // With the request id and trace a host gave the request (X-Request-ID,
 // traceparent), so that what the service logs is found beside the host's
@@ -4856,7 +4857,20 @@ static NSNumber *OISScalarReturnValue(NSInvocation *invocation, char type)
     [self fail:400 message:@"The body must be a JSON object"];
     return nil;
   }
-  self.parsedBody = ODataNormalizedControlInformation(json, [self.request valueForHeader:@"OData-Version"] ?: self.request.version);
+  NSDictionary *body = ODataNormalizedControlInformation(json, [self.request valueForHeader:@"OData-Version"] ?: self.request.version);
+  // A client on another version of the model: its body made this model's.
+  ODataService *service = self.service;
+  NSString *version = [self.request valueForHeader:ODataModelVersionHeader];
+  if (version.length && service.upgradeBody && ![version isEqualToString:service.modelVersion ?: @""]) {
+    NSError *error = nil;
+    NSDictionary *upgraded = service.upgradeBody(body, version, self.request.entity, self.request, &error);
+    if (![upgraded isKindOfClass:[NSDictionary class]]) {
+      [self respondError:error ?: ODataServiceError(400, [NSString stringWithFormat:@"A client on model version %@ cannot write this", version])];
+      return nil;
+    }
+    body = upgraded;
+  }
+  self.parsedBody = body;
   return self.parsedBody;
 }
 
@@ -4980,6 +4994,8 @@ static NSNumber *OISScalarReturnValue(NSInvocation *invocation, char type)
   _namespaceName = @"Default";
   _containerName = @"Container";
   _maxVersion = @"4.01";
+  NSArray *identifiers = [[_model.versionIdentifiers.allObjects valueForKey:@"description"] sortedArrayUsingSelector:@selector(compare:)];
+  _modelVersion = identifiers.count ? [identifiers componentsJoinedByString:@","] : nil;
   _replyTimeout = 60;
   _tracer = [OTTracer tracerNamed:@"ODataService" version:nil];
   _repeatabilityDuration = 3600;
