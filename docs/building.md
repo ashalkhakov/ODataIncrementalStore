@@ -110,11 +110,16 @@ docker build -f Docker/Dockerfile --target sdk       -t odatakit-sdk .
 docker build -f Docker/Dockerfile --target runtime   -t odatakit-runtime .
 docker build -f Docker/Dockerfile --target ois-serve -t ois-serve .
 docker build -f Docker/Dockerfile --target check .
+docker build -f Docker/Dockerfile --target unit .
 ```
 
 - `odatakit-sdk`: clang, GNUstep, FreeCoreData (with `momc` and its
   PostgreSQL and MySQL stores), ODataKit and HTTPServerKit installed with the
   fragment and pkg-config files. Build an application in it.
+- `check` and `unit` are for CI and for trying a change on Linux: the
+  loopback check (`make -C Server check`) and an application built
+  against what is installed; and the XCTest suite (`make test`, with
+  `tools-xctest` in the stack).
 - `odatakit-runtime`: what such an application needs to run, and no more;
   a library it would lack fails the image's build, not a server at start.
 - `ois-serve`: the runtime and `ois-serve`, on every address at 8080, as a

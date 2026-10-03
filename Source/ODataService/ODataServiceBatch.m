@@ -254,6 +254,19 @@ static void OISAppendText(NSMutableData *data, NSString *text)
   NSString *text = [self resolvedReference:item.URLString] ?: item.URLString;
   NSURL *url = [NSURL URLWithString:text relativeToURL:_service.serviceRoot].absoluteURL;
   if (!url) return nil;
+  // The batch's $schemaversion, for a request that names none (Part 1,
+  // 11.2.12).
+  NSString *version = nil;
+  for (NSURLQueryItem *item in [NSURLComponents componentsWithURL:_exchange.request.URL resolvingAgainstBaseURL:NO].queryItems) {
+    if ([item.name isEqualToString:@"$schemaversion"]) version = item.value;
+  }
+  NSString *query = url.query ?: @"";
+  if (version && [query rangeOfString:@"$schemaversion="].location == NSNotFound
+      && [query rangeOfString:@"%24schemaversion="].location == NSNotFound) {
+    NSURLComponents *components = [NSURLComponents componentsWithURL:url resolvingAgainstBaseURL:NO];
+    components.queryItems = [(components.queryItems ?: @[]) arrayByAddingObject:[NSURLQueryItem queryItemWithName:@"$schemaversion" value:version]];
+    url = components.URL ?: url;
+  }
   NSMutableURLRequest *request = [NSMutableURLRequest requestWithURL:url];
   request.HTTPMethod = item.method;
   // The batch's own headers (who is asking, which versions) hold for each

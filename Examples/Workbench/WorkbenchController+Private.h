@@ -8,6 +8,7 @@
 #import "WBQuery.h"
 #import "WBResults.h"
 #import "WBTraces.h"
+#import "WBSync.h"
 
 @interface WorkbenchController ()
 
@@ -58,6 +59,8 @@
 // exchange's own).
 @property (nonatomic, strong) WBTraceRecorder *traceRecorder;
 @property (nonatomic, strong) WBTraceWindow *traceWindow;
+// Sync: an offline device beside the built-in service (Sync > Show Device).
+@property (nonatomic, strong) WBSyncWindow *syncWindow;
 
 // How many rows a screen holds, as a test says; 0: as the table's height says.
 @property (nonatomic) NSUInteger screenfulForTests;
@@ -86,5 +89,9 @@
 // The selected exchange's trace, the span that sent it chosen.
 - (IBAction)showTraceOfExchange:(id)sender;
 - (IBAction)clearTraces:(id)sender;
+- (IBAction)showSync:(id)sender;
+// The device for the built-in service now (made, or made again for a new
+// one); nil for another service.
+- (WBSyncWindow *)syncDevice;
 
 @end

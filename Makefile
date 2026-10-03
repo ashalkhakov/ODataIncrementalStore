@@ -13,7 +13,7 @@ ifeq ($(origin CC),default)
 CC = clang
 endif
 SRC_DIR = Source
-LIBS_ = ODataKit ODataIncrementalStore OTelKit HTTPServerKit ODataService
+LIBS_ = ODataKit ODataIncrementalStore OTelKit HTTPServerKit ODataService ODataSync
 GCDWebServer_DIR = ThirdParty/GCDWebServer
 include $(GCDWebServer_DIR)/GCDWebServer.make
 INC = $(foreach l,$(LIBS_),-I$(SRC_DIR)/$(l)/include -I$(SRC_DIR)/$(l)/include/$(l))
@@ -48,14 +48,15 @@ CLIENT_SRCS = $(wildcard $(SRC_DIR)/ODataIncrementalStore/*.m)
 TRACE_SRCS = $(wildcard $(SRC_DIR)/OTelKit/*.m)
 HOST_SRCS = $(wildcard $(SRC_DIR)/HTTPServerKit/*.m)
 SERVICE_SRCS = $(wildcard $(SRC_DIR)/ODataService/*.m)
-SRCS = $(KIT_SRCS) $(CLIENT_SRCS) $(TRACE_SRCS) $(HOST_SRCS) $(SERVICE_SRCS)
+SYNC_SRCS = $(wildcard $(SRC_DIR)/ODataSync/*.m)
+SRCS = $(KIT_SRCS) $(CLIENT_SRCS) $(TRACE_SRCS) $(HOST_SRCS) $(SERVICE_SRCS) $(SYNC_SRCS)
 GCDWebServer_OBJS = $(GCDWebServer_OBJC_FILES:.m=.o)
 
 OBJS = $(SRCS:.m=.o)
 
 .PHONY: all clean test
 
-all: libODataKit.so libODataIncrementalStore.so libOTelKit.so libOTelKit.so libHTTPServerKit.so libODataService.so ois-filter ois-model Catalog.momd
+all: libODataKit.so libODataIncrementalStore.so libOTelKit.so libHTTPServerKit.so libODataService.so libODataSync.so ois-filter ois-model Catalog.momd
 
 libODataKit.so: $(KIT_SRCS:.m=.o)
 	$(CC) -shared -o $@ $^ $(GNUSTEP_LIBS)
@@ -71,6 +72,12 @@ libHTTPServerKit.so: $(HOST_SRCS:.m=.o) $(GCDWebServer_OBJS) libOTelKit.so
 
 libODataService.so: $(SERVICE_SRCS:.m=.o) libODataKit.so libHTTPServerKit.so
 	$(CC) -shared -o $@ $(SERVICE_SRCS:.m=.o) -L. -lHTTPServerKit -lOTelKit -lODataKit $(GNUSTEP_LIBS)
+
+libODataSync.so: $(SYNC_SRCS:.m=.o) libODataService.so libODataIncrementalStore.so libOTelKit.so libODataKit.so
+	$(CC) -shared -o $@ $(SYNC_SRCS:.m=.o) -L. -lODataService -lHTTPServerKit -lODataIncrementalStore -lOTelKit -lODataKit $(GNUSTEP_LIBS)
+
+$(SRC_DIR)/ODataSync/%.o: $(SRC_DIR)/ODataSync/%.m
+	$(CC) $(OBJCFLAGS) -I$(SRC_DIR)/ODataSync -c $< -o $@
 
 $(SRC_DIR)/HTTPServerKit/%.o: $(SRC_DIR)/HTTPServerKit/%.m
 	$(CC) $(OBJCFLAGS) $(GCDWebServer_INCLUDE_DIRS) -DHTTPSERVERKIT_VERSION='"$(HTTPSERVERKIT_VERSION)"' -c $< -o $@
@@ -102,5 +109,5 @@ test:
 	$(MAKE) -C Tests run-tests
 
 clean:
-	rm -f $(OBJS) $(GCDWebServer_OBJS) libODataKit.so libODataIncrementalStore.so libHTTPServerKit.so libODataService.so ois-filter ois-model
+	rm -f $(OBJS) $(GCDWebServer_OBJS) libODataKit.so libODataIncrementalStore.so libOTelKit.so libHTTPServerKit.so libODataService.so libODataSync.so ois-filter ois-model
 	rm -rf Catalog.momd

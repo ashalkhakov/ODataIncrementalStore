@@ -94,7 +94,7 @@ NS_ASSUME_NONNULL_BEGIN
 //   MaxPageSize, MaxVersion, Namespace, Container, MaxURLLength,
 //   MaxExpandDepth, MaxBatchRequests, MaxRowsInMemory, MaxJSONDepth,
 //   MaxAsyncRequests, ReplyTimeout, AsyncResultDuration,
-//   RepeatabilityDuration   the service's (ODataService.h)
+//   RepeatabilityDuration, HistoryRetention   the service's (ODataService.h)
 //   AllowAnonymous  YES: a request that names no one is answered too
 //   PrintMetadata YES: write $metadata to standard output and exit
 @interface ODataServerConfiguration : HSConfiguration

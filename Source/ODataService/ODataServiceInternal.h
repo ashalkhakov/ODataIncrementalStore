@@ -41,6 +41,9 @@ typedef NS_ENUM(NSInteger, OISAccess) { OISAccessRead, OISAccessInsert, OISAcces
 @end
 
 @interface ODataService ()
+// History is pruned up to here (pruneHistoryBeforeDate:): a delta token
+// issued before it may have lost changes. Kept in the store's metadata.
+- (nullable NSDate *)historyPrunedBefore;
 - (void)rememberAnswer:(NSInteger)status headers:(NSDictionary *)headers body:(NSData *)body
                 forKey:(NSString *)key signature:(nullable NSString *)signature;
 - (void)prepare;
@@ -175,6 +178,9 @@ typedef NS_ENUM(NSInteger, OISTargetKind) {
 // in the response carries (the history as it stood when the read began).
 @property (nonatomic, copy, nullable) NSString *deltaToken;
 @property (nonatomic, copy, nullable) NSString *trackingToken;
+// The version of the schema the client named ($schemaversion), when not
+// the service's own: what it writes goes through upgradeBody.
+@property (nonatomic, copy, nullable) NSString *schemaVersion;
 @property (nonatomic, copy, nullable) NSArray<NSManagedObjectID *> *deltaChanged;
 @property (nonatomic, copy, nullable) NSArray<NSDictionary *> *deltaDeleted;
 
@@ -223,6 +229,9 @@ typedef NS_ENUM(NSInteger, OISTargetKind) {
 @property (nonatomic, copy, nullable) NSArray *writeAnswers;
 // An operation's parameters, with Lookups for its entities until read.
 @property (nonatomic, copy, nullable) NSArray *operationValuesPlanned;
+// The key the path's last entity was looked up by (Core Data attribute
+// names): an upsert's, when it names none.
+@property (nonatomic, copy, nullable) NSDictionary *lookedUpKey;
 // NO in a change set: its requests share a context, saved once they have
 // all succeeded.
 @property (nonatomic) BOOL saves;
@@ -330,6 +339,10 @@ FOUNDATION_EXPORT void OISLog(HSLogLevel level, NSURLRequest *_Nullable request,
 - (nullable OISHierarchy *)describedHierarchyOf:(NSArray<NSString *> *)setPath qualifier:(NSString *)qualifier
                                           fetch:(NSFetchRequest * _Nullable * _Nullable)fetchp handler:(ODataEntitySetHandler * _Nullable * _Nullable)handlerp;
 - (BOOL)takeChanges:(ODataChanges *)changes;
+// A token as links carry it, with the caller's scope version; and back,
+// nil (answered 410) when the version is not the caller's now.
+- (NSString *)scopedToken:(NSString *)token;
+- (nullable NSString *)tokenCheckingScope:(NSString *)link;
 - (NSDictionary *)removedEntry:(NSString *)path reason:(NSString *)reason;
 // For writes.
 - (nullable NSDictionary *)bodyJSON;
@@ -399,6 +412,10 @@ typedef NS_ENUM(NSInteger, OISStoreAsk) { OISAskObjects, OISAskCount, OISAskGrou
 // Writes (OISServiceCall+Write.m): planned, then run as plans are.
 @interface OISServiceCall (Write)
 - (void)insert;
+// The same with the key an upsert's URL gives: the body may repeat it, not
+// contradict it.
+- (void)insertWithKey:(nullable NSDictionary *)key;
+- (nullable NSString *)ifMatchHeader;
 - (void)insertMedia:(NSEntityDescription *)entity media:(NSAttributeDescription *)media;
 - (void)updateReplacing:(BOOL)replace;
 - (void)remove;

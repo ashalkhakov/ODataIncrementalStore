@@ -74,6 +74,7 @@ static BOOL WorkbenchLoadNib(NSString *name, id owner)
   _logTable.doubleAction = @selector(showExchange:);
   [self keepScroller:_logTable.enclosingScrollView];
   [self addTraceMenus];
+  [self addSyncMenu];
   for (NSTextView *view in @[ self.predicateView, self.inspectorView ]) [self prepareTextView:view fixedPitch:NO];
   [self rebuildStreams];
   [self.servicePopup selectItemAtIndex:WBServiceBuiltIn];
@@ -418,6 +419,13 @@ static BOOL WorkbenchLoadNib(NSString *name, id owner)
     self.statusField.stringValue = @"Not connected.";
     return;
   }
+  // What the service has now, for the objects the context holds from
+  // before too (another client's change, the Sync window's device): each
+  // turned back into a fault, read again from what this fetch brings. An
+  // unsaved edit here is kept.
+  for (NSManagedObject *object in [_connection.context.registeredObjects copy]) {
+    if (!object.hasChanges && !object.isFault) [_connection.context refreshObject:object mergeChanges:NO];
+  }
   NSError *error = nil;
   if ([[self currentQuery] isVerbatim]) {
     // As it is written: every row at once, the columns what they have.
@@ -639,6 +647,53 @@ static NSString *WBRawHeaders(NSDictionary *headers)
     [context addItemWithTitle:@"Show Trace" action:@selector(showTraceOfExchange:) keyEquivalent:@""].target = self;
     _logTable.menu = context;
   }
+}
+
+#pragma mark - Sync
+
+// A Sync menu beside Trace: an offline device, kept in sync with the
+// built-in service by ODataSync.
+- (void)addSyncMenu
+{
+  NSMenu *menu = [[NSMenu alloc] initWithTitle:@"Sync"];
+  NSMenuItem *show = [menu addItemWithTitle:@"Show Device" action:@selector(showSync:) keyEquivalent:@"y"];
+  show.keyEquivalentModifierMask = NSEventModifierFlagCommand | NSEventModifierFlagShift;
+  show.target = self;
+  NSMenu *main = [NSApp mainMenu];
+  if (!main) return;
+  NSMenuItem *holder = [[NSMenuItem alloc] initWithTitle:@"Sync" action:NULL keyEquivalent:@""];
+  holder.submenu = menu;
+  NSInteger at = main.numberOfItems;
+  for (NSInteger i = 0; i < main.numberOfItems; i++) {
+    NSString *title = [main itemAtIndex:i].title;
+    if ([title isEqualToString:@"Window"] || [title isEqualToString:@"Help"]) {
+      at = i;
+      break;
+    }
+  }
+  [main insertItem:holder atIndex:at];
+}
+
+- (WBSyncWindow *)syncDevice
+{
+  WorkbenchEngine *engine = self.connection.engine;
+  if (!engine) return nil;
+  if (_syncWindow.engine != engine) {
+    [_syncWindow.window close];
+    _syncWindow = [[WBSyncWindow alloc] initWithEngine:engine];
+  }
+  return _syncWindow;
+}
+
+- (IBAction)showSync:(id)sender
+{
+  (void)sender;
+  WBSyncWindow *device = [self syncDevice];
+  if (!device) {
+    self.statusField.stringValue = @"Sync works with the built-in service: choose it, and Connect.";
+    return;
+  }
+  [device show];
 }
 
 - (WBTraceWindow *)traces

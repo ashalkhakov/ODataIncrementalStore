@@ -456,6 +456,29 @@
 }
 @end
 
+// What a caller may see has a version, as X-Scope says: their delta links
+// hold only while it does.
+@interface OISScopeVersionedProducts : ODataEntitySetHandler
+@end
+
+@implementation OISScopeVersionedProducts
+- (NSString *)scopeVersionForRequest:(ODataRequest *)request
+{
+  return [request valueForHeader:@"X-Scope"];
+}
+@end
+
+// Visible by a relationship: nothing a deleted row's tombstone keeps.
+@interface OISBeveragesOnly : ODataEntitySetHandler
+@end
+
+@implementation OISBeveragesOnly
+- (NSPredicate *)predicateForVisibleObjectsInRequest:(ODataRequest *)request
+{
+  return [NSPredicate predicateWithFormat:@"category.name == 'Beverages'"];
+}
+@end
+
 // Everyone is someone: X-Scopes (or the bearer token itself) is what they
 // may do, as a token's scope claim has it.
 @interface OISScopeAuthenticator : NSObject <HSAuthenticator>
@@ -1282,6 +1305,99 @@
 }
 
 #pragma mark Writing
+
+// Upsert (Part 1 section 11.4.4): PATCH or PUT to a key that names no
+// entity creates it, with the URL's key; sent again, it updates it.
+- (void)testUpsert
+{
+  NSDictionary *coffee = @{ @"ProductName": @"Ipoh Coffee", @"UnitPrice": @46, @"Category@odata.bind": @"Categories(1)" };
+  OISServiceResponse *created = [self send:@"PATCH" path:@"Products(500)" headers:nil body:coffee];
+  XCTAssertEqual(created.status, 201, @"%@", created.text);
+  XCTAssertEqualObjects(created.json[@"ProductID"], @500, @"the URL's key");
+  XCTAssertEqualObjects([created header:@"Location"], @"http://example.test/odata/Products(500)");
+  XCTAssertEqualObjects([self get:@"Products(500)/Category"].json[@"CategoryName"], @"Beverages", @"bound as an insert binds");
+
+  // Again, the same: an update now, with the same outcome.
+  OISServiceResponse *again = [self send:@"PATCH" path:@"Products(500)" headers:nil body:coffee];
+  XCTAssertEqual(again.status, 204, @"%@", again.text);
+  XCTAssertEqualObjects([self get:@"Products/$count"].text, @"6", @"one product, not two");
+  XCTAssertEqualObjects([self get:@"Products(500)"].json[@"UnitPrice"], @46);
+
+  OISServiceResponse *put = [self send:@"PUT" path:@"Products(501)" headers:@{ @"Prefer": @"return=minimal" }
+                                  body:@{ @"ProductName": @"Chartreuse verte", @"UnitPrice": @18 }];
+  XCTAssertEqual(put.status, 204, @"%@", put.text);
+  XCTAssertEqualObjects([put header:@"OData-EntityId"], @"http://example.test/odata/Products(501)");
+  XCTAssertEqualObjects([self get:@"Products(501)"].json[@"ProductName"], @"Chartreuse verte");
+
+  // The body may repeat the key, not contradict it.
+  XCTAssertEqual(([self send:@"PATCH" path:@"Products(502)" headers:nil body:@{ @"ProductID": @502, @"ProductName": @"Same" }].status), 201);
+  OISServiceResponse *other = [self send:@"PATCH" path:@"Products(503)" headers:nil body:@{ @"ProductID": @504, @"ProductName": @"Other" }];
+  XCTAssertEqual(other.status, 400, @"%@", other.text);
+  XCTAssertEqual([self get:@"Products(503)"].status, 404);
+  XCTAssertEqual([self get:@"Products(504)"].status, 404);
+}
+
+- (void)testUpsertPreconditions
+{
+  // If-Match: there must be an entity to match.
+  OISServiceResponse *match = [self send:@"PATCH" path:@"Products(600)" headers:@{ @"If-Match": @"*" } body:@{ @"ProductName": @"X" }];
+  XCTAssertEqual(match.status, 412, @"%@", match.text);
+  XCTAssertEqual([self get:@"Products(600)"].status, 404);
+
+  // If-None-Match: * only creates.
+  OISServiceResponse *fresh = [self send:@"PATCH" path:@"Products(600)" headers:@{ @"If-None-Match": @"*" } body:@{ @"ProductName": @"X" }];
+  XCTAssertEqual(fresh.status, 201, @"%@", fresh.text);
+  OISServiceResponse *exists = [self send:@"PATCH" path:@"Products(600)" headers:@{ @"If-None-Match": @"*" } body:@{ @"ProductName": @"Y" }];
+  XCTAssertEqual(exists.status, 412, @"%@", exists.text);
+  XCTAssertEqualObjects([self get:@"Products(600)"].json[@"ProductName"], @"X", @"left as it was");
+  // An ETag list: refused in that version, taken in another.
+  NSString *etag = [[self get:@"Products(600)"] header:@"ETag"];
+  XCTAssertEqual(([self send:@"PATCH" path:@"Products(600)" headers:@{ @"If-None-Match": etag } body:@{ @"ProductName": @"Z" }].status), 412);
+  XCTAssertEqual(([self send:@"PATCH" path:@"Products(600)" headers:@{ @"If-None-Match": @"W/\"other\"" } body:@{ @"ProductName": @"Z" }].status), 204);
+}
+
+- (void)testUpsertWhereItDoesNotApply
+{
+  // A set that does not take it, or no inserts at all: 404 as before.
+  ODataEntitySetHandler *products = [[ODataEntitySetHandler alloc] initWithEntity:OISCatalogEntity(@"Product")];
+  products.allowsUpsert = NO;
+  [_service setHandler:products forEntitySet:@"Products"];
+  XCTAssertEqual(([self send:@"PATCH" path:@"Products(700)" headers:nil body:@{ @"ProductName": @"X" }].status), 404);
+  NSString *metadata = [self get:@"$metadata"].text;
+  NSRange productsAt = [metadata rangeOfString:@"<EntitySet Name=\"Products\""];
+  NSRange categoriesAt = [metadata rangeOfString:@"<EntitySet Name=\"Categories\""];
+  XCTAssertTrue(productsAt.location != NSNotFound && categoriesAt.location != NSNotFound);
+  NSRange productsEnd = [metadata rangeOfString:@"</EntitySet>" options:0 range:NSMakeRange(productsAt.location, metadata.length - productsAt.location)];
+  NSString *productsSet = [metadata substringWithRange:NSMakeRange(productsAt.location, productsEnd.location - productsAt.location)];
+  XCTAssertTrue([productsSet rangeOfString:@"Upsertable"].location == NSNotFound, @"%@", productsSet);
+  NSRange categoriesEnd = [metadata rangeOfString:@"</EntitySet>" options:0 range:NSMakeRange(categoriesAt.location, metadata.length - categoriesAt.location)];
+  NSString *categoriesSet = [metadata substringWithRange:NSMakeRange(categoriesAt.location, categoriesEnd.location - categoriesAt.location)];
+  XCTAssertTrue([categoriesSet rangeOfString:@"Upsertable"].location != NSNotFound, @"a set that takes it says so: %@", categoriesSet);
+
+  // Not through a navigation property, and not before the path's end.
+  XCTAssertEqual(([self send:@"PATCH" path:@"Categories(1)/Products(999)" headers:nil body:@{ @"ProductName": @"X" }].status), 404);
+  XCTAssertEqual(([self send:@"PATCH" path:@"Categories(77)/CategoryName" headers:nil body:@{ @"value": @"X" }].status), 404);
+  XCTAssertEqual([self get:@"Categories(77)"].status, 404);
+}
+
+- (void)testUpsertInBatchAndWithScopes
+{
+  OISServiceResponse *batch = [self send:@"POST" path:@"$batch" headers:nil body:@{ @"requests": @[
+    @{ @"method": @"PATCH", @"url": @"Products(800)", @"id": @"1", @"body": @{ @"ProductName": @"Batch one" } },
+    @{ @"method": @"PATCH", @"url": @"Products(800)", @"id": @"2", @"body": @{ @"ProductName": @"Batch one, again" } } ] }];
+  XCTAssertEqual(batch.status, 200, @"%@", batch.text);
+  NSArray *statuses = [batch.json[@"responses"] valueForKey:@"status"];
+  XCTAssertEqualObjects(statuses, (@[ @201, @204 ]), @"%@", batch.text);
+  XCTAssertEqualObjects([self get:@"Products(800)"].json[@"ProductName"], @"Batch one, again");
+
+  // Creating is an insert: its scopes.
+  ODataEntitySetHandler *products = [[ODataEntitySetHandler alloc] initWithEntity:OISCatalogEntity(@"Product")];
+  products.insertScopes = [NSSet setWithObject:@"Products.Add"];
+  [_service setHandler:products forEntitySet:@"Products"];
+  _service.authenticator = [[OISScopeAuthenticator alloc] init];
+  XCTAssertEqual(([self send:@"PATCH" path:@"Products(801)" headers:@{ @"X-Scopes": @"Products.Read" } body:@{ @"ProductName": @"X" }].status), 403);
+  XCTAssertEqual(([self send:@"PATCH" path:@"Products(801)" headers:@{ @"X-Scopes": @"Products.Add" } body:@{ @"ProductName": @"X" }].status), 201);
+}
 
 - (void)testCreateUpdateDelete
 {
@@ -4040,6 +4156,45 @@ static NSString *OISHTTPDate(NSDate *date)
   XCTAssertEqual([self get:@"Products?$schemaversion=2"].status, 404);
 }
 
+// Schema versions (Part 1, 11.2.12): $metadata says the service's
+// (Core.SchemaVersion); a request names the one it is made against; another
+// only where the service reads it (upgradeBody), and a batch's requests
+// have the batch's.
+- (void)testSchemaVersions
+{
+  _service.modelVersion = @"2";
+  OISServiceResponse *metadata = [self get:@"$metadata"];
+  XCTAssertTrue([metadata.text rangeOfString:@"<Annotation Term=\"Org.OData.Core.V1.SchemaVersion\"><String>2</String></Annotation></Schema>"].location
+                    != NSNotFound, @"%@", metadata.text);
+  XCTAssertEqual([self get:@"Products?$schemaversion=2"].status, 200);
+  XCTAssertEqual([self get:@"Products?$schemaversion=*"].status, 200);
+  XCTAssertEqual([self get:@"Products?$schemaversion=1"].status, 404, @"a version the service does not read");
+
+  NSMutableArray *upgraded = [NSMutableArray array];
+  _service.upgradeBody = ^NSDictionary *(NSDictionary *body, NSString *version, NSEntityDescription *entity, ODataRequest *request,
+                                         NSError **error) {
+    [upgraded addObject:version];
+    NSMutableDictionary *now = [body mutableCopy];
+    // Version 1 called it Title.
+    if (now[@"Title"]) now[@"ProductName"] = now[@"Title"];
+    [now removeObjectForKey:@"Title"];
+    return now;
+  };
+  XCTAssertEqual([self get:@"Products?$schemaversion=1"].status, 200, @"read with the service's own schema");
+  XCTAssertEqual([self get:@"$metadata?$schemaversion=1"].status, 404, @"the service has its own $metadata only");
+  OISServiceResponse *patched = [self send:@"PATCH" path:@"Products(1)?$schemaversion=1" headers:nil body:@{ @"Title": @"Chai (v1)" }];
+  XCTAssertEqual(patched.status, 204, @"%@", patched.text);
+  XCTAssertEqualObjects([self get:@"Products(1)"].json[@"ProductName"], @"Chai (v1)");
+  OISServiceResponse *batch = [self send:@"POST" path:@"$batch?$schemaversion=1" headers:nil body:@{ @"requests": @[
+    @{ @"id": @"1", @"method": @"PATCH", @"url": @"Products(2)", @"headers": @{ @"Content-Type": @"application/json" },
+       @"body": @{ @"Title": @"Chang (v1)" } } ] }];
+  XCTAssertEqual(batch.status, 200, @"%@", batch.text);
+  XCTAssertEqualObjects([self get:@"Products(2)"].json[@"ProductName"], @"Chang (v1)", @"the batch's version, inherited: %@", batch.text);
+  XCTAssertEqualObjects(upgraded, (@[ @"1", @"1" ]));
+  [self send:@"PATCH" path:@"Products(1)?$schemaversion=2" headers:nil body:@{ @"ProductName": @"Chai" }];
+  XCTAssertEqual(upgraded.count, 2u, @"a client on the service's version is not upgraded");
+}
+
 // Data Aggregation 4.0 (CS04) beyond the minimal level: aggregating an
 // expression, paths through collection-valued navigation and their $count,
 // groupby with transformations of its own, isdefined; and what $metadata
@@ -6234,8 +6389,10 @@ static NSDate *OISDay(NSString *day)
   for (NSDictionary *value in values) {
     if (value[@"@odata.removed"]) removed[value[@"@odata.id"]] = value[@"@odata.removed"][@"reason"];
   }
-  XCTAssertEqualObjects(removed, (@{ @"Products(4)": @"changed", @"Products(5)": @"deleted" }), @"%@", delta.text);
-  XCTAssertEqual(values.count, 5u, @"Fleeting came and went unmentioned: %@", delta.text);
+  // Fleeting came and went since the link, and is told as deleted all the
+  // same: a client may have it (one that made it after reading the link).
+  XCTAssertEqualObjects(removed, (@{ @"Products(4)": @"changed", @"Products(5)": @"deleted", @"Products(7)": @"deleted" }), @"%@", delta.text);
+  XCTAssertEqual(values.count, 6u, @"%@", delta.text);
 
   // Followed on, nothing more.
   link = delta.json[@"@odata.deltaLink"];
@@ -6254,6 +6411,110 @@ static NSDate *OISDay(NSString *day)
   XCTAssertNil(read.headers[@"Preference-Applied"]);
   XCTAssertNil(read.json[@"@odata.deltaLink"]);
   XCTAssertEqual([self get:@"Products?$top=2&$deltatoken=0"].status, 410);
+}
+
+// A delta link holds while the caller's scope version does: another is a
+// 410, and the client reads the set again (docs/offline-sync.md, 4.1).
+- (void)testDeltaLinksHoldWhileTheScopeDoes
+{
+  [self serveTrackedCatalog];
+  [_service setHandler:[[OISScopeVersionedProducts alloc] initWithEntity:_coordinator.managedObjectModel.entitiesByName[@"Product"]] forEntitySet:@"Products"];
+  NSDictionary *v1 = @{ @"Prefer": @"odata.track-changes", @"X-Scope": @"team-7:v1" };
+  OISServiceResponse *read = [self send:@"GET" path:@"Products" headers:v1 body:nil];
+  NSString *link = read.json[@"@odata.deltaLink"];
+  XCTAssertTrue([link containsString:@"*"], @"the scope's version in the link: %@", link);
+  XCTAssertFalse([link containsString:@"team-7"], @"opaque in it: %@", link);
+
+  OISServiceResponse *same = [self send:@"GET" path:[self pathOfLink:link] headers:@{ @"X-Scope": @"team-7:v1" } body:nil];
+  XCTAssertEqual(same.status, 200, @"%@", same.text);
+  link = same.json[@"@odata.deltaLink"];
+  OISServiceResponse *moved = [self send:@"GET" path:[self pathOfLink:link] headers:@{ @"X-Scope": @"team-7:v2" } body:nil];
+  XCTAssertEqual(moved.status, 410, @"%@", moved.text);
+  XCTAssertEqual(([self send:@"GET" path:[self pathOfLink:link] headers:nil body:nil].status), 410, @"no version now is another");
+
+  // Pages too: a scope that moves between them.
+  _service.maxPageSize = 2;
+  read = [self send:@"GET" path:@"Products" headers:v1 body:nil];
+  NSString *next = read.json[@"@odata.nextLink"];
+  XCTAssertEqual(([self send:@"GET" path:[self pathOfLink:next] headers:@{ @"X-Scope": @"team-7:v2" } body:nil].status), 410);
+  XCTAssertEqual(([self send:@"GET" path:[self pathOfLink:next] headers:@{ @"X-Scope": @"team-7:v1" } body:nil].status), 200);
+
+  // A handler that has no scope version writes links as before.
+  [_service setHandler:[[ODataEntitySetHandler alloc] initWithEntity:_coordinator.managedObjectModel.entitiesByName[@"Product"]] forEntitySet:@"Products"];
+  _service.maxPageSize = 0;
+  link = [self send:@"GET" path:@"Products" headers:@{ @"Prefer": @"odata.track-changes" } body:nil].json[@"@odata.deltaLink"];
+  XCTAssertFalse([link containsString:@"*"], @"%@", link);
+}
+
+- (NSArray *)idsOf:(NSArray *)entries
+{
+  NSMutableArray *ids = [NSMutableArray array];
+  for (NSDictionary *entry in entries) [ids addObject:entry[@"@odata.id"] ?: [NSNull null]];
+  return ids;
+}
+
+// A deletion is reported to those who could see the row, by what its
+// tombstone kept; when the visibility reads anything else, to everyone.
+- (void)testDeletionsGoToThoseWhoCouldSeeThem
+{
+  [self serveTrackedCatalog];
+  [_service setHandler:[[OISScopedProducts alloc] initWithEntity:_coordinator.managedObjectModel.entitiesByName[@"Product"]] forEntitySet:@"Products"];
+  NSString *link = [self send:@"GET" path:@"Products" headers:@{ @"Prefer": @"odata.track-changes" } body:nil].json[@"@odata.deltaLink"];
+  NSManagedObjectContext *context = [self serviceContext];
+  NSError *error = nil;
+  [context deleteObject:[self productWithID:3 in:context]];   // seen: not discontinued
+  [context deleteObject:[self productWithID:5 in:context]];   // discontinued: never seen
+  XCTAssertTrue([context save:&error], @"%@", error);
+  OISServiceResponse *delta = [self get:[self pathOfLink:link]];
+  XCTAssertEqual(delta.status, 200, @"%@", delta.text);
+  XCTAssertEqualObjects([self idsOf:delta.json[@"value"]], @[ @"Products(3)" ], @"%@", delta.text);
+
+  // Visible by a relationship, which no tombstone keeps: every deletion.
+  [self serveTrackedCatalog];
+  [_service setHandler:[[OISBeveragesOnly alloc] initWithEntity:_coordinator.managedObjectModel.entitiesByName[@"Product"]] forEntitySet:@"Products"];
+  link = [self send:@"GET" path:@"Products" headers:@{ @"Prefer": @"odata.track-changes" } body:nil].json[@"@odata.deltaLink"];
+  context = [self serviceContext];
+  [context deleteObject:[self productWithID:5 in:context]];   // a condiment
+  XCTAssertTrue([context save:&error], @"%@", error);
+  delta = [self get:[self pathOfLink:link]];
+  XCTAssertEqualObjects([self idsOf:delta.json[@"value"]], @[ @"Products(5)" ], @"%@", delta.text);
+}
+
+// History kept only so long: a delta link from before what is kept is a
+// 410, and the client reads the set again; one given after is good.
+- (void)testHistoryRetention
+{
+  [self serveTrackedCatalog];
+  NSDictionary *track = @{ @"Prefer": @"odata.track-changes" };
+  NSString *old = [self send:@"GET" path:@"Products" headers:track body:nil].json[@"@odata.deltaLink"];
+  NSManagedObjectContext *context = [self serviceContext];
+  NSError *error = nil;
+  [[self productWithID:1 in:context] setValue:@"Chai (new)" forKey:@"name"];
+  XCTAssertTrue([context save:&error], @"%@", error);
+  XCTAssertTrue([_service pruneHistoryBeforeDate:[NSDate dateWithTimeIntervalSinceNow:1] error:&error], @"%@", error);
+  OISServiceResponse *expired = [self get:[self pathOfLink:old]];
+  XCTAssertEqual(expired.status, 410, @"%@", expired.text);
+
+  NSString *fresh = [self send:@"GET" path:@"Products" headers:track body:nil].json[@"@odata.deltaLink"];
+  [[self productWithID:2 in:context] setValue:@"Chang (new)" forKey:@"name"];
+  XCTAssertTrue([context save:&error], @"%@", error);
+  OISServiceResponse *delta = [self get:[self pathOfLink:fresh]];
+  XCTAssertEqual(delta.status, 200, @"%@", delta.text);
+  XCTAssertEqualObjects([delta.json[@"value"] valueForKey:@"ProductName"], @[ @"Chang (new)" ], @"%@", delta.text);
+
+  // By itself, as requests come: what is older than the retention goes.
+  NSString *before = delta.json[@"@odata.deltaLink"];
+  [[self productWithID:3 in:context] setValue:@"Aniseed Syrup (new)" forKey:@"name"];
+  XCTAssertTrue([context save:&error], @"%@", error);
+  [NSThread sleepForTimeInterval:1.2];
+  _service.historyRetention = 1;
+  [self get:@"Products/$count"];   // prunes, in the background
+  NSInteger status = 0;
+  for (int i = 0; i < 50 && status != 410; i++) {
+    [NSThread sleepForTimeInterval:0.05];
+    status = [self get:[self pathOfLink:before]].status;
+  }
+  XCTAssertEqual(status, 410, @"history older than a second was pruned");
 }
 
 // A tracked read in pages: each next link carries where the changes
@@ -7226,7 +7487,8 @@ static NSExpressionDescription *OISAggregateOf(NSString *function, NSString *key
   XCTAssertTrue([allowed rangeOfString:@"InsertRestrictions"].location == NSNotFound, @"everything allowed");
   ODataSchema *all = [ODataSchema schemaWithData:[allowed dataUsingEncoding:NSUTF8StringEncoding] error:NULL];
   XCTAssertEqualObjects([all annotation:@"Capabilities.UpdateRestrictions" forTarget:@"Default.Container/Products"],
-                        (@{ @"FilterSegmentSupported": @YES, @"TypecastSegmentSupported": @YES, @"DeltaUpdateSupported": @YES }));
+                        (@{ @"FilterSegmentSupported": @YES, @"TypecastSegmentSupported": @YES, @"DeltaUpdateSupported": @YES,
+                            @"Upsertable": @YES }));
   XCTAssertEqualObjects([all annotation:@"Capabilities.DeleteRestrictions" forTarget:@"Default.Container/Products"],
                         (@{ @"FilterSegmentSupported": @YES, @"TypecastSegmentSupported": @YES }));
   ODataEntitySetHandler *locations = [[ODataEntitySetHandler alloc] initWithEntity:OISCatalogEntity(@"Location")];

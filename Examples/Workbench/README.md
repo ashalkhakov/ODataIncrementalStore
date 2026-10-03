@@ -92,6 +92,31 @@ What you can do:
   selection. With `OTEL_EXPORTER_OTLP_ENDPOINT` set (as for `ois-serve`)
   the spans go to that collector too (Jaeger, Tempo), and against a real
   service that exports its own, the two trees are one there.
+- Sync (Sync > Show Device, ⇧⌘Y; at the built-in service): an offline
+  device beside the service, kept in sync by ODataSync
+  (`docs/offline-sync.md`). The device is a store of its own (SQLite, with
+  persistent history) of the same model: Categories, Suppliers and
+  Locations come down from the service; Products and Stock both sides
+  edit, Products stamped (`LastChanged`) for last writer wins, and
+  keeping what each version has seen (`Versions`, a version vector; the
+  built-in service runs `ODataSyncService`). The entity menu says which
+  way each goes (Product (both ways), Category (down: the service's)),
+  and the line under it what that means. At the left, the device's
+  objects: edit a cell, or New, or Delete (both ways only), and the
+  change waits, in the list at the right, until Sync (or Upload) sends it;
+  with Sync each change ticked, it goes at once.
+  Change at the Service raises the selected product's price there, as
+  another client would: change the same product on the device, sync, and
+  the conflict is settled by the rule chosen (the service's wins, the
+  device's, the last writer's, the fields merged, or set aside to decide:
+  then Retry sends the device's, Discard reads the service's). Conflicts
+  met are listed, each with the three versions (the one both last agreed
+  on, the device's, the service's, what each changed marked). Offline
+  makes every request fail: changes wait, and go when it is unticked.
+  Reconcile reads every set's keys again. The device's own requests are
+  listed at the right (select one for what went and what came back);
+  they are in the wire log too, and each sync is a trace (`sync`, `download Product`,
+  `upload batch`).
 - Execute. Rows are real managed objects; select one to see its attributes,
   fire its faults, or its relationships. Each prefetched relationship is a
   column, showing what came with the row. Fire relationships reads every
@@ -172,7 +197,8 @@ The interface is in XIBs, File's Owner `WorkbenchController` in each:
 `WorkbenchWindow.xib` (the window, every control in it, and the main menu
 with the Store menu), `ExchangeWindow.xib` (one exchange, whole) and
 `PlanWindow.xib` (Explain's plans), the last two loaded when first shown.
-The trace window is made in code (`WBTraces.m`), the same on both.
+The trace window and the sync window are made in code (`WBTraces.m`,
+`WBSync.m`), the same on both.
 As Xcode saves them: fixed frames with springs and struts and no
 constraints, which `ibtool` turns into constraints and GNUstep's
 `GSXib5Loader` reads as they are (`checkResizing` in the self-test sees
@@ -205,5 +231,6 @@ openapp ./Workbench.app
 
 Apple: open `ODataKit.xcworkspace` at the library root, scheme
 **Workbench**. The app embeds `ODataKit.framework`,
-`ODataIncrementalStore.framework` and `ODataService.framework`, compiles
+`ODataIncrementalStore.framework`, `ODataService.framework` and
+`ODataSync.framework` (with `HTTPServerKit` and `OTelKit`), compiles
 the three XIBs, and compiles `Catalog.xcdatamodeld`.

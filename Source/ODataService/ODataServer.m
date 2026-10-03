@@ -257,7 +257,7 @@ static void OISLoadBackendFor(NSString *type)
   return [[super knownSettings] arrayByAddingObjectsFromArray:@[
     @"Model", @"StoreType", @"StoreURL", @"StoreOptions", @"ServiceRoot", @"MaxPageSize", @"MaxVersion", @"Namespace", @"Container",
     @"MaxURLLength", @"MaxExpandDepth", @"MaxBatchRequests", @"MaxRowsInMemory", @"MaxJSONDepth", @"MaxAsyncRequests",
-    @"ReplyTimeout", @"AsyncResultDuration", @"RepeatabilityDuration", @"AllowAnonymous", @"PrintMetadata" ]];
+    @"ReplyTimeout", @"AsyncResultDuration", @"RepeatabilityDuration", @"HistoryRetention", @"AllowAnonymous", @"PrintMetadata" ]];
 }
 
 - (BOOL)printsMetadata
@@ -306,6 +306,7 @@ static void OISLoadBackendFor(NSString *type)
   if ([self setting:@"ReplyTimeout"]) service.replyTimeout = [self number:@"ReplyTimeout" otherwise:0];
   if ([self setting:@"AsyncResultDuration"]) service.asyncResultDuration = [self number:@"AsyncResultDuration" otherwise:0];
   if ([self setting:@"RepeatabilityDuration"]) service.repeatabilityDuration = [self number:@"RepeatabilityDuration" otherwise:0];
+  if ([self setting:@"HistoryRetention"]) service.historyRetention = [self number:@"HistoryRetention" otherwise:0];
   if ([self setting:@"AllowAnonymous"]) service.allowsAnonymousRequests = [self flag:@"AllowAnonymous" otherwise:NO];
   return service;
 }

@@ -12,6 +12,7 @@
 #pragma once
 #import <ODataIncrementalStore/ODataIncrementalStore.h>
 #import <ODataService/ODataService.h>
+#import <ODataSync/ODataSyncService.h>
 
 NS_ASSUME_NONNULL_BEGIN
 
@@ -27,6 +28,9 @@ FOUNDATION_EXPORT NSManagedObjectModel * _Nullable WorkbenchBuiltInModel(NSURL *
 // store holds): every entity but AuditEntry, the application's own record
 // of what its actions did.
 FOUNDATION_EXPORT NSString * const WorkbenchServedConfiguration;
+// A stamp of the service's own changes, as ODataSync's hybrid logical clock
+// writes them: past the wall clock and past the stamp it replaces.
+FOUNDATION_EXPORT NSString *WorkbenchServiceStamp(NSString *_Nullable previous);
 
 // One exchange, as it went over the wire: nothing shortened.
 @interface WorkbenchLogEntry : NSObject
@@ -45,6 +49,8 @@ FOUNDATION_EXPORT NSString * const WorkbenchServedConfiguration;
 
 @interface WorkbenchEngine : NSObject <ODataTransport>
 @property (nonatomic, readonly, copy) NSURL *serviceRoot;
+// The compiled Catalog model the built-in model is made from.
+@property (nonatomic, readonly, copy) NSURL *modelURL;
 @property (nonatomic, readonly) NSArray<WorkbenchLogEntry *> *log;
 @property (nonatomic, copy, nullable) void (^didHandle)(WorkbenchLogEntry *entry);
 // Exchanges started so far, counted as they start (the log hears of them
@@ -58,8 +64,10 @@ FOUNDATION_EXPORT NSString * const WorkbenchServedConfiguration;
 // The seed rows again, and an empty log.
 - (void)reset;
 // As another client would: a product's price raised at the service (its
-// version moves on). What changed, in words.
+// version moves on, and its lastChanged stamp). What changed, in words.
 - (NSString *)changeAtTheService;
+// The same, of that product (nil: the first).
+- (NSString *)changeProductAtTheService:(nullable NSNumber *)productID;
 @end
 
 // A real service: every exchange goes to ODataDefaultTransport(), and is

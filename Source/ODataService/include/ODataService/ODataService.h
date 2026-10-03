@@ -209,6 +209,16 @@ FOUNDATION_EXPORT NSString * const ODataUserInfoETag;  // @"OData.etag"
 @property (nonatomic) BOOL allowsInsert;
 @property (nonatomic) BOOL allowsUpdate;
 @property (nonatomic) BOOL allowsDelete;
+// Upsert (Part 1 section 11.4.4): a PATCH or PUT to a key of the set that
+// names no entity creates it, through -insertObjectWithValues:, with the
+// key from the URL (which the body need not repeat, and must not
+// contradict), and is answered 201 (204 with return=minimal); with
+// If-Match it is 412 instead, there being nothing to match. With
+// If-None-Match: * a PATCH or PUT only creates: 412 when the entity is
+// there. What a client that makes its own keys (UUIDs) sends again and
+// again with the same outcome. Default YES; needs allowsInsert, and is
+// said in $metadata (UpdateRestrictions/Upsertable) when allowsUpdate too.
+@property (nonatomic) BOOL allowsUpsert;
 // The permissions the set's methods need, as OAuth scopes the caller's
 // principal has (HSPrincipal's scopes): any one of a set's is enough;
 // nil or empty, the default, none is needed. Read is every read that
@@ -287,6 +297,15 @@ FOUNDATION_EXPORT NSString * const ODataUserInfoETag;  // @"OData.etag"
 // (ODataServiceError), one it can no longer answer for a 410: the caller
 // reads the set again. The default: the persistent history since it.
 - (nullable ODataChanges *)changesSince:(NSString *)token request:(ODataRequest *)request reply:(ODataReply *)reply;
+// The version of what the caller may see (-predicateForVisibleObjectsInRequest:),
+// for what changes it other than the rows themselves changing: the
+// principal's role, region or teams. A short opaque string (a counter the
+// application moves when a membership changes, or a digest of the claims
+// that decide it), which delta links carry; one followed with another
+// version is answered 410, and the client reads the set again (or
+// reconciles its keys: docs/offline-sync.md, 4.1). nil, the default: delta
+// links do not depend on it.
+- (nullable NSString *)scopeVersionForRequest:(ODataRequest *)request;
 
 // Whether the set's entity type is open (OpenType in $metadata): its
 // entities may have dynamic properties, properties the model does not
@@ -366,7 +385,11 @@ FOUNDATION_EXPORT NSString * const ODataUserInfoETag;  // @"OData.etag"
                                                 error:(NSError **)error;
 
 // The rows the caller may see at all, however they are reached: fetched,
-// by key, through navigation or $expand. nil: every row.
+// by key, through navigation or $expand. nil: every row. A deletion is
+// reported in a delta (Prefer: odata.track-changes) to a caller this lets
+// see the deleted row, evaluated on what its tombstone kept: so keep the
+// attributes it reads (preservesValueInHistoryOnDeletion), or every caller
+// is told of every deletion, as when it reads anything not kept.
 - (nullable NSPredicate *)predicateForVisibleObjectsInRequest:(ODataRequest *)request;
 
 // The rows of a request, already filtered, sorted and paged, with
@@ -454,6 +477,16 @@ FOUNDATION_EXPORT NSString * const ODataUserInfoETag;  // @"OData.etag"
 // At most this many asynchronous requests at a time, answered or not; more
 // are answered as though they had not asked. Default: 1000.
 @property (nonatomic) NSUInteger maxAsyncRequests;
+// How long the store's persistent history is kept, in seconds: what is
+// older is deleted, in the background, as requests come (at most every
+// tenth of this, between a minute and an hour), and a delta link from
+// before it is answered 410, so its client reads the set again. A delta
+// link stays good this long after it was given. 0, the default: the
+// service deletes none (history grows until something else prunes it).
+@property (nonatomic) NSTimeInterval historyRetention;
+// The store's persistent history before date deleted, now, as
+// historyRetention does by itself.
+- (BOOL)pruneHistoryBeforeDate:(NSDate *)date error:(NSError **)error;
 
 // Limits on what one request may ask of the service, so that no request,
 // careless or hostile, takes more than its share. Each is answered with an
@@ -526,6 +559,28 @@ FOUNDATION_EXPORT NSString * const ODataUserInfoETag;  // @"OData.etag"
 // without all its sub-entities, or that the model has not, is among
 // metadataProblems. Set it before the first request.
 @property (nonatomic, copy, nullable) NSString *configurationName;
+// The version of the schema it serves (OData 4.01's schema versioning):
+// $metadata says it (Core.SchemaVersion), and a client names the one it
+// speaks in $schemaversion. Default: the model's versionIdentifiers
+// (Xcode's Core Data Model Identifier), sorted and joined by commas; nil
+// when it has none.
+@property (nonatomic, copy, nullable) NSString *modelVersion;
+// A write from a client on another version of the schema ($schemaversion
+// other than modelVersion: offline devices that have not updated yet, and
+// send what they changed all the same):
+// the body as it came (OData JSON, the client's property names), the
+// version the client named, the entity it writes; answered with the body
+// as this model takes it (a renamed property under its new name, a new
+// required one filled in), or nil and an error to refuse it (400 when the
+// error says no status). Called for every write that names a version
+// other than modelVersion; not for one that names none. Without it, such
+// a request is answered 404, as one of a version the service does not
+// have; with it, reads of that version are answered from the service's
+// own schema (its changes, additions). As a data migration, but of one
+// request. Set it before the first request.
+@property (nonatomic, copy, nullable) NSDictionary *_Nullable (^upgradeBody)(NSDictionary *body, NSString *clientVersion,
+                                                                              NSEntityDescription *_Nullable entity,
+                                                                              ODataRequest *request, NSError **error);
 // The object whose methods are the service's unbound operations; see
 // ODataFunctions. Set it before the first request.
 @property (nonatomic, strong, nullable) id serviceOperations;

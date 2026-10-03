@@ -5,91 +5,46 @@
 	};
 	objectVersion = 56;
 	objects = {
+
 /* Begin PBXBuildFile section */
-		AB00000000000000000E1300 /* ODataService.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = AB00000000000000000E1200 /* ODataService.framework */; };
-		AB00000000000000000E1900 /* HTTPServerKit.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = AB00000000000000000E1800 /* HTTPServerKit.framework */; };
-		AB00000000000000000E1F00 /* OTelKit.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = AB00000000000000000E1E00 /* OTelKit.framework */; };
-		AB00000000000000000E1400 /* ODataService.framework in Embed Frameworks */ = {isa = PBXBuildFile; fileRef = AB00000000000000000E1200 /* ODataService.framework */; settings = {ATTRIBUTES = (CodeSignOnCopy, RemoveHeadersOnCopy, ); }; };
-		AB00000000000000000E1A00 /* HTTPServerKit.framework in Embed Frameworks */ = {isa = PBXBuildFile; fileRef = AB00000000000000000E1800 /* HTTPServerKit.framework */; settings = {ATTRIBUTES = (CodeSignOnCopy, RemoveHeadersOnCopy, ); }; };
-		AB00000000000000000E2000 /* OTelKit.framework in Embed Frameworks */ = {isa = PBXBuildFile; fileRef = AB00000000000000000E1E00 /* OTelKit.framework */; settings = {ATTRIBUTES = (CodeSignOnCopy, RemoveHeadersOnCopy, ); }; };
-		AB00000000000000000E0300 /* ODataKit.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = AB00000000000000000E0200 /* ODataKit.framework */; };
-		AB00000000000000000E0400 /* ODataKit.framework in Embed Frameworks */ = {isa = PBXBuildFile; fileRef = AB00000000000000000E0200 /* ODataKit.framework */; settings = {ATTRIBUTES = (CodeSignOnCopy, RemoveHeadersOnCopy, ); }; };
+		09B9ED482C7470BB3085B8B5 /* ODataSync.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = 5B310E12D8EC70C276FBABC7 /* ODataSync.framework */; };
+		7C316FF0434F39E08F5E7DA4 /* ODataSync.framework in Embed Frameworks */ = {isa = PBXBuildFile; fileRef = 5B310E12D8EC70C276FBABC7 /* ODataSync.framework */; settings = {ATTRIBUTES = (CodeSignOnCopy, RemoveHeadersOnCopy, ); }; };
+		942C23BF5ED1072A27E86199 /* WBSync.m in Sources */ = {isa = PBXBuildFile; fileRef = 4F1065873BF3739CF0BCBE48 /* WBSync.m */; };
 		AA000000000000000000008A /* main.m in Sources */ = {isa = PBXBuildFile; fileRef = AA000000000000000000008B /* main.m */; };
 		AA000000000000000000008C /* WorkbenchController.m in Sources */ = {isa = PBXBuildFile; fileRef = AA000000000000000000008D /* WorkbenchController.m */; };
 		AA000000000000000000008E /* WorkbenchEngine.m in Sources */ = {isa = PBXBuildFile; fileRef = AA000000000000000000008F /* WorkbenchEngine.m */; };
 		AA0000000000000000000090 /* Catalog.xcdatamodeld in Resources */ = {isa = PBXBuildFile; fileRef = AA0000000000000000000091 /* Catalog.xcdatamodeld */; };
-		AA00000000000000000000B2 /* WorkbenchWindow.xib in Resources */ = {isa = PBXBuildFile; fileRef = AA00000000000000000000B1 /* WorkbenchWindow.xib */; };
-		AA0000000000000000000E04 /* PlanWindow.xib in Resources */ = {isa = PBXBuildFile; fileRef = AA0000000000000000000E03 /* PlanWindow.xib */; };
-		AA0000000000000000000E02 /* ExchangeWindow.xib in Resources */ = {isa = PBXBuildFile; fileRef = AA0000000000000000000E01 /* ExchangeWindow.xib */; };
-		AB00000000000000000000C2 /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = AB00000000000000000000C1 /* Assets.xcassets */; };
 		AA0000000000000000000092 /* ODataIncrementalStore.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = AA0000000000000000000093 /* ODataIncrementalStore.framework */; };
 		AA0000000000000000000094 /* Cocoa.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = AA0000000000000000000095 /* Cocoa.framework */; };
 		AA0000000000000000000096 /* CoreData.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = AA000000000000000000003D /* CoreData.framework */; };
 		AA0000000000000000000097 /* ODataIncrementalStore.framework in Embed Frameworks */ = {isa = PBXBuildFile; fileRef = AA0000000000000000000093 /* ODataIncrementalStore.framework */; settings = {ATTRIBUTES = (CodeSignOnCopy, RemoveHeadersOnCopy, ); }; };
+		AA00000000000000000000B2 /* WorkbenchWindow.xib in Resources */ = {isa = PBXBuildFile; fileRef = AA00000000000000000000B1 /* WorkbenchWindow.xib */; };
 		AA00000000000000000000C1 /* WorkbenchController+SelfTest.m in Sources */ = {isa = PBXBuildFile; fileRef = AA00000000000000000000C2 /* WorkbenchController+SelfTest.m */; };
 		AA00000000000000000000C3 /* WBConnection.m in Sources */ = {isa = PBXBuildFile; fileRef = AA00000000000000000000C4 /* WBConnection.m */; };
 		AA00000000000000000000C5 /* WBQuery.m in Sources */ = {isa = PBXBuildFile; fileRef = AA00000000000000000000C6 /* WBQuery.m */; };
 		AA00000000000000000000C7 /* WBResults.m in Sources */ = {isa = PBXBuildFile; fileRef = AA00000000000000000000C8 /* WBResults.m */; };
-		AA00000000000000000000E0 /* WBTraces.m in Sources */ = {isa = PBXBuildFile; fileRef = AA00000000000000000000E1 /* WBTraces.m */; };
 		AA00000000000000000000C9 /* WorkbenchSupport.m in Sources */ = {isa = PBXBuildFile; fileRef = AA00000000000000000000CA /* WorkbenchSupport.m */; };
+		AA00000000000000000000E0 /* WBTraces.m in Sources */ = {isa = PBXBuildFile; fileRef = AA00000000000000000000E1 /* WBTraces.m */; };
+		AA0000000000000000000E02 /* ExchangeWindow.xib in Resources */ = {isa = PBXBuildFile; fileRef = AA0000000000000000000E01 /* ExchangeWindow.xib */; };
+		AA0000000000000000000E04 /* PlanWindow.xib in Resources */ = {isa = PBXBuildFile; fileRef = AA0000000000000000000E03 /* PlanWindow.xib */; };
+		AB00000000000000000000C2 /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = AB00000000000000000000C1 /* Assets.xcassets */; };
+		AB00000000000000000E0300 /* ODataKit.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = AB00000000000000000E0200 /* ODataKit.framework */; };
+		AB00000000000000000E0400 /* ODataKit.framework in Embed Frameworks */ = {isa = PBXBuildFile; fileRef = AB00000000000000000E0200 /* ODataKit.framework */; settings = {ATTRIBUTES = (CodeSignOnCopy, RemoveHeadersOnCopy, ); }; };
+		AB00000000000000000E1300 /* ODataService.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = AB00000000000000000E1200 /* ODataService.framework */; };
+		AB00000000000000000E1400 /* ODataService.framework in Embed Frameworks */ = {isa = PBXBuildFile; fileRef = AB00000000000000000E1200 /* ODataService.framework */; settings = {ATTRIBUTES = (CodeSignOnCopy, RemoveHeadersOnCopy, ); }; };
+		AB00000000000000000E1900 /* HTTPServerKit.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = AB00000000000000000E1800 /* HTTPServerKit.framework */; };
+		AB00000000000000000E1A00 /* HTTPServerKit.framework in Embed Frameworks */ = {isa = PBXBuildFile; fileRef = AB00000000000000000E1800 /* HTTPServerKit.framework */; settings = {ATTRIBUTES = (CodeSignOnCopy, RemoveHeadersOnCopy, ); }; };
+		AB00000000000000000E1F00 /* OTelKit.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = AB00000000000000000E1E00 /* OTelKit.framework */; };
+		AB00000000000000000E2000 /* OTelKit.framework in Embed Frameworks */ = {isa = PBXBuildFile; fileRef = AB00000000000000000E1E00 /* OTelKit.framework */; settings = {ATTRIBUTES = (CodeSignOnCopy, RemoveHeadersOnCopy, ); }; };
 /* End PBXBuildFile section */
 
 /* Begin PBXContainerItemProxy section */
-		AB00000000000000000E1000 /* PBXContainerItemProxy */ = {
-			isa = PBXContainerItemProxy;
-			containerPortal = AA0000000000000000000099 /* ODataKit.xcodeproj */;
-			proxyType = 1;
-			remoteGlobalIDString = AA000000000000000000000A;
-			remoteInfo = ODataService;
-		};
-		AB00000000000000000E1600 /* PBXContainerItemProxy */ = {
-			isa = PBXContainerItemProxy;
-			containerPortal = AA0000000000000000000099 /* ODataKit.xcodeproj */;
-			proxyType = 1;
-			remoteGlobalIDString = 9828CC078A88AE7706B232C7;
-			remoteInfo = HTTPServerKit;
-		};
-		AB00000000000000000E1C00 /* PBXContainerItemProxy */ = {
-			isa = PBXContainerItemProxy;
-			containerPortal = AA0000000000000000000099 /* ODataKit.xcodeproj */;
-			proxyType = 1;
-			remoteGlobalIDString = 4CBB61F9CEEAF8A9C5A1F7CF;
-			remoteInfo = OTelKit;
-		};
-		AB00000000000000000E1100 /* PBXContainerItemProxy */ = {
+		249D3B095272DA403494C228 /* PBXContainerItemProxy */ = {
 			isa = PBXContainerItemProxy;
 			containerPortal = AA0000000000000000000099 /* ODataKit.xcodeproj */;
 			proxyType = 2;
-			remoteGlobalIDString = AA000000000000000000000B;
-			remoteInfo = ODataService;
-		};
-		AB00000000000000000E1700 /* PBXContainerItemProxy */ = {
-			isa = PBXContainerItemProxy;
-			containerPortal = AA0000000000000000000099 /* ODataKit.xcodeproj */;
-			proxyType = 2;
-			remoteGlobalIDString = A21CEFC6F685318B7798AD60;
-			remoteInfo = HTTPServerKit;
-		};
-		AB00000000000000000E1D00 /* PBXContainerItemProxy */ = {
-			isa = PBXContainerItemProxy;
-			containerPortal = AA0000000000000000000099 /* ODataKit.xcodeproj */;
-			proxyType = 2;
-			remoteGlobalIDString = D7BA1954D987FDFF19FEE609;
-			remoteInfo = OTelKit;
-		};
-		AB00000000000000000E0000 /* PBXContainerItemProxy */ = {
-			isa = PBXContainerItemProxy;
-			containerPortal = AA0000000000000000000099 /* ODataKit.xcodeproj */;
-			proxyType = 1;
-			remoteGlobalIDString = AA0000000000000000000006;
-			remoteInfo = ODataKit;
-		};
-		AB00000000000000000E0100 /* PBXContainerItemProxy */ = {
-			isa = PBXContainerItemProxy;
-			containerPortal = AA0000000000000000000099 /* ODataKit.xcodeproj */;
-			proxyType = 2;
-			remoteGlobalIDString = AA0000000000000000000007;
-			remoteInfo = ODataKit;
+			remoteGlobalIDString = 5C30F5597E6C2517354354B7;
+			remoteInfo = ODataSync;
 		};
 		AA0000000000000000000098 /* PBXContainerItemProxy */ = {
 			isa = PBXContainerItemProxy;
@@ -105,6 +60,69 @@
 			remoteGlobalIDString = AA0000000000000000000003;
 			remoteInfo = ODataIncrementalStore;
 		};
+		AB00000000000000000E0000 /* PBXContainerItemProxy */ = {
+			isa = PBXContainerItemProxy;
+			containerPortal = AA0000000000000000000099 /* ODataKit.xcodeproj */;
+			proxyType = 1;
+			remoteGlobalIDString = AA0000000000000000000006;
+			remoteInfo = ODataKit;
+		};
+		AB00000000000000000E0100 /* PBXContainerItemProxy */ = {
+			isa = PBXContainerItemProxy;
+			containerPortal = AA0000000000000000000099 /* ODataKit.xcodeproj */;
+			proxyType = 2;
+			remoteGlobalIDString = AA0000000000000000000007;
+			remoteInfo = ODataKit;
+		};
+		AB00000000000000000E1000 /* PBXContainerItemProxy */ = {
+			isa = PBXContainerItemProxy;
+			containerPortal = AA0000000000000000000099 /* ODataKit.xcodeproj */;
+			proxyType = 1;
+			remoteGlobalIDString = AA000000000000000000000A;
+			remoteInfo = ODataService;
+		};
+		AB00000000000000000E1100 /* PBXContainerItemProxy */ = {
+			isa = PBXContainerItemProxy;
+			containerPortal = AA0000000000000000000099 /* ODataKit.xcodeproj */;
+			proxyType = 2;
+			remoteGlobalIDString = AA000000000000000000000B;
+			remoteInfo = ODataService;
+		};
+		AB00000000000000000E1600 /* PBXContainerItemProxy */ = {
+			isa = PBXContainerItemProxy;
+			containerPortal = AA0000000000000000000099 /* ODataKit.xcodeproj */;
+			proxyType = 1;
+			remoteGlobalIDString = 9828CC078A88AE7706B232C7;
+			remoteInfo = HTTPServerKit;
+		};
+		AB00000000000000000E1700 /* PBXContainerItemProxy */ = {
+			isa = PBXContainerItemProxy;
+			containerPortal = AA0000000000000000000099 /* ODataKit.xcodeproj */;
+			proxyType = 2;
+			remoteGlobalIDString = A21CEFC6F685318B7798AD60;
+			remoteInfo = HTTPServerKit;
+		};
+		AB00000000000000000E1C00 /* PBXContainerItemProxy */ = {
+			isa = PBXContainerItemProxy;
+			containerPortal = AA0000000000000000000099 /* ODataKit.xcodeproj */;
+			proxyType = 1;
+			remoteGlobalIDString = 4CBB61F9CEEAF8A9C5A1F7CF;
+			remoteInfo = OTelKit;
+		};
+		AB00000000000000000E1D00 /* PBXContainerItemProxy */ = {
+			isa = PBXContainerItemProxy;
+			containerPortal = AA0000000000000000000099 /* ODataKit.xcodeproj */;
+			proxyType = 2;
+			remoteGlobalIDString = D7BA1954D987FDFF19FEE609;
+			remoteInfo = OTelKit;
+		};
+		ADE942EDE1EFDF75145BAB8F /* PBXContainerItemProxy */ = {
+			isa = PBXContainerItemProxy;
+			containerPortal = AA0000000000000000000099 /* ODataKit.xcodeproj */;
+			proxyType = 1;
+			remoteGlobalIDString = 7F1CE30E03D845ACEF6B15CD;
+			remoteInfo = ODataSync;
+		};
 /* End PBXContainerItemProxy section */
 
 /* Begin PBXCopyFilesBuildPhase section */
@@ -119,6 +137,7 @@
 				AB00000000000000000E1A00 /* HTTPServerKit.framework in Embed Frameworks */,
 				AB00000000000000000E2000 /* OTelKit.framework in Embed Frameworks */,
 				AB00000000000000000E0400 /* ODataKit.framework in Embed Frameworks */,
+				7C316FF0434F39E08F5E7DA4 /* ODataSync.framework in Embed Frameworks */,
 			);
 			name = "Embed Frameworks";
 			runOnlyForDeploymentPostprocessing = 0;
@@ -126,34 +145,36 @@
 /* End PBXCopyFilesBuildPhase section */
 
 /* Begin PBXFileReference section */
+		4F1065873BF3739CF0BCBE48 /* WBSync.m */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.c.objc; path = WBSync.m; sourceTree = "<group>"; };
+		989B3DD1FA5D11C2457D88F5 /* WBSync.h */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.c.h; path = WBSync.h; sourceTree = "<group>"; };
 		AA0000000000000000000009 /* Workbench.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = Workbench.app; sourceTree = BUILT_PRODUCTS_DIR; };
-		AA0000000000000000000099 /* ODataKit.xcodeproj */ = {isa = PBXFileReference; lastKnownFileType = "wrapper.pb-project"; name = ODataKit.xcodeproj; path = ../../ODataKit.xcodeproj; sourceTree = "<group>"; };
-		AA0000000000000000000095 /* Cocoa.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = Cocoa.framework; path = System/Library/Frameworks/Cocoa.framework; sourceTree = SDKROOT; };
 		AA000000000000000000003D /* CoreData.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = CoreData.framework; path = System/Library/Frameworks/CoreData.framework; sourceTree = SDKROOT; };
-		AA000000000000000000009C /* ../../Xcode/Configs/Debug.xcconfig */ = {isa = PBXFileReference; lastKnownFileType = text.xcconfig; path = ../../Xcode/Configs/Debug.xcconfig; sourceTree = "<group>"; };
-		AA000000000000000000009D /* ../../Xcode/Configs/Release.xcconfig */ = {isa = PBXFileReference; lastKnownFileType = text.xcconfig; path = ../../Xcode/Configs/Release.xcconfig; sourceTree = "<group>"; };
 		AA000000000000000000008B /* main.m */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.objc; path = main.m; sourceTree = "<group>"; };
 		AA000000000000000000008D /* WorkbenchController.m */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.objc; path = WorkbenchController.m; sourceTree = "<group>"; };
 		AA000000000000000000008F /* WorkbenchEngine.m */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.objc; path = WorkbenchEngine.m; sourceTree = "<group>"; };
+		AA0000000000000000000091 /* Catalog.xcdatamodeld */ = {isa = PBXFileReference; lastKnownFileType = wrapper.xcdatamodeld; name = Catalog.xcdatamodeld; path = ../Catalog/Catalog.xcdatamodeld; sourceTree = "<group>"; };
+		AA0000000000000000000095 /* Cocoa.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = Cocoa.framework; path = System/Library/Frameworks/Cocoa.framework; sourceTree = SDKROOT; };
+		AA0000000000000000000099 /* ODataKit.xcodeproj */ = {isa = PBXFileReference; lastKnownFileType = "wrapper.pb-project"; name = ODataKit.xcodeproj; path = ../../ODataKit.xcodeproj; sourceTree = "<group>"; };
+		AA000000000000000000009C /* Debug.xcconfig */ = {isa = PBXFileReference; lastKnownFileType = text.xcconfig; path = ../../Xcode/Configs/Debug.xcconfig; sourceTree = "<group>"; };
+		AA000000000000000000009D /* Release.xcconfig */ = {isa = PBXFileReference; lastKnownFileType = text.xcconfig; path = ../../Xcode/Configs/Release.xcconfig; sourceTree = "<group>"; };
 		AA000000000000000000009E /* WorkbenchController.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = WorkbenchController.h; sourceTree = "<group>"; };
 		AA000000000000000000009F /* WorkbenchEngine.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = WorkbenchEngine.h; sourceTree = "<group>"; };
-		AA0000000000000000000091 /* Catalog.xcdatamodeld */ = {isa = PBXFileReference; lastKnownFileType = wrapper.xcdatamodeld; name = Catalog.xcdatamodeld; path = ../Catalog/Catalog.xcdatamodeld; sourceTree = "<group>"; };
 		AA00000000000000000000B1 /* WorkbenchWindow.xib */ = {isa = PBXFileReference; lastKnownFileType = file.xib; path = WorkbenchWindow.xib; sourceTree = "<group>"; };
-		AA0000000000000000000E03 /* PlanWindow.xib */ = {isa = PBXFileReference; lastKnownFileType = file.xib; path = PlanWindow.xib; sourceTree = "<group>"; };
-		AA0000000000000000000E01 /* ExchangeWindow.xib */ = {isa = PBXFileReference; lastKnownFileType = file.xib; path = ExchangeWindow.xib; sourceTree = "<group>"; };
-		AB00000000000000000000C1 /* Assets.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; path = Assets.xcassets; sourceTree = "<group>"; };
 		AA00000000000000000000C2 /* WorkbenchController+SelfTest.m */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.objc; path = "WorkbenchController+SelfTest.m"; sourceTree = "<group>"; };
-		AA00000000000000000000C4 /* WBConnection.m */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.objc; path = "WBConnection.m"; sourceTree = "<group>"; };
-		AA00000000000000000000C6 /* WBQuery.m */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.objc; path = "WBQuery.m"; sourceTree = "<group>"; };
-		AA00000000000000000000C8 /* WBResults.m */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.objc; path = "WBResults.m"; sourceTree = "<group>"; };
-		AA00000000000000000000E1 /* WBTraces.m */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.objc; path = "WBTraces.m"; sourceTree = "<group>"; };
-		AA00000000000000000000CA /* WorkbenchSupport.m */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.objc; path = "WorkbenchSupport.m"; sourceTree = "<group>"; };
-		AA00000000000000000000D1 /* WBConnection.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = "WBConnection.h"; sourceTree = "<group>"; };
-		AA00000000000000000000D2 /* WBQuery.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = "WBQuery.h"; sourceTree = "<group>"; };
-		AA00000000000000000000D3 /* WBResults.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = "WBResults.h"; sourceTree = "<group>"; };
-		AA00000000000000000000E2 /* WBTraces.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = "WBTraces.h"; sourceTree = "<group>"; };
-		AA00000000000000000000D4 /* WorkbenchSupport.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = "WorkbenchSupport.h"; sourceTree = "<group>"; };
+		AA00000000000000000000C4 /* WBConnection.m */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.objc; path = WBConnection.m; sourceTree = "<group>"; };
+		AA00000000000000000000C6 /* WBQuery.m */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.objc; path = WBQuery.m; sourceTree = "<group>"; };
+		AA00000000000000000000C8 /* WBResults.m */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.objc; path = WBResults.m; sourceTree = "<group>"; };
+		AA00000000000000000000CA /* WorkbenchSupport.m */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.objc; path = WorkbenchSupport.m; sourceTree = "<group>"; };
+		AA00000000000000000000D1 /* WBConnection.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = WBConnection.h; sourceTree = "<group>"; };
+		AA00000000000000000000D2 /* WBQuery.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = WBQuery.h; sourceTree = "<group>"; };
+		AA00000000000000000000D3 /* WBResults.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = WBResults.h; sourceTree = "<group>"; };
+		AA00000000000000000000D4 /* WorkbenchSupport.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = WorkbenchSupport.h; sourceTree = "<group>"; };
 		AA00000000000000000000D5 /* WorkbenchController+Private.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = "WorkbenchController+Private.h"; sourceTree = "<group>"; };
+		AA00000000000000000000E1 /* WBTraces.m */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.objc; path = WBTraces.m; sourceTree = "<group>"; };
+		AA00000000000000000000E2 /* WBTraces.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = WBTraces.h; sourceTree = "<group>"; };
+		AA0000000000000000000E01 /* ExchangeWindow.xib */ = {isa = PBXFileReference; lastKnownFileType = file.xib; path = ExchangeWindow.xib; sourceTree = "<group>"; };
+		AA0000000000000000000E03 /* PlanWindow.xib */ = {isa = PBXFileReference; lastKnownFileType = file.xib; path = PlanWindow.xib; sourceTree = "<group>"; };
+		AB00000000000000000000C1 /* Assets.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; path = Assets.xcassets; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -168,13 +189,14 @@
 				AB00000000000000000E0300 /* ODataKit.framework in Frameworks */,
 				AA0000000000000000000094 /* Cocoa.framework in Frameworks */,
 				AA0000000000000000000096 /* CoreData.framework in Frameworks */,
+				09B9ED482C7470BB3085B8B5 /* ODataSync.framework in Frameworks */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
 /* End PBXFrameworksBuildPhase section */
 
 /* Begin PBXGroup section */
-		AA00000000000000000000A1 /* Project */ = {
+		AA00000000000000000000A1 = {
 			isa = PBXGroup;
 			children = (
 				AA00000000000000000000A2 /* Workbench */,
@@ -210,20 +232,19 @@
 				AA0000000000000000000E01 /* ExchangeWindow.xib */,
 				AB00000000000000000000C1 /* Assets.xcassets */,
 				AA0000000000000000000091 /* Catalog.xcdatamodeld */,
+				4F1065873BF3739CF0BCBE48 /* WBSync.m */,
+				989B3DD1FA5D11C2457D88F5 /* WBSync.h */,
 			);
 			name = Workbench;
 			sourceTree = "<group>";
 		};
-		AA00000000000000000000A6 /* Products */ = {
+		AA00000000000000000000A3 /* Configs */ = {
 			isa = PBXGroup;
 			children = (
-				AA0000000000000000000093 /* ODataIncrementalStore.framework */,
-				AB00000000000000000E1200 /* ODataService.framework */,
-				AB00000000000000000E1800 /* HTTPServerKit.framework */,
-				AB00000000000000000E1E00 /* OTelKit.framework */,
-				AB00000000000000000E0200 /* ODataKit.framework */,
+				AA000000000000000000009C /* Debug.xcconfig */,
+				AA000000000000000000009D /* Release.xcconfig */,
 			);
-			name = Products;
+			name = Configs;
 			sourceTree = "<group>";
 		};
 		AA00000000000000000000A4 /* Frameworks */ = {
@@ -243,13 +264,17 @@
 			name = Products;
 			sourceTree = "<group>";
 		};
-		AA00000000000000000000A3 /* Configs */ = {
+		AA00000000000000000000A6 /* Products */ = {
 			isa = PBXGroup;
 			children = (
-				AA000000000000000000009C /* Debug.xcconfig */,
-				AA000000000000000000009D /* Release.xcconfig */,
+				AA0000000000000000000093 /* ODataIncrementalStore.framework */,
+				AB00000000000000000E1200 /* ODataService.framework */,
+				AB00000000000000000E1800 /* HTTPServerKit.framework */,
+				AB00000000000000000E1E00 /* OTelKit.framework */,
+				AB00000000000000000E0200 /* ODataKit.framework */,
+				5B310E12D8EC70C276FBABC7 /* ODataSync.framework */,
 			);
-			name = Configs;
+			name = Products;
 			sourceTree = "<group>";
 		};
 /* End PBXGroup section */
@@ -272,6 +297,7 @@
 				AB00000000000000000E1B00 /* PBXTargetDependency */,
 				AB00000000000000000E2100 /* PBXTargetDependency */,
 				AB00000000000000000E0500 /* PBXTargetDependency */,
+				EF3D532ADFBB9D375633B61D /* PBXTargetDependency */,
 			);
 			name = Workbench;
 			productName = Workbench;
@@ -318,6 +344,27 @@
 /* End PBXProject section */
 
 /* Begin PBXReferenceProxy section */
+		5B310E12D8EC70C276FBABC7 /* ODataSync.framework */ = {
+			isa = PBXReferenceProxy;
+			fileType = wrapper.framework;
+			path = ODataSync.framework;
+			remoteRef = 249D3B095272DA403494C228 /* PBXContainerItemProxy */;
+			sourceTree = BUILT_PRODUCTS_DIR;
+		};
+		AA0000000000000000000093 /* ODataIncrementalStore.framework */ = {
+			isa = PBXReferenceProxy;
+			fileType = wrapper.framework;
+			path = ODataIncrementalStore.framework;
+			remoteRef = AA000000000000000000009A /* PBXContainerItemProxy */;
+			sourceTree = BUILT_PRODUCTS_DIR;
+		};
+		AB00000000000000000E0200 /* ODataKit.framework */ = {
+			isa = PBXReferenceProxy;
+			fileType = wrapper.framework;
+			path = ODataKit.framework;
+			remoteRef = AB00000000000000000E0100 /* PBXContainerItemProxy */;
+			sourceTree = BUILT_PRODUCTS_DIR;
+		};
 		AB00000000000000000E1200 /* ODataService.framework */ = {
 			isa = PBXReferenceProxy;
 			fileType = wrapper.framework;
@@ -337,20 +384,6 @@
 			fileType = wrapper.framework;
 			path = OTelKit.framework;
 			remoteRef = AB00000000000000000E1D00 /* PBXContainerItemProxy */;
-			sourceTree = BUILT_PRODUCTS_DIR;
-		};
-		AB00000000000000000E0200 /* ODataKit.framework */ = {
-			isa = PBXReferenceProxy;
-			fileType = wrapper.framework;
-			path = ODataKit.framework;
-			remoteRef = AB00000000000000000E0100 /* PBXContainerItemProxy */;
-			sourceTree = BUILT_PRODUCTS_DIR;
-		};
-		AA0000000000000000000093 /* ODataIncrementalStore.framework */ = {
-			isa = PBXReferenceProxy;
-			fileType = wrapper.framework;
-			path = ODataIncrementalStore.framework;
-			remoteRef = AA000000000000000000009A /* PBXContainerItemProxy */;
 			sourceTree = BUILT_PRODUCTS_DIR;
 		};
 /* End PBXReferenceProxy section */
@@ -384,12 +417,23 @@
 				AA00000000000000000000C7 /* WBResults.m in Sources */,
 				AA00000000000000000000E0 /* WBTraces.m in Sources */,
 				AA00000000000000000000C9 /* WorkbenchSupport.m in Sources */,
+				942C23BF5ED1072A27E86199 /* WBSync.m in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
 /* End PBXSourcesBuildPhase section */
 
 /* Begin PBXTargetDependency section */
+		AA00000000000000000000AA /* PBXTargetDependency */ = {
+			isa = PBXTargetDependency;
+			name = ODataIncrementalStore;
+			targetProxy = AA0000000000000000000098 /* PBXContainerItemProxy */;
+		};
+		AB00000000000000000E0500 /* PBXTargetDependency */ = {
+			isa = PBXTargetDependency;
+			name = ODataKit;
+			targetProxy = AB00000000000000000E0000 /* PBXContainerItemProxy */;
+		};
 		AB00000000000000000E1500 /* PBXTargetDependency */ = {
 			isa = PBXTargetDependency;
 			name = ODataService;
@@ -405,15 +449,10 @@
 			name = OTelKit;
 			targetProxy = AB00000000000000000E1C00 /* PBXContainerItemProxy */;
 		};
-		AB00000000000000000E0500 /* PBXTargetDependency */ = {
+		EF3D532ADFBB9D375633B61D /* PBXTargetDependency */ = {
 			isa = PBXTargetDependency;
-			name = ODataKit;
-			targetProxy = AB00000000000000000E0000 /* PBXContainerItemProxy */;
-		};
-		AA00000000000000000000AA /* PBXTargetDependency */ = {
-			isa = PBXTargetDependency;
-			name = ODataIncrementalStore;
-			targetProxy = AA0000000000000000000098 /* PBXContainerItemProxy */;
+			name = ODataSync;
+			targetProxy = ADE942EDE1EFDF75145BAB8F /* PBXContainerItemProxy */;
 		};
 /* End PBXTargetDependency section */
 
@@ -436,20 +475,18 @@
 			isa = XCBuildConfiguration;
 			baseConfigurationReference = AA000000000000000000009C /* Debug.xcconfig */;
 			buildSettings = {
+				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				ASSETCATALOG_COMPILER_GENERATE_SWIFT_ASSET_SYMBOL_EXTENSIONS = NO;
+				CLANG_WARN_QUOTED_INCLUDE_IN_FRAMEWORK_HEADER = NO;
 				COMBINE_HIDPI_IMAGES = YES;
+				ENABLE_HARDENED_RUNTIME = NO;
 				INFOPLIST_KEY_CFBundleDisplayName = "OIS Workbench";
 				INFOPLIST_KEY_LSApplicationCategoryType = "public.app-category.developer-tools";
 				INFOPLIST_KEY_NSHumanReadableCopyright = "Copyright (C) 2026 OIS contributors. LGPL-2.1-or-later.";
 				INFOPLIST_KEY_NSPrincipalClass = NSApplication;
-				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
-				LD_RUNPATH_SEARCH_PATHS = (
-					"@executable_path/../Frameworks",
-				);
-				PRODUCT_BUNDLE_IDENTIFIER = "io.github.ashalkhakov.ODataIncrementalStore.Workbench";
+				LD_RUNPATH_SEARCH_PATHS = "@executable_path/../Frameworks";
+				PRODUCT_BUNDLE_IDENTIFIER = io.github.ashalkhakov.ODataIncrementalStore.Workbench;
 				PRODUCT_NAME = "$(TARGET_NAME)";
-				ENABLE_HARDENED_RUNTIME = NO;
-				CLANG_WARN_QUOTED_INCLUDE_IN_FRAMEWORK_HEADER = NO;
 			};
 			name = Debug;
 		};
@@ -457,40 +494,38 @@
 			isa = XCBuildConfiguration;
 			baseConfigurationReference = AA000000000000000000009D /* Release.xcconfig */;
 			buildSettings = {
+				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				ASSETCATALOG_COMPILER_GENERATE_SWIFT_ASSET_SYMBOL_EXTENSIONS = NO;
+				CLANG_WARN_QUOTED_INCLUDE_IN_FRAMEWORK_HEADER = NO;
 				COMBINE_HIDPI_IMAGES = YES;
+				ENABLE_HARDENED_RUNTIME = NO;
 				INFOPLIST_KEY_CFBundleDisplayName = "OIS Workbench";
 				INFOPLIST_KEY_LSApplicationCategoryType = "public.app-category.developer-tools";
 				INFOPLIST_KEY_NSHumanReadableCopyright = "Copyright (C) 2026 OIS contributors. LGPL-2.1-or-later.";
 				INFOPLIST_KEY_NSPrincipalClass = NSApplication;
-				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
-				LD_RUNPATH_SEARCH_PATHS = (
-					"@executable_path/../Frameworks",
-				);
-				PRODUCT_BUNDLE_IDENTIFIER = "io.github.ashalkhakov.ODataIncrementalStore.Workbench";
+				LD_RUNPATH_SEARCH_PATHS = "@executable_path/../Frameworks";
+				PRODUCT_BUNDLE_IDENTIFIER = io.github.ashalkhakov.ODataIncrementalStore.Workbench;
 				PRODUCT_NAME = "$(TARGET_NAME)";
-				ENABLE_HARDENED_RUNTIME = NO;
-				CLANG_WARN_QUOTED_INCLUDE_IN_FRAMEWORK_HEADER = NO;
 			};
 			name = Release;
 		};
 /* End XCBuildConfiguration section */
 
 /* Begin XCConfigurationList section */
-		AA00000000000000000000AC /* Build configuration list for PBXProject "Workbench" */ = {
-			isa = XCConfigurationList;
-			buildConfigurations = (
-				AA00000000000000000000AD /* Debug */,
-				AA00000000000000000000AE /* Release */,
-			);
-			defaultConfigurationIsVisible = 0;
-			defaultConfigurationName = Release;
-		};
 		AA00000000000000000000A7 /* Build configuration list for PBXNativeTarget "Workbench" */ = {
 			isa = XCConfigurationList;
 			buildConfigurations = (
 				AA00000000000000000000AF /* Debug */,
 				AA00000000000000000000B0 /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
+		AA00000000000000000000AC /* Build configuration list for PBXProject "Workbench" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				AA00000000000000000000AD /* Debug */,
+				AA00000000000000000000AE /* Release */,
 			);
 			defaultConfigurationIsVisible = 0;
 			defaultConfigurationName = Release;

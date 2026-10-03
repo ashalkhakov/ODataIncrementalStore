@@ -612,6 +612,7 @@ static void OISAddChildren(NSXMLElement *parent, NSArray<NSXMLElement *> *childr
         record[@"FilterSegmentSupported"] = @YES;
         record[@"TypecastSegmentSupported"] = @YES;
         if ([restriction isEqualToString:@"Update"]) record[@"DeltaUpdateSupported"] = @YES;
+        if ([restriction isEqualToString:@"Update"] && ![self.restrictions[setName] containsObject:@"Upsert"]) record[@"Upsertable"] = @YES;
       }
       if (record.count) annotations[[NSString stringWithFormat:@"Org.OData.Capabilities.V1.%@Restrictions", restriction]] = record;
     }
@@ -705,6 +706,11 @@ static NSString * const OISEdm = @"http://docs.oasis-open.org/odata/ns/edm";
     NSXMLElement *schema = OISElement(@"Schema", @[ @"Namespace", ns ]);
     [schema addNamespace:[NSXMLNode namespaceWithName:@"" stringValue:OISEdm]];
     OISAddChildren(schema, schemas[ns]);
+    // Its version, which clients name in $schemaversion (Core is referenced:
+    // the container's ODataVersions is a Core term).
+    if (self.schemaVersion.length && [ns isEqualToString:self.namespaceName]) {
+      OISAddChildren(schema, [self annotations:@{ [OISCore stringByAppendingString:@".SchemaVersion"]: self.schemaVersion }]);
+    }
     [services addChild:schema];
   }
   [edmx addChild:services];

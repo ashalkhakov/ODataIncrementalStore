@@ -488,13 +488,18 @@ static BOOL OISConditionAllows(NSString *condition, NSString *current)
 
 - (void)insert
 {
+  [self insertWithKey:nil];
+}
+
+- (void)insertWithKey:(NSDictionary *)key
+{
   if (!self.handler.allowsInsert) {
     [self methodNotAllowed:@[ @"GET" ]];
     return;
   }
   NSAttributeDescription *media = [self.service.writer mediaAttributeOfEntity:self.entity];
   NSString *given = [self.request valueForHeader:@"Content-Type"].lowercaseString;
-  if (media && given.length && ![given hasPrefix:@"application/json"]) {
+  if (!key && media && given.length && ![given hasPrefix:@"application/json"]) {
     [self insertMedia:self.entity media:media];
     return;
   }
@@ -522,6 +527,17 @@ static BOOL OISConditionAllows(NSString *condition, NSString *current)
   if (!values) {
     [self failPlanning:error];
     return;
+  }
+  // An upsert's key is the URL's.
+  for (NSString *name in key) {
+    id given = values[name];
+    if (given && given != [NSNull null] && ![given isEqual:key[name]]) {
+      NSAttributeDescription *attribute = OISRootEntity(entity).attributesByName[name];
+      [self fail:400 message:[NSString stringWithFormat:@"The body's %@ is not the key the URL names",
+                                                       attribute ? [self.mapper propertyForAttribute:attribute] : name]];
+      return;
+    }
+    values[name] = key[name];
   }
   NSString *expansion = [self expansionOfBody:body entity:entity];
   if (expansion.length) self.responseOptions = [ODataQueryOptions optionsWithQuery:@{ @"$expand": expansion } error:NULL];
@@ -595,6 +611,13 @@ static BOOL OISConditionAllows(NSString *condition, NSString *current)
 {
   if (!self.handler.allowsUpdate) {
     [self methodNotAllowed:@[ @"GET" ]];
+    return;
+  }
+  // If-None-Match: * only creates (an upsert's); a list of ETags refuses
+  // the entity in one of those versions.
+  NSString *unless = [self.request valueForHeader:@"If-None-Match"];
+  if (unless.length && OISConditionAllows(unless, [self etagOf:self.object])) {
+    [self fail:412 message:[unless rangeOfString:@"*"].location != NSNotFound ? @"The entity exists" : @"The entity is in that version"];
     return;
   }
   NSDictionary *body = [self bodyJSON];

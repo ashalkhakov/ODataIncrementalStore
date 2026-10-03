@@ -251,7 +251,7 @@ static HSRequest *OISHostRequest(NSURLRequest *request)
 // raises for arithmetic on a key path's collection operator,
 // products.@count * 20) as 501, not as the service failing.
 static NSString *OISStringFromHistoryToken(NSPersistentHistoryToken *token);
-static BOOL OISHistoryTokenFromString(NSString *string, NSPersistentHistoryToken **token);
+static BOOL OISHistoryTokenFromString(NSString *string, NSPersistentHistoryToken **token, NSDate **issued);
 
 static NSArray *OISFetch(NSManagedObjectContext *context, NSFetchRequest *fetchRequest, NSError **error)
 {
@@ -325,6 +325,7 @@ static NSArray *OISFetch(NSManagedObjectContext *context, NSFetchRequest *fetchR
   _nonSortableProperties = [NSSet set];
   _allowsUpdate = YES;
   _allowsDelete = YES;
+  _allowsUpsert = YES;
   _tracksChanges = YES;
   return self;
 }
@@ -453,8 +454,17 @@ static NSArray *OISFetch(NSManagedObjectContext *context, NSFetchRequest *fetchR
 - (ODataChanges *)changesSince:(NSString *)token request:(ODataRequest *)request reply:(ODataReply *)reply
 {
   NSPersistentHistoryToken *since = nil;
-  if (!OISHistoryTokenFromString(token, &since)) {
+  NSDate *issued = nil;
+  if (!OISHistoryTokenFromString(token, &since, &issued)) {
     [reply failWithError:ODataServiceError(400, [NSString stringWithFormat:@"$deltatoken=%@ is not one this service wrote", token])];
+    return nil;
+  }
+  // Given before the history was pruned up to: changes made after it may be
+  // gone (FreeCoreData does not say so itself, as Apple's history does).
+  NSDate *pruned = [self.service historyPrunedBefore];
+  // In milliseconds, as tokens say.
+  if (issued && pruned && (long long)(issued.timeIntervalSince1970 * 1000) < (long long)(pruned.timeIntervalSince1970 * 1000)) {
+    [reply failWithError:ODataServiceError(410, @"The delta link has expired; read the set again")];
     return nil;
   }
   NSError *error = nil;
@@ -468,7 +478,6 @@ static NSArray *OISFetch(NSManagedObjectContext *context, NSFetchRequest *fetchR
     return nil;
   }
   NSMutableOrderedSet *changed = [NSMutableOrderedSet orderedSet];
-  NSMutableSet *born = [NSMutableSet set];
   NSMutableDictionary *deleted = [NSMutableDictionary dictionary];
   NSPersistentHistoryToken *last = since;
   for (NSPersistentHistoryTransaction *transaction in result.result) {
@@ -478,7 +487,6 @@ static NSArray *OISFetch(NSManagedObjectContext *context, NSFetchRequest *fetchR
       if (![oid.entity isKindOfEntity:self.entity]) continue;
       switch (change.changeType) {
         case NSPersistentHistoryChangeTypeInsert:
-          [born addObject:oid];
           [changed addObject:oid];
           break;
         case NSPersistentHistoryChangeTypeUpdate: {
@@ -490,12 +498,12 @@ static NSArray *OISFetch(NSManagedObjectContext *context, NSFetchRequest *fetchR
           break;
         }
         case NSPersistentHistoryChangeTypeDelete:
+          // Made and gone since the link, it is still told: a client may
+          // have it all the same (one that made it after reading the
+          // link: an offline device's upload). One that never had it
+          // finds nothing to remove.
           [changed removeObject:oid];
-          if ([born containsObject:oid]) {
-            [born removeObject:oid];
-          } else {
-            deleted[oid] = change.tombstone ?: @{};
-          }
+          deleted[oid] = change.tombstone ?: @{};
           break;
       }
     }
@@ -507,6 +515,11 @@ static NSArray *OISFetch(NSManagedObjectContext *context, NSFetchRequest *fetchR
 }
 
 - (NSPredicate *)predicateForVisibleObjectsInRequest:(ODataRequest *)request
+{
+  return nil;
+}
+
+- (NSString *)scopeVersionForRequest:(ODataRequest *)request
 {
   return nil;
 }
@@ -660,18 +673,30 @@ BOOL ODataJSONNestedWithin(NSData *data, NSUInteger depth)
 
 
 
-// A delta token: the persistent history token, archived, in base64url;
-// 0 for the start of history (a store with none yet may have no token).
+// A delta token: when it was given (milliseconds), a dot, and the
+// persistent history token, archived, in base64url (0 for the start of
+// history: a store with none yet may have no token). Every change after
+// the token's place was made after it was given, so history pruned up to
+// a later time may have lost some: the token has expired.
 static NSString *OISStringFromHistoryToken(NSPersistentHistoryToken *token)
 {
-  if (!token) return @"0";
+  long long issued = (long long)([[NSDate date] timeIntervalSince1970] * 1000);
+  if (!token) return [NSString stringWithFormat:@"%lld.0", issued];
   NSData *data = [NSKeyedArchiver archivedDataWithRootObject:token requiringSecureCoding:YES error:NULL];
-  return data ? ODataBase64URLString(data) : nil;
+  return data ? [NSString stringWithFormat:@"%lld.%@", issued, ODataBase64URLString(data)] : nil;
 }
 
-static BOOL OISHistoryTokenFromString(NSString *string, NSPersistentHistoryToken **token)
+static BOOL OISHistoryTokenFromString(NSString *string, NSPersistentHistoryToken **token, NSDate **issued)
 {
   *token = nil;
+  *issued = nil;
+  // One given before tokens said when (no dot: base64url has none).
+  NSRange dot = [string rangeOfString:@"."];
+  if (dot.location != NSNotFound) {
+    long long ms = [[string substringToIndex:dot.location] longLongValue];
+    if (ms > 0) *issued = [NSDate dateWithTimeIntervalSince1970:(NSTimeInterval)ms / 1000];
+    string = [string substringFromIndex:NSMaxRange(dot)];
+  }
   if ([string isEqualToString:@"0"]) return YES;
   NSData *data = ODataDataFromBase64(string);
   if (!data.length) return NO;
@@ -1160,10 +1185,18 @@ static NSUInteger OISExpandDepth(ODataQueryOptions *options)
   self.JSONAliases = JSONAliases;
   self.deltaToken = query[@"$deltatoken"];
   for (NSString *key in query) {
-    // One schema, the model's: any version (*) is it, another is none.
-    if ([key isEqualToString:@"$schemaversion"] && ![query[key] isEqualToString:@"*"]) {
-      [self fail:404 message:[NSString stringWithFormat:@"The service has no schema version %@", query[key]]];
-      return NO;
+    // The schema the request is made against (Part 1, 11.2.12): the
+    // service's (its modelVersion, or *); another only where the service
+    // can read what such a client writes (upgradeBody), and its $metadata
+    // never, the service having only its own.
+    if ([key isEqualToString:@"$schemaversion"]) {
+      NSString *asked = query[key];
+      BOOL current = [asked isEqualToString:@"*"] || (self.service.modelVersion && [asked isEqualToString:self.service.modelVersion]);
+      if (!current && (!self.service.upgradeBody || [self.resourcePath isEqualToString:@"$metadata"])) {
+        [self fail:404 message:[NSString stringWithFormat:@"The service has no schema version %@", asked]];
+        return NO;
+      }
+      if (!current) self.schemaVersion = asked;
     }
     if ([@[ @"$index" ] containsObject:key]) {
       [self fail:501 message:[NSString stringWithFormat:@"%@ is not supported", key]];
@@ -1730,6 +1763,7 @@ static NSUInteger OISExpandDepth(ODataQueryOptions *options)
 {
   NSDictionary *key = [self keyFromParts:parts entity:self.entity];
   if (!key) return;
+  self.lookedUpKey = key;
   ODataReply *reply = [self replyWithAction:@selector(didFindObject:)];
   NSManagedObject *object = [self.handler objectWithKey:key request:self.request reply:reply];
   [reply returned:object];
@@ -1747,6 +1781,7 @@ static NSUInteger OISExpandDepth(ODataQueryOptions *options)
     if (![members containsObject:object]) object = nil;
   }
   if (!object) {
+    if ([self upsertsMissingEntity]) return;
     [self fail:404 message:[NSString stringWithFormat:@"%@ has no such entity", self.request.path.segments[self.index > 0 ? self.index - 1 : 0].name]];
     return;
   }
@@ -1759,6 +1794,26 @@ static NSUInteger OISExpandDepth(ODataQueryOptions *options)
   self.navigation = nil;
   self.index++;
   [self walk];
+}
+
+// PATCH or PUT to an entity set's key that names no entity: an upsert
+// creates it (ODataEntitySetHandler's allowsUpsert). Not through a
+// navigation property, and only as the path's last segment.
+- (BOOL)upsertsMissingEntity
+{
+  NSString *method = self.request.method;
+  if (![method isEqualToString:@"PATCH"] && ![method isEqualToString:@"PUT"]) return NO;
+  if (self.parent || self.index + 1 != self.request.path.segments.count) return NO;
+  if (!self.handler.allowsInsert || !self.handler.allowsUpsert || !self.lookedUpKey) return NO;
+  if ([self ifMatchHeader]) {
+    [self fail:412 message:@"There is no such entity to match"];
+    return YES;
+  }
+  self.index++;
+  if (![self negotiateFormat]) return YES;
+  self.request.entity = self.entity;
+  [self insertWithKey:self.lookedUpKey];
+  return YES;
 }
 
 #pragma mark Dispatch
@@ -3886,14 +3941,41 @@ static id OISSparseAtPath(NSArray<NSString *> *path, NSArray<NSNumber *> *collec
 - (NSString *)nextLinkWithToken:(NSUInteger)token
 {
   NSString *skip = [NSString stringWithFormat:@"%lu", (unsigned long)token];
-  if (self.trackingToken) skip = [skip stringByAppendingFormat:@"~%@", self.trackingToken];
+  if (self.trackingToken) skip = [skip stringByAppendingFormat:@"~%@", [self scopedToken:self.trackingToken]];
   return [self linkReplacing:@"$skiptoken" with:skip];
 }
 
 // This request's delta link: its options, and where its changes begin.
 - (NSString *)deltaLink
 {
-  return [self linkReplacing:@"$deltatoken" with:self.trackingToken];
+  return [self linkReplacing:@"$deltatoken" with:[self scopedToken:self.trackingToken]];
+}
+
+// The caller's scope version (the handler's), as a link carries it after
+// the handler's token: token*version. A history token is Base64URL, which
+// has no *.
+- (NSString *)scopeOfLinks
+{
+  NSString *version = [self.handler scopeVersionForRequest:self.request];
+  return version.length ? ODataBase64URLString([version dataUsingEncoding:NSUTF8StringEncoding]) : nil;
+}
+
+- (NSString *)scopedToken:(NSString *)token
+{
+  NSString *scope = [self scopeOfLinks];
+  return scope ? [token stringByAppendingFormat:@"*%@", scope] : token;
+}
+
+- (NSString *)tokenCheckingScope:(NSString *)link
+{
+  NSRange star = [link rangeOfString:@"*" options:NSBackwardsSearch];
+  NSString *given = star.location == NSNotFound ? nil : [link substringFromIndex:NSMaxRange(star)];
+  NSString *now = [self scopeOfLinks];
+  if (!(given == now || [given isEqualToString:now])) {
+    [self fail:410 message:@"What this set shows you has changed since that link; read it again"];
+    return nil;
+  }
+  return star.location == NSNotFound ? link : [link substringToIndex:star.location];
 }
 
 // This request again, with this option (and neither $skiptoken nor
@@ -4121,6 +4203,9 @@ static id OISSparseAtPath(NSArray<NSString *> *path, NSArray<NSNumber *> *collec
     [self fail:410 message:@"The changes of this set are not tracked; read it again"];
     return;
   }
+  NSString *token = [self tokenCheckingScope:self.deltaToken];
+  if (!token) return;
+  self.deltaToken = token;
   [self runPlan:[self planDelta] then:@selector(didRunDelta)];
 }
 
@@ -4132,10 +4217,62 @@ static id OISSparseAtPath(NSArray<NSString *> *path, NSArray<NSNumber *> *collec
 // What changed since a delta token, as the handler says: the changed
 // objects, the deleted ones' paths, and the token a delta link goes on
 // from. NO once answered, with the error.
+// Whether an expression reads only what a deleted row's tombstone kept
+// (values): constants, and key paths that begin with a kept attribute.
+static BOOL OISReadsOnlyKept(NSExpression *expression, NSDictionary *values)
+{
+  switch (expression.expressionType) {
+    case NSConstantValueExpressionType:
+      return YES;
+    case NSKeyPathExpressionType: {
+      NSString *first = [expression.keyPath componentsSeparatedByString:@"."].firstObject;
+      return first.length && values[first] != nil;
+    }
+    case NSAggregateExpressionType:
+      for (id member in expression.collection) {
+        if (![member isKindOfClass:[NSExpression class]] || !OISReadsOnlyKept(member, values)) return NO;
+      }
+      return YES;
+    case NSFunctionExpressionType:
+      for (NSExpression *argument in expression.arguments) {
+        if (!OISReadsOnlyKept(argument, values)) return NO;
+      }
+      return expression.operand.expressionType == NSConstantValueExpressionType || OISReadsOnlyKept(expression.operand, values);
+    default:
+      return NO;
+  }
+}
+
+static BOOL OISPredicateReadsOnlyKept(NSPredicate *predicate, NSDictionary *values)
+{
+  if ([predicate isKindOfClass:[NSCompoundPredicate class]]) {
+    for (NSPredicate *sub in [(NSCompoundPredicate *)predicate subpredicates]) {
+      if (!OISPredicateReadsOnlyKept(sub, values)) return NO;
+    }
+    return YES;
+  }
+  if ([predicate isKindOfClass:[NSComparisonPredicate class]]) {
+    NSComparisonPredicate *comparison = (NSComparisonPredicate *)predicate;
+    return comparison.comparisonPredicateModifier == NSDirectPredicateModifier &&
+           comparison.predicateOperatorType != NSCustomSelectorPredicateOperatorType &&
+           OISReadsOnlyKept(comparison.leftExpression, values) && OISReadsOnlyKept(comparison.rightExpression, values);
+  }
+  NSString *format = predicate.predicateFormat;
+  return [format isEqualToString:@"TRUEPREDICATE"] || [format isEqualToString:@"FALSEPREDICATE"];
+}
+
 - (BOOL)takeChanges:(ODataChanges *)changes
 {
   NSMutableArray *paths = [NSMutableArray array];
+  // A deletion is the business of those who could see the row: by what its
+  // tombstone kept, when the predicate reads nothing else; else everyone's.
+  NSPredicate *visible = [self.handler predicateForVisibleObjectsInRequest:self.request];
   for (NSDictionary *deleted in changes.deleted) {
+    NSDictionary *values = deleted[@"values"];
+    if (visible && [values isKindOfClass:[NSDictionary class]] && OISPredicateReadsOnlyKept(visible, values) &&
+        ![visible evaluateWithObject:values]) {
+      continue;
+    }
     NSString *path = [self canonicalPathOfValues:deleted[@"values"] entity:deleted[@"entity"]];
     if (!path) {
       [self fail:410 message:@"A deleted entity's key was not kept; read the set again"];
@@ -4748,7 +4885,20 @@ static NSNumber *OISScalarReturnValue(NSInvocation *invocation, char type)
     [self fail:400 message:@"The body must be a JSON object"];
     return nil;
   }
-  self.parsedBody = ODataNormalizedControlInformation(json, [self.request valueForHeader:@"OData-Version"] ?: self.request.version);
+  NSDictionary *body = ODataNormalizedControlInformation(json, [self.request valueForHeader:@"OData-Version"] ?: self.request.version);
+  // A client on another version of the schema: its body made this one's.
+  ODataService *service = self.service;
+  NSString *version = self.schemaVersion;
+  if (version.length && service.upgradeBody) {
+    NSError *error = nil;
+    NSDictionary *upgraded = service.upgradeBody(body, version, self.request.entity, self.request, &error);
+    if (![upgraded isKindOfClass:[NSDictionary class]]) {
+      [self respondError:error ?: ODataServiceError(400, [NSString stringWithFormat:@"A client on model version %@ cannot write this", version])];
+      return nil;
+    }
+    body = upgraded;
+  }
+  self.parsedBody = body;
   return self.parsedBody;
 }
 
@@ -4857,6 +5007,8 @@ static NSNumber *OISScalarReturnValue(NSInvocation *invocation, char type)
   // Asynchronous requests, by status monitor.
   NSMutableDictionary<NSString *, OISAsyncJob *> *_jobs;
   NSLock *_jobsLock;
+  // When history was last pruned (historyRetention).
+  NSDate *_historyPruned;
 }
 
 - (instancetype)initWithPersistentStoreCoordinator:(NSPersistentStoreCoordinator *)coordinator serviceRoot:(NSURL *)serviceRoot
@@ -4870,6 +5022,12 @@ static NSNumber *OISScalarReturnValue(NSInvocation *invocation, char type)
   _namespaceName = @"Default";
   _containerName = @"Container";
   _maxVersion = @"4.01";
+  // Its version identifiers (Xcode's Core Data Model Identifier), the
+  // empty one left out: none, no version.
+  NSArray *identifiers = [[[_model.versionIdentifiers.allObjects valueForKey:@"description"]
+                             filteredArrayUsingPredicate:[NSPredicate predicateWithFormat:@"length > 0"]]
+                             sortedArrayUsingSelector:@selector(compare:)];
+  _modelVersion = identifiers.count ? [identifiers componentsJoinedByString:@","] : nil;
   _replyTimeout = 60;
   _tracer = [OTTracer tracerNamed:@"ODataService" version:nil];
   _repeatabilityDuration = 3600;
@@ -5149,6 +5307,7 @@ static NSNumber *OISScalarReturnValue(NSInvocation *invocation, char type)
       if (!handler.allowsInsert) [refused addObject:@"Insert"];
       if (!handler.allowsUpdate) [refused addObject:@"Update"];
       if (!handler.allowsDelete) [refused addObject:@"Delete"];
+      if (!handler.allowsUpsert || !handler.allowsInsert || !handler.allowsUpdate) [refused addObject:@"Upsert"];
       if (handler.isOpenType) {
         [open addObject:OISRootEntity(handler.entity).name];
         [signature appendFormat:@";%@ open", set];
@@ -5237,6 +5396,8 @@ static NSNumber *OISScalarReturnValue(NSInvocation *invocation, char type)
     NSString *schemeName = [authorization[@"Name"] isKindOfClass:[NSString class]] ? authorization[@"Name"] : nil;
     [signature appendFormat:@";scheme:%@", schemeName ?: @""];
     [signature appendFormat:@";container:%lu", (unsigned long)container.description.hash];
+    // The schema's version, which may be set after the first request too.
+    [signature appendFormat:@";schema:%@", self.modelVersion ?: @""];
     NSString *xml = self.metadataByVersion[signature];
     if (!xml) {
       self.writer.containerAnnotations = container;
@@ -5246,6 +5407,7 @@ static NSNumber *OISScalarReturnValue(NSInvocation *invocation, char type)
       self.writer.securitySchemeName = schemeName;
       self.writer.openEntityNames = open;
       self.writer.entitySetAnnotations = setAnnotations;
+      self.writer.schemaVersion = self.modelVersion;
       xml = [self.writer XMLStringForVersion:version];
       self.metadataByVersion[signature] = xml;
     }
@@ -5309,8 +5471,70 @@ static NSNumber *OISScalarReturnValue(NSInvocation *invocation, char type)
   [self startExchange:exchange principal:principal given:YES];
 }
 
+#pragma mark History
+
+- (BOOL)pruneHistoryBeforeDate:(NSDate *)date error:(NSError **)error
+{
+  NSManagedObjectContext *context = [[NSManagedObjectContext alloc] initWithConcurrencyType:NSPrivateQueueConcurrencyType];
+  context.persistentStoreCoordinator = self.coordinator;
+  __block BOOL pruned = NO;
+  __block NSError *failure = nil;
+  [context performBlockAndWait:^{
+    NSError *e = nil;
+    pruned = [context executeRequest:[NSPersistentHistoryChangeRequest deleteHistoryBeforeDate:date] error:&e] != nil;
+    failure = e;
+  }];
+  if (pruned) {
+    // How far: a delta token given before this has expired. No further
+    // than now: what comes after was not there to prune.
+    NSDate *now = [NSDate date];
+    if ([date compare:now] == NSOrderedDescending) date = now;
+    @synchronized (self) {
+      NSPersistentStore *store = self.coordinator.persistentStores.firstObject;
+      NSMutableDictionary *metadata = store ? [[self.coordinator metadataForPersistentStore:store] mutableCopy] : nil;
+      NSDate *before = metadata[@"ODataService.historyPrunedBefore"];
+      if (store && (!before || [before compare:date] == NSOrderedAscending)) {
+        metadata[@"ODataService.historyPrunedBefore"] = date;
+        [self.coordinator setMetadata:metadata forPersistentStore:store];
+      }
+    }
+  }
+  if (error) *error = failure;
+  return pruned;
+}
+
+- (NSDate *)historyPrunedBefore
+{
+  @synchronized (self) {
+    NSPersistentStore *store = self.coordinator.persistentStores.firstObject;
+    id before = store ? [self.coordinator metadataForPersistentStore:store][@"ODataService.historyPrunedBefore"] : nil;
+    return [before isKindOfClass:[NSDate class]] ? before : nil;
+  }
+}
+
+// Pruned as requests come, no more often than a tenth of the retention
+// (between a minute and an hour), off the request's way.
+- (void)pruneHistoryIfDue
+{
+  NSTimeInterval retention = self.historyRetention;
+  if (retention <= 0) return;
+  NSTimeInterval every = MIN(MAX(retention / 10, 60), 3600);
+  @synchronized (self) {
+    if (_historyPruned && -[_historyPruned timeIntervalSinceNow] < every) return;
+    _historyPruned = [NSDate date];
+  }
+  NSDate *before = [NSDate dateWithTimeIntervalSinceNow:-retention];
+  dispatch_async(dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_BACKGROUND, 0), ^{
+    NSError *error = nil;
+    if (![self pruneHistoryBeforeDate:before error:&error]) {
+      HSLogMessage(HSLogLevelWarn, @"ODataService", nil, @"persistent history was not pruned: %@", error.localizedDescription);
+    }
+  });
+}
+
 - (void)startExchange:(ODataExchange *)exchange principal:(HSPrincipal *)principal given:(BOOL)given
 {
+  [self pruneHistoryIfDue];
   if (self.maxURLLength && exchange.request.URL.absoluteString.length > self.maxURLLength) {
     NSDictionary *error = @{ @"error": @{ @"code": @"414", @"message": [NSString stringWithFormat:@"The URL is longer than the service takes (%lu characters)",
                                                                                                    (unsigned long)self.maxURLLength] } };

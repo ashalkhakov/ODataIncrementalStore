@@ -4,6 +4,8 @@
 #   OTelKit                OpenTelemetry tracing: spans, sampling, OTLP export
 #   HTTPServerKit          an HTTP server for APIs: the listener (GCDWebServer),
 #                          a pipeline and router, sign-in, observability
+#   ODataSync              an offline Core Data store kept in sync with a
+#                          service (docs/offline-sync.md)
 #   ODataService           the server: a Core Data store served over OData,
 #                          and as an HTTPServerKit application's module
 # (ois-serve, and the loopback check over it, are in Server/).
@@ -37,13 +39,14 @@ endif
 OIS_INCLUDE_DIRS = -ISource/ODataKit/include -ISource/ODataIncrementalStore/include -ISource/ODataService/include \
 	-ISource/HTTPServerKit/include -ISource/ODataKit/include/ODataKit \
 	-ISource/ODataIncrementalStore/include/ODataIncrementalStore -ISource/ODataService/include/ODataService \
-	-ISource/HTTPServerKit/include/HTTPServerKit -ISource/OTelKit/include -ISource/OTelKit/include/OTelKit
+	-ISource/HTTPServerKit/include/HTTPServerKit -ISource/OTelKit/include -ISource/OTelKit/include/OTelKit \
+	-ISource/ODataSync/include -ISource/ODataSync/include/ODataSync
 OIS_OBJCFLAGS = -fobjc-arc -fblocks -fobjc-runtime=gnustep-2.0 \
 	-fconstant-string-class=NSConstantString -fobjc-exceptions -Wall -Wno-unused-parameter
 ADDITIONAL_OBJCFLAGS += $(OIS_OBJCFLAGS)
 
 # In the order they depend on each other (which make -j is told below).
-LIBRARY_NAME = ODataKit ODataIncrementalStore OTelKit HTTPServerKit ODataService
+LIBRARY_NAME = ODataKit ODataIncrementalStore OTelKit HTTPServerKit ODataService ODataSync
 
 include ThirdParty/GCDWebServer/GCDWebServer.make
 # The version httpserverkit_build_info says.
@@ -213,16 +216,50 @@ ODataService_LIBRARIES_DEPEND_UPON += -lHTTPServerKit -lOTelKit -lODataKit -lCor
 ODataService_OBJCFLAGS += $(OIS_OBJCFLAGS)
 ODataService_CFLAGS += -fblocks
 
+ODataSync_NEEDS_GUI = no
+ODataSync_OBJC_FILES = \
+	Source/ODataSync/ODSClock.m \
+	Source/ODataSync/ODSCodec.m \
+	Source/ODataSync/ODSConflicts.m \
+	Source/ODataSync/ODSDownloader.m \
+	Source/ODataSync/ODSModel.m \
+	Source/ODataSync/ODSRecorder.m \
+	Source/ODataSync/ODSRequests.m \
+	Source/ODataSync/ODSStore.m \
+	Source/ODataSync/ODSUploader.m \
+	Source/ODataSync/ODSVersions.m \
+	Source/ODataSync/ODataSyncChange.m \
+	Source/ODataSync/ODataSyncEngine.m \
+	Source/ODataSync/ODataSyncPeerServer.m \
+	Source/ODataSync/ODataSyncRemote.m \
+	Source/ODataSync/ODataSyncService.m
+
+ODataSync_HEADER_FILES = \
+	ODataSync.h \
+	ODataSyncEngine.h \
+	ODataSyncPeerServer.h \
+	ODataSyncService.h
+
+ODataSync_HEADER_FILES_DIR = Source/ODataSync/include/ODataSync
+ODataSync_HEADER_FILES_INSTALL_DIR = ODataSync
+ODataSync_INCLUDE_DIRS = $(OIS_INCLUDE_DIRS) -ISource/ODataSync
+ODataSync_LIB_DIRS = -L./obj
+ODataSync_LIBRARIES_DEPEND_UPON += -lODataService -lHTTPServerKit -lODataIncrementalStore -lOTelKit -lODataKit -lCoreData -ldispatch
+ODataSync_OBJCFLAGS += $(OIS_OBJCFLAGS)
+ODataSync_CFLAGS += -fblocks
+
 -include GNUmakefile.preamble
 include $(GNUSTEP_MAKEFILES)/library.make
 -include GNUmakefile.postamble
 
 # make -j builds the libraries side by side: the client and the service
 # link against libODataKit, so it is built first; the service against
-# libHTTPServerKit too, and the client and the server against libOTelKit.
+# libHTTPServerKit too, and the client and the server against libOTelKit;
+# ODataSync against the client and the service (its peer server).
 ODataIncrementalStore.all.library.variables ODataService.all.library.variables: ODataKit.all.library.variables
 ODataService.all.library.variables: HTTPServerKit.all.library.variables
 HTTPServerKit.all.library.variables ODataIncrementalStore.all.library.variables: OTelKit.all.library.variables
+ODataSync.all.library.variables: ODataIncrementalStore.all.library.variables ODataService.all.library.variables
 
 ODATAKIT_SCRIPTS = Scripts
 # What an application builds against the installed libraries with: a

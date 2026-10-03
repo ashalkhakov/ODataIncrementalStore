@@ -176,7 +176,17 @@ NSManagedObjectModel *WorkbenchBuiltInModel(NSURL *catalogURL)
   NSEntityDescription *product = model.entitiesByName[@"Product"];
   if (!product) return nil;
   NSAttributeDescription *version = WBAttribute(@"version", NSInteger64AttributeType, @"Version", YES, @{ @"OData.etag": @"YES" });
-  product.properties = [product.properties arrayByAddingObject:version];
+  // When it was changed last, as a hybrid logical clock says (ODataSync's
+  // last writer wins, in the Sync window): the device stamps it, and so does
+  // the service's own change.
+  NSAttributeDescription *lastChanged = WBAttribute(@"lastChanged", NSStringAttributeType, @"LastChanged", YES, nil);
+  // What each version has seen (ODataSync's version vector), which the
+  // service and the device keep alike.
+  NSAttributeDescription *versions = WBAttribute(@"versions", NSStringAttributeType, @"Versions", YES, nil);
+  product.properties = [product.properties arrayByAddingObjectsFromArray:@[ version, lastChanged, versions ]];
+  NSMutableDictionary *productInfo = [product.userInfo mutableCopy] ?: [NSMutableDictionary dictionary];
+  productInfo[@"ODataSync.versions"] = @"versions";
+  product.userInfo = productInfo;
   NSEntityDescription *budget = WBEntity(@"Budget", @"Budgets", @{ @"OData.periodStart": @"from", @"OData.periodEnd": @"to", @"OData.objectKey": @"category" }, @[
     WBAttribute(@"id", NSInteger64AttributeType, @"BudgetID", NO, @{ @"OData.key": @"YES" }),
     WBAttribute(@"category", NSStringAttributeType, @"CategoryName", NO, nil),
@@ -285,7 +295,17 @@ static NSDate *WBDay(NSString *day)
 
 #pragma mark - The engine
 
+NSString *WorkbenchServiceStamp(NSString *previous)
+{
+  // Past the wall clock, and past the stamp it replaces.
+  long long now = (long long)([[NSDate date] timeIntervalSince1970] * 1000);
+  long long seen = previous.length >= 21 ? [[previous substringToIndex:16] longLongValue] : 0;
+  if (now > seen) return [NSString stringWithFormat:@"%016lld.0000.service0", now];
+  return [NSString stringWithFormat:@"%016lld.%04d.service0", seen, [[previous substringWithRange:NSMakeRange(17, 4)] intValue] + 1];
+}
+
 @implementation WorkbenchEngine {
+  ODataSyncService *_sync;
   NSURL *_modelURL;
   NSMutableArray *_log;
   NSURL *_storeURL;
@@ -300,6 +320,11 @@ static NSDate *WBDay(NSString *day)
   _log = [NSMutableArray array];
   if (![self startService]) return nil;
   return self;
+}
+
+- (NSURL *)modelURL
+{
+  return _modelURL;
 }
 
 - (NSArray *)log
@@ -329,12 +354,18 @@ static NSDate *WBDay(NSString *day)
 
 - (NSString *)changeAtTheService
 {
+  return [self changeProductAtTheService:nil];
+}
+
+- (NSString *)changeProductAtTheService:(NSNumber *)productID
+{
   NSManagedObjectContext *context = [[NSManagedObjectContext alloc] initWithConcurrencyType:NSPrivateQueueConcurrencyType];
   context.persistentStoreCoordinator = self.service.coordinator;
   __block NSString *what = @"Nothing to change.";
   [context performBlockAndWait:^{
     NSFetchRequest *fetch = [NSFetchRequest fetchRequestWithEntityName:@"Product"];
     fetch.sortDescriptors = @[ [NSSortDescriptor sortDescriptorWithKey:@"id" ascending:YES] ];
+    if (productID) fetch.predicate = [NSPredicate predicateWithFormat:@"id == %@", productID];
     fetch.fetchLimit = 1;
     NSManagedObject *product = [[context executeFetchRequest:fetch error:NULL] firstObject];
     if (!product) return;
@@ -342,6 +373,7 @@ static NSDate *WBDay(NSString *day)
     NSDecimalNumber *raised = [price decimalNumberByAdding:[NSDecimalNumber one]];
     [product setValue:raised forKey:@"unitPrice"];
     [product setValue:@([[product valueForKey:@"version"] longLongValue] + 1) forKey:@"version"];
+    [product setValue:WorkbenchServiceStamp([product valueForKey:@"lastChanged"]) forKey:@"lastChanged"];
     NSError *error = nil;
     what = [context save:&error] ? [NSString stringWithFormat:@"At the service, %@ now costs %@ (version %@).",
                                                               [product valueForKey:@"name"], raised, [product valueForKey:@"version"]]
@@ -360,6 +392,8 @@ static NSDate *WBDay(NSString *day)
   if (!model.entities.count) return NO;
   NSEntityDescription *product = model.entitiesByName[@"Product"];
   product.managedObjectClassName = NSStringFromClass([WorkbenchProduct class]);
+  // Deletions kept, for ODataSync's devices (not served: no key).
+  [ODataSyncService addBookkeepingToModel:model configuration:nil];
   NSPersistentStoreCoordinator *coordinator = [[NSPersistentStoreCoordinator alloc] initWithManagedObjectModel:model];
   NSError *error = nil;
   // SQLite, which keeps persistent history: the service's delta links.
@@ -379,6 +413,8 @@ static NSDate *WBDay(NSString *day)
   service.serviceOperations = [[WorkbenchCatalogOperations alloc] init];
   // GET <root>/$explain/<path>: the Explain button's plans.
   service.explains = YES;
+  // Histories compared, deletions kept: the Sync window's devices.
+  _sync = [[ODataSyncService alloc] initWithService:service];
   for (NSString *problem in service.operationProblems) NSLog(@"Workbench: %@", problem);
   for (NSString *problem in service.metadataProblems) NSLog(@"Workbench: %@", problem);
   _service = service;
