@@ -5,47 +5,20 @@
 //
 // Both implement <ODataTransport> and report every exchange as a
 // WorkbenchLogEntry. WorkbenchEngine never opens a socket: it is the
-// library's own server, an ODataService over the built-in model (below)
+// library's own server, an ODataService over the built-in model (WorkbenchModel.h)
 // in a SQLite store of its own that keeps persistent history, seeded with a
 // few of Northwind's rows, with a few operations of its own.
 
 #pragma once
-#import <ODataIncrementalStore/ODataIncrementalStore.h>
+#import "WorkbenchModel.h"
 #import <ODataService/ODataService.h>
 #import <ODataSync/ODataSyncService.h>
 
 NS_ASSUME_NONNULL_BEGIN
 
-// The built-in service's model, the client's as well: the Catalog, and
-// what it does not show. Products have a version (ETags, and so
-// conflicts); Budgets have application time (a category's budget over
-// time: $at, $from and $to, Temporal.Update and the rest); Pictures are
-// media entities (Download, Upload); EquipmentUnits are an open type,
-// each kind with dynamic properties of its own. Keys are kept in a deletion's
-// tombstone, so its sets' changes can be followed by delta links.
-FOUNDATION_EXPORT NSManagedObjectModel * _Nullable WorkbenchBuiltInModel(NSURL *catalogURL);
-// The configuration of it the built-in service serves (and the client's
-// store holds): every entity but AuditEntry, the application's own record
-// of what its actions did.
-FOUNDATION_EXPORT NSString * const WorkbenchServedConfiguration;
 // A stamp of the service's own changes, as ODataSync's hybrid logical clock
 // writes them: past the wall clock and past the stamp it replaces.
 FOUNDATION_EXPORT NSString *WorkbenchServiceStamp(NSString *_Nullable previous);
-
-// One exchange, as it went over the wire: nothing shortened.
-@interface WorkbenchLogEntry : NSObject
-@property (copy) NSString *method;
-@property (copy) NSString *URL;
-@property (nonatomic) NSInteger status;                              // 0: no answer
-@property (copy, nullable) NSDictionary<NSString *, NSString *> *requestHeaders;
-@property (copy, nullable) NSData *requestData;
-@property (copy, nullable) NSDictionary<NSString *, NSString *> *responseHeaders;
-@property (copy, nullable) NSData *responseData;
-@property (copy, nullable) NSString *failure;                        // why there was no answer
-@property (strong) NSDate *date;
-@property (nonatomic) NSTimeInterval duration;
-@property (copy) NSString *storeHint;                                // what the store was doing, where known
-@end
 
 @interface WorkbenchEngine : NSObject <ODataTransport>
 @property (nonatomic, readonly, copy) NSURL *serviceRoot;

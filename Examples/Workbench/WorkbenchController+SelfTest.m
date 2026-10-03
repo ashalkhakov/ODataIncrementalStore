@@ -837,6 +837,42 @@ static void WBCheck(BOOL ok, NSString *what, NSString *detail)
   [device.window orderOut:nil];
 }
 
+// Sync > Serve on the Network: the built-in service over HTTP, and a device
+// that reaches it as the Device app does on an iPhone (the network, a
+// store of its own), its edit at the service.
+- (void)checkServedOnTheNetwork
+{
+  self.connection.servePort = 18640 + arc4random_uniform(1000);
+  [self toggleServeNetwork:nil];
+  [self waitWhileConnecting];
+  NSURL *root = self.connection.servedRoot;
+  if (!root && [self.connection.serveFailure hasSuffix:@"no address on a network"]) {
+    // A container with no network of its own: nothing to serve on.
+    fprintf(stderr, "SKIP  sync: a device over the network (no address on a network)\n");
+    [self toggleServeNetwork:nil];
+    [self waitWhileConnecting];
+    return;
+  }
+  WorkbenchDevice *device = root ? [[WorkbenchDevice alloc] initWithModelURL:self.connection.engine.modelURL serviceRoot:root
+                                                                   transport:ODataDefaultTransport() storeURL:nil] : nil;
+  NSError *error = nil;
+  BOOL synced = [device syncAndWait:&error];
+  NSArray *products = [device objectsOfEntity:@"Product"];
+  NSNumber *first = [products.firstObject valueForKey:@"id"];
+  if (products.count) [device setValue:@"Chai (from the network)" ofAttribute:@"name" object:products.firstObject];
+  synced = synced && [device syncAndWait:&error];
+  // Its log hears of each exchange on the main thread.
+  [[NSRunLoop currentRunLoop] runMode:NSDefaultRunLoopMode beforeDate:[NSDate dateWithTimeIntervalSinceNow:0.3]];
+  BOOL overHTTP = [device.requests.lastObject.URL hasPrefix:root.absoluteString ?: @"-"] && device.requests.lastObject.status == 200;
+  WBCheck(synced && products.count > 0 && overHTTP && [[self serviceValue:@"name" ofProduct:first] isEqual:@"Chai (from the network)"],
+          @"sync: a device over the network, the service served on it",
+          [NSString stringWithFormat:@"%@; %lu products; first request %@ %ld; at the service %@; %@", root ?: self.connection.serveFailure,
+                                     (unsigned long)products.count, device.requests.lastObject.URL, (long)device.requests.lastObject.status,
+                                     [self serviceValue:@"name" ofProduct:first], error.localizedDescription ?: @"no error"]);
+  [self toggleServeNetwork:nil];
+  [self waitWhileConnecting];
+}
+
 - (void)runSelfTest
 {
   NSArray *names = @[ @"Built-in", @"Northwind", @"TripPin" ];
@@ -882,6 +918,7 @@ static void WBCheck(BOOL ok, NSString *what, NSString *detail)
       [self checkBuiltInFeatures];
       [self checkBuiltInOpenType];
       [self checkSync];
+      [self checkServedOnTheNetwork];
     }
     if (service != WBServiceBuiltIn) WBCheck(![self.explainButton isEnabled], @"explain: only at the built-in service", nil);
     if (service != WBServiceTripPin) continue;

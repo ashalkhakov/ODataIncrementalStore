@@ -37,6 +37,7 @@ need the framework project in the same workspace).
 | `ODataKitTests` | XCTest for all three: snapshots, the service in process, no network (⌘U) |
 | `Catalog` | A small AppKit client |
 | `Workbench` | The workbench |
+| `Device` | The Workbench's device on iOS ([iOS](#ios)) |
 
 ```
 xcodebuild -workspace ODataKit.xcworkspace -scheme ODataKitTests -destination 'platform=macOS' test
@@ -48,6 +49,35 @@ A client app embeds `ODataKit.framework` and `ODataIncrementalStore.framework`
 (Workbench does). The server tools build with plain clang, with no Xcode
 project: `make -C Server` writes `Server/build/ois-serve`, and
 `make -C Server check` runs it over a loopback socket.
+
+## iOS
+
+ODataKit, OTelKit, ODataIncrementalStore and ODataSync build for iOS 15 and
+later (devices and the simulator) as well as for macOS: the same targets in
+`ODataKit.xcodeproj`, the same schemes, chosen by the destination.
+
+```
+xcodebuild -workspace ODataKit.xcworkspace -scheme ODataSync -destination 'generic/platform=iOS Simulator' build
+```
+
+On iOS they are the client's:
+
+- **ODataSync** is the device's part alone: `ODataSyncEngine` and the
+  remotes, the rules, the changes. `ODataSyncPeerServer` and
+  `ODataSyncService` serve (ODataService over HTTPServerKit). Their sources,
+  their headers and the two frameworks are filtered to macOS in the target,
+  and `ODataSync.h` leaves them out on iOS.
+- **ODataService** and **HTTPServerKit** stay macOS (and GNUstep) only.
+- **XML**: Foundation on iOS has no `NSXMLDocument`, which reading and
+  writing `$metadata` (and a generated model) use. `ODataXML.h` names the
+  classes the client uses, `ODataXMLDocument`, `ODataXMLElement` and
+  `ODataXMLNode`: NSXML's where Foundation has them, and on iOS OISXML's,
+  the subset of NSXML they need, over `NSXMLParser`. OISXML is built on
+  every platform and checked against NSXML (`ODataXMLTests`).
+
+An app embeds the frameworks it links. `Examples/Device` is one: the
+Workbench's Sync window on an iPhone ([its README](../Examples/Device/README.md)).
+For a device, it needs your signing team (`Examples/Device/Local.xcconfig`).
 
 ## GNUstep
 
@@ -208,6 +238,8 @@ make -C Tests/Live live      # GNUstep
 - `Examples/Workbench`: the workbench ([its README](../Examples/Workbench/README.md)).
   `Workbench --self-test` drives its window against each service and prints a
   line per check; `--self-test builtin` needs no network.
+- `Examples/Device`: the Workbench's device on iOS, which syncs with a
+  Workbench serving on the network (`Workbench --serve`) ([its README](../Examples/Device/README.md)).
 - `Examples/Catalog`: a smaller client: a table, a predicate, an inspector.
 - `Examples/QuickStart`: the README's first path, one file.
 

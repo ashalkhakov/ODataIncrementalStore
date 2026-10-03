@@ -659,6 +659,9 @@ static NSString *WBRawHeaders(NSDictionary *headers)
   NSMenuItem *show = [menu addItemWithTitle:@"Show Device" action:@selector(showSync:) keyEquivalent:@"y"];
   show.keyEquivalentModifierMask = NSEventModifierFlagCommand | NSEventModifierFlagShift;
   show.target = self;
+  // For a device elsewhere: the Device app, on an iPhone on the same network.
+  [menu addItem:[NSMenuItem separatorItem]];
+  [menu addItemWithTitle:@"Serve on the Network" action:@selector(toggleServeNetwork:) keyEquivalent:@""].target = self;
   NSMenu *main = [NSApp mainMenu];
   if (!main) return;
   NSMenuItem *holder = [[NSMenuItem alloc] initWithTitle:@"Sync" action:NULL keyEquivalent:@""];
@@ -683,6 +686,29 @@ static NSString *WBRawHeaders(NSDictionary *headers)
     _syncWindow = [[WBSyncWindow alloc] initWithEngine:engine];
   }
   return _syncWindow;
+}
+
+- (void)serveOnTheNetworkAtPort:(NSUInteger)port
+{
+  if (port) _connection.servePort = port;
+  if (_connection.servesNetwork) return;
+  [self.servicePopup selectItemAtIndex:WBServiceBuiltIn];
+  self.serviceURLField.stringValue = [WBConnection rootOfService:WBServiceBuiltIn];
+  [self toggleServeNetwork:nil];
+}
+
+// The built-in service served on the network too, or no longer: a new
+// connection to it, at the network's root (its data starts again).
+- (IBAction)toggleServeNetwork:(id)sender
+{
+  (void)sender;
+  _connection.servesNetwork = !_connection.servesNetwork;
+  if (![self builtIn]) {
+    self.statusField.stringValue = _connection.servesNetwork ? @"The built-in service is served on the network once you connect to it."
+                                                             : @"The built-in service is no longer served on the network.";
+    return;
+  }
+  [self connect:nil];
 }
 
 - (IBAction)showSync:(id)sender
@@ -1290,6 +1316,7 @@ static NSString *WBRawHeaders(NSDictionary *headers)
 
 - (BOOL)validateMenuItem:(NSMenuItem *)item
 {
+  if (sel_isEqual(item.action, @selector(toggleServeNetwork:))) item.state = _connection.servesNetwork ? NSOnState : NSOffState;
   if (sel_isEqual(item.action, @selector(changeAtTheService:))) return _connection.engine != nil;
   return YES;
 }

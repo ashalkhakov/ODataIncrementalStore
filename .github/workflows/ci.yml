@@ -71,6 +71,11 @@ jobs:
               -destination 'platform=macOS' -configuration Debug \
               -derivedDataPath "$RUNNER_TEMP/DerivedData" build
           done
+          # The libraries for iOS, and the Device app over them (unsigned:
+          # the simulator's).
+          xcodebuild -workspace ODataKit.xcworkspace -scheme Device \
+            -destination 'generic/platform=iOS Simulator' -configuration Debug \
+            -derivedDataPath "$RUNNER_TEMP/DerivedData-iOS" build
 
       # The snapshots check what the store sends; this checks that real
       # services agree: Microsoft's public Northwind v4 (read) and TripPin

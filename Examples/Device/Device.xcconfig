@@ -1,0 +1,30 @@
+// The Device app: iOS 15 and later, iPhone and iPad. The shared settings
+// (Debug.xcconfig or Release.xcconfig) come first, in the project.
+//
+// On an iPhone it is signed with your team: Xcode's Signing & Capabilities
+// pane, or DEVELOPMENT_TEAM = <your team ID> in Local.xcconfig beside this
+// file (git ignores it). The simulator needs neither.
+
+SUPPORTED_PLATFORMS = iphoneos iphonesimulator
+SDKROOT = iphoneos
+IPHONEOS_DEPLOYMENT_TARGET = 15.0
+TARGETED_DEVICE_FAMILY = 1,2
+LD_RUNPATH_SEARCH_PATHS = $(inherited) @executable_path/Frameworks
+
+PRODUCT_BUNDLE_IDENTIFIER = io.github.ashalkhakov.ODataIncrementalStore.Device
+INFOPLIST_FILE = Info.plist
+INFOPLIST_KEY_CFBundleDisplayName = OIS Device
+INFOPLIST_KEY_NSLocalNetworkUsageDescription = The Device app syncs with the Workbench on your Mac, over the local network.
+INFOPLIST_KEY_UILaunchScreen_Generation = YES
+INFOPLIST_KEY_UISupportedInterfaceOrientations_iPhone = UIInterfaceOrientationPortrait UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight
+INFOPLIST_KEY_UISupportedInterfaceOrientations_iPad = UIInterfaceOrientationPortrait UIInterfaceOrientationPortraitUpsideDown UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight
+
+// WorkbenchModel, WorkbenchDevice and WorkbenchSupport are the Workbench's.
+USER_HEADER_SEARCH_PATHS = $(SRCROOT)/../Workbench
+
+CODE_SIGN_STYLE = Automatic
+CODE_SIGN_IDENTITY = Apple Development
+CODE_SIGN_IDENTITY[sdk=iphonesimulator*] = -
+CODE_SIGNING_REQUIRED[sdk=iphoneos*] = YES
+
+#include? "Local.xcconfig"

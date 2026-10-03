@@ -2,7 +2,10 @@
 // SPDX-License-Identifier: LGPL-2.1-or-later
 
 #import "ODSModel.h"
-#import <ODataService/ODataService.h>
+
+// The mapper's version attribute key (ODataService's ODataUserInfoETag):
+// named here, so that ODataSync's client needs no ODataService (iOS).
+static NSString * const ODSUserInfoETag = @"OData.etag";
 
 NSString * const ODataSyncDirectionKey = @"ODataSync.direction";
 NSString * const ODataSyncConflictsKey = @"ODataSync.conflicts";
@@ -170,7 +173,7 @@ NSAttributeDescription *ODSModifiedAttributeOf(NSEntityDescription *entity)
 - (NSAttributeDescription *)versionAttributeOf:(NSEntityDescription *)entity
 {
   for (NSAttributeDescription *attribute in entity.attributesByName.allValues) {
-    id flag = attribute.userInfo[ODataUserInfoETag];
+    id flag = attribute.userInfo[ODSUserInfoETag];
     if (!([flag isEqual:@"YES"] || [flag isEqual:@YES])) continue;
     switch (attribute.attributeType) {
       case NSInteger16AttributeType:

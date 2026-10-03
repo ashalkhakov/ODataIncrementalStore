@@ -32,3 +32,6 @@ ThirdParty/GCDWebServer/build/
 ThirdParty/GCDWebServer/obj/
 Server/build/
 Server/obj/
+
+# The Device app: your signing team
+Examples/Device/Local.xcconfig

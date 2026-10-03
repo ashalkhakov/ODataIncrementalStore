@@ -7,35 +7,19 @@
 #import <AppKit/AppKit.h>
 #import <ODataSync/ODataSync.h>
 #import "WorkbenchEngine.h"
+#import "WorkbenchDevice.h"
 
 NS_ASSUME_NONNULL_BEGIN
 
-// How the device settles a conflict, as the window's menu lists them.
-typedef NS_ENUM(NSInteger, WBSyncRule) {
-  WBSyncRuleRemoteWins = 0,
-  WBSyncRuleDeviceWins,
-  WBSyncRuleLastWriterWins,
-  WBSyncRuleMergeFields,
-  WBSyncRuleSetAside,  // deferred: an issue, to retry or discard
-};
-
-// A conflict the device met, and how it went.
-@interface WBSyncConflict : NSObject
-@property (nonatomic, readonly) ODataSyncConflict *conflict;
-@property (nonatomic, readonly) ODataSyncResolutionKind outcome;
-@property (nonatomic, readonly) NSDate *date;
-@end
-
-// The device: the built-in model in a SQLite store of its own, with
-// persistent history, whose Categories, Suppliers and Locations come down
-// from the service (down), and whose Products and Stock both sides edit
-// (both); Products are stamped (lastChanged) for last writer wins. It
-// reaches the service through the built-in engine (so its exchanges are in
-// the wire log, and its syncs in Traces), unless offline.
-@interface WBSyncWindow : NSObject <NSTableViewDataSource, NSTableViewDelegate, ODataSyncDelegate>
+// The device's window: a WorkbenchDevice (WorkbenchDevice.h) in a SQLite
+// store of its own, which reaches the service through the built-in engine
+// (so its exchanges are in the wire log, and its syncs in Traces), unless
+// offline.
+@interface WBSyncWindow : NSObject <NSTableViewDataSource, NSTableViewDelegate>
 - (nullable instancetype)initWithEngine:(WorkbenchEngine *)engine NS_DESIGNATED_INITIALIZER;
 - (instancetype)init NS_UNAVAILABLE;
 @property (nonatomic, readonly) WorkbenchEngine *engine;
+@property (nonatomic, readonly) WorkbenchDevice *device;
 @property (nonatomic, readonly) ODataSyncEngine *sync;
 @property (nonatomic, readonly) NSPersistentStoreCoordinator *deviceStore;
 // The device's objects, as the table shows them (the main queue's).

@@ -134,6 +134,9 @@ make -C Examples/Workbench && openapp Examples/Workbench/Workbench.app   # GNUst
 CI packages it on every push (a universal macOS app, a Linux AppImage), and
 attaches both to each release — [its README](Examples/Workbench/README.md).
 
+Its Sync window's device also runs on an iPhone: [the Device app](Examples/Device/README.md)
+syncs over the network with a Workbench that serves its built-in service.
+
 ## What works
 
 - **Reading**: filters (comparisons, `in`, string, date and arithmetic
@@ -154,6 +157,9 @@ attaches both to each release — [its README](Examples/Workbench/README.md).
   Connect, JWTs, a trusted proxy), and 4.0 or 4.01 by what the client asks.
   Reads and writes are planned as a database plans them, and can be
   explained; 4.01's collection writes (`$each`, a delta payload).
+- **iOS** (15 and later): the client (ODataKit, ODataIncrementalStore) and
+  ODataSync's device side; the service and the peer server are macOS and
+  GNUstep only ([building](docs/building.md#ios)).
 - **Checked**: against the snapshot suite on every push, both platforms, and
   against Microsoft's public Northwind and TripPin services.
 
@@ -225,7 +231,7 @@ flowchart LR
 | `Source/HTTPServerKit/` | The HTTP server: the listener (vendored GCDWebServer), pipeline, router, sign-in, logs and metrics, the application |
 | `Source/ODataService/` | The service, its handlers, `$metadata` writer, predicate builder, `$batch`, timelines; `ODataServer.h`, the service as an HTTPServerKit module |
 | `Server/` | `ois-serve`, an example application, the loopback check, deployment examples |
-| `Examples/` | Workbench, Catalog, the quick start |
+| `Examples/` | Workbench, Device (iOS), Catalog, the quick start |
 | `Tools/` | `ois-model` (a model from `$metadata`), `ois-filter` |
 | `Tests/` | XCTest: snapshots of real services, the service over loopback; `Tests/Live/` against Northwind and TripPin |
 | `docs/` | Guides, how it works, conformance, server design |
@@ -237,7 +243,7 @@ flowchart LR
 - [Query plans](docs/query-plan.md) · [Write plans](docs/write-plan.md): how the service plans reads and writes
 - [How it works](docs/how-it-works.md): the mapping, query translation, what runs where
 - [Client conformance](docs/odata-conformance.md): OData v4, item by item
-- [Workbench](Examples/Workbench/README.md)
+- [Workbench](Examples/Workbench/README.md) · [Device (iOS)](Examples/Device/README.md)
 
 ## License
 

@@ -47,6 +47,16 @@ typedef NS_ENUM(NSInteger, WBService) {
 @property (nonatomic, readonly, copy, nullable) NSString *failure;
 // The built-in service, when that is the one.
 @property (nonatomic, readonly, nullable) WorkbenchEngine *engine;
+// The built-in service served on the network too (HTTPServerKit), for a
+// device elsewhere (the Device app, on iOS): at servePort (default 8640),
+// on all interfaces, with no authentication. Its root is then the network
+// one (servedRoot), which its links begin with, in this process as well.
+// Taken at the next connection.
+@property (nonatomic) BOOL servesNetwork;
+@property (nonatomic) NSUInteger servePort;
+@property (nonatomic, readonly, nullable) NSURL *servedRoot;
+// Why it is not served, when it was asked to be.
+@property (nonatomic, readonly, copy, nullable) NSString *serveFailure;
 // How many exchanges the transport in use has started.
 @property (nonatomic, readonly) NSUInteger exchangesStarted;
 // What the service is, in a line: entities, operations, version.

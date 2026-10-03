@@ -8,8 +8,10 @@
 
 /* Begin PBXBuildFile section */
 		09B9ED482C7470BB3085B8B5 /* ODataSync.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = 5B310E12D8EC70C276FBABC7 /* ODataSync.framework */; };
+		0F7E19DF8E054A0C4BF350A2 /* WorkbenchDevice.m in Sources */ = {isa = PBXBuildFile; fileRef = FC7B0FDF2768FE210A1CFD2E /* WorkbenchDevice.m */; };
 		7C316FF0434F39E08F5E7DA4 /* ODataSync.framework in Embed Frameworks */ = {isa = PBXBuildFile; fileRef = 5B310E12D8EC70C276FBABC7 /* ODataSync.framework */; settings = {ATTRIBUTES = (CodeSignOnCopy, RemoveHeadersOnCopy, ); }; };
 		942C23BF5ED1072A27E86199 /* WBSync.m in Sources */ = {isa = PBXBuildFile; fileRef = 4F1065873BF3739CF0BCBE48 /* WBSync.m */; };
+		A17EAFA7B40999E262D97750 /* WorkbenchModel.m in Sources */ = {isa = PBXBuildFile; fileRef = 986F3DA9CF252313A4AFEB95 /* WorkbenchModel.m */; };
 		AA000000000000000000008A /* main.m in Sources */ = {isa = PBXBuildFile; fileRef = AA000000000000000000008B /* main.m */; };
 		AA000000000000000000008C /* WorkbenchController.m in Sources */ = {isa = PBXBuildFile; fileRef = AA000000000000000000008D /* WorkbenchController.m */; };
 		AA000000000000000000008E /* WorkbenchEngine.m in Sources */ = {isa = PBXBuildFile; fileRef = AA000000000000000000008F /* WorkbenchEngine.m */; };
@@ -146,6 +148,8 @@
 
 /* Begin PBXFileReference section */
 		4F1065873BF3739CF0BCBE48 /* WBSync.m */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.c.objc; path = WBSync.m; sourceTree = "<group>"; };
+		91287A5DE82B52D40EC935CE /* WorkbenchDevice.h */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.c.h; path = WorkbenchDevice.h; sourceTree = "<group>"; };
+		986F3DA9CF252313A4AFEB95 /* WorkbenchModel.m */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.c.objc; path = WorkbenchModel.m; sourceTree = "<group>"; };
 		989B3DD1FA5D11C2457D88F5 /* WBSync.h */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.c.h; path = WBSync.h; sourceTree = "<group>"; };
 		AA0000000000000000000009 /* Workbench.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = Workbench.app; sourceTree = BUILT_PRODUCTS_DIR; };
 		AA000000000000000000003D /* CoreData.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = CoreData.framework; path = System/Library/Frameworks/CoreData.framework; sourceTree = SDKROOT; };
@@ -175,6 +179,8 @@
 		AA0000000000000000000E01 /* ExchangeWindow.xib */ = {isa = PBXFileReference; lastKnownFileType = file.xib; path = ExchangeWindow.xib; sourceTree = "<group>"; };
 		AA0000000000000000000E03 /* PlanWindow.xib */ = {isa = PBXFileReference; lastKnownFileType = file.xib; path = PlanWindow.xib; sourceTree = "<group>"; };
 		AB00000000000000000000C1 /* Assets.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; path = Assets.xcassets; sourceTree = "<group>"; };
+		CE18C071E2F64EAF0C84382D /* WorkbenchModel.h */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.c.h; path = WorkbenchModel.h; sourceTree = "<group>"; };
+		FC7B0FDF2768FE210A1CFD2E /* WorkbenchDevice.m */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.c.objc; path = WorkbenchDevice.m; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -234,6 +240,10 @@
 				AA0000000000000000000091 /* Catalog.xcdatamodeld */,
 				4F1065873BF3739CF0BCBE48 /* WBSync.m */,
 				989B3DD1FA5D11C2457D88F5 /* WBSync.h */,
+				CE18C071E2F64EAF0C84382D /* WorkbenchModel.h */,
+				986F3DA9CF252313A4AFEB95 /* WorkbenchModel.m */,
+				91287A5DE82B52D40EC935CE /* WorkbenchDevice.h */,
+				FC7B0FDF2768FE210A1CFD2E /* WorkbenchDevice.m */,
 			);
 			name = Workbench;
 			sourceTree = "<group>";
@@ -418,6 +428,8 @@
 				AA00000000000000000000E0 /* WBTraces.m in Sources */,
 				AA00000000000000000000C9 /* WorkbenchSupport.m in Sources */,
 				942C23BF5ED1072A27E86199 /* WBSync.m in Sources */,
+				A17EAFA7B40999E262D97750 /* WorkbenchModel.m in Sources */,
+				0F7E19DF8E054A0C4BF350A2 /* WorkbenchDevice.m in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
