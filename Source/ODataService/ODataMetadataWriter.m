@@ -706,6 +706,11 @@ static NSString * const OISEdm = @"http://docs.oasis-open.org/odata/ns/edm";
     NSXMLElement *schema = OISElement(@"Schema", @[ @"Namespace", ns ]);
     [schema addNamespace:[NSXMLNode namespaceWithName:@"" stringValue:OISEdm]];
     OISAddChildren(schema, schemas[ns]);
+    // Its version, which clients name in $schemaversion (Core is referenced:
+    // the container's ODataVersions is a Core term).
+    if (self.schemaVersion.length && [ns isEqualToString:self.namespaceName]) {
+      OISAddChildren(schema, [self annotations:@{ [OISCore stringByAppendingString:@".SchemaVersion"]: self.schemaVersion }]);
+    }
     [services addChild:schema];
   }
   [edmx addChild:services];

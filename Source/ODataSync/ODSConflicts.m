@@ -8,9 +8,6 @@
 
 #import "ODSInternal.h"
 
-NSString * const ODataSyncConflictsKey = @"ODataSync.conflicts";
-NSString * const ODataSyncModifiedKey = @"ODataSync.modified";
-NSString * const ODataSyncVersionsKey = @"ODataSync.versions";
 
 #pragma mark - Conflicts and resolutions
 
@@ -101,8 +98,7 @@ static NSString *ODSFingerprint(NSDictionary *values)
 @implementation ODataSyncLastWriterWins
 - (ODataSyncResolution *)resolveConflict:(ODataSyncConflict *)conflict
 {
-  NSString *name = conflict.entity.userInfo[ODataSyncModifiedKey];
-  for (NSEntityDescription *e = conflict.entity.superentity; !name && e; e = e.superentity) name = e.userInfo[ODataSyncModifiedKey];
+  NSString *name = ODSModifiedAttributeOf(conflict.entity).name;
   id local = name ? conflict.local[name] : nil;
   id remote = name ? conflict.remote[name] : nil;
   // A delete has no stamp of its own: the other side's change stands.
@@ -182,7 +178,7 @@ static NSString *ODSFingerprint(NSDictionary *values)
 {
   id<ODataSyncResolving> resolver = [self resolverForEntityName:root.name];
   if (resolver) return resolver;
-  NSString *named = [root.userInfo[ODataSyncConflictsKey] lowercaseString];
+  NSString *named = [self.model conflictRuleOf:root];
   if ([named isEqualToString:@"local"]) return [[ODataSyncLocalWins alloc] init];
   if ([named isEqualToString:@"lastwriter"]) return [[ODataSyncLastWriterWins alloc] init];
   if ([named isEqualToString:@"merge"]) return [[ODataSyncMergeFields alloc] init];
@@ -194,7 +190,7 @@ static NSString *ODSFingerprint(NSDictionary *values)
 - (void)agreeOn:(NSDictionary *)row etag:(NSString *)etag of:(NSEntityDescription *)root keyText:(NSString *)keyText
          remote:(ODataSyncRemote *)remote context:(NSManagedObjectContext *)context
 {
-  NSManagedObject *shadow = [self shadowOf:root.name keyText:keyText remote:remote inContext:context make:row != nil];
+  NSManagedObject *shadow = [self.store shadowOf:root.name keyText:keyText remote:remote inContext:context make:row != nil];
   if (!row) {
     if (shadow) [context deleteObject:shadow];
     return;
@@ -233,6 +229,7 @@ static NSString *ODSFingerprint(NSDictionary *values)
                remote:(ODataSyncRemote *)remote context:(NSManagedObjectContext *)context versions:(BOOL)known
 {
   ODSCodec *codec = self.codec;
+  ODSModel *model = self.model;
   NSManagedObject *object = nil;
   if (known) {
     // The histories said so.
@@ -240,7 +237,7 @@ static NSString *ODSFingerprint(NSDictionary *values)
     if (!object) return NO;
   } else {
     // By the stamps, from a peer.
-    NSAttributeDescription *stamp = [codec modifiedAttributeOf:root];
+    NSAttributeDescription *stamp = [model modifiedAttributeOf:root];
     object = stamp && remote.peer ? [codec objectOfEntity:root key:key inContext:context] : nil;
     id ours = [object valueForKey:stamp.name], theirs = row[[codec.mapper propertyForAttribute:stamp]];
     if (![ours isKindOfClass:[NSString class]] || ![theirs isKindOfClass:[NSString class]] || [ours compare:theirs] != NSOrderedDescending) return NO;
@@ -249,26 +246,9 @@ static NSString *ODSFingerprint(NSDictionary *values)
   // from where this side's went). Taken, it would go round again.
   NSString *keyText = [codec keyTextOf:key entity:root];
   [self agreeOn:row etag:etag of:root keyText:keyText remote:remote context:context];
-  NSManagedObject *entry = [self newEntryOf:root key:key operation:ODataSyncOperationUpdate remote:remote context:context];
+  NSManagedObject *entry = [self.store newEntryOf:root key:key operation:ODataSyncOperationUpdate remote:remote context:context];
   [self sendWhatDiffers:object from:[codec valuesFromJSON:row entity:root] entry:entry context:context];
   return YES;
-}
-
-- (NSManagedObject *)newEntryOf:(NSEntityDescription *)root key:(NSDictionary *)key operation:(ODataSyncOperation)operation
-                         remote:(ODataSyncRemote *)remote context:(NSManagedObjectContext *)context
-{
-  NSManagedObject *entry = [NSEntityDescription insertNewObjectForEntityForName:ODSOutboxEntity inManagedObjectContext:context];
-  NSFetchRequest *last = [NSFetchRequest fetchRequestWithEntityName:ODSOutboxEntity];
-  last.sortDescriptors = @[ [NSSortDescriptor sortDescriptorWithKey:@"sequence" ascending:NO] ];
-  last.fetchLimit = 1;
-  int64_t sequence = [[[[context executeFetchRequest:last error:NULL] firstObject] valueForKey:@"sequence"] longLongValue] + 1;
-  [entry setValue:remote.identifier forKey:@"remote"];
-  [entry setValue:root.name forKey:@"entityType"];
-  [entry setValue:ODSArchive(key) forKey:@"key"];
-  [entry setValue:[self.codec keyTextOf:key entity:root] forKey:@"keyText"];
-  [entry setValue:@(operation) forKey:@"operation"];
-  [entry setValue:@(sequence) forKey:@"sequence"];
-  return entry;
 }
 
 - (void)settleConflictOf:(NSEntityDescription *)root key:(NSDictionary *)key entry:(NSManagedObject *)entry
@@ -282,10 +262,10 @@ static NSString *ODSFingerprint(NSDictionary *values)
 // larger), and a change of this replica's when its values are new to both.
 - (void)setVersionsOf:(NSManagedObject *)object seen:(NSDictionary *)local and:(NSDictionary *)remote changed:(BOOL)changed
 {
-  NSAttributeDescription *attribute = object ? [self.codec versionsAttributeOf:object.entity] : nil;
+  NSAttributeDescription *attribute = object ? [self.model versionsAttributeOf:object.entity] : nil;
   if (!attribute) return;
   NSDictionary *versions = ODSMergeVersions(local, remote);
-  if (changed) versions = ODSMergeVersions(versions, @{ self.shortReplica: @([self nextCount]) });
+  if (changed) versions = ODSMergeVersions(versions, @{ self.clock.shortReplica: @([self.clock nextCount]) });
   [object setValue:ODSTextOfVersions(versions) forKey:attribute.name];
 }
 
@@ -303,8 +283,9 @@ static NSString *ODSFingerprint(NSDictionary *values)
                   remote:(ODataSyncRemote *)remote context:(NSManagedObjectContext *)context
 {
   ODSCodec *codec = self.codec;
+  ODSModel *model = self.model;
   NSString *keyText = [codec keyTextOf:key entity:root];
-  NSManagedObject *shadow = [self shadowOf:root.name keyText:keyText remote:remote inContext:context make:NO];
+  NSManagedObject *shadow = [self.store shadowOf:root.name keyText:keyText remote:remote inContext:context make:NO];
   NSData *kept = [shadow valueForKey:@"values"];
   id baseRow = kept.length ? [NSJSONSerialization JSONObjectWithData:kept options:0 error:NULL] : nil;
   NSMutableDictionary *base = [baseRow isKindOfClass:[NSDictionary class]] ? [[codec valuesFromJSON:baseRow entity:root] mutableCopy] : nil;
@@ -312,13 +293,13 @@ static NSString *ODSFingerprint(NSDictionary *values)
   NSManagedObject *object = deletedHere ? nil : [codec objectOfEntity:root key:key inContext:context];
   NSMutableDictionary *local = object ? [[codec valuesOfObject:object] mutableCopy] : nil;
   NSMutableDictionary *remoteValues = row ? [[codec valuesFromJSON:row entity:root] mutableCopy] : nil;
-  NSAttributeDescription *stamp = [codec modifiedAttributeOf:root];
-  if (stamp && remoteValues) [self witness:remoteValues[stamp.name]];
+  NSAttributeDescription *stamp = [model modifiedAttributeOf:root];
+  if (stamp && remoteValues) [self.clock witness:remoteValues[stamp.name]];
   // What each version has seen: the vectors, which the values compared
   // leave out (they differ whenever the histories do).
-  NSAttributeDescription *versionsAttribute = [codec versionsAttributeOf:root];
+  NSAttributeDescription *versionsAttribute = [model versionsAttributeOf:root];
   NSDictionary *localVersions = object ? [codec versionsOfObject:object]
-                                       : [self deletedVersionsOf:root.name keyText:keyText inContext:context];
+                                       : [self.store deletedVersionsOf:root.name keyText:keyText inContext:context];
   NSDictionary *remoteVersions = row ? [codec versionsOfRow:row entity:root] : deletedVersions ?: @{};
   if (versionsAttribute) {
     [base removeObjectForKey:versionsAttribute.name];
@@ -356,7 +337,7 @@ static NSString *ODSFingerprint(NSDictionary *values)
     [self agreeOn:row etag:etag of:root keyText:keyText remote:remote context:context];
     return;
   }
-  NSArray *all = [[[codec attributesOf:root] valueForKey:@"name"] arrayByAddingObjectsFromArray:[[codec toOnesOf:root] valueForKey:@"name"]];
+  NSArray *all = [[[model attributesOf:root] valueForKey:@"name"] arrayByAddingObjectsFromArray:[[model toOnesOf:root] valueForKey:@"name"]];
   NSMutableSet *everything = [NSMutableSet setWithArray:all];
   if (versionsAttribute) [everything removeObject:versionsAttribute.name];
   NSSet *localChanges = base && local ? ODSChangedNames(base, local) : everything;
@@ -399,7 +380,7 @@ static NSString *ODSFingerprint(NSDictionary *values)
     case ODataSyncMerge: {
       object = [self objectToWrite:root key:key context:context];
       [codec applyValues:resolution.values ?: @{} toObject:object];
-      if (stamp && [resolution.values objectForKey:stamp.name] == nil) [object setValue:[self tick] forKey:stamp.name];
+      if (stamp && [resolution.values objectForKey:stamp.name] == nil) [object setValue:[self.clock tick] forKey:stamp.name];
       if (known || versionsAttribute) {
         NSMutableDictionary *now = [[codec valuesOfObject:object] mutableCopy];
         if (versionsAttribute) [now removeObjectForKey:versionsAttribute.name];

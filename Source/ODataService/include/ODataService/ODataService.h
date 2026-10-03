@@ -42,9 +42,6 @@ NS_ASSUME_NONNULL_BEGIN
 // and incremented by every update. Without one, an entity's ETag is a hash
 // of its values.
 FOUNDATION_EXPORT NSString * const ODataUserInfoETag;  // @"OData.etag"
-// The request header a client names the version of its model in (an
-// offline app's ODataSync engine does): see ODataService's upgradeBody.
-FOUNDATION_EXPORT NSString * const ODataModelVersionHeader;  // @"Model-Version"
 
 // How a handler answers. The service is the only caller of a handler's
 // methods, and the reply is its end of the call. A method that can answer
@@ -562,20 +559,25 @@ FOUNDATION_EXPORT NSString * const ODataModelVersionHeader;  // @"Model-Version"
 // without all its sub-entities, or that the model has not, is among
 // metadataProblems. Set it before the first request.
 @property (nonatomic, copy, nullable) NSString *configurationName;
-// The version of the model it serves, as clients name theirs
-// (ODataModelVersionHeader). Default: the model's versionIdentifiers
+// The version of the schema it serves (OData 4.01's schema versioning):
+// $metadata says it (Core.SchemaVersion), and a client names the one it
+// speaks in $schemaversion. Default: the model's versionIdentifiers
 // (Xcode's Core Data Model Identifier), sorted and joined by commas; nil
 // when it has none.
 @property (nonatomic, copy, nullable) NSString *modelVersion;
-// A write from a client on another version of the model (offline devices
-// that have not updated yet, and send what they changed all the same):
+// A write from a client on another version of the schema ($schemaversion
+// other than modelVersion: offline devices that have not updated yet, and
+// send what they changed all the same):
 // the body as it came (OData JSON, the client's property names), the
 // version the client named, the entity it writes; answered with the body
 // as this model takes it (a renamed property under its new name, a new
 // required one filled in), or nil and an error to refuse it (400 when the
 // error says no status). Called for every write that names a version
-// other than modelVersion; not for one that names none. As a data
-// migration, but of one request. Set it before the first request.
+// other than modelVersion; not for one that names none. Without it, such
+// a request is answered 404, as one of a version the service does not
+// have; with it, reads of that version are answered from the service's
+// own schema (its changes, additions). As a data migration, but of one
+// request. Set it before the first request.
 @property (nonatomic, copy, nullable) NSDictionary *_Nullable (^upgradeBody)(NSDictionary *body, NSString *clientVersion,
                                                                               NSEntityDescription *_Nullable entity,
                                                                               ODataRequest *request, NSError **error);

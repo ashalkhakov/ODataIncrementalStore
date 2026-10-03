@@ -1,5 +1,5 @@
-// What ODataSync's files share: the bookkeeping entities, how objects are
-// written and read as OData, and the two halves.
+// What ODataSync's files share: the engine's parts (the model, the codec,
+// the requests, the store, the clocks, the recorder), and the two halves.
 // Copyright (C) 2026 OIS contributors
 // SPDX-License-Identifier: LGPL-2.1-or-later
 
@@ -10,14 +10,13 @@
 #import <ODataIncrementalStore/ODataClient.h>
 #import <ODataIncrementalStore/ODataConfiguration.h>
 #import <OTelKit/OTTrace.h>
+#import "ODSModel.h"
+#import "ODSStore.h"
+#import "ODSClock.h"
+#import "ODSRequests.h"
+#import "ODSRecorder.h"
 
 NS_ASSUME_NONNULL_BEGIN
-
-// The bookkeeping entities (docs/offline-sync.md, 3.3).
-FOUNDATION_EXPORT NSString * const ODSRemoteStateEntity;   // remote, deltaLinks, filters, historyToken
-FOUNDATION_EXPORT NSString * const ODSOutboxEntity;        // remote, entityName, key, operation, properties, ...
-FOUNDATION_EXPORT NSString * const ODSShadowEntity;        // remote, entityType, keyText, etag, values (a row's JSON)
-FOUNDATION_EXPORT NSString * const ODSTombstoneEntity;     // entityType, keyText, deleted (a date), versions
 
 // Version vectors (ODSVersions.m): replica -> the count of its latest
 // change a version includes.
@@ -37,7 +36,6 @@ FOUNDATION_EXPORT NSString * const ODSDeletedCode;           // @"ODataSync.dele
 FOUNDATION_EXPORT NSString * const ODSDeletionsKey;
 FOUNDATION_EXPORT NSDictionary<NSString *, NSString *> *_Nullable ODSSentDeletions(NSManagedObjectContext *context);
 FOUNDATION_EXPORT void ODSNoteSentDeletion(NSManagedObjectContext *context, NSString *name, NSString *versions);
-FOUNDATION_EXPORT NSEntityDescription *ODSTombstoneEntityDescription(void);
 FOUNDATION_EXPORT NSDictionary<NSString *, NSNumber *> *ODSVersionsFromText(NSString *_Nullable text);
 FOUNDATION_EXPORT NSString *ODSTextOfVersions(NSDictionary<NSString *, NSNumber *> *_Nullable versions);
 FOUNDATION_EXPORT ODSOrder ODSCompareVersions(NSDictionary<NSString *, NSNumber *> *_Nullable a, NSDictionary<NSString *, NSNumber *> *_Nullable b);
@@ -51,22 +49,12 @@ FOUNDATION_EXPORT NSData *ODSArchive(id _Nullable plist);
 FOUNDATION_EXPORT id _Nullable ODSUnarchive(NSData *_Nullable data);
 
 // How the engine's objects are written and read as OData: by the mapper's
-// names, the value coder's values.
+// names, the value coder's values. What an entity is (its keys, synced
+// properties, directions) is the model's (ODSModel).
 @interface ODSCodec : NSObject
-- (instancetype)initWithModel:(NSManagedObjectModel *)model;
-@property (nonatomic, readonly) NSManagedObjectModel *model;
-@property (nonatomic, readonly) ODataPropertyMapper *mapper;
-- (ODataSyncDirection)directionOfEntity:(NSEntityDescription *)entity;
-// The way it goes with this remote: with a peer, up is both.
-- (ODataSyncDirection)directionOfEntity:(NSEntityDescription *)entity toward:(nullable ODataSyncRemote *)remote;
-- (NSEntityDescription *)rootOf:(NSEntityDescription *)entity;
-// Root entities going these ways (with the remote), parents before
-// children (an entity before those whose to-ones point to it).
-- (NSArray<NSEntityDescription *> *)rootEntitiesGoing:(NSSet<NSNumber *> *)directions toward:(nullable ODataSyncRemote *)remote;
-// The synced attributes (served, not computed, no dynamic bag) and to-one
-// relationships to synced entities.
-- (NSArray<NSAttributeDescription *> *)attributesOf:(NSEntityDescription *)entity;
-- (NSArray<NSRelationshipDescription *> *)toOnesOf:(NSEntityDescription *)entity;
+- (instancetype)initWithModel:(ODSModel *)model;
+@property (nonatomic, readonly) ODSModel *model;
+@property (nonatomic, readonly) ODataPropertyMapper *mapper;  // the model's
 // Keys, by Core Data attribute name.
 - (NSDictionary *)keyOfObject:(NSManagedObject *)object;
 - (nullable NSDictionary *)keyFromJSON:(NSDictionary *)json entity:(NSEntityDescription *)entity;
@@ -99,75 +87,37 @@ FOUNDATION_EXPORT id _Nullable ODSUnarchive(NSData *_Nullable data);
 // An object as a row: what a shadow keeps of a version (wire names, its
 // to-ones' keys expanded).
 - (NSDictionary *)rowOfObject:(NSManagedObject *)object;
-// The properties whose values differ (missing is NSNull).
-FOUNDATION_EXPORT NSSet<NSString *> *ODSChangedNames(NSDictionary *_Nullable before, NSDictionary *_Nullable after);
-// The String attribute last writer wins orders by (ODataSync.modified).
-- (nullable NSAttributeDescription *)modifiedAttributeOf:(NSEntityDescription *)entity;
-// The attribute that keeps an object's version vector (ODataSync.versions).
-- (nullable NSAttributeDescription *)versionsAttributeOf:(NSEntityDescription *)entity;
-// An object's version vector; an empty one when it keeps none.
+// An object's version vector, a row's (by the mapper's property name);
+// empty when it keeps none.
 - (NSDictionary<NSString *, NSNumber *> *)versionsOfObject:(nullable NSManagedObject *)object;
-// A row's (by the mapper's property name).
 - (NSDictionary<NSString *, NSNumber *> *)versionsOfRow:(nullable NSDictionary *)row entity:(NSEntityDescription *)entity;
-// The service's version counter (an integer attribute that OData.etag
-// names, which the service increments on each update): which of two
-// copies is newer.
-- (nullable NSAttributeDescription *)versionAttributeOf:(NSEntityDescription *)entity;
-// $expand of the to-ones' keys, for reading an entity's rows: nil for none.
-- (nullable NSString *)expandOfEntity:(NSEntityDescription *)entity;
-// $select of the key, for reading only keys.
-- (NSString *)selectOfKeyOfEntity:(NSEntityDescription *)entity;
-// $filter text naming these keys (k eq 1 or k eq 2; (a eq 1 and b eq 2) or ...).
-- (NSString *)filterOfKeys:(NSArray<NSDictionary *> *)keys entity:(NSEntityDescription *)entity;
 @end
 
+// The properties whose values differ (missing is NSNull).
+FOUNDATION_EXPORT NSSet<NSString *> *ODSChangedNames(NSDictionary *_Nullable before, NSDictionary *_Nullable after);
+
 @interface ODataSyncEngine ()
-@property (nonatomic, readonly) ODSCodec *codec;
-@property (nonatomic, readonly) OTTracer *tracer;
-// A client of the remote: its configuration, at 4.01, its transport.
-- (ODataClient *)clientOf:(ODataSyncRemote *)remote;
-// Whether an object of the entity, by its key's text, was deleted here
-// (and not made again since): a peer may not bring it back.
-- (BOOL)isDeleted:(NSString *)entityName keyText:(NSString *)keyText inContext:(NSManagedObjectContext *)context;
-// The deleted version's vector (empty: none kept, or not deleted); and the
-// deletion forgotten (the object made again by one that knew of it).
-- (NSDictionary<NSString *, NSNumber *> *)deletedVersionsOf:(NSString *)entityName keyText:(NSString *)keyText
-                                                  inContext:(NSManagedObjectContext *)context;
-- (void)forgetDeletionOf:(NSString *)entityName keyText:(NSString *)keyText inContext:(NSManagedObjectContext *)context;
 // The engine of a service's store (ODataSyncService): its replica is svc.
 - (instancetype)initServiceWithCoordinator:(NSPersistentStoreCoordinator *)coordinator;
 @property (nonatomic, readonly, getter=isService) BOOL service;
-- (void)pruneTombstones;
-// This replica as vectors name it, and the count of a new change of its
-// (kept in the store's metadata).
-@property (nonatomic, readonly) NSString *shortReplica;
-- (int64_t)nextCount;
-// The headers every request to the remote has: to a peer, this replica.
-- (NSDictionary<NSString *, NSString *> *)headersFor:(ODataSyncRemote *)remote;
+// Its parts.
+@property (nonatomic, readonly) ODSModel *model;
+@property (nonatomic, readonly) ODSCodec *codec;
+@property (nonatomic, readonly) ODSStore *store;
+@property (nonatomic, readonly) ODSClock *clock;
+@property (nonatomic, readonly) OTTracer *tracer;
+// A client of the remote: its configuration, at 4.01, its transport.
+- (ODataClient *)clientOf:(ODataSyncRemote *)remote;
 // The remote added with this identifier.
 - (nullable ODataSyncRemote *)remoteWithIdentifier:(NSString *)identifier;
-// A new private context on the coordinator, writing as this author.
-- (NSManagedObjectContext *)contextWritingAs:(NSString *)author;
-// The remote's state object (made when there is none), in this context.
-- (NSManagedObject *)stateOf:(ODataSyncRemote *)remote inContext:(NSManagedObjectContext *)context;
-// An object's outbox entry for the remote, and its shadow (made when asked
-// and there is none): by root entity name and key text.
-- (nullable NSManagedObject *)entryOf:(NSString *)entityName keyText:(NSString *)keyText remote:(ODataSyncRemote *)remote
-                            inContext:(NSManagedObjectContext *)context;
-- (nullable NSManagedObject *)shadowOf:(NSString *)entityName keyText:(NSString *)keyText remote:(ODataSyncRemote *)remote
-                             inContext:(NSManagedObjectContext *)context make:(BOOL)make;
-// A URL under the remote's service root, from a relative path and query,
-// not yet percent-encoded.
-- (NSURL *)URLOf:(NSString *)relative remote:(ODataSyncRemote *)remote;
-@property (nonatomic, readonly) NSMutableDictionary<NSString *, NSNumber *> *tally;  // downloaded, removed, ...
+// Deletions older than tombstoneRetention, forgotten.
+- (void)pruneTombstones;
+// What a sync did, as it goes: downloaded, removed, uploaded, refused, conflicts.
+@property (nonatomic, readonly) NSMutableDictionary<NSString *, NSNumber *> *tally;
 - (void)count:(NSString *)what by:(NSUInteger)n;
 - (void)setAside:(ODataSyncIssue *)issue;
 - (void)ignoredLocalChangeTo:(NSManagedObjectID *)objectID;
 - (nullable id<ODataSyncResolving>)resolverForEntityName:(NSString *)entityName;
-// The hybrid logical clock: a stamp for a change made now; a stamp seen
-// from elsewhere, so the next is after it.
-- (NSString *)tick;
-- (void)witness:(nullable NSString *)stamp;
 @end
 
 // Conflicts (ODSConflicts.m).
@@ -196,9 +146,6 @@ FOUNDATION_EXPORT NSSet<NSString *> *ODSChangedNames(NSDictionary *_Nullable bef
 // The same, when the vectors said this side's is newer.
 - (BOOL)keepNewerThan:(NSDictionary *)row etag:(nullable NSString *)etag of:(NSEntityDescription *)root key:(NSDictionary *)key
                remote:(ODataSyncRemote *)remote context:(NSManagedObjectContext *)context versions:(BOOL)known;
-// A new outbox entry, last in line.
-- (NSManagedObject *)newEntryOf:(NSEntityDescription *)root key:(NSDictionary *)key operation:(ODataSyncOperation)operation
-                         remote:(ODataSyncRemote *)remote context:(NSManagedObjectContext *)context;
 @end
 
 @interface ODataSyncConflict ()

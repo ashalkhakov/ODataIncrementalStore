@@ -555,8 +555,11 @@ validation error) is answered 500 with "The service could not answer the
 request", and logged: its own message may name files or say more of the
 service than a client should know.
 
-`$schemaversion=*` is the service's one schema; another version is
-`404`. `$index` (a position in an ordered collection) is `501`: Core
+`$schemaversion` names the schema a request is made against (Part 1,
+11.2.12): `*` or the service's `modelVersion` (which `$metadata` says, as
+`Core.SchemaVersion`) is its own; another is `404`, unless the service
+reads it (`upgradeBody`, which then has each write's body made the
+service's), and a `$batch`'s requests have the batch's. `$index` (a position in an ordered collection) is `501`: Core
 Data's to-many relationships here are not ordered.
 
 ### The HTTP adapter

@@ -218,12 +218,20 @@ ODataService_CFLAGS += -fblocks
 
 ODataSync_NEEDS_GUI = no
 ODataSync_OBJC_FILES = \
+	Source/ODataSync/ODSClock.m \
+	Source/ODataSync/ODSCodec.m \
 	Source/ODataSync/ODSConflicts.m \
 	Source/ODataSync/ODSDownloader.m \
+	Source/ODataSync/ODSModel.m \
+	Source/ODataSync/ODSRecorder.m \
+	Source/ODataSync/ODSRequests.m \
+	Source/ODataSync/ODSStore.m \
 	Source/ODataSync/ODSUploader.m \
 	Source/ODataSync/ODSVersions.m \
+	Source/ODataSync/ODataSyncChange.m \
 	Source/ODataSync/ODataSyncEngine.m \
 	Source/ODataSync/ODataSyncPeerServer.m \
+	Source/ODataSync/ODataSyncRemote.m \
 	Source/ODataSync/ODataSyncService.m
 
 ODataSync_HEADER_FILES = \

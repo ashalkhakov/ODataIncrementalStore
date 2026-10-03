@@ -19,7 +19,9 @@ static const NSInteger ODSConflictRounds = 3;
 @implementation ODSUploader {
   ODataSyncEngine *_engine;
   ODataSyncRemote *_remote;
+  ODSModel *_model;
   ODSCodec *_codec;
+  ODSRequests *_requests;
   ODataClient *_client;
   NSArray<NSEntityDescription *> *_entities;
   BOOL _batchUnsupported;
@@ -31,29 +33,22 @@ static const NSInteger ODSConflictRounds = 3;
   if (!self) return nil;
   _engine = engine;
   _remote = remote;
+  _model = engine.model;
   _codec = engine.codec;
+  _requests = [[ODSRequests alloc] initWithEngine:engine remote:remote];
   _client = [engine clientOf:remote];
-  _entities = [_codec rootEntitiesGoing:[NSSet setWithObjects:@(ODataSyncDirectionUp), @(ODataSyncDirectionBoth), nil] toward:_remote];
+  _entities = [_model rootEntitiesGoing:[NSSet setWithObjects:@(ODataSyncDirectionUp), @(ODataSyncDirectionBoth), nil] toward:_remote];
   return self;
 }
 
 #pragma mark History into the outbox
 
-- (int64_t)nextSequenceIn:(NSManagedObjectContext *)context
-{
-  NSFetchRequest *fetch = [NSFetchRequest fetchRequestWithEntityName:ODSOutboxEntity];
-  fetch.sortDescriptors = @[ [NSSortDescriptor sortDescriptorWithKey:@"sequence" ascending:NO] ];
-  fetch.fetchLimit = 1;
-  NSManagedObject *last = [[context executeFetchRequest:fetch error:NULL] firstObject];
-  return [[last valueForKey:@"sequence"] longLongValue] + 1;
-}
-
 // The synced properties a change names (Core Data names); nil for none.
 - (NSSet<NSString *> *)syncedNamesOf:(NSArray<NSPropertyDescription *> *)properties entity:(NSEntityDescription *)entity
 {
   NSMutableSet *names = [NSMutableSet set];
-  NSSet *attributes = [NSSet setWithArray:[[_codec attributesOf:entity] valueForKey:@"name"]];
-  NSSet *toOnes = [NSSet setWithArray:[[_codec toOnesOf:entity] valueForKey:@"name"]];
+  NSSet *attributes = [NSSet setWithArray:[[_model attributesOf:entity] valueForKey:@"name"]];
+  NSSet *toOnes = [NSSet setWithArray:[[_model toOnesOf:entity] valueForKey:@"name"]];
   for (NSPropertyDescription *property in properties) {
     if ([attributes containsObject:property.name] || [toOnes containsObject:property.name]) [names addObject:property.name];
   }
@@ -66,7 +61,7 @@ static const NSInteger ODSConflictRounds = 3;
          key:(NSDictionary *)key relayed:(BOOL)relayed context:(NSManagedObjectContext *)context sequence:(int64_t *)sequence
 {
   NSString *keyText = [_codec keyTextOf:key entity:root];
-  NSManagedObject *entry = [_engine entryOf:root.name keyText:keyText remote:_remote inContext:context];
+  NSManagedObject *entry = [_engine.store entryOf:root.name keyText:keyText remote:_remote inContext:context];
   if (!entry) {
     entry = [NSEntityDescription insertNewObjectForEntityForName:ODSOutboxEntity inManagedObjectContext:context];
     [entry setValue:_remote.identifier forKey:@"remote"];
@@ -109,14 +104,14 @@ static const NSInteger ODSConflictRounds = 3;
 
 - (BOOL)fillOutbox:(NSManagedObjectContext *)context error:(NSError **)error
 {
-  NSManagedObject *state = [_engine stateOf:_remote inContext:context];
+  NSManagedObject *state = [_engine.store stateOf:_remote inContext:context];
   NSData *archived = [state valueForKey:@"historyToken"];
   NSPersistentHistoryToken *token = archived ? [NSKeyedUnarchiver unarchivedObjectOfClass:[NSPersistentHistoryToken class] fromData:archived error:NULL] : nil;
   NSPersistentHistoryChangeRequest *request = [NSPersistentHistoryChangeRequest fetchHistoryAfterToken:token];
   request.resultType = NSPersistentHistoryResultTypeTransactionsAndChanges;
   NSPersistentHistoryResult *result = (NSPersistentHistoryResult *)[context executeRequest:request error:error];
   if (!result) return NO;
-  int64_t sequence = [self nextSequenceIn:context];
+  int64_t sequence = [_engine.store nextSequenceIn:context];
   NSPersistentHistoryToken *last = token;
   NSSet *bookkeeping = [NSSet setWithObjects:ODSRemoteStateEntity, ODSOutboxEntity, ODSShadowEntity, ODSTombstoneEntity, nil];
   // Made and gone within what is read now: its deletion is nothing to send.
@@ -139,13 +134,13 @@ static const NSInteger ODSConflictRounds = 3;
     for (NSPersistentHistoryChange *change in transaction.changes) {
       NSEntityDescription *entity = change.changedObjectID.entity;
       if ([bookkeeping containsObject:entity.name]) continue;
-      ODataSyncDirection direction = [_codec directionOfEntity:entity];
+      ODataSyncDirection direction = [_model directionOfEntity:entity];
       if (direction == ODataSyncDirectionDown) {
         if (!relayed) [_engine ignoredLocalChangeTo:change.changedObjectID];
         continue;
       }
       if (direction == ODataSyncDirectionNone) continue;
-      NSEntityDescription *root = [_codec rootOf:entity];
+      NSEntityDescription *root = [_model rootOf:entity];
       if (change.changeType == NSPersistentHistoryChangeTypeDelete) {
         // A deletion a peer sent here was made there (an engine sends a
         // peer its own deletions, and those passed on so): passed on. One
@@ -183,8 +178,6 @@ static const NSInteger ODSConflictRounds = 3;
 
 #pragma mark Requests
 
-// An entity tag no remote gives.
-static NSString * const ODSUnknownVersion = @"\"ODataSync.unknown\"";
 
 // Whether the entry is sent as a both entity's (If-Match, If-None-Match;
 // a 412 a conflict): a both entity, an up entity to a peer, and an up
@@ -192,8 +185,8 @@ static NSString * const ODSUnknownVersion = @"\"ODataSync.unknown\"";
 // already deleted at the remote.
 - (BOOL)checksVersionsOf:(NSManagedObject *)entry
 {
-  NSEntityDescription *root = _codec.model.entitiesByName[[entry valueForKey:@"entityType"]];
-  ODataSyncDirection direction = [_codec directionOfEntity:root toward:_remote];
+  NSEntityDescription *root = _model.model.entitiesByName[[entry valueForKey:@"entityType"]];
+  ODataSyncDirection direction = [_model directionOfEntity:root toward:_remote];
   return direction == ODataSyncDirectionBoth || (direction == ODataSyncDirectionUp && [[entry valueForKey:@"relayed"] boolValue]);
 }
 
@@ -219,7 +212,7 @@ static NSString * const ODSUnknownVersion = @"\"ODataSync.unknown\"";
 // it has become nothing (an object made and gone before it was sent).
 - (NSDictionary *)requestOf:(NSManagedObject *)entry context:(NSManagedObjectContext *)context
 {
-  NSEntityDescription *root = _codec.model.entitiesByName[[entry valueForKey:@"entityType"]];
+  NSEntityDescription *root = _model.model.entitiesByName[[entry valueForKey:@"entityType"]];
   NSDictionary *key = ODSUnarchive([entry valueForKey:@"key"]);
   if (!root || !key) {
     [context deleteObject:entry];
@@ -228,7 +221,7 @@ static NSString * const ODSUnknownVersion = @"\"ODataSync.unknown\"";
   ODataSyncOperation operation = [[entry valueForKey:@"operation"] integerValue];
   if (operation == ODataSyncOperationRefresh) return nil;  // read, not sent (-refreshIn:)
   BOOL both = [self checksVersionsOf:entry];
-  NSManagedObject *shadow = both ? [_engine shadowOf:root.name keyText:[entry valueForKey:@"keyText"] remote:_remote inContext:context make:NO] : nil;
+  NSManagedObject *shadow = both ? [_engine.store shadowOf:root.name keyText:[entry valueForKey:@"keyText"] remote:_remote inContext:context make:NO] : nil;
   NSString *etag = [shadow valueForKey:@"etag"];
   NSManagedObject *object = operation == ODataSyncOperationDelete ? nil : [_codec objectOfEntity:root key:key inContext:context];
   if (operation != ODataSyncOperationDelete && !object) {
@@ -242,7 +235,7 @@ static NSString * const ODSUnknownVersion = @"\"ODataSync.unknown\"";
   NSData *kept = [shadow valueForKey:@"values"];
   id agreed = object && kept.length ? [NSJSONSerialization JSONObjectWithData:kept options:0 error:NULL] : nil;
   if ([agreed isKindOfClass:[NSDictionary class]]) {
-    NSAttributeDescription *stamp = [_codec modifiedAttributeOf:root];
+    NSAttributeDescription *stamp = [_model modifiedAttributeOf:root];
     id ours = stamp ? [object valueForKey:stamp.name] : nil, theirs = stamp ? agreed[[_codec.mapper propertyForAttribute:stamp]] : nil;
     NSDictionary *mine = [_codec versionsOfObject:object], *seen = [_codec versionsOfRow:agreed entity:root];
     BOOL older = mine.count && seen.count ? ODSCompareVersions(mine, seen) == ODSOrderBefore
@@ -265,29 +258,13 @@ static NSString * const ODSUnknownVersion = @"\"ODataSync.unknown\"";
     [entry setValue:@(operation) forKey:@"operation"];
     [entry setValue:ODSArchive(differ.allObjects) forKey:@"properties"];
   }
-  NSMutableDictionary *headers = [[_engine headersFor:_remote] mutableCopy];
-  NSMutableDictionary *request = [NSMutableDictionary dictionaryWithObject:[_codec pathOfEntity:root key:key] forKey:@"url"];
   if (operation == ODataSyncOperationDelete) {
-    request[@"method"] = @"DELETE";
-    if (both) headers[@"If-Match"] = etag ?: @"*";
-    // The deletion's history, for the remote's tombstone.
-    NSDictionary *deleted = [_engine deletedVersionsOf:root.name keyText:[entry valueForKey:@"keyText"] inContext:context];
-    if (deleted.count) headers[ODataSyncVersionsHeader] = ODSTextOfVersions(deleted);
-  } else {
-    NSArray *names = ODSUnarchive([entry valueForKey:@"properties"]);
-    NSSet *properties = operation == ODataSyncOperationInsert || !names ? nil : [NSSet setWithArray:names];
-    request[@"method"] = @"PATCH";
-    request[@"body"] = [_codec JSONOfObject:object properties:properties];
-    headers[@"Content-Type"] = @"application/json";
-    headers[@"Prefer"] = @"return=minimal";
-    // A change of a version never agreed on with this remote (one that came
-    // from elsewhere): matching nothing, it meets the remote's version (a
-    // 412, and the resolver), and so never overwrites it unseen.
-    if (both && operation == ODataSyncOperationInsert && !etag) headers[@"If-None-Match"] = @"*";
-    else if (both) headers[@"If-Match"] = etag ?: ODSUnknownVersion;
+    return [_requests deletionOf:root key:key checked:both etag:etag
+                        versions:[_engine.store deletedVersionsOf:root.name keyText:[entry valueForKey:@"keyText"] inContext:context]];
   }
-  request[@"headers"] = headers;
-  return request;
+  NSArray *names = ODSUnarchive([entry valueForKey:@"properties"]);
+  return [_requests upsertOf:object entity:root key:key properties:names ? [NSSet setWithArray:names] : nil
+                      insert:operation == ODataSyncOperationInsert checked:both etag:etag];
 }
 
 static NSString *ODSMessageOf(NSData *body, NSInteger status)
@@ -321,12 +298,7 @@ static NSString *ODSHeader(NSDictionary *headers, NSString *name)
 // One request alone; its status (0: no answer), headers and body.
 - (NSInteger)sendAlone:(NSDictionary *)request headers:(NSDictionary **)headers body:(NSData **)body error:(NSError **)error
 {
-  NSMutableURLRequest *http = [NSMutableURLRequest requestWithURL:[_engine URLOf:request[@"url"] remote:_remote]];
-  http.HTTPMethod = request[@"method"];
-  [http setValue:@"application/json" forHTTPHeaderField:@"Accept"];
-  NSDictionary *given = request[@"headers"];
-  for (NSString *name in given) [http setValue:given[name] forHTTPHeaderField:name];
-  if (request[@"body"]) http.HTTPBody = [NSJSONSerialization dataWithJSONObject:request[@"body"] options:0 error:NULL];
+  NSMutableURLRequest *http = [_requests HTTPRequestOf:request];
   NSError *failure = nil;
   ODataHTTPResponse *response = [_client sendRequest:http error:&failure];
   if (response) {
@@ -348,20 +320,7 @@ static NSString *ODSHeader(NSDictionary *headers, NSString *name)
 // failure (0: no answer).
 - (NSDictionary<NSString *, ODataBatchPart *> *)sendBatch:(NSArray<NSDictionary *> *)requests status:(NSInteger *)status error:(NSError **)error
 {
-  NSMutableArray *items = [NSMutableArray array];
-  for (NSUInteger i = 0; i < requests.count; i++) {
-    NSMutableDictionary *item = [requests[i] mutableCopy];
-    item[@"id"] = [NSString stringWithFormat:@"%lu", (unsigned long)i + 1];
-    [items addObject:item];
-  }
-  NSMutableURLRequest *http = [NSMutableURLRequest requestWithURL:[_engine URLOf:@"$batch" remote:_remote]];
-  http.HTTPMethod = @"POST";
-  [http setValue:@"application/json" forHTTPHeaderField:@"Content-Type"];
-  [http setValue:@"application/json" forHTTPHeaderField:@"Accept"];
-  [http setValue:@"odata.continue-on-error" forHTTPHeaderField:@"Prefer"];
-  NSDictionary *headers = [_engine headersFor:_remote];
-  for (NSString *name in headers) [http setValue:headers[name] forHTTPHeaderField:name];
-  http.HTTPBody = [NSJSONSerialization dataWithJSONObject:@{ @"requests": items } options:0 error:NULL];
+  NSMutableURLRequest *http = [_requests batchOf:requests];
   NSError *failure = nil;
   ODataHTTPResponse *response = [_client sendRequest:http error:&failure];
   *status = response ? 200 : (failure.code > ODataIncrementalStoreErrorHTTP && failure.code < ODataIncrementalStoreErrorHTTP + 600
@@ -387,7 +346,7 @@ static NSString *ODSHeader(NSDictionary *headers, NSString *name)
   [entry setValue:@YES forKey:@"setAside"];
   [entry setValue:@(status) forKey:@"status"];
   [entry setValue:message forKey:@"message"];
-  NSEntityDescription *root = _codec.model.entitiesByName[[entry valueForKey:@"entityType"]];
+  NSEntityDescription *root = _model.model.entitiesByName[[entry valueForKey:@"entityType"]];
   NSDictionary *key = ODSUnarchive([entry valueForKey:@"key"]);
   NSManagedObject *object = root && key ? [_codec objectOfEntity:root key:key inContext:context] : nil;
   [_engine setAside:[[ODataSyncIssue alloc] initWithEntry:entry objectID:object.objectID]];
@@ -397,7 +356,7 @@ static NSString *ODSHeader(NSDictionary *headers, NSString *name)
 // and settled as a conflict.
 - (BOOL)resolveConflictOf:(NSManagedObject *)entry context:(NSManagedObjectContext *)context error:(NSError **)error
 {
-  NSEntityDescription *root = _codec.model.entitiesByName[[entry valueForKey:@"entityType"]];
+  NSEntityDescription *root = _model.model.entitiesByName[[entry valueForKey:@"entityType"]];
   NSDictionary *key = ODSUnarchive([entry valueForKey:@"key"]);
   ODSDownloader *down = [[ODSDownloader alloc] initWithEngine:_engine remote:_remote];
   NSInteger status = 0;
@@ -427,7 +386,7 @@ static NSString *ODSHeader(NSDictionary *headers, NSString *name)
   fetch.predicate = [NSPredicate predicateWithFormat:@"remote == %@ AND operation == %d", _remote.identifier, (int)ODataSyncOperationRefresh];
   ODSDownloader *down = [[ODSDownloader alloc] initWithEngine:_engine remote:_remote];
   for (NSManagedObject *entry in [context executeFetchRequest:fetch error:NULL]) {
-    NSEntityDescription *root = _codec.model.entitiesByName[[entry valueForKey:@"entityType"]];
+    NSEntityDescription *root = _model.model.entitiesByName[[entry valueForKey:@"entityType"]];
     NSDictionary *key = ODSUnarchive([entry valueForKey:@"key"]);
     if (root && key && ![down refreshObjectOfEntity:root key:key context:context error:error]) return NO;
     [context deleteObject:entry];
@@ -448,7 +407,7 @@ static NSString *ODSHeader(NSDictionary *headers, NSString *name)
   if ((status >= 200 && status < 300) || (status == 404 && operation == ODataSyncOperationDelete)) {
     if (both) {
       // What both have now: the device's version.
-      NSEntityDescription *root = _codec.model.entitiesByName[entityName];
+      NSEntityDescription *root = _model.model.entitiesByName[entityName];
       NSManagedObject *object = operation == ODataSyncOperationDelete ? nil
           : [_codec objectOfEntity:root key:ODSUnarchive([entry valueForKey:@"key"]) inContext:context];
       [_engine agreeOn:object ? [_codec rowOfObject:object] : nil etag:ODSHeader(headers, @"ETag") of:root keyText:keyText
@@ -469,7 +428,7 @@ static NSString *ODSHeader(NSDictionary *headers, NSString *name)
   if (deletedThere && operation != ODataSyncOperationDelete) {
     // Deleted there by one that did not know of this change: a conflict,
     // delete against change, the deletion's history given.
-    NSEntityDescription *root = _codec.model.entitiesByName[entityName];
+    NSEntityDescription *root = _model.model.entitiesByName[entityName];
     [_engine settleConflictOf:root key:ODSUnarchive([entry valueForKey:@"key"]) entry:entry remoteRow:nil remoteVersions:deletedThere
                          etag:nil remote:_remote context:context];
     return YES;
@@ -477,7 +436,7 @@ static NSString *ODSHeader(NSDictionary *headers, NSString *name)
   if (status == 410 && operation != ODataSyncOperationDelete) {
     // Deleted there, by one that saw this version: deleted here too
     // (written as the remote's deletion, and so passed on).
-    NSEntityDescription *root = _codec.model.entitiesByName[entityName];
+    NSEntityDescription *root = _model.model.entitiesByName[entityName];
     NSManagedObject *object = [_codec objectOfEntity:root key:ODSUnarchive([entry valueForKey:@"key"]) inContext:context];
     if (object) {
       [context deleteObject:object];
@@ -563,7 +522,7 @@ static NSString *ODSHeader(NSDictionary *headers, NSString *name)
 
 - (BOOL)collect:(NSError **)error
 {
-  NSManagedObjectContext *context = [_engine contextWritingAs:ODataSyncBookkeepingAuthor];
+  NSManagedObjectContext *context = [_engine.store contextWritingAs:ODataSyncBookkeepingAuthor];
   __block BOOL ok = NO;
   __block NSError *failure = nil;
   [context performBlockAndWait:^{
@@ -579,7 +538,7 @@ static NSString *ODSHeader(NSDictionary *headers, NSString *name)
 {
   // A conflict's outcome is the remote's, written as coming from it (and
   // so passed on to the others).
-  NSManagedObjectContext *context = [_engine contextWritingAs:[ODataSyncDownAuthorPrefix stringByAppendingString:_remote.identifier]];
+  NSManagedObjectContext *context = [_engine.store contextWritingAs:[ODataSyncDownAuthorPrefix stringByAppendingString:_remote.identifier]];
   __block BOOL ok = NO;
   __block NSError *failure = nil;
   [context performBlockAndWait:^{

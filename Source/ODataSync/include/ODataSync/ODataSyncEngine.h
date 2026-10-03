@@ -264,9 +264,11 @@ typedef NS_ENUM(NSInteger, ODataSyncResolutionKind) {
 // it cannot bring the object back (its insert refused, 410). Default: 30
 // days; 0: for ever. A peer that comes back after longer may.
 @property (nonatomic) NSTimeInterval tombstoneRetention;
-// The version of the model, named to every remote (the Model-Version
-// header), so that a service on a newer version can read what a device
-// that has not updated yet sends (ODataService's upgradeBody). Default:
+// The version of the model's schema, named in every request
+// ($schemaversion, OData 4.01's schema versioning; a service's $metadata
+// says its own, Core.SchemaVersion), so that a service on a newer version
+// can read what a device that has not updated yet sends (ODataService's
+// upgradeBody). Default:
 // the model's versionIdentifiers (Xcode's Core Data Model Identifier),
 // sorted, joined by commas. When it changes (an app update, its store
 // migrated), what remotes refused is sent again, in the new model's shape.

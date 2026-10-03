@@ -769,14 +769,20 @@ one waits until the app is updated. ODataSync works by property names:
 - **Down**: a device ignores properties it does not know, and sets it
   does not sync; a property it has that the service no longer sends keeps
   its value.
-- **Up**: each request names the device's model version (`Model-Version`,
-  `ODataSyncEngine.modelVersion`, by default the model's version
-  identifiers). An ODataService whose `upgradeBody` is set is handed each
-  write from a client on another version (its body as sent, the version,
-  the entity) and answers the body as its own model takes it: a renamed
-  property under its new name, a new required one filled in. A data
-  migration, as the app does for its store, but of one request. It can
-  also refuse (a version too old): the change is set aside, not lost.
+- **Up**: OData 4.01's schema versioning (Part 1, 11.2.12). The
+  service's `$metadata` says its version (`Core.SchemaVersion` on the
+  schema: `ODataService.modelVersion`, by default the model's version
+  identifiers), and every request a device sends names the one it speaks
+  (`$schemaversion`, `ODataSyncEngine.modelVersion`; a `$batch`'s
+  requests have the batch's). A version other than the service's is
+  answered 404 (the spec's, for a version the service does not have),
+  unless the service can read it: then its `upgradeBody` is handed each
+  write (its body as sent, the version, the entity) and answers the body
+  as its own model takes it, a renamed property under its new name, a new
+  required one filled in; reads are answered from its own schema, and its
+  `$metadata` is its own only. A data migration, as the app does for its
+  store, but of one request. It can also refuse (a version too old): the
+  change is set aside, not lost.
 - **After an update**: the store is migrated (Core Data's migration), and
   the outbox with it: it holds keys and property names, not values, so
   what waited is sent from the migrated objects, in the new model's

@@ -17,7 +17,7 @@ NSString * const ODSClientAuthor = @"ODataSync.client";
 
 - (NSString *)authorOfRequest:(ODataRequest *)request values:(NSDictionary<NSString *, id> *)values
 {
-  NSAttributeDescription *versions = [self.engine.codec versionsAttributeOf:self.entity];
+  NSAttributeDescription *versions = [self.engine.model versionsAttributeOf:self.entity];
   BOOL sent = versions && values[versions.name] && values[versions.name] != [NSNull null];
   return sent || [request valueForHeader:ODataSyncVersionsHeader] ? ODSClientAuthor : nil;
 }
@@ -32,23 +32,25 @@ NSString * const ODSClientAuthor = @"ODataSync.client";
 - (NSString *)keyTextOf:(NSDictionary *)key
 {
   ODSCodec *codec = self.engine.codec;
-  return key ? [codec keyTextOf:key entity:[codec rootOf:self.entity]] : nil;
+  ODSModel *model = self.engine.model;
+  return key ? [codec keyTextOf:key entity:[model rootOf:self.entity]] : nil;
 }
 
 - (NSManagedObject *)insertObjectWithValues:(NSDictionary<NSString *, id> *)values request:(ODataRequest *)request reply:(ODataReply *)reply
 {
   ODataSyncEngine *engine = self.engine;
   ODSCodec *codec = engine.codec;
-  NSEntityDescription *root = [codec rootOf:self.entity];
+  ODSModel *model = engine.model;
+  NSEntityDescription *root = [model rootOf:self.entity];
   NSString *keyText = [self keyTextOf:[codec keyFromValues:values entity:root]];
   // Now and then, deletions older than they are kept are forgotten.
   if (!_pruned || -[_pruned timeIntervalSinceNow] > 3600) {
     _pruned = [NSDate date];
     [engine pruneTombstones];
   }
-  if (keyText && [engine isDeleted:root.name keyText:keyText inContext:request.context]) {
-    NSDictionary *deleted = [engine deletedVersionsOf:root.name keyText:keyText inContext:request.context];
-    NSAttributeDescription *attribute = [codec versionsAttributeOf:self.entity];
+  if (keyText && [engine.store isDeleted:root.name keyText:keyText inContext:request.context]) {
+    NSDictionary *deleted = [engine.store deletedVersionsOf:root.name keyText:keyText inContext:request.context];
+    NSAttributeDescription *attribute = [model versionsAttributeOf:self.entity];
     NSDictionary *sent = attribute ? ODSVersionsFromText(values[attribute.name]) : @{};
     ODSOrder order = deleted.count && sent.count ? ODSCompareVersions(sent, deleted) : ODSOrderBefore;
     if (order == ODSOrderConcurrent) {
@@ -67,7 +69,7 @@ NSString * const ODSClientAuthor = @"ODataSync.client";
       return nil;
     }
     // Made again by one that knew of the deletion.
-    [engine forgetDeletionOf:root.name keyText:keyText inContext:request.context];
+    [engine.store forgetDeletionOf:root.name keyText:keyText inContext:request.context];
   }
   [self writeAs:request values:values];
   return [super insertObjectWithValues:values request:request reply:reply];
@@ -87,7 +89,7 @@ NSString * const ODSClientAuthor = @"ODataSync.client";
   NSString *sent = [request valueForHeader:ODataSyncVersionsHeader];
   NSString *keyText = [self keyTextOf:[self.engine.codec keyOfObject:object]];
   if (sent.length && keyText) {
-    ODSNoteSentDeletion(request.context, [[self.engine.codec rootOf:self.entity].name stringByAppendingFormat:@" %@", keyText], sent);
+    ODSNoteSentDeletion(request.context, [[self.engine.model rootOf:self.entity].name stringByAppendingFormat:@" %@", keyText], sent);
   }
   [super deleteObject:object request:request reply:reply];
 }
@@ -114,9 +116,9 @@ NSString * const ODSClientAuthor = @"ODataSync.client";
   _service = service;
   _engine = [[ODataSyncEngine alloc] initServiceWithCoordinator:service.coordinator];
   NSMutableArray *unchecked = [NSMutableArray array];
-  ODSCodec *codec = _engine.codec;
+  ODSModel *model = _engine.model;
   for (NSEntityDescription *entity in service.model.entities) {
-    if (entity.superentity || ![codec versionsAttributeOf:entity]) continue;
+    if (entity.superentity || ![model versionsAttributeOf:entity]) continue;
     NSString *set = [service.mapper entitySetForEntity:entity];
     ODataEntitySetHandler *existing = [service handlerForEntitySet:set];
     if ([existing isKindOfClass:[ODataSyncSetHandler class]]) {

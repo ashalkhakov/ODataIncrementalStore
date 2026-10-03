@@ -19,7 +19,6 @@
 #import "OISPlan.h"
 
 NSString * const ODataUserInfoETag = @"OData.etag";
-NSString * const ODataModelVersionHeader = @"Model-Version";
 
 // With the request id and trace a host gave the request (X-Request-ID,
 // traceparent), so that what the service logs is found beside the host's
@@ -1186,10 +1185,18 @@ static NSUInteger OISExpandDepth(ODataQueryOptions *options)
   self.JSONAliases = JSONAliases;
   self.deltaToken = query[@"$deltatoken"];
   for (NSString *key in query) {
-    // One schema, the model's: any version (*) is it, another is none.
-    if ([key isEqualToString:@"$schemaversion"] && ![query[key] isEqualToString:@"*"]) {
-      [self fail:404 message:[NSString stringWithFormat:@"The service has no schema version %@", query[key]]];
-      return NO;
+    // The schema the request is made against (Part 1, 11.2.12): the
+    // service's (its modelVersion, or *); another only where the service
+    // can read what such a client writes (upgradeBody), and its $metadata
+    // never, the service having only its own.
+    if ([key isEqualToString:@"$schemaversion"]) {
+      NSString *asked = query[key];
+      BOOL current = [asked isEqualToString:@"*"] || (self.service.modelVersion && [asked isEqualToString:self.service.modelVersion]);
+      if (!current && (!self.service.upgradeBody || [self.resourcePath isEqualToString:@"$metadata"])) {
+        [self fail:404 message:[NSString stringWithFormat:@"The service has no schema version %@", asked]];
+        return NO;
+      }
+      if (!current) self.schemaVersion = asked;
     }
     if ([@[ @"$index" ] containsObject:key]) {
       [self fail:501 message:[NSString stringWithFormat:@"%@ is not supported", key]];
@@ -4879,10 +4886,10 @@ static NSNumber *OISScalarReturnValue(NSInvocation *invocation, char type)
     return nil;
   }
   NSDictionary *body = ODataNormalizedControlInformation(json, [self.request valueForHeader:@"OData-Version"] ?: self.request.version);
-  // A client on another version of the model: its body made this model's.
+  // A client on another version of the schema: its body made this one's.
   ODataService *service = self.service;
-  NSString *version = [self.request valueForHeader:ODataModelVersionHeader];
-  if (version.length && service.upgradeBody && ![version isEqualToString:service.modelVersion ?: @""]) {
+  NSString *version = self.schemaVersion;
+  if (version.length && service.upgradeBody) {
     NSError *error = nil;
     NSDictionary *upgraded = service.upgradeBody(body, version, self.request.entity, self.request, &error);
     if (![upgraded isKindOfClass:[NSDictionary class]]) {
@@ -5389,6 +5396,8 @@ static NSNumber *OISScalarReturnValue(NSInvocation *invocation, char type)
     NSString *schemeName = [authorization[@"Name"] isKindOfClass:[NSString class]] ? authorization[@"Name"] : nil;
     [signature appendFormat:@";scheme:%@", schemeName ?: @""];
     [signature appendFormat:@";container:%lu", (unsigned long)container.description.hash];
+    // The schema's version, which may be set after the first request too.
+    [signature appendFormat:@";schema:%@", self.modelVersion ?: @""];
     NSString *xml = self.metadataByVersion[signature];
     if (!xml) {
       self.writer.containerAnnotations = container;
@@ -5398,6 +5407,7 @@ static NSNumber *OISScalarReturnValue(NSInvocation *invocation, char type)
       self.writer.securitySchemeName = schemeName;
       self.writer.openEntityNames = open;
       self.writer.entitySetAnnotations = setAnnotations;
+      self.writer.schemaVersion = self.modelVersion;
       xml = [self.writer XMLStringForVersion:version];
       self.metadataByVersion[signature] = xml;
     }

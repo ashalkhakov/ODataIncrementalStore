@@ -178,6 +178,9 @@ typedef NS_ENUM(NSInteger, OISTargetKind) {
 // in the response carries (the history as it stood when the read began).
 @property (nonatomic, copy, nullable) NSString *deltaToken;
 @property (nonatomic, copy, nullable) NSString *trackingToken;
+// The version of the schema the client named ($schemaversion), when not
+// the service's own: what it writes goes through upgradeBody.
+@property (nonatomic, copy, nullable) NSString *schemaVersion;
 @property (nonatomic, copy, nullable) NSArray<NSManagedObjectID *> *deltaChanged;
 @property (nonatomic, copy, nullable) NSArray<NSDictionary *> *deltaDeleted;
 

@@ -4156,6 +4156,45 @@ static NSString *OISHTTPDate(NSDate *date)
   XCTAssertEqual([self get:@"Products?$schemaversion=2"].status, 404);
 }
 
+// Schema versions (Part 1, 11.2.12): $metadata says the service's
+// (Core.SchemaVersion); a request names the one it is made against; another
+// only where the service reads it (upgradeBody), and a batch's requests
+// have the batch's.
+- (void)testSchemaVersions
+{
+  _service.modelVersion = @"2";
+  OISServiceResponse *metadata = [self get:@"$metadata"];
+  XCTAssertTrue([metadata.text rangeOfString:@"<Annotation Term=\"Org.OData.Core.V1.SchemaVersion\"><String>2</String></Annotation></Schema>"].location
+                    != NSNotFound, @"%@", metadata.text);
+  XCTAssertEqual([self get:@"Products?$schemaversion=2"].status, 200);
+  XCTAssertEqual([self get:@"Products?$schemaversion=*"].status, 200);
+  XCTAssertEqual([self get:@"Products?$schemaversion=1"].status, 404, @"a version the service does not read");
+
+  NSMutableArray *upgraded = [NSMutableArray array];
+  _service.upgradeBody = ^NSDictionary *(NSDictionary *body, NSString *version, NSEntityDescription *entity, ODataRequest *request,
+                                         NSError **error) {
+    [upgraded addObject:version];
+    NSMutableDictionary *now = [body mutableCopy];
+    // Version 1 called it Title.
+    if (now[@"Title"]) now[@"ProductName"] = now[@"Title"];
+    [now removeObjectForKey:@"Title"];
+    return now;
+  };
+  XCTAssertEqual([self get:@"Products?$schemaversion=1"].status, 200, @"read with the service's own schema");
+  XCTAssertEqual([self get:@"$metadata?$schemaversion=1"].status, 404, @"the service has its own $metadata only");
+  OISServiceResponse *patched = [self send:@"PATCH" path:@"Products(1)?$schemaversion=1" headers:nil body:@{ @"Title": @"Chai (v1)" }];
+  XCTAssertEqual(patched.status, 204, @"%@", patched.text);
+  XCTAssertEqualObjects([self get:@"Products(1)"].json[@"ProductName"], @"Chai (v1)");
+  OISServiceResponse *batch = [self send:@"POST" path:@"$batch?$schemaversion=1" headers:nil body:@{ @"requests": @[
+    @{ @"id": @"1", @"method": @"PATCH", @"url": @"Products(2)", @"headers": @{ @"Content-Type": @"application/json" },
+       @"body": @{ @"Title": @"Chang (v1)" } } ] }];
+  XCTAssertEqual(batch.status, 200, @"%@", batch.text);
+  XCTAssertEqualObjects([self get:@"Products(2)"].json[@"ProductName"], @"Chang (v1)", @"the batch's version, inherited: %@", batch.text);
+  XCTAssertEqualObjects(upgraded, (@[ @"1", @"1" ]));
+  [self send:@"PATCH" path:@"Products(1)?$schemaversion=2" headers:nil body:@{ @"ProductName": @"Chai" }];
+  XCTAssertEqual(upgraded.count, 2u, @"a client on the service's version is not upgraded");
+}
+
 // Data Aggregation 4.0 (CS04) beyond the minimal level: aggregating an
 // expression, paths through collection-valued navigation and their $count,
 // groupby with transformations of its own, isdefined; and what $metadata

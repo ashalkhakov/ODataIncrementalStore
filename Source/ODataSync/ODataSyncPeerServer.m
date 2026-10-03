@@ -39,8 +39,8 @@ static BOOL ODSIsReplica(NSString *text)
 - (void)witness:(NSManagedObject *)object
 {
   ODataSyncEngine *engine = self.engine;
-  NSAttributeDescription *stamp = object ? [engine.codec modifiedAttributeOf:object.entity] : nil;
-  if (stamp) [engine witness:[object valueForKey:stamp.name]];
+  NSAttributeDescription *stamp = object ? [engine.model modifiedAttributeOf:object.entity] : nil;
+  if (stamp) [engine.clock witness:[object valueForKey:stamp.name]];
 }
 
 - (NSManagedObject *)insertObjectWithValues:(NSDictionary<NSString *, id> *)values request:(ODataRequest *)request reply:(ODataReply *)reply
@@ -78,9 +78,10 @@ static BOOL ODSIsReplica(NSString *text)
   // made): not the bookkeeping, nor what is the app's alone.
   _service.configurationName = ODataSyncPeerConfiguration;
   ODSCodec *codec = engine.codec;
+  ODSModel *model = engine.model;
   for (NSEntityDescription *entity in engine.coordinator.managedObjectModel.entities) {
     if (entity.superentity) continue;
-    ODataSyncDirection direction = [codec directionOfEntity:entity];
+    ODataSyncDirection direction = [model directionOfEntity:entity];
     if (direction == ODataSyncDirectionNone) continue;
     ODSPeerSetHandler *handler = [[ODSPeerSetHandler alloc] initWithEntity:entity];
     handler.engine = engine;
