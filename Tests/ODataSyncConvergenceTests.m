@@ -170,7 +170,7 @@ static NSManagedObjectModel *OSCModel(BOOL versions)
 }
 
 // Each object of the entity as its values, by id.
-- (NSDictionary<id, NSDictionary *> *)rowsOf:(NSString *)entity keys:(NSArray<NSString *> *)keys in:(NSPersistentStoreCoordinator *)coordinator
+- (NSDictionary<id<NSCopying>, NSDictionary *> *)rowsOf:(NSString *)entity keys:(NSArray<NSString *> *)keys in:(NSPersistentStoreCoordinator *)coordinator
 {
   NSMutableDictionary *rows = [NSMutableDictionary dictionary];
   [self in:coordinator do:^(NSManagedObjectContext *context) {
@@ -524,7 +524,7 @@ static NSDictionary *OSCExpected(OSCChange local, OSCChange remote, OSCRule rule
       else if (how == 1) ok = [device.engine downloadFromRemote:remote error:&error];
       else if (how == 2) ok = [device.engine uploadToRemote:remote error:&error];
       else ok = [device.engine downloadFromRemote:remote error:&error] && [device.engine uploadToRemote:remote error:&error];
-      XCTAssertTrue(ok, @"seed %llu step %@: %@", seed, label, error);
+      XCTAssertTrue(ok, @"seed %llu step %@: %@", (unsigned long long)seed, label, error);
       [log addObject:[NSString stringWithFormat:@"%@: device %lu %@ %@", label, (unsigned long)device.number,
                                                 @[ @"syncs all", @"downloads from", @"uploads to", @"syncs with" ][remote ? how : 0], remote ?: @""]];
     }
@@ -539,7 +539,7 @@ static NSDictionary *OSCExpected(OSCChange local, OSCChange remote, OSCRule rule
     changes = 0;
     for (OSCDevice *device in devices) {
       NSError *error = nil;
-      XCTAssertTrue([device.engine syncWithError:&error], @"seed %llu: %@", seed, error);
+      XCTAssertTrue([device.engine syncWithError:&error], @"seed %llu: %@", (unsigned long long)seed, error);
       ODataSyncResult *result = device.engine.lastResult;
       changes += result.uploaded + result.downloaded + result.removed + result.conflicts + result.refused;
       [log addObject:[NSString stringWithFormat:@"round %lu: device %lu %@", (unsigned long)rounds, (unsigned long)device.number, result]];
@@ -547,12 +547,12 @@ static NSDictionary *OSCExpected(OSCChange local, OSCChange remote, OSCRule rule
     rounds++;
   } while (changes && rounds < 8);
   NSString *story = [log componentsJoinedByString:@"\n"];
-  XCTAssertEqual(changes, 0u, @"seed %llu: still changing after %lu rounds\n%@", seed, (unsigned long)rounds, story);
+  XCTAssertEqual(changes, 0u, @"seed %llu: still changing after %lu rounds\n%@", (unsigned long long)seed, (unsigned long)rounds, story);
 
   NSDictionary *tasks = [self rowsOf:@"Task" keys:@[ @"title", @"done", @"modified" ] in:_server];
   NSDictionary *assets = [self rowsOf:@"Asset" keys:@[ @"name", @"version" ] in:_server];
   for (OSCDevice *device in devices) {
-    NSString *who = [NSString stringWithFormat:@"seed %llu, device %lu", seed, (unsigned long)device.number];
+    NSString *who = [NSString stringWithFormat:@"seed %llu, device %lu", (unsigned long long)seed, (unsigned long)device.number];
     NSDictionary *deviceTasks = [self rowsOf:@"Task" keys:@[ @"title", @"done", @"modified" ] in:device.store];
     NSDictionary *deviceAssets = [self rowsOf:@"Asset" keys:@[ @"name", @"version" ] in:device.store];
     if (![deviceTasks isEqual:tasks]) {
@@ -582,7 +582,7 @@ static NSDictionary *OSCExpected(OSCChange local, OSCChange remote, OSCRule rule
       cameBack++;
       continue;
     }
-    XCTFail(@"seed %llu: task %@ kept %@, not the last %@\n%@", seed, task, kept, last, story);
+    XCTFail(@"seed %llu: task %@ kept %@, not the last %@\n%@", (unsigned long long)seed, task, kept, last, story);
   }
   // An inspection no device deleted reached the service, as last written.
   NSDictionary *inspections = [self rowsOf:@"Inspection" keys:@[ @"note", @"modified" ] in:_server];
@@ -591,9 +591,9 @@ static NSDictionary *OSCExpected(OSCChange local, OSCChange remote, OSCRule rule
     NSArray *writes = [inspectionWrites[inspection] sortedArrayUsingComparator:^NSComparisonResult(NSDictionary *a, NSDictionary *b) {
       return [a[@"modified"] compare:b[@"modified"]];
     }];
-    XCTAssertEqualObjects(inspections[inspection], writes.lastObject, @"seed %llu: inspection %@\n%@", seed, inspection, story);
+    XCTAssertEqualObjects(inspections[inspection], writes.lastObject, @"seed %llu: inspection %@\n%@", (unsigned long long)seed, inspection, story);
   }
-  if (cameBack) NSLog(@"seed %llu: %lu deleted task(s) came back (docs/offline-sync.md, 7.1)", seed, (unsigned long)cameBack);
+  if (cameBack) NSLog(@"seed %llu: %lu deleted task(s) came back (docs/offline-sync.md, 7.1)", (unsigned long long)seed, (unsigned long)cameBack);
 }
 
 // The same, each object keeping what its version has seen.

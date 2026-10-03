@@ -236,7 +236,7 @@
   XCTAssertEqualObjects(sent[@"spanId"], span.context.spanID);
   XCTAssertNil(sent[@"parentSpanId"]);
   XCTAssertEqualObjects(sent[@"kind"], @2);
-  XCTAssertEqualObjects(sent[@"startTimeUnixNano"], ([NSString stringWithFormat:@"%llu", span.startTime]), @"64 bits, as a string");
+  XCTAssertEqualObjects(sent[@"startTimeUnixNano"], ([NSString stringWithFormat:@"%llu", (unsigned long long)span.startTime]), @"64 bits, as a string");
   XCTAssertEqualObjects(sent[@"status"], (@{ @"code": @2, @"message": @"broken" }));
   NSMutableDictionary *attributes = [NSMutableDictionary dictionary];
   for (NSDictionary *attribute in sent[@"attributes"]) attributes[attribute[@"key"]] = attribute[@"value"];
