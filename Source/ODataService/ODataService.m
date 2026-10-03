@@ -252,7 +252,7 @@ static HSRequest *OISHostRequest(NSURLRequest *request)
 // raises for arithmetic on a key path's collection operator,
 // products.@count * 20) as 501, not as the service failing.
 static NSString *OISStringFromHistoryToken(NSPersistentHistoryToken *token);
-static BOOL OISHistoryTokenFromString(NSString *string, NSPersistentHistoryToken **token);
+static BOOL OISHistoryTokenFromString(NSString *string, NSPersistentHistoryToken **token, NSDate **issued);
 
 static NSArray *OISFetch(NSManagedObjectContext *context, NSFetchRequest *fetchRequest, NSError **error)
 {
@@ -455,8 +455,17 @@ static NSArray *OISFetch(NSManagedObjectContext *context, NSFetchRequest *fetchR
 - (ODataChanges *)changesSince:(NSString *)token request:(ODataRequest *)request reply:(ODataReply *)reply
 {
   NSPersistentHistoryToken *since = nil;
-  if (!OISHistoryTokenFromString(token, &since)) {
+  NSDate *issued = nil;
+  if (!OISHistoryTokenFromString(token, &since, &issued)) {
     [reply failWithError:ODataServiceError(400, [NSString stringWithFormat:@"$deltatoken=%@ is not one this service wrote", token])];
+    return nil;
+  }
+  // Given before the history was pruned up to: changes made after it may be
+  // gone (FreeCoreData does not say so itself, as Apple's history does).
+  NSDate *pruned = [self.service historyPrunedBefore];
+  // In milliseconds, as tokens say.
+  if (issued && pruned && (long long)(issued.timeIntervalSince1970 * 1000) < (long long)(pruned.timeIntervalSince1970 * 1000)) {
+    [reply failWithError:ODataServiceError(410, @"The delta link has expired; read the set again")];
     return nil;
   }
   NSError *error = nil;
@@ -665,18 +674,30 @@ BOOL ODataJSONNestedWithin(NSData *data, NSUInteger depth)
 
 
 
-// A delta token: the persistent history token, archived, in base64url;
-// 0 for the start of history (a store with none yet may have no token).
+// A delta token: when it was given (milliseconds), a dot, and the
+// persistent history token, archived, in base64url (0 for the start of
+// history: a store with none yet may have no token). Every change after
+// the token's place was made after it was given, so history pruned up to
+// a later time may have lost some: the token has expired.
 static NSString *OISStringFromHistoryToken(NSPersistentHistoryToken *token)
 {
-  if (!token) return @"0";
+  long long issued = (long long)([[NSDate date] timeIntervalSince1970] * 1000);
+  if (!token) return [NSString stringWithFormat:@"%lld.0", issued];
   NSData *data = [NSKeyedArchiver archivedDataWithRootObject:token requiringSecureCoding:YES error:NULL];
-  return data ? ODataBase64URLString(data) : nil;
+  return data ? [NSString stringWithFormat:@"%lld.%@", issued, ODataBase64URLString(data)] : nil;
 }
 
-static BOOL OISHistoryTokenFromString(NSString *string, NSPersistentHistoryToken **token)
+static BOOL OISHistoryTokenFromString(NSString *string, NSPersistentHistoryToken **token, NSDate **issued)
 {
   *token = nil;
+  *issued = nil;
+  // One given before tokens said when (no dot: base64url has none).
+  NSRange dot = [string rangeOfString:@"."];
+  if (dot.location != NSNotFound) {
+    long long ms = [[string substringToIndex:dot.location] longLongValue];
+    if (ms > 0) *issued = [NSDate dateWithTimeIntervalSince1970:(NSTimeInterval)ms / 1000];
+    string = [string substringFromIndex:NSMaxRange(dot)];
+  }
   if ([string isEqualToString:@"0"]) return YES;
   NSData *data = ODataDataFromBase64(string);
   if (!data.length) return NO;
@@ -5453,8 +5474,32 @@ static NSNumber *OISScalarReturnValue(NSInvocation *invocation, char type)
     pruned = [context executeRequest:[NSPersistentHistoryChangeRequest deleteHistoryBeforeDate:date] error:&e] != nil;
     failure = e;
   }];
+  if (pruned) {
+    // How far: a delta token given before this has expired. No further
+    // than now: what comes after was not there to prune.
+    NSDate *now = [NSDate date];
+    if ([date compare:now] == NSOrderedDescending) date = now;
+    @synchronized (self) {
+      NSPersistentStore *store = self.coordinator.persistentStores.firstObject;
+      NSMutableDictionary *metadata = store ? [[self.coordinator metadataForPersistentStore:store] mutableCopy] : nil;
+      NSDate *before = metadata[@"ODataService.historyPrunedBefore"];
+      if (store && (!before || [before compare:date] == NSOrderedAscending)) {
+        metadata[@"ODataService.historyPrunedBefore"] = date;
+        [self.coordinator setMetadata:metadata forPersistentStore:store];
+      }
+    }
+  }
   if (error) *error = failure;
   return pruned;
+}
+
+- (NSDate *)historyPrunedBefore
+{
+  @synchronized (self) {
+    NSPersistentStore *store = self.coordinator.persistentStores.firstObject;
+    id before = store ? [self.coordinator metadataForPersistentStore:store][@"ODataService.historyPrunedBefore"] : nil;
+    return [before isKindOfClass:[NSDate class]] ? before : nil;
+  }
 }
 
 // Pruned as requests come, no more often than a tenth of the retention

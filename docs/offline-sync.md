@@ -618,7 +618,10 @@ What ODataService needs, and what it has:
    links answer 410: `historyRetention` (`HistoryRetention` for
    `ois-serve`), pruned by date in the background as requests come, and
    410 for links from before it. *Exists*; the client side handles 410
-   already. A device offline longer than that reads its sets again.
+   already. A delta token says when it was given, and the store's metadata
+   how far history was pruned: a token given before that is 410 on any
+   store (FreeCoreData's history does not report an expired token, as
+   Apple's does). A device offline longer than that reads its sets again.
 7. **Key uniqueness**: an upsert must find the one entity a key names; the
    store's key attribute is indexed and unique (a uniqueness constraint in
    the model). *Recommended in the docs; checked by the service at start,

@@ -41,6 +41,9 @@ typedef NS_ENUM(NSInteger, OISAccess) { OISAccessRead, OISAccessInsert, OISAcces
 @end
 
 @interface ODataService ()
+// History is pruned up to here (pruneHistoryBeforeDate:): a delta token
+// issued before it may have lost changes. Kept in the store's metadata.
+- (nullable NSDate *)historyPrunedBefore;
 - (void)rememberAnswer:(NSInteger)status headers:(NSDictionary *)headers body:(NSData *)body
                 forKey:(NSString *)key signature:(nullable NSString *)signature;
 - (void)prepare;

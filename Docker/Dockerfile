@@ -7,6 +7,7 @@
 #   docker build -f Docker/Dockerfile --target runtime   -t odatakit-runtime .
 #   docker build -f Docker/Dockerfile --target ois-serve -t ois-serve .
 #   docker build -f Docker/Dockerfile --target check .
+#   docker build -f Docker/Dockerfile --target unit .
 #
 #   sdk        everything to build an application with: clang, the stack,
 #              FreeCoreData (with momc and the PostgreSQL and MySQL stores),
@@ -17,6 +18,8 @@
 #              (OIS_ variables, or a property list at OIS_CONFIG)
 #   check      sdk, with the loopback check run and an application built
 #              against the installed libraries both ways, for CI
+#   unit       sdk, with the XCTest suite run (make test), as CI's unit
+#              tests: tools-xctest is part of the stack for it
 #
 # The stack is gnustep-patches' build, as CI's: the same two pins.
 
@@ -39,7 +42,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 ENV PREFIX=/opt/gnustep \
     CC=clang CXX=clang++ \
     LIBRARY_COMBO=ng-gnu-gnu RUNTIME_VERSION=gnustep-2.0 \
-    COMPONENTS="libobjc2 libdispatch tools-make libs-base"
+    COMPONENTS="libobjc2 libdispatch tools-make libs-base tools-xctest"
 # Every RUN in the images after this one sees the stack (GNUstep.sh).
 COPY Docker/ois-env /usr/local/bin/ois-env
 SHELL ["/usr/local/bin/ois-env", "/bin/sh", "-c"]
@@ -91,6 +94,10 @@ RUN set -e; \
       "$app" -Model /usr/local/share/ois-serve/Catalog.momd -PrintMetadata YES | grep -q '<EntitySet Name="Products"'; \
     done; \
     echo "check: the loopback check, and an application built both ways, pass"
+
+FROM sdk AS unit
+WORKDIR /usr/src/odatakit
+RUN make test
 
 FROM ubuntu:${UBUNTU} AS runtime
 ARG DEBIAN_FRONTEND=noninteractive
