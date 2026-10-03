@@ -4,165 +4,6 @@
 #import "WBSync.h"
 #import "WorkbenchSupport.h"
 
-// The device's way to the service: the built-in engine, or nothing at all.
-// Each exchange the device has, recorded as it went.
-@interface WBSyncLine : NSObject <ODataTransport>
-@property (nonatomic, weak) WorkbenchEngine *engine;
-@property (atomic) BOOL offline;
-@property (nonatomic, copy) void (^didFinish)(WorkbenchLogEntry *entry);
-@end
-
-@implementation WBSyncLine
-- (WorkbenchLogEntry *)entryOf:(NSURLRequest *)request started:(NSDate *)started
-{
-  WorkbenchLogEntry *entry = [[WorkbenchLogEntry alloc] init];
-  entry.method = request.HTTPMethod.uppercaseString ?: @"GET";
-  entry.URL = request.URL.absoluteString ?: @"";
-  entry.requestHeaders = request.allHTTPHeaderFields;
-  entry.requestData = request.HTTPBody;
-  entry.date = started;
-  entry.storeHint = @"";
-  return entry;
-}
-
-// On the main thread, by its run loop (which a nested run loop runs too).
-- (void)report:(WorkbenchLogEntry *)entry
-{
-  if (![NSThread isMainThread]) {
-    [self performSelectorOnMainThread:_cmd withObject:entry waitUntilDone:NO];
-    return;
-  }
-  if (self.didFinish) self.didFinish(entry);
-}
-
-- (void)startExchange:(ODataExchange *)exchange
-{
-  if (self.offline || !self.engine) {
-    exchange.error = [NSError errorWithDomain:NSURLErrorDomain code:NSURLErrorNotConnectedToInternet
-                                     userInfo:@{ NSLocalizedDescriptionKey: @"The device is offline." }];
-    WorkbenchLogEntry *entry = [self entryOf:exchange.request started:[NSDate date]];
-    entry.failure = exchange.error.localizedDescription;
-    [self report:entry];
-    [exchange finish];
-    return;
-  }
-  ODataExchange *inner = [[ODataExchange alloc] initWithRequest:exchange.request target:self action:@selector(innerDidFinish:)];
-  inner.context = @[ exchange, [NSDate date] ];
-  [self.engine startExchange:inner];
-}
-
-- (void)innerDidFinish:(ODataExchange *)inner
-{
-  ODataExchange *outer = inner.context[0];
-  outer.URLResponse = inner.URLResponse;
-  outer.data = inner.data;
-  outer.error = inner.error;
-  NSHTTPURLResponse *http = [inner.URLResponse isKindOfClass:[NSHTTPURLResponse class]] ? (NSHTTPURLResponse *)inner.URLResponse : nil;
-  WorkbenchLogEntry *entry = [self entryOf:inner.request started:inner.context[1]];
-  entry.status = http.statusCode;
-  entry.responseHeaders = http.allHeaderFields;
-  entry.responseData = inner.data ?: [NSData data];
-  entry.failure = inner.error.localizedDescription;
-  entry.duration = -[entry.date timeIntervalSinceNow];
-  [self report:entry];
-  [outer finish];
-}
-@end
-
-@interface WBSyncConflict ()
-@property (nonatomic, readwrite) ODataSyncConflict *conflict;
-@property (nonatomic, readwrite) ODataSyncResolutionKind outcome;
-@property (nonatomic, readwrite) NSDate *date;
-@end
-
-@implementation WBSyncConflict
-@end
-
-// The rule the window chose, and each conflict it settled, kept.
-@interface WBSyncRecorder : NSObject <ODataSyncResolving>
-@property (atomic) WBSyncRule rule;
-@property (nonatomic, strong) NSMutableArray<WBSyncConflict *> *conflicts;
-@end
-
-@implementation WBSyncRecorder
-- (instancetype)init
-{
-  self = [super init];
-  _conflicts = [NSMutableArray array];
-  return self;
-}
-
-- (ODataSyncResolution *)resolveConflict:(ODataSyncConflict *)conflict
-{
-  id<ODataSyncResolving> rule = nil;
-  switch (self.rule) {
-    case WBSyncRuleRemoteWins: rule = [[ODataSyncRemoteWins alloc] init]; break;
-    case WBSyncRuleDeviceWins: rule = [[ODataSyncLocalWins alloc] init]; break;
-    case WBSyncRuleLastWriterWins: rule = [[ODataSyncLastWriterWins alloc] init]; break;
-    case WBSyncRuleMergeFields: rule = [[ODataSyncMergeFields alloc] init]; break;
-    case WBSyncRuleSetAside: break;
-  }
-  ODataSyncResolution *resolution = rule ? [rule resolveConflict:conflict] : [ODataSyncResolution defer];
-  WBSyncConflict *met = [[WBSyncConflict alloc] init];
-  met.conflict = conflict;
-  met.outcome = resolution.kind;
-  met.date = [NSDate date];
-  @synchronized (_conflicts) {
-    [_conflicts insertObject:met atIndex:0];
-  }
-  return resolution;
-}
-
-- (NSArray<WBSyncConflict *> *)recorded
-{
-  @synchronized (_conflicts) {
-    return [_conflicts copy];
-  }
-}
-@end
-
-static NSString *WBOperationName(ODataSyncOperation operation)
-{
-  switch (operation) {
-    case ODataSyncOperationInsert: return @"insert";
-    case ODataSyncOperationUpdate: return @"update";
-    case ODataSyncOperationDelete: return @"delete";
-    case ODataSyncOperationRefresh: return @"read again";
-  }
-  return @"?";
-}
-
-static NSString *WBOutcomeName(ODataSyncResolutionKind kind)
-{
-  switch (kind) {
-    case ODataSyncTakeRemote: return @"the service's";
-    case ODataSyncKeepLocal: return @"the device's";
-    case ODataSyncMerge: return @"merged";
-    case ODataSyncDefer: return @"set aside";
-  }
-  return @"?";
-}
-
-static NSString *WBKeyText(NSDictionary *key)
-{
-  NSMutableArray *parts = [NSMutableArray array];
-  for (NSString *name in [key.allKeys sortedArrayUsingSelector:@selector(compare:)]) {
-    [parts addObject:key.count == 1 ? [key[name] description] : [NSString stringWithFormat:@"%@=%@", name, key[name]]];
-  }
-  return [parts componentsJoinedByString:@","];
-}
-
-static NSString *WBValuesText(NSDictionary *values, NSSet *changed)
-{
-  if (!values) return @"  (deleted)\n";
-  NSMutableString *text = [NSMutableString string];
-  for (NSString *name in [values.allKeys sortedArrayUsingSelector:@selector(compare:)]) {
-    id value = values[name] == [NSNull null] ? @"-" : values[name];
-    [text appendFormat:@"  %@ %@ = %@\n", [changed containsObject:name] ? @"*" : @" ", name, WBCellValue(value)];
-  }
-  return text;
-}
-
 static NSTableColumn *WBSyncColumn(NSString *identifier, NSString *title, CGFloat width)
 {
   NSTableColumn *column = [[NSTableColumn alloc] initWithIdentifier:identifier];
@@ -186,49 +27,8 @@ static NSButton *WBSyncButton(NSString *title, NSRect frame, id target, SEL acti
   return button;
 }
 
-// The entities the device shows, in the menu's order, and which way each
-// goes (the device's model says so in each entity's userInfo).
-static NSArray<NSString *> *WBSyncEntities(void)
-{
-  return @[ @"Product", @"Stock", @"Category", @"Supplier", @"Location" ];
-}
-
-static NSDictionary<NSString *, NSString *> *WBSyncDirections(void)
-{
-  return @{ @"Category": @"down", @"Supplier": @"down", @"Location": @"down", @"Product": @"both", @"Stock": @"both" };
-}
-
-static NSString *WBDirectionTitle(NSString *entity)
-{
-  NSString *direction = WBSyncDirections()[entity];
-  if ([direction isEqualToString:@"both"]) return [entity stringByAppendingString:@" (both ways)"];
-  if ([direction isEqualToString:@"up"]) return [entity stringByAppendingString:@" (up: the device's)"];
-  return [entity stringByAppendingString:@" (down: the service's)"];
-}
-
-// What the rules are, for the entity shown.
-static NSString *WBDirectionRules(NSString *entity)
-{
-  NSString *direction = WBSyncDirections()[entity];
-  if ([direction isEqualToString:@"both"]) {
-    return [NSString stringWithFormat:@"%@: both ways. Edit it here (a cell, New, Delete): the change waits under Waiting to be sent until "
-                                      @"Sync or Upload sends it. The service's changes come with Sync or Download. Changed on both sides: "
-                                      @"the Conflicts rule settles it.", entity];
-  }
-  if ([direction isEqualToString:@"up"]) {
-    return [NSString stringWithFormat:@"%@: up, the device's. Made and changed here, sent by Sync or Upload; the service never sends it back.",
-                                      entity];
-  }
-  return [NSString stringWithFormat:@"%@: down, the service's. It comes with Sync or Download, and is read only here (the "
-                                    @"Workbench has no up entity: Products and Stock go both ways).", entity];
-}
-
 @implementation WBSyncWindow {
-  WBSyncLine *_line;
-  WBSyncRecorder *_recorder;
-  NSURL *_storeURL;
   NSArray<NSString *> *_columns;
-  NSTimer *_poll;
 }
 
 - (instancetype)initWithEngine:(WorkbenchEngine *)engine
@@ -236,86 +36,46 @@ static NSString *WBDirectionRules(NSString *entity)
   self = [super init];
   if (!self) return nil;
   _engine = engine;
-  _line = [[WBSyncLine alloc] init];
-  _line.engine = engine;
-  _recorder = [[WBSyncRecorder alloc] init];
   _objects = @[];
   _changes = @[];
   _conflicts = @[];
-  _requests = @[];
+  _device = [[WorkbenchDevice alloc] initWithModelURL:engine.modelURL serviceRoot:engine.serviceRoot transport:engine storeURL:nil];
+  if (!_device) return nil;
   __weak WBSyncWindow *weak = self;
-  _line.didFinish = ^(WorkbenchLogEntry *entry) {
+  _device.didLog = ^(WorkbenchLogEntry *entry) {
     [weak logged:entry];
   };
-  if (![self openDevice]) return nil;
+  _device.didChange = ^(NSString *status) {
+    [weak changed:status];
+  };
   [self makeWindow];
   [self entityChanged:nil];
   return self;
 }
 
-- (void)dealloc
+- (ODataSyncEngine *)sync
 {
-  [_poll invalidate];
-  [self forgetStore];
+  return _device.sync;
 }
 
-#pragma mark The device
-
-- (void)forgetStore
+- (NSPersistentStoreCoordinator *)deviceStore
 {
-  if (!_storeURL) return;
-  for (NSString *suffix in @[ @"", @"-wal", @"-shm" ]) {
-    [[NSFileManager defaultManager] removeItemAtPath:[_storeURL.path stringByAppendingString:suffix] error:NULL];
-  }
-  _storeURL = nil;
+  return _device.coordinator;
 }
 
-// The built-in model, which way each entity goes said in its userInfo, and
-// the engine's own entities added: a store of its own, an engine over it.
-- (BOOL)openDevice
+- (NSManagedObjectContext *)context
 {
-  NSManagedObjectModel *model = WorkbenchBuiltInModel(_engine.modelURL);
-  if (!model) return NO;
-  NSDictionary *directions = WBSyncDirections();
-  for (NSString *name in directions) {
-    NSEntityDescription *entity = model.entitiesByName[name];
-    NSMutableDictionary *info = [entity.userInfo mutableCopy] ?: [NSMutableDictionary dictionary];
-    info[ODataSyncDirectionKey] = directions[name];
-    if ([name isEqualToString:@"Product"]) info[ODataSyncModifiedKey] = @"lastChanged";
-    entity.userInfo = info;
-  }
-  // The device keeps a deleted object's key, for the service to be told.
-  for (NSEntityDescription *entity in model.entities) {
-    for (NSAttributeDescription *attribute in entity.attributesByName.allValues) {
-      if (WBIsKey(attribute)) attribute.preservesValueInHistoryOnDeletion = YES;
-    }
-  }
-  [ODataSyncEngine addBookkeepingToModel:model configuration:nil];
-  NSPersistentStoreCoordinator *coordinator = [[NSPersistentStoreCoordinator alloc] initWithManagedObjectModel:model];
-  [self forgetStore];
-  _storeURL = [NSURL fileURLWithPath:[NSTemporaryDirectory() stringByAppendingPathComponent:
-                                         [NSString stringWithFormat:@"Workbench-device-%@.sqlite", [NSProcessInfo processInfo].globallyUniqueString]]];
-  NSError *error = nil;
-  if (![coordinator addPersistentStoreWithType:NSSQLiteStoreType configuration:nil URL:_storeURL
-                                       options:@{ NSPersistentHistoryTrackingKey: @YES } error:&error]) {
-    NSLog(@"Workbench: the device's store does not open: %@", error);
-    return NO;
-  }
-  _deviceStore = coordinator;
-  _context = [[NSManagedObjectContext alloc] initWithConcurrencyType:NSMainQueueConcurrencyType];
-  _context.persistentStoreCoordinator = coordinator;
-  _sync = [[ODataSyncEngine alloc] initWithCoordinator:coordinator];
-  _sync.resolver = _recorder;
-  _sync.delegate = self;
-  ODataSyncRemote *remote = [ODataSyncRemote remoteWithServiceRoot:_engine.serviceRoot];
-  remote.transport = _line;
-  [_sync addRemote:remote];
-  return YES;
+  return _device.context;
 }
 
-- (ODataSyncRemote *)remote
+- (NSArray<WorkbenchLogEntry *> *)requests
 {
-  return _sync.remotes.firstObject;
+  return _device.requests;
+}
+
+- (BOOL)isBusy
+{
+  return _device.busy;
 }
 
 #pragma mark The window
@@ -383,7 +143,7 @@ static NSString *WBDirectionRules(NSString *entity)
   conflicts.autoresizingMask = NSViewMinYMargin;
   [content addSubview:conflicts];
   _rulePopup = [[NSPopUpButton alloc] initWithFrame:NSMakeRect(x + 80, top + 2, 200, 26) pullsDown:NO];
-  [_rulePopup addItemsWithTitles:@[ @"The service's wins", @"The device's wins", @"The last writer wins", @"Merge the fields", @"Set aside, to decide" ]];
+  [_rulePopup addItemsWithTitles:WBSyncRuleTitles()];
   _rulePopup.target = self;
   _rulePopup.action = @selector(ruleChanged:);
   _rulePopup.autoresizingMask = NSViewMinYMargin;
@@ -418,8 +178,8 @@ static NSString *WBDirectionRules(NSString *entity)
   left.autoresizingMask = NSViewWidthSizable | NSViewHeightSizable;
   CGFloat leftHeight = left.frame.size.height;
   _entityPopup = [[NSPopUpButton alloc] initWithFrame:NSMakeRect(8, leftHeight - 30, 220, 26) pullsDown:NO];
-  for (NSString *entity in WBSyncEntities()) {
-    [_entityPopup addItemWithTitle:WBDirectionTitle(entity)];
+  for (NSString *entity in [WorkbenchDevice entityNames]) {
+    [_entityPopup addItemWithTitle:[_device titleOfEntity:entity]];
     _entityPopup.lastItem.representedObject = entity;
   }
   _entityPopup.target = self;
@@ -528,42 +288,19 @@ static NSString *WBDirectionRules(NSString *entity)
   return _entityPopup.selectedItem.representedObject ?: @"Product";
 }
 
-- (BOOL)entityIsEditable
-{
-  NSEntityDescription *entity = _deviceStore.managedObjectModel.entitiesByName[[self entityName]];
-  NSString *direction = entity.userInfo[ODataSyncDirectionKey];
-  return [direction isEqualToString:@"both"] || [direction isEqualToString:@"up"];
-}
-
 - (IBAction)entityChanged:(id)sender
 {
   (void)sender;
-  NSEntityDescription *entity = _deviceStore.managedObjectModel.entitiesByName[[self entityName]];
-  // As the Workbench shows the Catalog's entities; then the version and the
-  // stamp (the service's and the engine's), and what it belongs to.
-  NSMutableArray *columns = [NSMutableArray array];
-  for (NSString *name in WBColumnNames(entity, YES)) {
-    if (entity.attributesByName[name]) [columns addObject:name];
-  }
-  for (NSString *name in @[ @"version", @"lastChanged", @"versions" ]) {
-    if (entity.attributesByName[name] && ![columns containsObject:name]) [columns addObject:name];
-  }
-  for (NSString *name in [entity.relationshipsByName.allKeys sortedArrayUsingSelector:@selector(compare:)]) {
-    NSRelationshipDescription *relationship = entity.relationshipsByName[name];
-    if (!relationship.isToMany) [columns addObject:name];
-  }
-  _columns = columns;
-  _rulesField.stringValue = WBDirectionRules([self entityName]);
-  _makeButton.enabled = [self entityIsEditable];
-  _deleteButton.enabled = [self entityIsEditable];
+  NSString *entity = [self entityName];
+  _columns = [_device columnsOfEntity:entity];
+  _rulesField.stringValue = [_device rulesOfEntity:entity];
+  BOOL editable = [_device entityIsEditable:entity];
+  _makeButton.enabled = editable;
+  _deleteButton.enabled = editable;
   while (_dataTable.tableColumns.count) [_dataTable removeTableColumn:_dataTable.tableColumns.lastObject];
-  BOOL editable = [self entityIsEditable];
-  for (NSString *name in columns) {
-    NSAttributeDescription *attribute = entity.attributesByName[name];
+  for (NSString *name in _columns) {
     NSTableColumn *column = WBSyncColumn(name, name, [name isEqualToString:@"lastChanged"] || [name isEqualToString:@"versions"] ? 190 : 90);
-    // The key, the version, the stamp and the history are the engine's and
-    // the service's.
-    column.editable = editable && attribute && !WBIsKey(attribute) && ![@[ @"version", @"lastChanged", @"versions" ] containsObject:name];
+    column.editable = [_device column:name isEditableInEntity:entity];
     [_dataTable addTableColumn:column];
   }
   [self reloadObjects];
@@ -571,133 +308,67 @@ static NSString *WBDirectionRules(NSString *entity)
 
 - (void)logged:(WorkbenchLogEntry *)entry
 {
-  NSMutableArray *requests = [_requests mutableCopy];
-  [requests insertObject:entry atIndex:0];
-  if (requests.count > 200) [requests removeLastObject];
-  _requests = requests;
+  (void)entry;
   [_requestTable reloadData];
   // The newest at the top, in view.
   if (_requestTable.selectedRow < 1) [_requestTable scrollRowToVisible:0];
 }
 
+- (void)changed:(NSString *)status
+{
+  [self reload];
+  _statusField.stringValue = status;
+}
+
 - (void)reloadObjects
 {
-  [_context reset];
-  NSFetchRequest *fetch = [NSFetchRequest fetchRequestWithEntityName:[self entityName]];
-  fetch.sortDescriptors = @[ [NSSortDescriptor sortDescriptorWithKey:@"id" ascending:YES] ];
-  _objects = [_context executeFetchRequest:fetch error:NULL] ?: @[];
+  _objects = [_device objectsOfEntity:[self entityName]];
   [_dataTable reloadData];
 }
 
 - (void)reload
 {
   [self reloadObjects];
-  _changes = [_sync pendingChanges];
-  _conflicts = [_recorder recorded];
+  _changes = [_device pendingChanges];
+  _conflicts = [_device conflicts];
   [_changesTable reloadData];
   [_conflictTable reloadData];
 }
 
 - (id)valueOfAttribute:(NSString *)attribute entity:(NSString *)entity key:(id)key
 {
-  __block id value = nil;
-  NSManagedObjectContext *context = [[NSManagedObjectContext alloc] initWithConcurrencyType:NSPrivateQueueConcurrencyType];
-  context.persistentStoreCoordinator = _deviceStore;
-  [context performBlockAndWait:^{
-    NSFetchRequest *fetch = [NSFetchRequest fetchRequestWithEntityName:entity];
-    fetch.predicate = [NSPredicate predicateWithFormat:@"id == %@", key];
-    value = [[[context executeFetchRequest:fetch error:NULL] firstObject] valueForKey:attribute];
-  }];
-  return value;
+  return [_device valueOfAttribute:attribute entity:entity key:key];
 }
 
 #pragma mark Running
 
-// The work on a thread of its own, the result said and the tables read
-// again on the main thread.
-- (void)run:(NSString *)what work:(BOOL (^)(NSError **error))work
-{
-  if (_busy) {
-    _statusField.stringValue = @"Still syncing.";
-    return;
-  }
-  _busy = YES;
-  _statusField.stringValue = [what stringByAppendingString:@"…"];
-  ODataSyncEngine *sync = _sync;
-  dispatch_async(dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0), ^{
-    NSError *error = nil;
-    BOOL ok = work(&error);
-    ODataSyncResult *result = sync.lastResult;
-    dispatch_async(dispatch_get_main_queue(), ^{
-      [self finished:what ok:ok result:result error:error];
-    });
-  });
-}
-
-- (void)finished:(NSString *)what ok:(BOOL)ok result:(ODataSyncResult *)result error:(NSError *)error
-{
-  _busy = NO;
-  [self reload];
-  if (!ok) {
-    _statusField.stringValue = [NSString stringWithFormat:@"%@ failed: %@ The changes wait for the next sync.", what,
-                                                          error.localizedDescription ?: @"no answer."];
-    return;
-  }
-  NSMutableArray *parts = [NSMutableArray array];
-  if (result) {
-    [parts addObject:[NSString stringWithFormat:@"%lu down", (unsigned long)result.downloaded]];
-    if (result.removed) [parts addObject:[NSString stringWithFormat:@"%lu removed", (unsigned long)result.removed]];
-    [parts addObject:[NSString stringWithFormat:@"%lu up", (unsigned long)result.uploaded]];
-    if (result.conflicts) [parts addObject:[NSString stringWithFormat:@"%lu conflict(s)", (unsigned long)result.conflicts]];
-    if (result.refused) [parts addObject:[NSString stringWithFormat:@"%lu set aside", (unsigned long)result.refused]];
-  }
-  _statusField.stringValue = [NSString stringWithFormat:@"%@: %@. %lu change(s) waiting.", what,
-                                                        parts.count ? [parts componentsJoinedByString:@", "] : @"done",
-                                                        (unsigned long)_changes.count];
-}
-
 - (IBAction)sync:(id)sender
 {
   (void)sender;
-  ODataSyncEngine *sync = _sync;
-  [self run:@"Sync" work:^BOOL(NSError **error) {
-    return [sync syncWithError:error];
-  }];
+  [_device run:WBSyncActionSync];
 }
 
 - (IBAction)download:(id)sender
 {
   (void)sender;
-  ODataSyncEngine *sync = _sync;
-  ODataSyncRemote *remote = [self remote];
-  [self run:@"Download" work:^BOOL(NSError **error) {
-    return [sync downloadFromRemote:remote error:error];
-  }];
+  [_device run:WBSyncActionDownload];
 }
 
 - (IBAction)upload:(id)sender
 {
   (void)sender;
-  ODataSyncEngine *sync = _sync;
-  ODataSyncRemote *remote = [self remote];
-  [self run:@"Upload" work:^BOOL(NSError **error) {
-    return [sync uploadToRemote:remote error:error];
-  }];
+  [_device run:WBSyncActionUpload];
 }
 
 - (IBAction)reconcile:(id)sender
 {
   (void)sender;
-  ODataSyncEngine *sync = _sync;
-  ODataSyncRemote *remote = [self remote];
-  [self run:@"Reconcile" work:^BOOL(NSError **error) {
-    return [sync reconcileWithRemote:remote error:error];
-  }];
+  [_device run:WBSyncActionReconcile];
 }
 
 - (BOOL)syncAndWait:(NSError **)error
 {
-  BOOL ok = [_sync syncWithError:error];
+  BOOL ok = [_device syncAndWait:error];
   [self reload];
   return ok;
 }
@@ -713,65 +384,24 @@ static NSString *WBDirectionRules(NSString *entity)
 
 #pragma mark Changing the device
 
-- (id)valueFromCell:(id)value attribute:(NSAttributeDescription *)attribute
+// The switch as it is now (the self-test sets it without its action).
+- (void)takeAutoSync
 {
-  if (value == nil || [value isKindOfClass:[NSNull class]]) return nil;
-  NSString *text = [value isKindOfClass:[NSString class]] ? value : [value description];
-  if (!text.length && attribute.attributeType != NSStringAttributeType) return nil;
-  switch (attribute.attributeType) {
-    case NSInteger16AttributeType:
-    case NSInteger32AttributeType:
-    case NSInteger64AttributeType: return @(text.longLongValue);
-    case NSDecimalAttributeType: return [NSDecimalNumber decimalNumberWithString:text];
-    case NSDoubleAttributeType:
-    case NSFloatAttributeType: return @(text.doubleValue);
-    case NSBooleanAttributeType: return @([@[ @"1", @"yes", @"true" ] containsObject:text.lowercaseString]);
-    case NSDateAttributeType: return WBDate(text);
-    default: return text;
-  }
-}
-
-- (void)saveSaying:(NSString *)what
-{
-  NSError *error = nil;
-  if (![_context save:&error]) {
-    _statusField.stringValue = [NSString stringWithFormat:@"Not saved: %@", error.localizedDescription];
-    [_context rollback];
-    return;
-  }
-  [self reload];
-  if (_autoSyncButton.state == NSOnState) {
-    [self sync:nil];
-    return;
-  }
-  _statusField.stringValue = [NSString stringWithFormat:@"%@ on the device; %lu change(s) waiting: Sync (or Upload) sends them.", what,
-                                                        (unsigned long)_changes.count];
+  _device.syncsEachChange = _autoSyncButton.state == NSOnState;
 }
 
 - (void)setValue:(id)value ofAttribute:(NSString *)name row:(NSInteger)row
 {
   if (row < 0 || (NSUInteger)row >= _objects.count) return;
-  NSManagedObject *object = _objects[(NSUInteger)row];
-  NSAttributeDescription *attribute = object.entity.attributesByName[name];
-  if (!attribute) return;
-  [object setValue:[self valueFromCell:value attribute:attribute] forKey:name];
-  [self saveSaying:[NSString stringWithFormat:@"%@ %@ changed", object.entity.name, [object valueForKey:@"id"]]];
+  [self takeAutoSync];
+  [_device setValue:value ofAttribute:name object:_objects[(NSUInteger)row]];
 }
 
 - (IBAction)newObject:(id)sender
 {
   (void)sender;
-  if (![self entityIsEditable]) {
-    _statusField.stringValue = [NSString stringWithFormat:@"%@ is the service's: the device only reads it.", [self entityName]];
-    return;
-  }
-  NSManagedObject *object = [NSEntityDescription insertNewObjectForEntityForName:[self entityName] inManagedObjectContext:_context];
-  // A key no one else will take (the Catalog's keys are numbers).
-  [object setValue:@(100000 + (NSInteger)([NSUUID UUID].UUIDString.hash % 900000)) forKey:@"id"];
-  if (object.entity.attributesByName[@"name"]) [object setValue:@"New on the device" forKey:@"name"];
-  if (object.entity.attributesByName[@"quantity"]) [object setValue:@0 forKey:@"quantity"];
-  [self saveSaying:[NSString stringWithFormat:@"%@ %@ made (a random key: the Catalog's keys are numbers; an offline app's own would be UUIDs)",
-                                             object.entity.name, [object valueForKey:@"id"]]];
+  [self takeAutoSync];
+  [_device newObjectOfEntity:[self entityName]];
 }
 
 - (IBAction)deleteObject:(id)sender
@@ -779,10 +409,8 @@ static NSString *WBDirectionRules(NSString *entity)
   (void)sender;
   NSInteger row = _dataTable.selectedRow;
   if (row < 0 || (NSUInteger)row >= _objects.count) return;
-  NSManagedObject *object = _objects[(NSUInteger)row];
-  NSString *what = [NSString stringWithFormat:@"%@ %@ deleted", object.entity.name, [object valueForKey:@"id"]];
-  [_context deleteObject:object];
-  [self saveSaying:what];
+  [self takeAutoSync];
+  [_device deleteObject:_objects[(NSUInteger)row]];
 }
 
 - (ODataSyncIssue *)selectedIssue
@@ -801,9 +429,7 @@ static NSString *WBDirectionRules(NSString *entity)
     _statusField.stringValue = @"Select a change set aside to retry it.";
     return;
   }
-  [_sync retryIssue:issue];
-  [self reload];
-  _statusField.stringValue = @"It goes again at the next sync (a conflict's: the device's version over the service's).";
+  [_device retryIssue:issue];
 }
 
 - (IBAction)discardIssue:(id)sender
@@ -814,22 +440,17 @@ static NSString *WBDirectionRules(NSString *entity)
     _statusField.stringValue = @"Select a change set aside to discard it.";
     return;
   }
-  [_sync discardIssue:issue];
-  [self reload];
-  _statusField.stringValue = @"Discarded (a conflict's: the service's version is read at the next sync).";
+  [_device discardIssue:issue];
 }
 
 - (IBAction)resetDevice:(id)sender
 {
   (void)sender;
-  if (_busy) return;
-  [_recorder.conflicts removeAllObjects];
-  WBSyncRule rule = self.rule;
-  if (![self openDevice]) {
+  if (_device.busy) return;
+  if (![_device reset]) {
     _statusField.stringValue = @"The device's store does not open.";
     return;
   }
-  self.rule = rule;
   [self entityChanged:nil];
   [self reload];
   _statusField.stringValue = @"A new device: Sync reads the service's data into it.";
@@ -837,54 +458,38 @@ static NSString *WBDirectionRules(NSString *entity)
 
 - (WBSyncRule)rule
 {
-  return _recorder.rule;
+  return _device.rule;
 }
 
 - (void)setRule:(WBSyncRule)rule
 {
-  _recorder.rule = rule;
+  _device.rule = rule;
   [_rulePopup selectItemAtIndex:rule];
 }
 
 - (IBAction)ruleChanged:(id)sender
 {
   (void)sender;
-  _recorder.rule = (WBSyncRule)_rulePopup.indexOfSelectedItem;
+  _device.rule = (WBSyncRule)_rulePopup.indexOfSelectedItem;
 }
 
 - (BOOL)isOffline
 {
-  return _line.offline;
+  return _device.offline;
 }
 
 - (void)setOffline:(BOOL)offline
 {
-  _line.offline = offline;
+  _device.offline = offline;
   _offlineButton.state = offline ? NSOnState : NSOffState;
 }
 
 - (IBAction)offlineChanged:(id)sender
 {
   (void)sender;
-  _line.offline = _offlineButton.state == NSOnState;
-  _statusField.stringValue = _line.offline ? @"Offline: change things on the device; they wait, and go when it is back."
-                                           : @"Back online: Sync sends what waits.";
-}
-
-#pragma mark ODataSyncDelegate
-
-- (void)syncEngine:(ODataSyncEngine *)engine didSetAside:(ODataSyncIssue *)issue
-{
-  (void)engine;
-  (void)issue;
-}
-
-- (void)syncEngine:(ODataSyncEngine *)engine ignoredLocalChangeToObject:(NSManagedObjectID *)objectID
-{
-  (void)engine;
-  dispatch_async(dispatch_get_main_queue(), ^{
-    self.statusField.stringValue = [NSString stringWithFormat:@"A change to %@ is not sent: the service owns it.", objectID.entity.name];
-  });
+  _device.offline = _offlineButton.state == NSOnState;
+  _statusField.stringValue = _device.offline ? @"Offline: change things on the device; they wait, and go when it is back."
+                                             : @"Back online: Sync sends what waits.";
 }
 
 #pragma mark Tables
@@ -894,7 +499,7 @@ static NSString *WBDirectionRules(NSString *entity)
   if (table == _dataTable) return (NSInteger)_objects.count;
   if (table == _changesTable) return (NSInteger)_changes.count;
   if (table == _conflictTable) return (NSInteger)_conflicts.count;
-  if (table == _requestTable) return (NSInteger)_requests.count;
+  if (table == _requestTable) return (NSInteger)self.requests.count;
   return 0;
 }
 
@@ -914,88 +519,32 @@ static NSString *WBDirectionRules(NSString *entity)
     if ([identifier isEqualToString:@"entity"]) return change.entityName;
     if ([identifier isEqualToString:@"key"]) return WBKeyText(change.key);
     if ([identifier isEqualToString:@"attempts"]) return @(change.attempts);
-    if ([identifier isEqualToString:@"change"]) {
-      NSString *name = WBOperationName(change.operation);
-      return change.operation == ODataSyncOperationUpdate && change.properties
-          ? [NSString stringWithFormat:@"%@ %@", name, [change.properties componentsJoinedByString:@", "]] : name;
-    }
-    if ([identifier isEqualToString:@"issue"]) {
-      if (![change isKindOfClass:[ODataSyncIssue class]]) return @"";
-      ODataSyncIssue *issue = (ODataSyncIssue *)change;
-      return [NSString stringWithFormat:@"%ld %@", (long)issue.status, issue.message];
-    }
+    if ([identifier isEqualToString:@"change"]) return WBChangeText(change);
+    if ([identifier isEqualToString:@"issue"]) return WBIssueText(change);
     return nil;
   }
-  if (table == _requestTable) return [self requestValue:identifier row:row];
+  if (table == _requestTable) {
+    NSArray<WorkbenchLogEntry *> *requests = self.requests;
+    if ((NSUInteger)row >= requests.count) return nil;
+    WorkbenchLogEntry *entry = requests[(NSUInteger)row];
+    if ([identifier isEqualToString:@"time"]) return WBTimeText(entry.date);
+    if ([identifier isEqualToString:@"method"]) return entry.method;
+    if ([identifier isEqualToString:@"url"]) return WBRequestPath(entry, _engine.serviceRoot);
+    if ([identifier isEqualToString:@"status"]) return entry.status ? @(entry.status) : @"-";
+    if ([identifier isEqualToString:@"ms"]) return entry.duration ? [NSString stringWithFormat:@"%.0f", entry.duration * 1000] : @"";
+    return nil;
+  }
   if (table == _conflictTable) {
     if ((NSUInteger)row >= _conflicts.count) return nil;
     WBSyncConflict *met = _conflicts[(NSUInteger)row];
-    ODataSyncConflict *conflict = met.conflict;
-    if ([identifier isEqualToString:@"time"]) {
-      NSDateFormatter *format = [[NSDateFormatter alloc] init];
-      format.dateFormat = @"HH:mm:ss";
-      return [format stringFromDate:met.date];
-    }
-    if ([identifier isEqualToString:@"entity"]) return conflict.entity.name;
-    if ([identifier isEqualToString:@"key"]) return WBKeyText(conflict.key);
-    if ([identifier isEqualToString:@"here"]) {
-      return conflict.local ? [[conflict.localChanges.allObjects sortedArrayUsingSelector:@selector(compare:)] componentsJoinedByString:@", "] : @"deleted";
-    }
-    if ([identifier isEqualToString:@"there"]) {
-      return conflict.remote ? [[conflict.remoteChanges.allObjects sortedArrayUsingSelector:@selector(compare:)] componentsJoinedByString:@", "] : @"deleted";
-    }
+    if ([identifier isEqualToString:@"time"]) return WBTimeText(met.date);
+    if ([identifier isEqualToString:@"entity"]) return met.conflict.entity.name;
+    if ([identifier isEqualToString:@"key"]) return WBKeyText(met.conflict.key);
+    if ([identifier isEqualToString:@"here"]) return WBConflictSideText(met, YES);
+    if ([identifier isEqualToString:@"there"]) return WBConflictSideText(met, NO);
     if ([identifier isEqualToString:@"outcome"]) return WBOutcomeName(met.outcome);
   }
   return nil;
-}
-
-- (NSString *)pathOf:(WorkbenchLogEntry *)entry
-{
-  NSString *root = _engine.serviceRoot.absoluteString;
-  return [entry.URL hasPrefix:root] ? [entry.URL substringFromIndex:root.length] : entry.URL;
-}
-
-- (id)requestValue:(NSString *)identifier row:(NSInteger)row
-{
-  if ((NSUInteger)row >= _requests.count) return nil;
-  WorkbenchLogEntry *entry = _requests[(NSUInteger)row];
-  if ([identifier isEqualToString:@"time"]) {
-    NSDateFormatter *format = [[NSDateFormatter alloc] init];
-    format.dateFormat = @"HH:mm:ss";
-    return [format stringFromDate:entry.date];
-  }
-  if ([identifier isEqualToString:@"method"]) return entry.method;
-  if ([identifier isEqualToString:@"url"]) return [self pathOf:entry];
-  if ([identifier isEqualToString:@"status"]) return entry.status ? @(entry.status) : @"-";
-  if ([identifier isEqualToString:@"ms"]) return entry.duration ? [NSString stringWithFormat:@"%.0f", entry.duration * 1000] : @"";
-  return nil;
-}
-
-static NSString *WBBodyText(NSData *data)
-{
-  if (!data.length) return @"";
-  id json = [NSJSONSerialization JSONObjectWithData:data options:0 error:NULL];
-  NSData *pretty = json ? [NSJSONSerialization dataWithJSONObject:json options:NSJSONWritingPrettyPrinted error:NULL] : nil;
-  return [[NSString alloc] initWithData:pretty ?: data encoding:NSUTF8StringEncoding] ?: @"(binary)";
-}
-
-- (void)showRequest:(WorkbenchLogEntry *)entry
-{
-  NSMutableString *text = [NSMutableString stringWithFormat:@"%@ %@\n", entry.method, entry.URL];
-  for (NSString *name in [entry.requestHeaders.allKeys sortedArrayUsingSelector:@selector(compare:)]) {
-    [text appendFormat:@"%@: %@\n", name, entry.requestHeaders[name]];
-  }
-  if (entry.requestData.length) [text appendFormat:@"\n%@\n", WBBodyText(entry.requestData)];
-  if (entry.failure && !entry.status) {
-    [text appendFormat:@"\nNo answer: %@\n", entry.failure];
-  } else {
-    [text appendFormat:@"\n%ld\n", (long)entry.status];
-    for (NSString *name in [entry.responseHeaders.allKeys sortedArrayUsingSelector:@selector(compare:)]) {
-      [text appendFormat:@"%@: %@\n", name, entry.responseHeaders[name]];
-    }
-    if (entry.responseData.length) [text appendFormat:@"\n%@\n", WBBodyText(entry.responseData)];
-  }
-  _detailView.string = text;
 }
 
 - (void)tableView:(NSTableView *)table setObjectValue:(id)value forTableColumn:(NSTableColumn *)column row:(NSInteger)row
@@ -1008,22 +557,14 @@ static NSString *WBBodyText(NSData *data)
 {
   if (notification.object == _requestTable) {
     NSInteger selected = _requestTable.selectedRow;
-    if (selected >= 0 && (NSUInteger)selected < _requests.count) [self showRequest:_requests[(NSUInteger)selected]];
+    NSArray<WorkbenchLogEntry *> *requests = self.requests;
+    if (selected >= 0 && (NSUInteger)selected < requests.count) _detailView.string = WBRequestText(requests[(NSUInteger)selected]);
     return;
   }
   if (notification.object != _conflictTable) return;
   NSInteger row = _conflictTable.selectedRow;
   if (row < 0 || (NSUInteger)row >= _conflicts.count) return;
-  WBSyncConflict *met = _conflicts[(NSUInteger)row];
-  ODataSyncConflict *conflict = met.conflict;
-  NSMutableString *text = [NSMutableString stringWithFormat:@"%@ %@: %@\n\n", conflict.entity.name, WBKeyText(conflict.key), WBOutcomeName(met.outcome)];
-  [text appendString:@"Agreed on last:\n"];
-  [text appendString:conflict.base ? WBValuesText(conflict.base, nil) : @"  (not known)\n"];
-  [text appendString:@"\nOn the device:\n"];
-  [text appendString:WBValuesText(conflict.local, conflict.localChanges)];
-  [text appendString:@"\nAt the service:\n"];
-  [text appendString:WBValuesText(conflict.remote, conflict.remoteChanges)];
-  _detailView.string = text;
+  _detailView.string = WBConflictText(_conflicts[(NSUInteger)row]);
 }
 
 @end

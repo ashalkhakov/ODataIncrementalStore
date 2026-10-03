@@ -5,6 +5,7 @@
 #import "ODataPropertyMapper.h"
 #import "ODataValue.h"
 #import "ODataError.h"
+#import <ODataKit/ODataXML.h>
 #import "ODataRegex.h"
 
 NSString * const ODataUserInfoUnmapped = @"OData.unmapped";
@@ -497,19 +498,19 @@ static void OISApplyVocabularies(NSDictionary<NSString *, id> *annotations, ODat
 #pragma mark - Writing a model
 
 // An element with these attributes, in this order: name, value, ...
-static NSXMLElement *OISModelElement(NSString *name, NSArray *attributes)
+static ODataXMLElement *OISModelElement(NSString *name, NSArray *attributes)
 {
-  NSXMLElement *element = [[NSXMLElement alloc] initWithName:name];
+  ODataXMLElement *element = [[ODataXMLElement alloc] initWithName:name];
   for (NSUInteger i = 0; i + 1 < attributes.count; i += 2) {
-    [element addAttribute:[NSXMLNode attributeWithName:attributes[i] stringValue:[attributes[i + 1] description]]];
+    [element addAttribute:[ODataXMLNode attributeWithName:attributes[i] stringValue:[attributes[i + 1] description]]];
   }
   return element;
 }
 
-static void OISAddUserInfo(NSXMLElement *parent, NSDictionary *info)
+static void OISAddUserInfo(ODataXMLElement *parent, NSDictionary *info)
 {
   if (!info.count) return;
-  NSXMLElement *userInfo = OISModelElement(@"userInfo", nil);
+  ODataXMLElement *userInfo = OISModelElement(@"userInfo", nil);
   for (NSString *key in [info.allKeys sortedArrayUsingSelector:@selector(compare:)]) {
     [userInfo addChild:OISModelElement(@"entry", @[ @"key", key, @"value", [info[key] description] ])];
   }
@@ -519,7 +520,7 @@ static void OISAddUserInfo(NSXMLElement *parent, NSDictionary *info)
 + (NSData *)modelDocumentForModel:(NSManagedObjectModel *)model
 {
   NSString *version = [self versionIdentifierOfModel:model];
-  NSXMLElement *root = OISModelElement(@"model", @[
+  ODataXMLElement *root = OISModelElement(@"model", @[
     @"type", @"com.apple.IDECoreDataModeler.DataModel", @"documentVersion", @"1.0", @"lastSavedToolsVersion", @"1",
     @"systemVersion", @"1", @"minimumToolsVersion", @"Automatic", @"sourceLanguage", @"Objective-C",
     @"userDefinedModelVersionIdentifier", version ?: @"" ]);
@@ -527,18 +528,18 @@ static void OISAddUserInfo(NSXMLElement *parent, NSDictionary *info)
     return [[a name] compare:[b name]];
   }];
   for (NSEntityDescription *entity in entities) {
-    NSXMLElement *element = OISModelElement(@"entity", @[ @"name", entity.name ]);
+    ODataXMLElement *element = OISModelElement(@"entity", @[ @"name", entity.name ]);
     NSString *cls = entity.managedObjectClassName;
-    if (cls.length && ![cls isEqualToString:@"NSManagedObject"]) [element addAttribute:[NSXMLNode attributeWithName:@"representedClassName" stringValue:cls]];
-    if (entity.superentity) [element addAttribute:[NSXMLNode attributeWithName:@"parentEntity" stringValue:entity.superentity.name]];
-    if (entity.isAbstract) [element addAttribute:[NSXMLNode attributeWithName:@"isAbstract" stringValue:@"YES"]];
-    [element addAttribute:[NSXMLNode attributeWithName:@"syncable" stringValue:@"YES"]];
+    if (cls.length && ![cls isEqualToString:@"NSManagedObject"]) [element addAttribute:[ODataXMLNode attributeWithName:@"representedClassName" stringValue:cls]];
+    if (entity.superentity) [element addAttribute:[ODataXMLNode attributeWithName:@"parentEntity" stringValue:entity.superentity.name]];
+    if (entity.isAbstract) [element addAttribute:[ODataXMLNode attributeWithName:@"isAbstract" stringValue:@"YES"]];
+    [element addAttribute:[ODataXMLNode attributeWithName:@"syncable" stringValue:@"YES"]];
     NSDictionary *inherited = entity.superentity.propertiesByName ?: @{};
     NSArray *names = [entity.propertiesByName.allKeys sortedArrayUsingSelector:@selector(compare:)];
     for (NSString *name in names) {
       if (inherited[name]) continue;
       NSPropertyDescription *property = entity.propertiesByName[name];
-      NSXMLElement *child;
+      ODataXMLElement *child;
       if ([property isKindOfClass:[NSAttributeDescription class]]) {
         NSAttributeDescription *attr = (NSAttributeDescription *)property;
         NSMutableArray *attributes = [@[ @"name", name, @"optional", attr.isOptional ? @"YES" : @"NO",
@@ -571,23 +572,23 @@ static void OISAddUserInfo(NSXMLElement *parent, NSDictionary *info)
     OISAddUserInfo(element, entity.userInfo);
     [root addChild:element];
   }
-  NSXMLDocument *document = [[NSXMLDocument alloc] initWithRootElement:root];
+  ODataXMLDocument *document = [[ODataXMLDocument alloc] initWithRootElement:root];
   document.version = @"1.0";
   document.characterEncoding = @"UTF-8";
   document.standalone = YES;
-  return [document XMLDataWithOptions:NSXMLNodePrettyPrint | NSXMLNodeCompactEmptyElement];
+  return [document XMLDataWithOptions:ODataXMLNodePrettyPrint | ODataXMLNodeCompactEmptyElement];
 }
 
 // The userDefinedModelVersionIdentifier of a model document, or of the
 // first entity's OData.modelVersion entry.
 static NSString *OISDocumentVersion(NSData *document)
 {
-  NSXMLElement *root = document.length ? [[NSXMLDocument alloc] initWithData:document options:0 error:NULL].rootElement : nil;
+  ODataXMLElement *root = document.length ? [[ODataXMLDocument alloc] initWithData:document options:0 error:NULL].rootElement : nil;
   NSString *version = [root attributeForName:@"userDefinedModelVersionIdentifier"].stringValue;
   if (version.length) return version;
-  for (NSXMLElement *entity in [root elementsForName:@"entity"]) {
-    for (NSXMLElement *userInfo in [entity elementsForName:@"userInfo"]) {
-      for (NSXMLElement *entry in [userInfo elementsForName:@"entry"]) {
+  for (ODataXMLElement *entity in [root elementsForName:@"entity"]) {
+    for (ODataXMLElement *userInfo in [entity elementsForName:@"userInfo"]) {
+      for (ODataXMLElement *entry in [userInfo elementsForName:@"entry"]) {
         if ([[entry attributeForName:@"key"].stringValue isEqualToString:@"OData.modelVersion"]) {
           NSString *value = [entry attributeForName:@"value"].stringValue;
           if (value.length) return value;

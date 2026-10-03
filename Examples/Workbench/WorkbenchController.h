@@ -34,6 +34,9 @@
 @property (nonatomic, strong) IBOutlet NSMenu *mainMenu;
 
 - (void)showWindow;
+// The built-in service served on the network (Sync > Serve on the
+// Network), at that port (0: the default, 8640).
+- (void)serveOnTheNetworkAtPort:(NSUInteger)port;
 - (BOOL)applicationShouldTerminateAfterLastWindowClosed:(NSApplication *)sender;
 - (IBAction)serviceChanged:(id)sender;
 - (IBAction)connect:(id)sender;

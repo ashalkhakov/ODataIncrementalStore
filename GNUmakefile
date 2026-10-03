@@ -57,6 +57,7 @@ ODataKit_OBJC_FILES = \
 	Source/ODataKit/ODataApply.m \
 	Source/ODataKit/ODataBatch.m \
 	Source/ODataKit/ODataCSDL.m \
+	Source/ODataKit/OISXML.m \
 	Source/ODataKit/ODataError.m \
 	Source/ODataKit/ODataExpression.m \
 	Source/ODataKit/ODataLexer.m \
@@ -71,6 +72,7 @@ ODataKit_HEADER_FILES = \
 	ODataApply.h \
 	ODataBatch.h \
 	ODataCSDL.h \
+	ODataXML.h \
 	ODataError.h \
 	ODataExpression.h \
 	ODataKit.h \

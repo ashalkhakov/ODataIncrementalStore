@@ -289,7 +289,11 @@ its built-in service, its outbox, the conflicts it meets, its requests.
 | `ODSUploader.m` | up: history into the outbox, requests sent, answers taken |
 | `ODSConflicts.m` | conflicts: versions met, resolvers, resolutions applied |
 | `ODSVersions.m` | version vectors: text, comparison, merging |
-| `ODataSyncPeerServer.m`, `ODataSyncService.m` | the peer server and the service's part |
+| `ODataSyncPeerServer.m`, `ODataSyncService.m` | the peer server and the service's part (macOS and GNUstep only) |
+
+On iOS, ODataSync is the device's part: the target filters the peer server,
+the service's part, their headers, and ODataService and HTTPServerKit to
+macOS, and `ODataSync.h` leaves them out. The rest builds unchanged.
 
 ## Tests
 

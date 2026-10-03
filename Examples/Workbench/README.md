@@ -117,6 +117,13 @@ What you can do:
   listed at the right (select one for what went and what came back);
   they are in the wire log too, and each sync is a trace (`sync`, `download Product`,
   `upload batch`).
+- Serve on the Network (Sync menu, or `Workbench --serve [port]`): the
+  built-in service served over HTTP too, at `http://<this Mac's address>:8640/odata/`
+  (the status line says where), on every interface and with no
+  authentication. A new connection: the service starts again from its
+  seed rows, at that root, in the window as well. The Device app
+  (`Examples/Device`) syncs with it from an iPhone: the Sync window's
+  device, on a real one.
 - Execute. Rows are real managed objects; select one to see its attributes,
   fire its faults, or its relationships. Each prefetched relationship is a
   column, showing what came with the row. Fire relationships reads every
@@ -191,7 +198,8 @@ named `-unsigned`.
 `Workbench --self-test` drives the window against each service in turn and
 prints a line per check (CI runs it); with `WORKBENCH_SHOTS=<dir>` it also
 saves the window as a PDF per service. `Workbench --self-test builtin` tests
-the built-in service alone, with no network.
+the built-in service alone, with no internet (it serves the built-in service
+on the local network once, and syncs a device with it over HTTP).
 
 The interface is in XIBs, File's Owner `WorkbenchController` in each:
 `WorkbenchWindow.xib` (the window, every control in it, and the main menu

@@ -1,0 +1,488 @@
+// !$*UTF8*$!
+{
+	archiveVersion = 1;
+	classes = {
+	};
+	objectVersion = 46;
+	objects = {
+
+/* Begin PBXBuildFile section */
+		004AD4935B974590CF29438D /* DVSession.m in Sources */ = {isa = PBXBuildFile; fileRef = A8F39C78E497A6DDC6D25874 /* DVSession.m */; };
+		251A5D57025DC130790DA3FE /* ODataIncrementalStore.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = 88D20759103361E28574DB0D /* ODataIncrementalStore.framework */; };
+		2864FDDE5FC3A2D4EBDDF089 /* Foundation.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = C0060369DE486910F1594791 /* Foundation.framework */; };
+		2F7ECD43FC9ADFE9916B0E79 /* ODataIncrementalStore.framework in Embed Frameworks */ = {isa = PBXBuildFile; fileRef = 88D20759103361E28574DB0D /* ODataIncrementalStore.framework */; settings = {ATTRIBUTES = (CodeSignOnCopy, RemoveHeadersOnCopy, ); }; };
+		3EFA9DE626EAC45CBA89AD80 /* WorkbenchDevice.m in Sources */ = {isa = PBXBuildFile; fileRef = 96D0A79DF75EF7AE24A00186 /* WorkbenchDevice.m */; };
+		4394AEC36262BE5D36A8C069 /* OTelKit.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = 6F7C220C848FCB7563B74E3B /* OTelKit.framework */; };
+		5FD339952994BEACEF332A33 /* ODataSync.framework in Embed Frameworks */ = {isa = PBXBuildFile; fileRef = F8D1D730F169250E33F6BC13 /* ODataSync.framework */; settings = {ATTRIBUTES = (CodeSignOnCopy, RemoveHeadersOnCopy, ); }; };
+		65737AED44C8C36AECBFE502 /* Catalog.xcdatamodeld in Sources */ = {isa = PBXBuildFile; fileRef = 0F3066026D1F99BEDD4E2A82 /* Catalog.xcdatamodeld */; };
+		6BA6A336A5FC30788421FAFF /* ODataKit.framework in Embed Frameworks */ = {isa = PBXBuildFile; fileRef = 0F10D5FE2D1F0BC7740B310F /* ODataKit.framework */; settings = {ATTRIBUTES = (CodeSignOnCopy, RemoveHeadersOnCopy, ); }; };
+		8126F78C984BD2B96DB394A8 /* ODataSync.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = F8D1D730F169250E33F6BC13 /* ODataSync.framework */; };
+		A0A787E3174D9DFE1F43DBD1 /* OTelKit.framework in Embed Frameworks */ = {isa = PBXBuildFile; fileRef = 6F7C220C848FCB7563B74E3B /* OTelKit.framework */; settings = {ATTRIBUTES = (CodeSignOnCopy, RemoveHeadersOnCopy, ); }; };
+		A6A76995814F2DEDE7DA5A4C /* ODataKit.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = 0F10D5FE2D1F0BC7740B310F /* ODataKit.framework */; };
+		C03D83CAAB19976DE0EC1832 /* DVControllers.m in Sources */ = {isa = PBXBuildFile; fileRef = 1ABCA2DCA3F87246AA51D3FC /* DVControllers.m */; };
+		D5C3D35C9D56B53475779711 /* WorkbenchSupport.m in Sources */ = {isa = PBXBuildFile; fileRef = DE667380C022DC9FD676BEE0 /* WorkbenchSupport.m */; };
+		EB4FCC575681E8DC59D2C254 /* WorkbenchModel.m in Sources */ = {isa = PBXBuildFile; fileRef = FA5DCF091AB5EFDD1DF35B20 /* WorkbenchModel.m */; };
+		F8AF2EECF669C19ADBDABECF /* main.m in Sources */ = {isa = PBXBuildFile; fileRef = B93D08049F8B798C4EB2CCBD /* main.m */; };
+/* End PBXBuildFile section */
+
+/* Begin PBXContainerItemProxy section */
+		447AACD155D83C81D7083828 /* PBXContainerItemProxy */ = {
+			isa = PBXContainerItemProxy;
+			containerPortal = BAC21FE3B01261AF001053FB /* ODataKit.xcodeproj */;
+			proxyType = 2;
+			remoteGlobalIDString = AA0000000000000000000007;
+			remoteInfo = Subproject;
+		};
+		47FB74697F9634697DF56EEE /* PBXContainerItemProxy */ = {
+			isa = PBXContainerItemProxy;
+			containerPortal = BAC21FE3B01261AF001053FB /* ODataKit.xcodeproj */;
+			proxyType = 2;
+			remoteGlobalIDString = AA000000000000000000000B;
+			remoteInfo = Subproject;
+		};
+		4BAD9FCB21053A1B579921B0 /* PBXContainerItemProxy */ = {
+			isa = PBXContainerItemProxy;
+			containerPortal = BAC21FE3B01261AF001053FB /* ODataKit.xcodeproj */;
+			proxyType = 2;
+			remoteGlobalIDString = D7BA1954D987FDFF19FEE609;
+			remoteInfo = Subproject;
+		};
+		4C65897077EB37DF1DFB5046 /* PBXContainerItemProxy */ = {
+			isa = PBXContainerItemProxy;
+			containerPortal = BAC21FE3B01261AF001053FB /* ODataKit.xcodeproj */;
+			proxyType = 1;
+			remoteGlobalIDString = 4CBB61F9CEEAF8A9C5A1F7CF;
+			remoteInfo = OTelKit;
+		};
+		91F1C65FD1F6E2D02F4B09CE /* PBXContainerItemProxy */ = {
+			isa = PBXContainerItemProxy;
+			containerPortal = BAC21FE3B01261AF001053FB /* ODataKit.xcodeproj */;
+			proxyType = 1;
+			remoteGlobalIDString = AA0000000000000000000002;
+			remoteInfo = ODataIncrementalStore;
+		};
+		972CDA49897CE3F5D9503881 /* PBXContainerItemProxy */ = {
+			isa = PBXContainerItemProxy;
+			containerPortal = BAC21FE3B01261AF001053FB /* ODataKit.xcodeproj */;
+			proxyType = 2;
+			remoteGlobalIDString = AA0000000000000000000003;
+			remoteInfo = Subproject;
+		};
+		9C701C874AE534640FE7A4CA /* PBXContainerItemProxy */ = {
+			isa = PBXContainerItemProxy;
+			containerPortal = BAC21FE3B01261AF001053FB /* ODataKit.xcodeproj */;
+			proxyType = 2;
+			remoteGlobalIDString = 5C30F5597E6C2517354354B7;
+			remoteInfo = Subproject;
+		};
+		A27B4BDE3E8A6CB80F27F98B /* PBXContainerItemProxy */ = {
+			isa = PBXContainerItemProxy;
+			containerPortal = BAC21FE3B01261AF001053FB /* ODataKit.xcodeproj */;
+			proxyType = 2;
+			remoteGlobalIDString = A21CEFC6F685318B7798AD60;
+			remoteInfo = Subproject;
+		};
+		AB87F64E0672641F3A3E49FB /* PBXContainerItemProxy */ = {
+			isa = PBXContainerItemProxy;
+			containerPortal = BAC21FE3B01261AF001053FB /* ODataKit.xcodeproj */;
+			proxyType = 1;
+			remoteGlobalIDString = 7F1CE30E03D845ACEF6B15CD;
+			remoteInfo = ODataSync;
+		};
+		BF89189A7ECBC24C40FC0BEC /* PBXContainerItemProxy */ = {
+			isa = PBXContainerItemProxy;
+			containerPortal = BAC21FE3B01261AF001053FB /* ODataKit.xcodeproj */;
+			proxyType = 1;
+			remoteGlobalIDString = AA0000000000000000000006;
+			remoteInfo = ODataKit;
+		};
+		ECFAC2F61528FDE763603FFA /* PBXContainerItemProxy */ = {
+			isa = PBXContainerItemProxy;
+			containerPortal = BAC21FE3B01261AF001053FB /* ODataKit.xcodeproj */;
+			proxyType = 2;
+			remoteGlobalIDString = AA0000000000000000000005;
+			remoteInfo = Subproject;
+		};
+/* End PBXContainerItemProxy section */
+
+/* Begin PBXCopyFilesBuildPhase section */
+		0AC6B517B9DA1E203258DD9E /* Embed Frameworks */ = {
+			isa = PBXCopyFilesBuildPhase;
+			buildActionMask = 2147483647;
+			dstPath = "";
+			dstSubfolderSpec = 10;
+			files = (
+				6BA6A336A5FC30788421FAFF /* ODataKit.framework in Embed Frameworks */,
+				A0A787E3174D9DFE1F43DBD1 /* OTelKit.framework in Embed Frameworks */,
+				2F7ECD43FC9ADFE9916B0E79 /* ODataIncrementalStore.framework in Embed Frameworks */,
+				5FD339952994BEACEF332A33 /* ODataSync.framework in Embed Frameworks */,
+			);
+			name = "Embed Frameworks";
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXCopyFilesBuildPhase section */
+
+/* Begin PBXFileReference section */
+		03B92C1A012BD84C32E70922 /* WorkbenchSupport.h */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.c.h; name = WorkbenchSupport.h; path = ../Workbench/WorkbenchSupport.h; sourceTree = "<group>"; };
+		0431D927701B172CB3774D07 /* Catalog.xcdatamodel */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = wrapper.xcdatamodel; path = Catalog.xcdatamodel; sourceTree = "<group>"; };
+		1ABCA2DCA3F87246AA51D3FC /* DVControllers.m */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.c.objc; path = DVControllers.m; sourceTree = "<group>"; };
+		3D47F48BFD2C5A6010CE9702 /* Debug.xcconfig */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = text.xcconfig; name = Debug.xcconfig; path = ../../Xcode/Configs/Debug.xcconfig; sourceTree = "<group>"; };
+		52001F7F5DF291BD06D0E6E9 /* Device.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = Device.app; sourceTree = BUILT_PRODUCTS_DIR; };
+		66756F86A0C54CDFBB474F73 /* Release.xcconfig */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = text.xcconfig; name = Release.xcconfig; path = ../../Xcode/Configs/Release.xcconfig; sourceTree = "<group>"; };
+		7EBD4B51D669E88B2BD478B3 /* DVSession.h */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.c.h; path = DVSession.h; sourceTree = "<group>"; };
+		96D0A79DF75EF7AE24A00186 /* WorkbenchDevice.m */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.c.objc; name = WorkbenchDevice.m; path = ../Workbench/WorkbenchDevice.m; sourceTree = "<group>"; };
+		9DEFFF5DBD966FC96A54D14F /* Device.xcconfig */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = text.xcconfig; path = Device.xcconfig; sourceTree = "<group>"; };
+		A8F39C78E497A6DDC6D25874 /* DVSession.m */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.c.objc; path = DVSession.m; sourceTree = "<group>"; };
+		AE5BB003B608366C9C5F41FE /* DVControllers.h */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.c.h; path = DVControllers.h; sourceTree = "<group>"; };
+		B93D08049F8B798C4EB2CCBD /* main.m */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.c.objc; path = main.m; sourceTree = "<group>"; };
+		BAC21FE3B01261AF001053FB /* ODataKit.xcodeproj */ = {isa = PBXFileReference; lastKnownFileType = "wrapper.pb-project"; name = ODataKit.xcodeproj; path = ../../ODataKit.xcodeproj; sourceTree = "<group>"; };
+		C002E1D3C0BB2198181252D5 /* WorkbenchDevice.h */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.c.h; name = WorkbenchDevice.h; path = ../Workbench/WorkbenchDevice.h; sourceTree = "<group>"; };
+		C0060369DE486910F1594791 /* Foundation.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = Foundation.framework; path = Platforms/iPhoneOS.platform/Developer/SDKs/iPhoneOS18.0.sdk/System/Library/Frameworks/Foundation.framework; sourceTree = DEVELOPER_DIR; };
+		D28A923B8EB20FA9A218A7CF /* WorkbenchModel.h */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.c.h; name = WorkbenchModel.h; path = ../Workbench/WorkbenchModel.h; sourceTree = "<group>"; };
+		DE667380C022DC9FD676BEE0 /* WorkbenchSupport.m */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.c.objc; name = WorkbenchSupport.m; path = ../Workbench/WorkbenchSupport.m; sourceTree = "<group>"; };
+		EB982D0289EDD5071861C74B /* Info.plist */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = text.plist.xml; path = Info.plist; sourceTree = "<group>"; };
+		FA5DCF091AB5EFDD1DF35B20 /* WorkbenchModel.m */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.c.objc; name = WorkbenchModel.m; path = ../Workbench/WorkbenchModel.m; sourceTree = "<group>"; };
+/* End PBXFileReference section */
+
+/* Begin PBXFrameworksBuildPhase section */
+		DC83DBE94F7B181DCCFC7D4E /* Frameworks */ = {
+			isa = PBXFrameworksBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				2864FDDE5FC3A2D4EBDDF089 /* Foundation.framework in Frameworks */,
+				A6A76995814F2DEDE7DA5A4C /* ODataKit.framework in Frameworks */,
+				4394AEC36262BE5D36A8C069 /* OTelKit.framework in Frameworks */,
+				251A5D57025DC130790DA3FE /* ODataIncrementalStore.framework in Frameworks */,
+				8126F78C984BD2B96DB394A8 /* ODataSync.framework in Frameworks */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXFrameworksBuildPhase section */
+
+/* Begin PBXGroup section */
+		17490E8545406F62016F9322 /* Frameworks */ = {
+			isa = PBXGroup;
+			children = (
+				4A91AEF71A7A9DF34F116908 /* iOS */,
+			);
+			name = Frameworks;
+			sourceTree = "<group>";
+		};
+		4A91AEF71A7A9DF34F116908 /* iOS */ = {
+			isa = PBXGroup;
+			children = (
+				C0060369DE486910F1594791 /* Foundation.framework */,
+			);
+			name = iOS;
+			sourceTree = "<group>";
+		};
+		549E681B887F7DA66D077C39 /* Products */ = {
+			isa = PBXGroup;
+			children = (
+				52001F7F5DF291BD06D0E6E9 /* Device.app */,
+				0F10D5FE2D1F0BC7740B310F /* ODataKit.framework */,
+				88D20759103361E28574DB0D /* ODataIncrementalStore.framework */,
+				5E9BEA94A6A8F5476A872D54 /* ODataService.framework */,
+				CC0EB9EB229FFC80C1BA86E3 /* ODataKitTests.xctest */,
+				A6A0BBFD64D3247DF6A7D5B7 /* HTTPServerKit.framework */,
+				6F7C220C848FCB7563B74E3B /* OTelKit.framework */,
+				F8D1D730F169250E33F6BC13 /* ODataSync.framework */,
+			);
+			name = Products;
+			sourceTree = "<group>";
+		};
+		78568D1094364A43C4AA0E87 /* Model */ = {
+			isa = PBXGroup;
+			children = (
+				0F3066026D1F99BEDD4E2A82 /* Catalog.xcdatamodeld */,
+			);
+			name = Model;
+			sourceTree = "<group>";
+		};
+		8E59FFA955CB5FEEE5AD60F2 /* Device */ = {
+			isa = PBXGroup;
+			children = (
+				B93D08049F8B798C4EB2CCBD /* main.m */,
+				A8F39C78E497A6DDC6D25874 /* DVSession.m */,
+				1ABCA2DCA3F87246AA51D3FC /* DVControllers.m */,
+				7EBD4B51D669E88B2BD478B3 /* DVSession.h */,
+				AE5BB003B608366C9C5F41FE /* DVControllers.h */,
+				EB982D0289EDD5071861C74B /* Info.plist */,
+			);
+			name = Device;
+			sourceTree = "<group>";
+		};
+		919CE209D6BB1318A331AE9B = {
+			isa = PBXGroup;
+			children = (
+				549E681B887F7DA66D077C39 /* Products */,
+				17490E8545406F62016F9322 /* Frameworks */,
+				C02FE98A67068CF982800C0F /* Configs */,
+				9DEFFF5DBD966FC96A54D14F /* Device.xcconfig */,
+				8E59FFA955CB5FEEE5AD60F2 /* Device */,
+				994DCACE48847A84372B1CA9 /* Workbench (shared) */,
+				78568D1094364A43C4AA0E87 /* Model */,
+				F7AA430B22067090FEB69455 /* Libraries */,
+			);
+			sourceTree = "<group>";
+		};
+		994DCACE48847A84372B1CA9 /* Workbench (shared) */ = {
+			isa = PBXGroup;
+			children = (
+				D28A923B8EB20FA9A218A7CF /* WorkbenchModel.h */,
+				FA5DCF091AB5EFDD1DF35B20 /* WorkbenchModel.m */,
+				C002E1D3C0BB2198181252D5 /* WorkbenchDevice.h */,
+				96D0A79DF75EF7AE24A00186 /* WorkbenchDevice.m */,
+				03B92C1A012BD84C32E70922 /* WorkbenchSupport.h */,
+				DE667380C022DC9FD676BEE0 /* WorkbenchSupport.m */,
+			);
+			name = "Workbench (shared)";
+			sourceTree = "<group>";
+		};
+		C02FE98A67068CF982800C0F /* Configs */ = {
+			isa = PBXGroup;
+			children = (
+				3D47F48BFD2C5A6010CE9702 /* Debug.xcconfig */,
+				66756F86A0C54CDFBB474F73 /* Release.xcconfig */,
+			);
+			name = Configs;
+			sourceTree = "<group>";
+		};
+		F7AA430B22067090FEB69455 /* Libraries */ = {
+			isa = PBXGroup;
+			children = (
+				BAC21FE3B01261AF001053FB /* ODataKit.xcodeproj */,
+			);
+			name = Libraries;
+			sourceTree = "<group>";
+		};
+/* End PBXGroup section */
+
+/* Begin PBXNativeTarget section */
+		F54CF01F67017B724EB1FEFF /* Device */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = 28E1C8E8B28E9E7048D477CC /* Build configuration list for PBXNativeTarget "Device" */;
+			buildPhases = (
+				1CD0AAD11FA83A49C8ECEB42 /* Sources */,
+				DC83DBE94F7B181DCCFC7D4E /* Frameworks */,
+				96719CFE1B6CD9993B582DC4 /* Resources */,
+				0AC6B517B9DA1E203258DD9E /* Embed Frameworks */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+				E470244C9EBB97A0735848FB /* PBXTargetDependency */,
+				5A1D40892C53709A4E67435B /* PBXTargetDependency */,
+				B95CE2412DA809F8944605DB /* PBXTargetDependency */,
+				E57DBF6898673DEE4C3DDC97 /* PBXTargetDependency */,
+			);
+			name = Device;
+			productName = Device;
+			productReference = 52001F7F5DF291BD06D0E6E9 /* Device.app */;
+			productType = "com.apple.product-type.application";
+		};
+/* End PBXNativeTarget section */
+
+/* Begin PBXProject section */
+		EC4CAB56EA2EB2966888ABE6 /* Project object */ = {
+			isa = PBXProject;
+			attributes = {
+				LastSwiftUpdateCheck = 1600;
+				LastUpgradeCheck = 1600;
+			};
+			buildConfigurationList = 8BC60A2FA280B4DE21AF2142 /* Build configuration list for PBXProject "Device" */;
+			compatibilityVersion = "Xcode 3.2";
+			developmentRegion = en;
+			hasScannedForEncodings = 0;
+			knownRegions = (
+				en,
+				Base,
+			);
+			mainGroup = 919CE209D6BB1318A331AE9B;
+			minimizedProjectReferenceProxies = 0;
+			preferredProjectObjectVersion = 77;
+			productRefGroup = 549E681B887F7DA66D077C39 /* Products */;
+			projectDirPath = "";
+			projectReferences = (
+				{
+					ProductGroup = 549E681B887F7DA66D077C39 /* Products */;
+					ProjectRef = BAC21FE3B01261AF001053FB /* ODataKit.xcodeproj */;
+				},
+			);
+			projectRoot = "";
+			targets = (
+				F54CF01F67017B724EB1FEFF /* Device */,
+			);
+		};
+/* End PBXProject section */
+
+/* Begin PBXReferenceProxy section */
+		0F10D5FE2D1F0BC7740B310F /* ODataKit.framework */ = {
+			isa = PBXReferenceProxy;
+			fileType = wrapper.framework;
+			path = ODataKit.framework;
+			remoteRef = 447AACD155D83C81D7083828 /* PBXContainerItemProxy */;
+			sourceTree = BUILT_PRODUCTS_DIR;
+		};
+		5E9BEA94A6A8F5476A872D54 /* ODataService.framework */ = {
+			isa = PBXReferenceProxy;
+			fileType = wrapper.framework;
+			path = ODataService.framework;
+			remoteRef = 47FB74697F9634697DF56EEE /* PBXContainerItemProxy */;
+			sourceTree = BUILT_PRODUCTS_DIR;
+		};
+		6F7C220C848FCB7563B74E3B /* OTelKit.framework */ = {
+			isa = PBXReferenceProxy;
+			fileType = wrapper.framework;
+			path = OTelKit.framework;
+			remoteRef = 4BAD9FCB21053A1B579921B0 /* PBXContainerItemProxy */;
+			sourceTree = BUILT_PRODUCTS_DIR;
+		};
+		88D20759103361E28574DB0D /* ODataIncrementalStore.framework */ = {
+			isa = PBXReferenceProxy;
+			fileType = wrapper.framework;
+			path = ODataIncrementalStore.framework;
+			remoteRef = 972CDA49897CE3F5D9503881 /* PBXContainerItemProxy */;
+			sourceTree = BUILT_PRODUCTS_DIR;
+		};
+		A6A0BBFD64D3247DF6A7D5B7 /* HTTPServerKit.framework */ = {
+			isa = PBXReferenceProxy;
+			fileType = wrapper.framework;
+			path = HTTPServerKit.framework;
+			remoteRef = A27B4BDE3E8A6CB80F27F98B /* PBXContainerItemProxy */;
+			sourceTree = BUILT_PRODUCTS_DIR;
+		};
+		CC0EB9EB229FFC80C1BA86E3 /* ODataKitTests.xctest */ = {
+			isa = PBXReferenceProxy;
+			fileType = wrapper.cfbundle;
+			path = ODataKitTests.xctest;
+			remoteRef = ECFAC2F61528FDE763603FFA /* PBXContainerItemProxy */;
+			sourceTree = BUILT_PRODUCTS_DIR;
+		};
+		F8D1D730F169250E33F6BC13 /* ODataSync.framework */ = {
+			isa = PBXReferenceProxy;
+			fileType = wrapper.framework;
+			path = ODataSync.framework;
+			remoteRef = 9C701C874AE534640FE7A4CA /* PBXContainerItemProxy */;
+			sourceTree = BUILT_PRODUCTS_DIR;
+		};
+/* End PBXReferenceProxy section */
+
+/* Begin PBXResourcesBuildPhase section */
+		96719CFE1B6CD9993B582DC4 /* Resources */ = {
+			isa = PBXResourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXResourcesBuildPhase section */
+
+/* Begin PBXSourcesBuildPhase section */
+		1CD0AAD11FA83A49C8ECEB42 /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				F8AF2EECF669C19ADBDABECF /* main.m in Sources */,
+				004AD4935B974590CF29438D /* DVSession.m in Sources */,
+				C03D83CAAB19976DE0EC1832 /* DVControllers.m in Sources */,
+				EB4FCC575681E8DC59D2C254 /* WorkbenchModel.m in Sources */,
+				3EFA9DE626EAC45CBA89AD80 /* WorkbenchDevice.m in Sources */,
+				D5C3D35C9D56B53475779711 /* WorkbenchSupport.m in Sources */,
+				65737AED44C8C36AECBFE502 /* Catalog.xcdatamodeld in Sources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXSourcesBuildPhase section */
+
+/* Begin PBXTargetDependency section */
+		5A1D40892C53709A4E67435B /* PBXTargetDependency */ = {
+			isa = PBXTargetDependency;
+			name = OTelKit;
+			targetProxy = 4C65897077EB37DF1DFB5046 /* PBXContainerItemProxy */;
+		};
+		B95CE2412DA809F8944605DB /* PBXTargetDependency */ = {
+			isa = PBXTargetDependency;
+			name = ODataIncrementalStore;
+			targetProxy = 91F1C65FD1F6E2D02F4B09CE /* PBXContainerItemProxy */;
+		};
+		E470244C9EBB97A0735848FB /* PBXTargetDependency */ = {
+			isa = PBXTargetDependency;
+			name = ODataKit;
+			targetProxy = BF89189A7ECBC24C40FC0BEC /* PBXContainerItemProxy */;
+		};
+		E57DBF6898673DEE4C3DDC97 /* PBXTargetDependency */ = {
+			isa = PBXTargetDependency;
+			name = ODataSync;
+			targetProxy = AB87F64E0672641F3A3E49FB /* PBXContainerItemProxy */;
+		};
+/* End PBXTargetDependency section */
+
+/* Begin XCBuildConfiguration section */
+		50152AC1AFDEBEBC399BD362 /* Release */ = {
+			isa = XCBuildConfiguration;
+			baseConfigurationReference = 66756F86A0C54CDFBB474F73 /* Release.xcconfig */;
+			buildSettings = {
+			};
+			name = Release;
+		};
+		50DF1B8FC1E953C663152283 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			baseConfigurationReference = 9DEFFF5DBD966FC96A54D14F /* Device.xcconfig */;
+			buildSettings = {
+			};
+			name = Debug;
+		};
+		57F11A2417123FCF7225FCF0 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			baseConfigurationReference = 3D47F48BFD2C5A6010CE9702 /* Debug.xcconfig */;
+			buildSettings = {
+			};
+			name = Debug;
+		};
+		9503B416140FF0B6B8C63A04 /* Release */ = {
+			isa = XCBuildConfiguration;
+			baseConfigurationReference = 9DEFFF5DBD966FC96A54D14F /* Device.xcconfig */;
+			buildSettings = {
+			};
+			name = Release;
+		};
+/* End XCBuildConfiguration section */
+
+/* Begin XCConfigurationList section */
+		28E1C8E8B28E9E7048D477CC /* Build configuration list for PBXNativeTarget "Device" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				9503B416140FF0B6B8C63A04 /* Release */,
+				50DF1B8FC1E953C663152283 /* Debug */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
+		8BC60A2FA280B4DE21AF2142 /* Build configuration list for PBXProject "Device" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				57F11A2417123FCF7225FCF0 /* Debug */,
+				50152AC1AFDEBEBC399BD362 /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
+/* End XCConfigurationList section */
+
+/* Begin XCVersionGroup section */
+		0F3066026D1F99BEDD4E2A82 /* Catalog.xcdatamodeld */ = {
+			isa = XCVersionGroup;
+			children = (
+				0431D927701B172CB3774D07 /* Catalog.xcdatamodel */,
+			);
+			currentVersion = 0431D927701B172CB3774D07 /* Catalog.xcdatamodel */;
+			name = Catalog.xcdatamodeld;
+			path = ../Catalog/Catalog.xcdatamodeld;
+			sourceTree = "<group>";
+			versionGroupType = wrapper.xcdatamodel;
+		};
+/* End XCVersionGroup section */
+	};
+	rootObject = EC4CAB56EA2EB2966888ABE6 /* Project object */;
+}

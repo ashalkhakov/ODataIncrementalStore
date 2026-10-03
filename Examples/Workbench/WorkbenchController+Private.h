@@ -85,6 +85,7 @@
 - (IBAction)explainQuery:(id)sender;
 - (IBAction)setMergePolicy:(NSMenuItem *)sender;
 - (IBAction)toggleRespondAsync:(id)sender;
+- (IBAction)toggleServeNetwork:(id)sender;
 - (IBAction)showTraces:(id)sender;
 // The selected exchange's trace, the span that sent it chosen.
 - (IBAction)showTraceOfExchange:(id)sender;

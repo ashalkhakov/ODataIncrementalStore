@@ -3,6 +3,10 @@
 
 #import "WBConnection.h"
 #import "WorkbenchSupport.h"
+#import <ODataService/ODataServer.h>
+#include <arpa/inet.h>
+#include <ifaddrs.h>
+#include <net/if.h>
 
 static NSString * const WBBuiltInRoot = @"http://workbench.local/odata/";
 static NSString * const WBNorthwindRoot = @"https://services.odata.org/V4/Northwind/Northwind.svc/";
@@ -34,8 +38,30 @@ static NSURL *WBTripPinSession(void)
   return [NSURL URLWithString:[NSString stringWithFormat:@"https://services.odata.org/V4/(S(%@))/TripPinServiceRW/", key]];
 }
 
+// This machine's address on the local network: the first IPv4 address of
+// an interface that is up and not the loopback (en0 first); nil for none.
+static NSString *WBLocalAddress(void)
+{
+  struct ifaddrs *list = NULL;
+  if (getifaddrs(&list) != 0) return nil;
+  NSString *found = nil;
+  for (int pass = 0; pass < 2 && !found; pass++) {
+    for (struct ifaddrs *each = list; each && !found; each = each->ifa_next) {
+      if (!each->ifa_addr || each->ifa_addr->sa_family != AF_INET) continue;
+      if (!(each->ifa_flags & IFF_UP) || (each->ifa_flags & IFF_LOOPBACK)) continue;
+      if (pass == 0 && strcmp(each->ifa_name, "en0") != 0) continue;
+      char text[INET_ADDRSTRLEN];
+      const struct sockaddr_in *address = (const struct sockaddr_in *)(const void *)each->ifa_addr;
+      if (inet_ntop(AF_INET, &address->sin_addr, text, sizeof text)) found = @(text);
+    }
+  }
+  freeifaddrs(list);
+  return found;
+}
+
 @implementation WBConnection {
   id _wire;  // the transport in use: the engine, or a network transport
+  HSServer *_server;
 }
 
 + (NSString *)rootOfService:(WBService)service
@@ -57,13 +83,48 @@ static NSURL *WBTripPinSession(void)
 
 - (instancetype)init
 {
-  if ((self = [super init])) _JSONBatch = YES;
+  if ((self = [super init])) {
+    _JSONBatch = YES;
+    _servePort = 8640;
+  }
   return self;
 }
 
 - (void)dealloc
 {
   _engine.didHandle = nil;
+  [_server stop];
+}
+
+// The root the built-in service has: its own made-up one, or the network's
+// while served.
+- (NSURL *)builtInRoot
+{
+  [_server stop];
+  _server = nil;
+  _servedRoot = nil;
+  _serveFailure = nil;
+  if (!_servesNetwork) return [NSURL URLWithString:WBBuiltInRoot];
+  NSString *address = WBLocalAddress();
+  if (!address) {
+    _serveFailure = @"this Mac has no address on a network";
+    return [NSURL URLWithString:WBBuiltInRoot];
+  }
+  return [NSURL URLWithString:[NSString stringWithFormat:@"http://%@:%lu/odata/", address, (unsigned long)_servePort]];
+}
+
+- (void)serve
+{
+  if (!_servesNetwork || _serveFailure || !_engine) return;
+  HSServer *server = [[HSServer alloc] initWithService:_engine.service];
+  server.bindToLocalhost = NO;
+  NSError *error = nil;
+  if (![server startOnPort:_servePort error:&error]) {
+    _serveFailure = error.localizedDescription ?: @"the server did not start";
+    return;
+  }
+  _server = server;
+  _servedRoot = _engine.serviceRoot;
 }
 
 - (NSUInteger)exchangesStarted
@@ -88,6 +149,11 @@ static NSURL *WBTripPinSession(void)
   if (_connecting) return @"Still connecting.";
   _service = service;
   _failure = nil;
+  if (service != WBServiceBuiltIn) {
+    [_server stop];
+    _server = nil;
+    _servedRoot = nil;
+  }
   if (service == WBServiceBuiltIn) {
     [self openBuiltIn];
     return nil;
@@ -110,7 +176,7 @@ static NSURL *WBTripPinSession(void)
 
 - (void)openBuiltIn
 {
-  NSURL *root = [NSURL URLWithString:WBBuiltInRoot];
+  NSURL *root = [self builtInRoot];
   NSURL *modelURL = WorkbenchModelURL();
   NSManagedObjectModel *model = modelURL ? WorkbenchBuiltInModel(modelURL) : nil;
   if (!model) {
@@ -135,6 +201,7 @@ static NSURL *WBTripPinSession(void)
     [weak logEntry:entry];
   };
   _wire = _engine;
+  [self serve];
   NSPersistentStoreCoordinator *psc = [[NSPersistentStoreCoordinator alloc] initWithManagedObjectModel:model];
   NSError *error = nil;
   // The configuration the service serves: the client's store holds it.
@@ -209,6 +276,10 @@ static NSURL *WBTripPinSession(void)
                               _service == WBServiceBuiltIn ? @"Built-in service" : _serviceRoot.absoluteString,
                               (unsigned long)_model.entities.count, (unsigned long)operations, _store.schema.version ?: @"4.0"];
   if (_service == WBServiceTripPin) [summary appendString:@" A session of its own: write freely."];
+  if (_service == WBServiceBuiltIn && _servedRoot) {
+    [summary appendFormat:@" Served on the network at %@ (no authentication): the Device app syncs with it.", _servedRoot.absoluteString];
+  }
+  if (_service == WBServiceBuiltIn && _servesNetwork && _serveFailure) [summary appendFormat:@" Not served on the network: %@.", _serveFailure];
   if (_service == WBServiceNorthwind) [summary appendString:@" Read-only."];
   return summary;
 }
